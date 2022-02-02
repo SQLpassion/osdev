@@ -33,15 +33,15 @@ PrintLine:
     MOV AH, 0xE
     INT 10
 
-	MOV AL, [SI]
-	CMP AL, 0
-	JE End_PrintLine
-
-	INT 0x10
-	INC SI
-	JMP PrintLine
-
-	End_PrintLine:
+    MOV AL, [SI]
+    CMP AL, 0
+    JE End_PrintLine
+    
+    INT 0x10
+    INC SI
+    JMP PrintLine
+    
+    End_PrintLine:
 RET
 
 ; OxA: new line
