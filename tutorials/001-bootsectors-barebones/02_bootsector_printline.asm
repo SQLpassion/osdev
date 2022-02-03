@@ -1,5 +1,5 @@
-; Tell the Assembler that are loaded at offset 0x7c00
-[ORG 0x7c00]
+; Tell the Assembler that we are loaded at offset 0x7C00
+[ORG 0x7C00]
 [BITS 16]
 
 ; Setup the DS and ES register
@@ -52,4 +52,4 @@ WelcomeMessage2: DB 'I hope you enjoy this tutorial...', 0xD, 0xA, 0x0
 
 ; Padding and magic number
 TIMES 510 - ($-$$) DB 0
-DW 0xaa55
+DW 0xAA55
