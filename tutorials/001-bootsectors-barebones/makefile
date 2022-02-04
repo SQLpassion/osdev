@@ -4,6 +4,7 @@ kaosimg : bootsector.bin
 	fat_imgen -c -s bootsector.bin -f kaos.img
 	cp kaos.img kaos.vfd
 
+
 # Builds the boot sector
 bootsector.bin: $(ASM)
 	nasm -fbin $(ASM) -o bootsector.bin
