@@ -10,7 +10,12 @@ The examples in this folder are showing you how you can create a barebone boot s
 You can build the barebone bootsectors from this folder with the following command - just pass in the necessary bootsector assembly file as an argument:
 
 ```shell
+# Linux/Mac OS
 docker run --rm -it -v $HOME/Documents/GitHub/SQLpassion/osdev:/src sqlpassion/kaos-buildenv
+    /bin/sh /src/tutorials/001-bootsectors-barebones/build.sh 01_bootsector.asm
+
+# Windows
+docker run --rm -it -v d:\GitHub\SQLpassion\osdev:/src sqlpassion/kaos-buildenv
     /bin/sh /src/tutorials/001-bootsectors-barebones/build.sh 01_bootsector.asm
 ```
 
