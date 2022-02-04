@@ -1,0 +1,40 @@
+{
+    "version": "2.0.0",
+    "tasks":
+    [
+        {
+            "label": "Build KAOS",
+            "type": "docker-run",
+            "dockerRun":
+            {
+                "image": "sqlpassion/kaos-buildenv",
+                "command": "/bin/sh /src/tutorials/001-bootsectors-barebones/build.sh 02_bootsector_printline.asm",
+                "remove": true,
+                "volumes":
+                [
+                    {
+                        "localPath": "${workspaceFolder}",
+                        "containerPath": "/src"
+                    }
+                ]
+            }
+        },
+        {
+            "label": "Clean up KAOS",
+            "type": "docker-run",
+            "dockerRun":
+            {
+                "image": "sqlpassion/kaos-buildenv",
+                "command": "/bin/sh /src/tutorials/001-bootsectors-barebones/clean.sh",
+                "remove": true,
+                "volumes":
+                [
+                    {
+                        "localPath": "${workspaceFolder}",
+                        "containerPath": "/src"
+                    }
+                ]
+            }
+        }
+    ]
+}
