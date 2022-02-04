@@ -7,7 +7,7 @@
             "type": "docker-run",
             "dockerRun": {
                 "image": "sqlpassion/kaos-buildenv",
-                "command": "/bin/sh /src/tutorials/001-bootsectors-barebones/build.sh 02_bootsector_printline.asm",
+                "command": "/bin/sh /src/main64/build.sh",
                 "remove": true,
                 "volumes": [
                     {
@@ -27,7 +27,7 @@
             "type": "docker-run",
             "dockerRun": {
                 "image": "sqlpassion/kaos-buildenv",
-                "command": "/bin/sh /src/tutorials/001-bootsectors-barebones/clean.sh",
+                "command": "/bin/sh /src/main64/clean.sh",
                 "remove": true,
                 "volumes": [
                     {
