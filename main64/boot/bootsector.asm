@@ -31,23 +31,30 @@ bsVolumeLabel:          DB "KAOS DRIVE "
 bsFileSystem:           DB "FAT12   "
 
 MAIN:
-; Setup the DS and ES register
-XOR AX, AX
-MOV DS, AX
-MOV ES, AX
+    ; Setup the DS and ES register
+    XOR     AX, AX
+    MOV     DS, AX
+    MOV     ES, AX
 
-; Prepare the stack
-; Otherwise we can't call a function...
-MOV AX, 0x7000
-MOV SS, AX
-MOV BP, 0x8000
-MOV SP, BP
+    ; Prepare the stack
+    ; Otherwise we can't call a function...
+    MOV     AX, 0x7000
+    MOV     SS, AX
+    MOV     BP, 0x8000
+    MOV     SP, BP
 
-; Print out the 1st string
-MOV SI, WelcomeMessage1
-CALL PRINTLINE
+    ; Print out a welcome message
+    MOV     SI, WelcomeMessage
+    CALL    PrintLine
 
-JMP $ ; Jump to current address = infinite loop
+    ; Load a file into memory
+    CALL    LoadRootDirectory
+
+    ; Print out the loaded file
+    MOV     SI, IMAGE_OFFSET
+    CALL    PrintLine
+
+    JMP     $ ; Jump to current address = infinite loop
 
 ; Include some helper functions
 %INCLUDE "../boot/functions.asm"
@@ -55,7 +62,18 @@ JMP $ ; Jump to current address = infinite loop
 ; OxA: new line
 ; 0xD: carriage return
 ; 0x0: null terminated string
-WelcomeMessage1: DB 'Booting KAOS...', 0xD, 0xA, 0x0
+WelcomeMessage: DB 'Booting KAOS...', 0xD, 0xA, 0x0
+
+ROOTDIRECTORY_AND_FAT_OFFSET	    equ 0x500
+IMAGE_OFFSET                        equ 0x1200
+Sector			                    db 0x00
+Head			                    db 0x00
+Track			                    db 0x00
+FileName    		                db "HELLO   TXT"
+FileReadError   		            db 'Failure', 0
+Cluster			                    dw 0x0000
+DiskReadErrorMessage:              db 'Disk read error...', 0
+DataSectorBeginning:                dw 0x0000
 
 ; Padding and magic number
 TIMES 510 - ($-$$) DB 0
