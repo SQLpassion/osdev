@@ -7,9 +7,8 @@ NOP                         ; This padding of 1 additional byte is needed, becau
                             ; BPB starts at offset 0x03 in the boot sector
 
 ;*********************************************
-;	BIOS Parameter Block (BPB) for FAT12
+;    BIOS Parameter Block (BPB) for FAT12
 ;*********************************************
-
 bpbOEM                  DB "KAOS    "
 bpbBytesPerSector:      DW 512
 bpbSectorsPerCluster:   DB 1
@@ -50,7 +49,7 @@ MAIN:
     ; Load a file into memory
     CALL    LoadRootDirectory
 
-    ; Print out the loaded file
+    ; Print out the content of the loaded file
     MOV     SI, IMAGE_OFFSET
     CALL    PrintLine
 
@@ -64,16 +63,16 @@ MAIN:
 ; 0x0: null terminated string
 WelcomeMessage: DB 'Booting KAOS...', 0xD, 0xA, 0x0
 
-ROOTDIRECTORY_AND_FAT_OFFSET	    equ 0x500
-IMAGE_OFFSET                        equ 0x1200
-Sector			                    db 0x00
-Head			                    db 0x00
-Track			                    db 0x00
-FileName    		                db "HELLO   TXT"
-FileReadError   		            db 'Failure', 0
-Cluster			                    dw 0x0000
-DiskReadErrorMessage:              db 'Disk read error...', 0
-DataSectorBeginning:                dw 0x0000
+ROOTDIRECTORY_AND_FAT_OFFSET        EQU 0x500
+IMAGE_OFFSET                        EQU 0x1200
+Sector                              DB 0x00
+Head                                DB 0x00
+Track                               DB 0x00
+FileName                            DB "HELLO   TXT"
+FileReadError                       DB 'Failure', 0
+Cluster                             DW 0x0000
+DiskReadErrorMessage:               DB 'Disk read error...', 0
+DataSectorBeginning:                DW 0x0000
 
 ; Padding and magic number
 TIMES 510 - ($-$$) DB 0

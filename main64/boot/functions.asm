@@ -8,18 +8,19 @@
 ;================================================
 PrintLine:
     ; Set the TTY mode
-    MOV		AH, 0xE
-    INT		10
+    MOV     AH, 0xE
+    INT     10
 
-    MOV		AL, [SI]
-    CMP	 	AL, 0
-    JE		End_PrintLine
+    ; Set the input string
+    MOV     AL, [SI]
+    CMP     AL, 0
+    JE      PrintLine_End
     
-    INT		0x10
-    INC 	SI
-    JMP 	PrintLine
+    INT     0x10
+    INC     SI
+    JMP     PrintLine
     
-    End_PrintLine:
+    PrintLine_End:
 RET
 
 ;************************************************;
@@ -32,15 +33,17 @@ RET
 ;
 ;************************************************;
 LBA2CHS:
-	xor     dx, dx							; prepare dx:ax for operation
-	div     WORD [bpbSectorsPerTrack]		; calculate
-	inc     dl								; adjust for sector 0
-	mov     BYTE [Sector], dl
-	xor     dx, dx							; prepare dx:ax for operation
-	div     WORD [bpbHeadsPerCylinder]		; calculate
-	mov     BYTE [Head], dl
-	mov     BYTE [Track], al
-	ret
+    XOR     DX, DX                                  ; prepare dx:ax for operation
+    DIV     WORD [bpbSectorsPerTrack]               ; calculate
+    INC     DL                                      ; adjust for sector 0
+    MOV     BYTE [Sector], DL
+    XOR     DX, DX                                  ; prepare dx:ax for operation
+    DIV     WORD [bpbHeadsPerCylinder]              ; calculate
+    MOV     BYTE [Head], DL
+    MOV     BYTE [Track], AL
+
+; Return...
+RET
 
 ;************************************************;
 ; Converts a FAT Cluster to LBA.
@@ -51,12 +54,14 @@ LBA2CHS:
 ; LBA = (FAT Cluster - 2) * sectors per cluster
 ;************************************************;
 FATCluster2LBA:
-    sub     ax, 0x0002                          ; zero base cluster number
-    xor     cx, cx
-    mov     cl, BYTE [bpbSectorsPerCluster]     ; convert byte to word
-    mul     cx
-    add     ax, WORD [DataSectorBeginning]      ; base data sector
-    ret
+    SUB     AX, 0x0002                              ; zero base cluster number
+    XOR     CX, CX
+    MOV     CL, BYTE [bpbSectorsPerCluster]         ; convert byte to word
+    MUL     CX
+    ADD     AX, WORD [DataSectorBeginning]          ; base data sector
+
+; Return...
+RET
 
 ;======================================================
 ; Loads data from the disk
@@ -64,150 +69,157 @@ FATCluster2LBA:
 ; cl: number of the sector were we will start to read
 ;======================================================
 LoadSectors:
-	push dx
+    PUSH    DX
 
-	mov		ah, 0x02					; BIOS read selector function
-	mov		al, dh						; Number of the sector we want to read
-	mov		ch, BYTE [Track]		    ; Track
-	mov		cl, BYTE [Sector]			; Sector
-	mov		dh, BYTE [Head]			    ; Head
-	mov		dl, 0           			; Select the boot drive
-	int		0x13						; BIOS interrupt that triggers the I/O
+    MOV     AH, 0x02                                ; BIOS read selector function
+    MOV     AL, DH                                  ; Number of the sector we want to read
+    MOV     CH, BYTE [Track]                        ; Track
+    MOV     CL, BYTE [Sector]                       ; Sector
+    MOV     DH, BYTE [Head]                         ; Head
+    MOV     DL, 0                                   ; Select the boot drive
+    INT     0x13                                    ; BIOS interrupt that triggers the I/O
 
-	jc		DiskError					; Error handling
+    JC      DiskError                               ; Error handling
 
-	pop		dx
-	cmp		dh, al						; Do we have read the amount of sectors that we have expected
-	jne		DiskError
-	ret
+    POP     dx
+    CMP     dh, al                                  ; Do we have read the amount of sectors that we have expected
+    JNE     DiskError
+
+; Return...
+RET
 
 ;=============================================
 DiskError:
-	mov 	si, DiskReadErrorMessage
-	call 	PrintLine
-	jmp 	$
+    MOV     si, DiskReadErrorMessage
+    CALL    PrintLine
+
+    ; Endless loop
+    JMP     $
 
 Failure:
-	mov		si, FileReadError
-	call	PrintLine
-	JMP     $
+    MOV     si, FileReadError
+    CALL    PrintLine
+
+    ; Endless loop
+    JMP     $
 
 ;=========================================================
 ; Loads the FAT12 Root Directory, and loads a given file
 ; into memory.
 ;=========================================================
 LoadRootDirectory:
-	; In the first step we calculate the size (number of sectors) 
-	; of the root directory and store the value in the CX register
-	; Calculation: 32 * bpbRootEntries / bpbBytesPerSector
-	xor     cx, cx
-	xor     dx, dx
-	mov     ax, 0x0020                      ; 32 byte directory entry
-	mul     WORD [bpbRootEntries]           ; total size of directory
-	div     WORD [bpbBytesPerSector]        ; sectors used by directory
-	xchg    ax, cx
+    ; In the first step we calculate the size (number of sectors) 
+    ; of the root directory and store the value in the CX register
+    ; Calculation: 32 * bpbRootEntries / bpbBytesPerSector
+    XOR     CX, CX
+    XOR     DX, DX
+    MOV     AX, 0x0020                              ; 32 byte directory entry
+    MUL     WORD [bpbRootEntries]                   ; total size of directory
+    DIV     WORD [bpbBytesPerSector]                ; sectors used by directory
+    XCHG    AX, CX
           
-	; In the next step we calculate the LBA address (number of the sector)
-	; of the root directory and store the location in the AX register
-	; AX holds afterwards an LBA address, which must be converted to a CHS address
-	;
-	; Calcuation: bpbNumberOfFATs * bpbSectorsPerFAT + bpbReservedSectors
-	mov     al, BYTE [bpbNumberOfFATs]       ; Number of FATs
-	mul     WORD [bpbSectorsPerFAT]          ; Number of sectors used by the FATs
-	add     ax, WORD [bpbReservedSectors]    ; Add the boot sector (and reserved sectors, if available)
+    ; In the next step we calculate the LBA address (number of the sector)
+    ; of the root directory and store the location in the AX register
+    ; AX holds afterwards an LBA address, which must be converted to a CHS address
+    ;
+    ; Calcuation: bpbNumberOfFATs * bpbSectorsPerFAT + bpbReservedSectors
+    MOV     AL, BYTE [bpbNumberOfFATs]              ; Number of FATs
+    MUL     WORD [bpbSectorsPerFAT]                 ; Number of sectors used by the FATs
+    ADD     AX, WORD [bpbReservedSectors]           ; Add the boot sector (and reserved sectors, if available)
 
-	; Calculate the address where the first cluster of data begins
-	; Calculation: Root Directory Size (register AX) + (size of FATs + boot sector + reserved sectors [register CX])
-	mov     WORD [DataSectorBeginning], ax   ; Size of the root directory
-    add     WORD [DataSectorBeginning], cx	 ; FAT sectors + boot sector + reserved sectors
+    ; Calculate the address where the first cluster of data begins
+    ; Calculation: Root Directory Size (register AX) + (size of FATs + boot sector + reserved sectors [register CX])
+    MOV     WORD [DataSectorBeginning], AX          ; Size of the root directory
+    ADD     WORD [DataSectorBeginning], CX          ; FAT sectors + boot sector + reserved sectors
 
-	; Convert the calculated LBA address (stored in AX) to a CHS address
-	call	LBA2CHS
+    ; Convert the calculated LBA address (stored in AX) to a CHS address
+    CALL    LBA2CHS
 
-	; And finally we read the complete root directory into memory
-	mov		bx, ROOTDIRECTORY_AND_FAT_OFFSET	; Load the Root Directory at 0x500
-	mov		dh, cl								; Load the number of sectors stored in CX
-	call	LoadSectors							; Perform the I/O operation
+    ; And finally we read the complete root directory into memory
+    MOV     BX, ROOTDIRECTORY_AND_FAT_OFFSET        ; Load the Root Directory at 0x500
+    MOV     DH, CL                                  ; Load the number of sectors stored in CX
+    CALL    LoadSectors                             ; Perform the I/O operation
 
-	; Now we have to find our file in the Root Directory
-	mov     cx, [bpbRootEntries]				; The number of root directory entries
-	mov     di, ROOTDIRECTORY_AND_FAT_OFFSET    ; Address of the Root directory
+    ; Now we have to find our file in the Root Directory
+    MOV     CX, [bpbRootEntries]                    ; The number of root directory entries
+    MOV     DI, ROOTDIRECTORY_AND_FAT_OFFSET        ; Address of the Root directory
     .Loop:
-		push    cx
-		mov     cx, 11					; We compare 11 characters (8.3 convention)
-		mov     si, FileName			; Compare against the file name
-		push    di
-	rep  cmpsb							; Test for string match
-		pop     di
-		je      LOAD_FAT				; When we have a match, we load the FAT
-		pop     cx
-		add     di, 32					; When we don't have a match, we go to next root directory entry (+ 32 bytes)
-		loop    .Loop
-		jmp     Failure					; The file image wasn't found in the root directory
+        PUSH    CX
+        MOV     CX, 11                              ; We compare 11 characters (8.3 convention)
+        MOV     SI, FileName                        ; Compare against the file name
+        PUSH    DI
+    REP CMPSB                                       ; Test for string match
+        POP     DI
+        JE      LoadFAT                             ; When we have a match, we load the FAT
+        POP     CX
+        ADD     DI, 32                              ; When we don't have a match, we go to next root directory entry (+ 32 bytes)
+        LOOP    .Loop
+        JMP     Failure                             ; The file image wasn't found in the root directory
 
-LOAD_FAT:
-	mov     dx, WORD [di + 0x001A]		; Add 26 bytes to the current entry of the root directory, so that we get the start cluster
-	mov     WORD [Cluster], dx          ; Store the 2 bytes of the start cluster (byte 26 & 27 of the root directory entry) in the variable "cluster"
+LoadFAT:
+    MOV     DX, WORD [DI + 0x001A]                  ; Add 26 bytes to the current entry of the root directory, so that we get the start cluster
+    MOV     WORD [Cluster], DX                      ; Store the 2 bytes of the start cluster (byte 26 & 27 of the root directory entry) in the variable "cluster"
 
-	; Calculate the number of sectors used by all FATs (bpbNumberOfFATs * bpbSectorsPerFAT)
-	xor     ax, ax
-	mov		BYTE [Track], al			; Initialize the track with 0
-	mov		BYTE [Head], al				; Initialize the head with 0
-	mov 	al, 1						; We just read 1 FAT, so that we stay within the 1st track
-    mul     WORD [bpbSectorsPerFAT]		; The sectors per FAT
-	mov		dh, al						; Store the number of sectors for all FATs in register DX
-	
-	; Load the FAT into memory
-	mov		bx, ROOTDIRECTORY_AND_FAT_OFFSET		; Offset in memory at which we want to load the FATs
-	mov		cx, WORD [bpbReservedSectors]			; Number of the reserved sectors (1)
-	add		cx, 1									; Add 1 to the number of reserved sectors, so that our start sector is the 2nd sector (directly after the boot sector)
-	mov		BYTE [Sector], cl						; Sector where we start to read
-	call	LoadSectors								; Call the load routine
+    ; Calculate the number of sectors used by all FATs (bpbNumberOfFATs * bpbSectorsPerFAT)
+    XOR     AX, AX
+    MOV     BYTE [Track], AL                        ; Initialize the track with 0
+    MOV     BYTE [Head], AL                         ; Initialize the head with 0
+    MOV     AL, 1                                   ; We just read 1 FAT, so that we stay within the 1st track
+    MUL     WORD [bpbSectorsPerFAT]                 ; The sectors per FAT
+    MOV     DH, AL                                  ; Store the number of sectors for all FATs in register DX
+    
+    ; Load the FAT into memory
+    MOV     BX, ROOTDIRECTORY_AND_FAT_OFFSET        ; Offset in memory at which we want to load the FATs
+    MOV     CX, WORD [bpbReservedSectors]           ; Number of the reserved sectors (1)
+    ADD     CX, 1                                   ; Add 1 to the number of reserved sectors, so that our start sector is the 2nd sector (directly after the boot sector)
+    MOV     BYTE [Sector], CL                       ; Sector where we start to read
+    CALL    LoadSectors                             ; Call the load routine
 
-	mov		bx, IMAGE_OFFSET						; Address where the first cluster should be stored
-	push	bx										; Store the current kernel address on the stack
+    MOV     BX, IMAGE_OFFSET                        ; Address where the first cluster should be stored
+    PUSH    BX                                      ; Store the current kernel address on the stack
 
-LOAD_IMAGE:
-    mov     ax, WORD [Cluster]						; FAT cluster to read
-	call    FATCluster2LBA							; Convert the FAT cluster to LBA (result stored in AX)
-	
-	; Convert the calculated LBA address (input in AX) to a CHS address
-	call	LBA2CHS
+LoadImage:
+    MOV     AX, WORD [Cluster]                      ; FAT cluster to read
+    CALL    FATCluster2LBA                          ; Convert the FAT cluster to LBA (result stored in AX)
+    
+    ; Convert the calculated LBA address (input in AX) to a CHS address
+    CALL    LBA2CHS
 
-	xor		dx, dx
-	mov     dh, BYTE [bpbSectorsPerCluster]			; Number of the sectors we want to read
-	pop		bx										; Get the current kernel address from the stack (for every sector we read, we advance the address by 512 bytes)
-	call    LoadSectors								; Read the cluster into memory
-	add		bx, 0x200								; Advance the kernel address by 512 bytes (1 sector that was read from disk)
+    XOR     DX, DX
+    MOV     DH, BYTE [bpbSectorsPerCluster]         ; Number of the sectors we want to read
+    POP     BX                                      ; Get the current kernel address from the stack (for every sector we read, we advance the address by 512 bytes)
+    CALL    LoadSectors                             ; Read the cluster into memory
+    ADD     BX, 0x200                               ; Advance the kernel address by 512 bytes (1 sector that was read from disk)
+    PUSH    BX
 
-	push	bx
-
-	; Compute the next cluster that we have to load from disk
-	mov     ax, WORD [Cluster]						; identify current cluster
-    mov     cx, ax									; copy current cluster
-    mov     dx, ax									; copy current cluster
-    shr     dx, 0x0001								; divide by two
-    add     cx, dx									; sum for (3/2)
-    mov     bx, ROOTDIRECTORY_AND_FAT_OFFSET        ; location of FAT in memory
-    add     bx, cx									; index into FAT
-    mov     dx, WORD [bx]							; read two bytes from FAT
-    test    ax, 0x0001
-    jnz     .ODD_CLUSTER
+    ; Compute the next cluster that we have to load from disk
+    MOV     AX, WORD [Cluster]                      ; identify current cluster
+    MOV     CX, AX                                  ; copy current cluster
+    MOV     DX, AX                                  ; copy current cluster
+    SHR     DX, 0x0001                              ; divide by two
+    ADD     CX, DX                                  ; sum for (3/2)
+    MOV     BX, ROOTDIRECTORY_AND_FAT_OFFSET        ; location of FAT in memory
+    ADD     BX, CX                                  ; index into FAT
+    MOV     DX, WORD [BX]                           ; read two bytes from FAT
+    TEST    AX, 0x0001
+    JNZ     LoadRootDirectory_OddCluster
           
-.EVEN_CLUSTER:
-    and     dx, 0000111111111111b					; Take the lowest 12 bits
-    jmp     .DONE
+LoadRootDirectory_EvenCluster:
+    AND     DX, 0000111111111111b                   ; Take the lowest 12 bits
+    JMP     LoadRootDirectory_Done
          
-.ODD_CLUSTER:
-	shr     dx, 0x0004								; Take the highest 12 bits
+LoadRootDirectory_OddCluster:
+    SHR     DX, 0x0004                              ; Take the highest 12 bits
           
-.DONE:
-    mov     WORD [Cluster], dx						; store new cluster
-	cmp     dx, 0x0FF0								; Test for end of file
-    jb      LOAD_IMAGE
+LoadRootDirectory_Done:
+    MOV     WORD [Cluster], DX                      ; store new cluster
+    CMP     DX, 0x0FF0                              ; Test for end of file
+    JB      LoadImage
 
-END_LOAD_ROOT_DIRECTORY:
-	; Restore the stack, so that we can do a RET
-	pop bx
-	pop bx
-	ret
+LoadRootDirectory_End:
+    ; Restore the stack, so that we can do a RET
+    POP BX
+    POP BX
+
+; Return...
+RET
