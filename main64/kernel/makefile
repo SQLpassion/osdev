@@ -2,6 +2,7 @@
 # The .vfd file is needed for Hyper-V.
 kaos64.img : bootsector.bin
 	fat_imgen -c -s ../boot/bootsector.bin -f ../kaos64.img
+	fat_imgen -m -f ../kaos64.img -i ../boot/hello.txt
 	cp ../kaos64.img ../kaos64.vfd
 
 # Builds the boot sector
