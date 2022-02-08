@@ -81,8 +81,8 @@ LoadSectors:
 
     JC      DiskError                               ; Error handling
 
-    POP     dx
-    CMP     dh, al                                  ; Do we have read the amount of sectors that we have expected
+    POP     DX
+    CMP     DH, AL                                  ; Do we have read the amount of sectors that we have expected
     JNE     DiskError
 
 ; Return...
@@ -90,14 +90,14 @@ RET
 
 ;=============================================
 DiskError:
-    MOV     si, DiskReadErrorMessage
+    MOV     SI, DiskReadErrorMessage
     CALL    PrintLine
 
     ; Endless loop
     JMP     $
 
 Failure:
-    MOV     si, FileReadError
+    MOV     SI, FileReadError
     CALL    PrintLine
 
     ; Endless loop
