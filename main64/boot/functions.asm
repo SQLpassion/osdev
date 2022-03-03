@@ -218,8 +218,25 @@ LoadRootDirectory_Done:
 
 LoadRootDirectory_End:
     ; Restore the stack, so that we can do a RET
-    POP BX
-    POP BX
+    POP     BX
+    POP     BX
 
 ; Return...
 RET
+
+;================================
+; Enter the x32 Protected Mode
+;================================
+EnterProtectedMode:
+    CLI                                             ; Disable interrupts
+    LGDT    [GDT_DESCRIPTOR]                        ; Load the GDT register with the start offset of the GDT
+    MOV     EAX, CR0
+    OR      EAX, 1
+
+    ; Set the "Protection Enable" bit in CR0 to finally
+    ; enable the x32 Protected Mode
+    MOV     CR0, EAX
+
+    ; Perform a far jump to selector 0x8, which points to a 32-bit Protected Mode code segment defined by the GDT entry.
+    ; The far jump clears the instruction pipeline, which contains 16 bit garbage instructions...
+    JMP     CODE_SEGMENT:ContinueInProtectedMode

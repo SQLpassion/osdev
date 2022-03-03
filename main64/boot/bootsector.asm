@@ -42,26 +42,41 @@ MAIN:
     MOV     BP, 0x8000
     MOV     SP, BP
 
-    ; Print out a welcome message
-    MOV     SI, WelcomeMessage
-    CALL    PrintLine
-
     ; Load a file into memory
     CALL    LoadRootDirectory
 
-    ; Print out the content of the loaded file
-    MOV     SI, IMAGE_OFFSET
-    CALL    PrintLine
+    ; Enter the x32 Protected Mode
+    CAlL EnterProtectedMode
 
     JMP     $ ; Jump to current address = infinite loop
 
 ; Include some helper functions
 %INCLUDE "../boot/functions.asm"
 
-; OxA: new line
-; 0xD: carriage return
-; 0x0: null terminated string
-WelcomeMessage: DB 'Booting KAOS...', 0xD, 0xA, 0x0
+;====================================================
+; Here begins the 32 bit code for the Protected Mode
+;====================================================
+[BITS 32]
+ContinueInProtectedMode:
+	; Setup the various segment registers with the data segment
+	MOV     AX, DATA_SEGMENT
+	MOV     DS, AX
+	MOV     SS, AX
+	MOV     ES, AX
+	MOV     FS, AX
+	MOV     GS, AX
+
+	; Setup the x32 Protected Mode Stack
+	MOV     EBP, 0x70000
+	MOV     ESP, EBP
+
+    ; Print out some welcome message from x32 Protected Mode.
+    ; Because we have no access to the BIOS interrupts anymore, we must directly interact with the frame buffer.
+    MOV     [0xB8000], byte 'H'
+    MOV     [0xB8002], byte 'i'
+
+    ; Endless loop
+    JMP $
 
 ROOTDIRECTORY_AND_FAT_OFFSET        EQU 0x500
 IMAGE_OFFSET                        EQU 0x1200
@@ -73,6 +88,74 @@ FileReadError                       DB 'Failure', 0
 Cluster                             DW 0x0000
 DiskReadErrorMessage:               DB 'Disk read error...', 0
 DataSectorBeginning:                DW 0x0000
+
+;===================================================================
+; Definition of the GDT, needed for entering the x32 Protected Mode
+; More information: https://wiki.osdev.org/Global_Descriptor_Table
+;===================================================================
+GDT_START:
+
+; Null Descriptor
+GDT_NULL:
+DD          0x0
+DD          0x0
+
+; Code Segment Descriptor
+GDT_CODE:
+DW          0xFFFF                  ; Limit: 2 bytes
+DW          0x0                     ; Base:  2 bytes
+DB          0x0                     ; Base:  1 byte
+DB          10011010b               ; Access Byte:
+                                    ;   - Bit 7: Present
+                                    ;   - Bit 6: Privilege Level
+                                    ;   - Bit 5: Privilege Level
+                                    ;   - Bit 4: Descriptor Type Bit
+                                    ;   - Bit 3: Executable Bit
+                                    ;   - Bit 2: Direction Bit
+                                    ;   - Bit 1: Readable/Writeable Bit
+                                    ;   - Bit 0: Accessed Bit  
+DB          11001111b               ; Flags (4 bits) + Limits (4 Bits)
+                                    ;   - Bit 7: Granularity Flag
+                                    ;   - Bit 6: Size Flag
+                                    ;   - Bit 5: Long-Mode Code Flag
+                                    ;   - Bit 4: Reserved
+                                    ;   - Bit 3 - 0: Limit
+DB          0x0                     ; Base: 1 byte
+
+; Data Segment Descriptor
+GDT_DATA:
+DW          0xFFFF                  ; Limit: 2 bytes
+DW          0x0                     ; Base:  2 bytes
+DB          0x0                     ; Base:  1 byte
+DB          10010010b               ; Access Byte:
+                                    ;   - Bit 7: Present
+                                    ;   - Bit 6: Privilege Level
+                                    ;   - Bit 5: Privilege Level
+                                    ;   - Bit 4: Descriptor Type Bit
+                                    ;   - Bit 3: Executable Bit
+                                    ;   - Bit 2: Direction Bit
+                                    ;   - Bit 1: Readable/Writeable Bit
+                                    ;   - Bit 0: Accessed Bit  
+DB          11001111b               ; Flags (4 bits) + Limits (4 Bits)
+                                    ;   - Bit 7: Granularity Flag
+                                    ;   - Bit 6: Size Flag
+                                    ;   - Bit 5: Long-Mode Code Flag
+                                    ;   - Bit 4: Reserved
+                                    ;   - Bit 3 - 0: Limit
+DB          0x0                     ; Base: 1 byte
+
+GDT_END:
+
+;==================================
+; Definition of the GDT Descriptor
+;==================================
+GDT_DESCRIPTOR:
+DW GDT_END - GDT_START - 1	        ; Size of the GDT - 1
+DD GDT_START				        ; Start address of the GDT
+                                    ; This address will be loaded into the GDT register
+
+CODE_SEGMENT EQU GDT_CODE - GDT_START
+DATA_SEGMENT EQU GDT_DATA - GDT_START
 
 ; Padding and magic number
 TIMES 510 - ($-$$) DB 0
