@@ -46,12 +46,11 @@ MAIN:
     MOV     SI, WelcomeMessage
     CALL    PrintLine
 
-    ; Load a file into memory
+    ; Load the KAOSLDR_x16.bin file into memory
     CALL    LoadRootDirectory
 
-    ; Print out the content of the loaded file
-    MOV     SI, IMAGE_OFFSET
-    CALL    PrintLine
+    ; Execute the KAOSLDR_X16.bin file...
+    call    LOADER_OFFSET
 
     JMP     $ ; Jump to current address = infinite loop
 
@@ -64,11 +63,11 @@ MAIN:
 WelcomeMessage: DB 'Booting KAOS...', 0xD, 0xA, 0x0
 
 ROOTDIRECTORY_AND_FAT_OFFSET        EQU 0x500
-IMAGE_OFFSET                        EQU 0x1200
+LOADER_OFFSET                        EQU 0x1200
 Sector                              DB 0x00
 Head                                DB 0x00
 Track                               DB 0x00
-FileName                            DB "HELLO   TXT"
+FileName                            DB "LDR_X16 BIN"
 FileReadError                       DB 'Failure', 0
 Cluster                             DW 0x0000
 DiskReadErrorMessage:               DB 'Disk read error...', 0

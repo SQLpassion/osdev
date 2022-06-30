@@ -175,7 +175,7 @@ LoadFAT:
     MOV     BYTE [Sector], CL                       ; Sector where we start to read
     CALL    LoadSectors                             ; Call the load routine
 
-    MOV     BX, IMAGE_OFFSET                        ; Address where the first cluster should be stored
+    MOV     BX, LOADER_OFFSET                        ; Address where the first cluster should be stored
     PUSH    BX                                      ; Store the current kernel address on the stack
 
 LoadImage:
