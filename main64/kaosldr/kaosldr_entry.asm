@@ -2,7 +2,7 @@
 [ORG 0x2000]
 [BITS 16]
 
-MAIN:
+Main:
     ; Print out a welcome message
     MOV     SI, BootMessage
     CALL    PrintString
