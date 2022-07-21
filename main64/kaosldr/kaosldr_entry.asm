@@ -1,4 +1,5 @@
-[ORG 0x1200]
+; Tell the Assembler that KAOSLDR.BIN is loaded at the offset 0x2000
+[ORG 0x2000]
 [BITS 16]
 
 MAIN:
@@ -60,12 +61,15 @@ MAIN:
     MOV     SI, CRLF
     CALL    PrintString
 
+    ; Enables the A20 gate
+    CALL    EnableA20
+
     RET
 
 ; Include some helper functions
-%INCLUDE "functions.asm"                                                                                                                                        
+%INCLUDE "functions.asm"                                                                                                                                     
 
-BootMessage:    DB 'Executing KAOSLDR_x16.bin...', 0xD, 0xA, 0x0
+BootMessage:    DB 'Executing the 2nd stage boot loader KAOSLDR.BIN...', 0xD, 0xA, 0x0
 YearString:     DB 'Year: ', 0x0
 MonthString:    DB 'Month: ', 0x0
 DayString:      DB 'Day: ', 0x0

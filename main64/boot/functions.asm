@@ -174,8 +174,7 @@ LoadFAT:
     ADD     CX, 1                                   ; Add 1 to the number of reserved sectors, so that our start sector is the 2nd sector (directly after the boot sector)
     MOV     BYTE [Sector], CL                       ; Sector where we start to read
     CALL    LoadSectors                             ; Call the load routine
-
-    MOV     BX, LOADER_OFFSET                        ; Address where the first cluster should be stored
+    MOV     BX, WORD [Loader_Offset]                ; Address where the first cluster should be stored
     PUSH    BX                                      ; Store the current kernel address on the stack
 
 LoadImage:

@@ -1,5 +1,5 @@
-# Remove the built KAOSLDR_x16
-cd /src/main64/kaosldr_x16
+# Remove the built KAOSLDR
+cd /src/main64/kaosldr
 make clean
 
 # Remove the built kernel

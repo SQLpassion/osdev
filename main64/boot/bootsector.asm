@@ -1,4 +1,4 @@
-; Tell the Assembler that we are loaded at offset 0x7C00
+; Tell the Assembler that the boot sector is loaded at the offset 0x7C00
 [ORG 0x7C00]
 [BITS 16]
 
@@ -42,35 +42,40 @@ MAIN:
     MOV     BP, 0x8000
     MOV     SP, BP
 
-    ; Print out a welcome message
-    MOV     SI, WelcomeMessage
+    ; Print out a boot message
+    MOV     SI, BootMessage
     CALL    PrintLine
 
-    ; Load the KAOSLDR_x16.bin file into memory
+    ; Load the KAOSLDR.BIN file into memory
+    MOV     CX, 11
+    LEA     SI, [SecondStageFileName]
+    LEA     DI, [FileName]
+    REP     MOVSB
+    MOV     WORD [Loader_Offset], KAOSLDR_OFFSET
     CALL    LoadRootDirectory
 
-    ; Execute the KAOSLDR_X16.bin file...
-    call    LOADER_OFFSET
-
-    JMP     $ ; Jump to current address = infinite loop
+    ; Execute the KAOSLDR.BIN file...
+    CALL KAOSLDR_OFFSET
 
 ; Include some helper functions
 %INCLUDE "../boot/functions.asm"
 
-; OxA: new line
-; 0xD: carriage return
-; 0x0: null terminated string
-WelcomeMessage: DB 'Booting KAOS...', 0xD, 0xA, 0x0
+; OxA: New Line
+; 0xD: Carriage Return
+; 0x0: Null Terminated String
+BootMessage: DB 'Booting KAOS...', 0xD, 0xA, 0x0
 
 ROOTDIRECTORY_AND_FAT_OFFSET        EQU 0x500
-LOADER_OFFSET                        EQU 0x1200
+KAOSLDR_OFFSET                      EQU 0x2000
+Loader_Offset                       DW 0x0000
 Sector                              DB 0x00
 Head                                DB 0x00
 Track                               DB 0x00
-FileName                            DB "LDR_X16 BIN"
+FileName                            DB 11 DUP (" ")
+SecondStageFileName                 DB "KAOSLDR BIN"
 FileReadError                       DB 'Failure', 0
 Cluster                             DW 0x0000
-DiskReadErrorMessage:               DB 'Disk read error...', 0
+DiskReadErrorMessage:               DB 'Disk Error', 0
 DataSectorBeginning:                DW 0x0000
 
 ; Padding and magic number

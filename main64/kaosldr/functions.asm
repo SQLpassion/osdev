@@ -133,3 +133,15 @@ GetTime:
     CALL    Bcd2Decimal
     MOV     [Second], AX
 RET
+
+;=============================================
+; This function enables the A20 gate
+;=============================================
+EnableA20:
+	CLI					; Disables interrupts
+	PUSH	AX			; Save AX on the stack
+	MOV     AL, 2
+	OUT     0x92, AL
+	POP	    AX			; Restore the value of AX from the stack
+	STI					; Enable the interrupts again
+RET 

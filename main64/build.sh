@@ -1,5 +1,5 @@
-# Builds the KAOSLDR_x16
-cd /src/main64/kaosldr_x16
+# Builds the KAOSLDR
+cd /src/main64/kaosldr
 make clean && make
 
 # Builds the kernel
