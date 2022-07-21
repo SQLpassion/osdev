@@ -46,6 +46,14 @@ Main:
     MOV     SI, BootMessage
     CALL    PrintLine
 
+    ; Load the KLDR64.BIN file into memory
+    MOV     CX, 11
+    LEA     SI, [SecondStageFileName64]
+    LEA     DI, [FileName]
+    REP     MOVSB
+    MOV     WORD [Loader_Offset], KAOSLDR64_OFFSET
+    CALL    LoadRootDirectory
+
     ; Load the KAOSLDR.BIN file into memory
     MOV     CX, 11
     LEA     SI, [SecondStageFileName]
@@ -54,7 +62,7 @@ Main:
     MOV     WORD [Loader_Offset], KAOSLDR_OFFSET
     CALL    LoadRootDirectory
 
-    ; Execute the KAOSLDR.BIN file...
+    ; Execute the x16 based KAOSLDR.BIN file...
     CALL KAOSLDR_OFFSET
 
 ; Include some helper functions
@@ -67,12 +75,14 @@ BootMessage: DB 'Booting KAOS...', 0xD, 0xA, 0x0
 
 ROOTDIRECTORY_AND_FAT_OFFSET        EQU 0x500
 KAOSLDR_OFFSET                      EQU 0x2000
+KAOSLDR64_OFFSET                    EQU 0x3000
 Loader_Offset                       DW 0x0000
 Sector                              DB 0x00
 Head                                DB 0x00
 Track                               DB 0x00
 FileName                            DB 11 DUP (" ")
 SecondStageFileName                 DB "KAOSLDR BIN"
+SecondStageFileName64               DB "KLDR64  BIN"
 FileReadError                       DB 'Failure', 0
 Cluster                             DW 0x0000
 DiskReadErrorMessage:               DB 'Disk Error', 0

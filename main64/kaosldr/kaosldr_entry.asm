@@ -64,10 +64,14 @@ Main:
     ; Enables the A20 gate
     CALL    EnableA20
 
+    ; Switch to x64 Long Mode and continue there...
+    CALL    SwitchToLongMode
+
     RET
 
 ; Include some helper functions
-%INCLUDE "functions.asm"                                                                                                                                     
+%INCLUDE "functions.asm"
+%INCLUDE "longmode.asm"                                                                                                                               
 
 BootMessage:    DB 'Executing the 2nd stage boot loader KAOSLDR.BIN...', 0xD, 0xA, 0x0
 YearString:     DB 'Year: ', 0x0

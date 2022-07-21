@@ -1,0 +1,3 @@
+Write final image to Floppy Disk: http://www.chrysocome.net/dd
+./dd.exe if=d:\github\sqlpassion\osdev\main64\kaos64.img od=a:
+
