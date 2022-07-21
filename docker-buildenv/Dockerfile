@@ -106,5 +106,5 @@ ENV PATH="$HOME/opt/cross/bin:$PATH"
 ########
 
 # docker image build -t sqlpassion/kaos-buildenv:latest .
-# docker run --rm -it -v d:\GitHub\KAOS:/src sqlpassion/kaos-buildenv /bin/sh /src/main64/build.sh
-# docker run --rm -it -v $HOME/Documents/GitHub/KAOS:/src sqlpassion/kaos-buildenv /bin/sh /src/main64/build.sh
+# docker run --rm -it -v d:\GitHub\SQLpassion/osdev:/src sqlpassion/kaos-buildenv /bin/sh /src/main64/build.sh
+# docker run --rm -it -v $HOME/Documents/GitHub/SQLpassion/osdev:/src sqlpassion/kaos-buildenv /bin/sh /src/main64/build.sh

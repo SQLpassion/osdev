@@ -1,4 +1,4 @@
-; Tell the Assembler that we are loaded at offset 0x7C00
+; Tell the Assembler that the boot sector is loaded at the offset 0x7C00
 [ORG 0x7C00]
 [BITS 16]
 
@@ -42,51 +42,40 @@ MAIN:
     MOV     BP, 0x8000
     MOV     SP, BP
 
-    ; Load a file into memory
+    ; Print out a boot message
+    MOV     SI, BootMessage
+    CALL    PrintLine
+
+    ; Load the KAOSLDR.BIN file into memory
+    MOV     CX, 11
+    LEA     SI, [SecondStageFileName]
+    LEA     DI, [FileName]
+    REP     MOVSB
+    MOV     WORD [Loader_Offset], KAOSLDR_OFFSET
     CALL    LoadRootDirectory
 
-    ; Enter the x32 Protected Mode
-    CAlL EnterProtectedMode
-
-    JMP     $ ; Jump to current address = infinite loop
+    ; Execute the KAOSLDR.BIN file...
+    CALL KAOSLDR_OFFSET
 
 ; Include some helper functions
 %INCLUDE "../boot/functions.asm"
 
-;====================================================
-; Here begins the 32 bit code for the Protected Mode
-;====================================================
-[BITS 32]
-ContinueInProtectedMode:
-	; Setup the various segment registers with the data segment
-	MOV     AX, DATA_SEGMENT
-	MOV     DS, AX
-	MOV     SS, AX
-	MOV     ES, AX
-	MOV     FS, AX
-	MOV     GS, AX
-
-	; Setup the x32 Protected Mode Stack
-	MOV     EBP, 0x70000
-	MOV     ESP, EBP
-
-    ; Print out some welcome message from x32 Protected Mode.
-    ; Because we have no access to the BIOS interrupts anymore, we must directly interact with the frame buffer.
-    MOV     [0xB8000], byte 'H'
-    MOV     [0xB8002], byte 'i'
-
-    ; Endless loop
-    JMP $
+; OxA: New Line
+; 0xD: Carriage Return
+; 0x0: Null Terminated String
+BootMessage: DB 'Booting KAOS...', 0xD, 0xA, 0x0
 
 ROOTDIRECTORY_AND_FAT_OFFSET        EQU 0x500
-IMAGE_OFFSET                        EQU 0x1200
+KAOSLDR_OFFSET                      EQU 0x2000
+Loader_Offset                       DW 0x0000
 Sector                              DB 0x00
 Head                                DB 0x00
 Track                               DB 0x00
-FileName                            DB "HELLO   TXT"
+FileName                            DB 11 DUP (" ")
+SecondStageFileName                 DB "KAOSLDR BIN"
 FileReadError                       DB 'Failure', 0
 Cluster                             DW 0x0000
-DiskReadErrorMessage:               DB 'Disk read error...', 0
+DiskReadErrorMessage:               DB 'Disk Error', 0
 DataSectorBeginning:                DW 0x0000
 
 ;===================================================================
