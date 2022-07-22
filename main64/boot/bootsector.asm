@@ -81,7 +81,7 @@ Sector                              DB 0x00
 Head                                DB 0x00
 Track                               DB 0x00
 FileName                            DB 11 DUP (" ")
-SecondStageFileName                 DB "KAOSLDR BIN"
+SecondStageFileName                 DB "KLDR16  BIN"
 SecondStageFileName64               DB "KLDR64  BIN"
 FileReadError                       DB 'Failure', 0
 Cluster                             DW 0x0000

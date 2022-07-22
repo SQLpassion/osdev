@@ -3,18 +3,22 @@
 // Define a variable for the screen location information
 ScreenLocation screenLocation;
 
+char tbuf[64];
+char tbuf_long[64];
+char bchars[] = {'0','1','2','3','4','5','6','7','8','9','A','B','C','D','E','F'};
+
 // Writes a single char (8 bytes) to the specified port.
 void outb(unsigned short Port, unsigned char Value)
 {
-	asm volatile ("outb %1, %0" : : "dN" (Port), "a" (Value));
+    asm volatile ("outb %1, %0" : : "dN" (Port), "a" (Value));
 }
 
 // Initializes the screen.
 void InitializeScreen()
 {
-	screenLocation.Row = 1;
-	screenLocation.Col = 1;
-	screenLocation.Attributes = COLOR_LIGHT_MAGENTA;
+    screenLocation.Row = 1;
+    screenLocation.Col = 1;
+    screenLocation.Attributes = COLOR_WHITE;
     ClearScreen();
 }
 
@@ -73,45 +77,99 @@ void MoveCursor()
 // Prints a single character on the screen.
 void print_char(char character)
 {
-	char* video_memory = (char *)VIDEO_MEMORY;
-	
-	switch(character)
-	{
-		case '\n':
-		{
-			// New line
-			screenLocation.Row++;
-			screenLocation.Col = 1;
+    char* video_memory = (char *)VIDEO_MEMORY;
+    
+    switch(character)
+    {
+        case '\n':
+        {
+            // New line
+            screenLocation.Row++;
+            screenLocation.Col = 1;
 
-			break;
-		}
-		case '\t':
-		{
-			// Tab
-			screenLocation.Col = (screenLocation.Col + 8) & ~ (8 - 1);
-			break;
-		}
-		default:
-		{
-			int offset = (screenLocation.Row - 1) * COLS * 2 + (screenLocation.Col - 1) * 2;
-			video_memory[offset] = character;
-			video_memory[offset + 1] = screenLocation.Attributes;
-			screenLocation.Col++;
+            break;
+        }
+        case '\t':
+        {
+            // Tab
+            screenLocation.Col = (screenLocation.Col + 8) & ~ (8 - 1);
+            break;
+        }
+        default:
+        {
+            int offset = (screenLocation.Row - 1) * COLS * 2 + (screenLocation.Col - 1) * 2;
+            video_memory[offset] = character;
+            video_memory[offset + 1] = screenLocation.Attributes;
+            screenLocation.Col++;
 
-			break;
-		}
-	}
+            break;
+        }
+    }
 
-	// Scroll();
-	MoveCursor();
+    // Scroll();
+    MoveCursor();
 }
 
 // Prints out a null-terminated string.
 void printf(char *string)
 {
-	while (*string != '\0')
-	{
-		print_char(*string);
-		string++;
-	}
+    while (*string != '\0')
+    {
+        print_char(*string);
+        string++;
+    }
+}
+
+// Prints out an integer value for a specific base (base 10 => decimal, base 16 => hex).
+void printf_int(int i, int base)
+{
+    char str[32] = "";
+    itoa(i, base, str);
+    printf(str);
+}
+
+// Converts an integer value to a string value for a specific base (base 10 => decimal, base 16 => hex)
+void itoa(int i, unsigned base, char *buf)
+{
+    if (base > 16) return;
+    
+    if (i < 0)
+    {
+        *buf++ = '-';
+        i *= -1;
+    }
+    
+    itoa_helper(i, base, buf);
+}
+
+// Helper function for the itoa function.
+// The static keyword means that this function is only available within the scope of this object file.
+static void itoa_helper(unsigned short i, unsigned base, char *buf)
+{
+    int pos = 0;
+    int opos = 0;
+    int top = 0;
+    
+    if (i == 0 || base > 16)
+    {
+        buf[0] = '0';
+        buf[1] = '\0';
+        return;
+    }
+    
+    while (i != 0)
+    {
+        tbuf[pos] = bchars[i % base];
+        pos++;
+        i /= base;
+    }
+    
+    top = pos--;
+    
+    for (opos = 0; opos < top; pos--,opos++)
+    {
+        buf[opos] = tbuf[pos];
+    }
+    
+    buf[opos] = 0;
 }
