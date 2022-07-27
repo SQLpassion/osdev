@@ -42,23 +42,21 @@ Main:
     MOV     BP, 0x8000
     MOV     SP, BP
 
+    CALL    Check_ATA_BSY
+    CALL    Check_ATA_RDY
+    CALL    ReadSector
+
+    MOV     SI, 0x2000
+    CALL    PrintLine
+
     ; Print out a boot message
     MOV     SI, BootMessage
     CALL    PrintLine
 
-    ; Load the KAOSLDR.BIN file into memory
-    MOV     CX, 11
-    LEA     SI, [SecondStageFileName]
-    LEA     DI, [FileName]
-    REP     MOVSB
-    MOV     WORD [Loader_Offset], KAOSLDR_OFFSET
-    CALL    LoadRootDirectory
-
-    ; Execute the KAOSLDR.BIN file...
-    CALL KAOSLDR_OFFSET
+    JMP     $
 
 ; Include some helper functions
-%INCLUDE "../boot/functions.asm"
+%INCLUDE "../boot/ata.asm"
 
 ; OxA: New Line
 ; 0xD: Carriage Return
