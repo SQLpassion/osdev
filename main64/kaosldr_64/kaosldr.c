@@ -1,4 +1,5 @@
 #include "misc.h"
+#include "ata.h"
 
 // Entry point of the x64 based KAOSLDR
 void kaosldr_main()
@@ -29,6 +30,19 @@ void kaosldr_main()
     printf("Second: ");
     printf_int(bib->Second, 10);
     printf("\n");
+
+    unsigned int *buffer = (unsigned int *)0x1000;
+    read_sectors_ATA_PIO(buffer, 2, 1);
+
+    int i = 0;
+    while (i < 256)
+    {
+        print_char(buffer[i] & 0xFF);
+        print_char((buffer[i] >> 8) & 0xFF);
+        i++;
+    }
+
+    write_sectors_ATA_PIO(2, 1, (unsigned int *)0x7C00);
 
     // Halt the system
     while (1 == 1) {}

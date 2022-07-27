@@ -58,8 +58,20 @@ typedef struct ScreenLocation
     int Attributes;
 } ScreenLocation;
 
+// Reads a single char (8 bytes) from the specified port.
+unsigned char inb(unsigned short Port);
+
+// Reads a single short (16 bytes) from the specific port.
+unsigned short inw(unsigned short Port);
+
 // Writes a single char (8 bytes) to the specified port.
 void outb(unsigned short Port, unsigned char Value);
+
+// Writes a single short (16 bytes) to the specified port.
+void outw(unsigned short Port, unsigned short Value);
+
+// Writes a single int (32 bytes) to the specified port.
+void outl(unsigned short Port, unsigned int Value);
 
 // Initializes and clears the screen
 void InitializeScreen();

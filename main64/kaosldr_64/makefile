@@ -6,7 +6,7 @@ HEADERS = $(wildcard *.h)
 OBJ = ${C_SOURCES:.c=.o}
 
 # Links the KLDR64.BIN
-kldr64.bin: ${OBJ}
+kldr64.bin: kaosldr.o ata.o ${OBJ}
 	x86_64-elf-ld -o $@ -Tlink.ld $^ --oformat binary -z max-page-size=0x1000
 
 # Compiles the KLDR64.BIN

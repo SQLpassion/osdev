@@ -7,10 +7,40 @@ char tbuf[64];
 char tbuf_long[64];
 char bchars[] = {'0','1','2','3','4','5','6','7','8','9','A','B','C','D','E','F'};
 
+// Reads a single char (8 bytes) from the specified port.
+unsigned char inb(unsigned short Port)
+{
+   unsigned char ret;
+   asm volatile("inb %1, %0" : "=a" (ret) : "dN" (Port));
+   
+   return ret;
+}
+
+// Reads a single short (16 bytes) from the specific port.
+unsigned short inw(unsigned short Port)
+{
+   unsigned short ret;
+   asm volatile ("inw %1, %0" : "=a" (ret) : "dN" (Port));
+   
+   return ret;
+}
+
 // Writes a single char (8 bytes) to the specified port.
 void outb(unsigned short Port, unsigned char Value)
 {
     asm volatile ("outb %1, %0" : : "dN" (Port), "a" (Value));
+}
+
+// Writes a single short (16 bytes) to the specified port.
+void outw(unsigned short Port, unsigned short Value)
+{
+    asm volatile ("outw %1, %0" : : "dN" (Port), "a" (Value));
+}
+
+// Writes a single int (32 bytes) to the specified port.
+void outl(unsigned short Port, unsigned int Value)
+{
+    asm volatile ("outl %1, %0" : : "dN" (Port), "a" (Value));
 }
 
 // Initializes the screen.

@@ -13,6 +13,10 @@ Main:
     ; Enables the A20 gate
     CALL    EnableA20
 
+     ; Print out a boot message
+    MOV     SI, BootMessage
+    CALL    PrintString
+
     ; Switch to x64 Long Mode and continue there...
     CALL    SwitchToLongMode
 
@@ -25,3 +29,4 @@ Main:
 BIB_OFFSET      EQU 0x1000 ; BIOS Information Block
 Year1           DW 0x00
 Year2           DW 0x00
+BootMessage:    DB 'Booting KAOSLDR...', 0xD, 0xA, 0x0
