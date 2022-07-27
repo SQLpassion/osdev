@@ -33,6 +33,9 @@ Check_ATA_BSY:
     JNZ     Check_ATA_BSY
 RET
 
+;================================================
+; This function checks the ATA PIO RDY flag.
+;================================================
 Check_ATA_RDY:
     MOV     DX, 0x1F7
     IN      AL, DX
@@ -40,15 +43,32 @@ Check_ATA_RDY:
     JZ      Check_ATA_RDY
 RET
 
+;================================================
+; This function reads a sector through ATA PIO.
+; BX:  Nunber of sectors to read
+; ECX: Starting LBA
+; EDI: Destination Address
+;================================================
 ReadSector:
     ; Sector count
     MOV     DX, 0x1F2
-    MOV     AL, 1       ; Sector Count
+    MOV     AL, BL
     OUT     DX, AL
 
-    ; LBA
+    ; LBA - Low Byte
     MOV     DX, 0x1F3
-    MOV     AL, 1       ; LBA
+    MOV     AL, CL
+    OUT     DX, AL
+
+    ; LBA - Middle Byte
+    MOV     DX, 0x1F4
+    MOV     AL, CH
+    OUT     DX, AL
+
+    ; LBA - High Byte
+    BSWAP   ECX
+    MOV     DX, 0x1F5
+    MOV     AL, CH
     OUT     DX, AL
 
     ; Read Command
@@ -56,11 +76,18 @@ ReadSector:
     MOV     AL, 0x20    ; Read Command
     OUT     DX, AL
 
-    CALL    Check_ATA_BSY
-    CALL    Check_ATA_RDY
+    .ReadNextSector:
+        CALL    Check_ATA_BSY
+        CALL    Check_ATA_RDY
 
-    MOV     EDI, 0x2000
-    MOV     DX, 0x1F0
-    MOV     CX, 256
-    REP     INSW
+        ; Read the sector of 512 bytes into ES:EDI
+        ; EDI is incremented by 512 bytes automatically
+        MOV     DX, 0x1F0
+        MOV     CX, 256
+        REP     INSW
+
+        ; Decrease the number of sectors to read and compare it to 0
+        DEC     BX
+        CMP     BX, 0
+        JNE     .ReadNextSector
 RET

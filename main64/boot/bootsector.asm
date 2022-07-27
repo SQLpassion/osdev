@@ -44,9 +44,35 @@ Main:
 
     CALL    Check_ATA_BSY
     CALL    Check_ATA_RDY
+
+    ; Reads a sector through ATA PIO from the HDD
+    MOV     BL, 1           ; Number of sectors to read
+    MOV     ECX, 1          ; LBA
+    MOV     EDI, 0x2000     ; Destination address
+    ; CALL    ReadSector
+
+    ; Print out the loaded data
+    ; MOV     SI, 0x2000
+    ; CALL    PrintLine
+    ; MOV     SI, 0x21FC
+    ; CALL    PrintLine
+
+    ; Reads a sector through ATA PIO from the HDD
+    MOV     BX, 4           ; Number of sectors to read
+    MOV     ECX, 3          ; LBA
+    MOV     EDI, 0x3000     ; Destination address
     CALL    ReadSector
 
-    MOV     SI, 0x2000
+    ; Print out the loaded data
+    MOV     SI, 0x3000
+    CALL    PrintLine
+    MOV     SI, 0x3200
+    CALL    PrintLine
+    MOV     SI, 0x3400
+    CALL    PrintLine
+    MOV     SI, 0x3600
+    CALL    PrintLine
+    MOV     SI, 0x37FD
     CALL    PrintLine
 
     ; Print out a boot message
