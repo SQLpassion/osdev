@@ -2,6 +2,16 @@
 ; This file contains some helper functions.
 ;************************************************;
 
+; This structure stores all the information that we retrieve from the BIOS while we are in x16 Real Mode
+STRUC BiosInformationBlock
+    .Year:      RESD 1
+    .Month:     RESW 1
+    .Day:       RESW 1
+    .Hour:      RESW 1
+    .Minute:    RESW 1
+    .Second:    RESW 1
+ENDSTRUC
+
 ;================================================
 ; This function prints a whole string, where the 
 ; input string is stored in the register "SI"
@@ -92,12 +102,12 @@ GetDate:
     ; Month
     MOV     AL, DH
     CALL    Bcd2Decimal 
-    MOV     [Month], AX
+    MOV     WORD [ES:DI + BiosInformationBlock.Month], AX
 
     ; Day
     MOV     AL, DL
     CALL    Bcd2Decimal
-    MOV     [Day], AX
+    MOV     WORD [ES:DI + BiosInformationBlock.Day], AX
 
     ; Calculate the whole year (e.g. "20" * 100 + "22" = 2022)
     MOV     AX, [Year1]
@@ -105,7 +115,7 @@ GetDate:
     MUL     BX
     MOV     BX, [Year2]
     ADD     AX, BX
-    MOV     [Year], AX
+    MOV     WORD [ES:DI + BiosInformationBlock.Year], AX
 RET
 
 ;=================================================
@@ -120,28 +130,28 @@ GetTime:
     PUSH    CX
     MOV     AL, CH
     CALL    Bcd2Decimal
-    MOV     [Hour], AX
+    MOV     WORD [ES:DI + BiosInformationBlock.Hour], AX
     POP     CX
 
     ; Minute
     MOV     AL, CL
     CALL    Bcd2Decimal
-    MOV     [Minute], AX
+    MOV     WORD [ES:DI + BiosInformationBlock.Minute], AX
 
     ; Second
     MOV     AL, DH
     CALL    Bcd2Decimal
-    MOV     [Second], AX
+    MOV     WORD [ES:DI + BiosInformationBlock.Second], AX
 RET
 
 ;=============================================
 ; This function enables the A20 gate
 ;=============================================
 EnableA20:
-	CLI					; Disables interrupts
-	PUSH	AX			; Save AX on the stack
-	MOV     AL, 2
-	OUT     0x92, AL
-	POP	    AX			; Restore the value of AX from the stack
-	STI					; Enable the interrupts again
+    CLI	                ; Disables interrupts
+    PUSH	AX          ; Save AX on the stack
+    MOV     AL, 2
+    OUT     0x92, AL
+    POP	    AX          ; Restore the value of AX from the stack
+    STI                 ; Enable the interrupts again
 RET 

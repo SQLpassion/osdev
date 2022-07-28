@@ -46,15 +46,24 @@ Main:
     MOV     SI, BootMessage
     CALL    PrintLine
 
-    ; Load the KAOSLDR.BIN file into memory
+    ; Load the KLDR64.BIN file into memory
     MOV     CX, 11
-    LEA     SI, [SecondStageFileName]
+    LEA     SI, [SecondStageFileName64]
     LEA     DI, [FileName]
     REP     MOVSB
+    MOV     WORD [Loader_Offset], KAOSLDR64_OFFSET
     CALL    LoadFileIntoMemory
 
-    ; Execute the loaded loader...
-    CALL     KAOSLDR_OFFSET
+    ; Load the KLDR16.BIN file into memory
+    MOV     CX, 11
+    LEA     SI, [SecondStageFileName16]
+    LEA     DI, [FileName]
+    REP     MOVSB
+    MOV     WORD [Loader_Offset], KAOSLDR16_OFFSET
+    CALL    LoadFileIntoMemory
+
+    ; Execute the KLDR16.BIN file...
+    CALL KAOSLDR16_OFFSET
 
 ; Include some helper functions
 %INCLUDE "../boot/functions.asm"
@@ -64,11 +73,13 @@ Main:
 ; 0x0: Null Terminated String
 BootMessage: DB 'Booting KAOS...', 0xD, 0xA, 0x0
 ROOTDIRECTORY_AND_FAT_OFFSET        EQU 0x500
-KAOSLDR_OFFSET                      EQU 0x2000
+KAOSLDR16_OFFSET                    EQU 0x2000
+KAOSLDR64_OFFSET                    EQU 0x3000
 Loader_Offset                       DW 0x0000
 FileName                            DB 11 DUP (" ")
-SecondStageFileName                 DB "KAOSLDR BIN"
-FileReadError                       DB 'file not found...', 0
+SecondStageFileName16               DB "KLDR16  BIN"
+SecondStageFileName64               DB "KLDR64  BIN"
+FileReadError                       DB 'Failure', 0
 Cluster                             DW 0x0000
 CRLF:                               DB 0xD, 0xA, 0x0
 

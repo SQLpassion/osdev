@@ -1,0 +1,11 @@
+Real Mode
+=========
+0x000500 - 0x004500: FAT Root Directory and FAT Tables (32 Sectors)
+0x001000 - 0x001FFF: BIOS Information Block
+0x002000 - 0x002FFF: KLDR16.BIN
+0x003000 - 0x007BFF: KLDR64.BIN
+0x007c00 - 0x007e00: Boot Sector
+0x007e00 - 0x008000: Real Mode Stack (512 Bytes)
+
+Long Mode
+=========

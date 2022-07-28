@@ -1,7 +1,3 @@
-;************************************************
-; This file contains ATA PIO functions.
-;************************************************
-
 ;================================================
 ; This function prints a whole string, where the 
 ; input string is stored in the register "SI"
@@ -31,18 +27,18 @@ PrintDecimal:
     MOV     CX, 0
     MOV     DX, 0
 
-PrintDecimal_Start:
+.PrintDecimal_Start:
     CMP     AX ,0
-    JE      PrintDecimal_Print
+    JE      .PrintDecimal_Print
     MOV     BX, 10
     DIV     BX
     PUSH    DX
     INC     CX
     XOR     DX, DX
-    JMP     PrintDecimal_Start
-PrintDecimal_Print:
+    JMP     .PrintDecimal_Start
+.PrintDecimal_Print:
     CMP     CX, 0
-    JE      PrintDecimal_Exit
+    JE      .PrintDecimal_Exit
     POP     DX
         
     ; Add 48 so that it represents the ASCII value of digits
@@ -52,8 +48,8 @@ PrintDecimal_Print:
     INT     0x10
 
     DEC     CX
-    JMP     PrintDecimal_Print
-PrintDecimal_Exit:
+    JMP     .PrintDecimal_Print
+.PrintDecimal_Exit:
 RET
 
 ;================================================
@@ -166,7 +162,7 @@ LoadFileIntoMemory:
         MOV     ECX, 0x1                                ; The LBA is 1
         MOV     EDI, ROOTDIRECTORY_AND_FAT_OFFSET       ; Offset in memory at which we want to load the FATs
         CALL    ReadSector                              ; Call the load routine
-        MOV     EDI, KAOSLDR_OFFSET                     ; Address where the first cluster should be stored
+        MOV     EDI, [Loader_Offset]                    ; Address where the first cluster should be stored
 
     .LoadImage:
         ; Print out the current offset where the cluster is loaded into memory
