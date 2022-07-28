@@ -1,5 +1,11 @@
-# Write final image in raw to a disk: http://www.chrysocome.net/dd
+# Write the final FAT12 image to a virtual disk (on Windows): http://www.chrysocome.net/dd
 ./dd.exe if=d:\github\sqlpassion\osdev\main64\kaos64.img od=d:\HDD-flat.vmdk
+
+# Write the final FAT12 image to a virtual disk (on Mac OS):
+dd if=kaos64.img of=HDD.vmdk conv=notrunc
+
+# Write the final FAT12 image to a physical disk (where /dev/disk2 is the attached physical hard disk!):
+dd if=kaos64.img of=/dev/disk2
 
 # Build from the command line
 clear; docker run --rm -it -v d:\GitHub\SQLpassion/osdev:/src sqlpassion/kaos-buildenv /bin/sh /src/main64/build.sh; ./dd.exe if=d:\github\sqlpassion\osdev\main64\kaos64.img of=d:\HDD-flat.vmdk
