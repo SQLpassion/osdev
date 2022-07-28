@@ -1,4 +1,5 @@
 #include "misc.h"
+#include "fat12.h"
 
 // Entry point of KLDR64.BIN
 // The only task of the KLDR64.BIN file is to load the KERNEL.BIN file to the physical 
@@ -34,6 +35,13 @@ void kaosldr_main()
     printf("\n");
     printf("Second: ");
     printf_int(bib->Second, 10);
+    printf("\n");
+
+    // Load the x64 OS Kernel into memory for its execution...
+    LoadKernelIntoMemory();
+
+    printf("\n");
+    printf("Kernel loaded...");
     printf("\n");
 
     // Halt the system

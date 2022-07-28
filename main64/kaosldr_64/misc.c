@@ -203,3 +203,18 @@ static void itoa_helper(unsigned short i, unsigned base, char *buf)
     
     buf[opos] = 0;
 }
+
+// A simple strcmp implementation
+int strcmp(char *s1, char *s2, int len)
+{
+    int i = 0;
+
+    while (*s1 && (*s1 == *s2) && i < len)
+    {
+        s1++;
+        s2++;
+        i++;
+    }
+
+    return *(unsigned char *)s1 - *(unsigned char *)s2;
+}
