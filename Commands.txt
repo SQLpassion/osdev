@@ -3,3 +3,12 @@
 
 # Build from the command line
 clear; docker run --rm -it -v d:\GitHub\SQLpassion/osdev:/src sqlpassion/kaos-buildenv /bin/sh /src/main64/build.sh; ./dd.exe if=d:\github\sqlpassion\osdev\main64\kaos64.img of=d:\HDD-flat.vmdk
+
+# Merge feature branch into main:
+git checkout main
+git merge --no-ff MyFeatureBranch
+git push origin main
+
+# Delete branch locally and remote:
+git branch -d MyFeatureBranch
+git push origin --delete MyFeatureBranch
