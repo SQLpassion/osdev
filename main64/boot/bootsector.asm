@@ -51,11 +51,10 @@ Main:
     LEA     SI, [SecondStageFileName]
     LEA     DI, [FileName]
     REP     MOVSB
-    MOV     WORD [Loader_Offset], KAOSLDR_OFFSET
-    CALL    LoadRootDirectory
+    CALL    LoadFileIntoMemory
 
-    ; Execute the KAOSLDR.BIN file...
-    CALL KAOSLDR_OFFSET
+    ; Execute the loaded loader...
+    CALL     KAOSLDR_OFFSET
 
 ; Include some helper functions
 %INCLUDE "../boot/functions.asm"
@@ -64,19 +63,14 @@ Main:
 ; 0xD: Carriage Return
 ; 0x0: Null Terminated String
 BootMessage: DB 'Booting KAOS...', 0xD, 0xA, 0x0
-
 ROOTDIRECTORY_AND_FAT_OFFSET        EQU 0x500
 KAOSLDR_OFFSET                      EQU 0x2000
 Loader_Offset                       DW 0x0000
-Sector                              DB 0x00
-Head                                DB 0x00
-Track                               DB 0x00
 FileName                            DB 11 DUP (" ")
 SecondStageFileName                 DB "KAOSLDR BIN"
-FileReadError                       DB 'Failure', 0
+FileReadError                       DB 'file not found...', 0
 Cluster                             DW 0x0000
-DiskReadErrorMessage:               DB 'Disk Error', 0
-DataSectorBeginning:                DW 0x0000
+CRLF:                               DB 0xD, 0xA, 0x0
 
 ; Padding and magic number
 TIMES 510 - ($-$$) DB 0
