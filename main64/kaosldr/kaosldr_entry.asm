@@ -77,6 +77,14 @@ HourString:     DB 'Hour: ', 0x0
 MinuteString:   DB 'Minute: ', 0x0
 SecondString:   DB 'Second: ', 0x0
 CRLF:           DB 0xD, 0xA, 0x0
+LongString1:    DB 'This is a very looooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooong string', 0xD, 0xA, 0x0
+LongString2:    DB 'This is a very looooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooong string', 0xD, 0xA, 0x0
+LongString3:    DB 'This is a very looooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooong string', 0xD, 0xA, 0x0
+LongString4:    DB 'This is a very looooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooong string', 0xD, 0xA, 0x0
+LongString5:    DB 'This is a very looooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooong string', 0xD, 0xA, 0x0
+LongString6:    DB 'This is a very looooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooong string', 0xD, 0xA, 0x0
+LongString7:    DB 'This is a very looooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooong string', 0xD, 0xA, 0x0
+LongString8:    DB 'This is a very looooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooong string', 0xD, 0xA, 0x0
 
 Year1           DW 0x00
 Year2           DW 0x00

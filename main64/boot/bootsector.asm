@@ -42,65 +42,35 @@ Main:
     MOV     BP, 0x8000
     MOV     SP, BP
 
-    CALL    Check_ATA_BSY
-    CALL    Check_ATA_RDY
-
-    ; Reads a sector through ATA PIO from the HDD
-    MOV     BL, 1           ; Number of sectors to read
-    MOV     ECX, 1          ; LBA
-    MOV     EDI, 0x2000     ; Destination address
-    ; CALL    ReadSector
-
-    ; Print out the loaded data
-    ; MOV     SI, 0x2000
-    ; CALL    PrintLine
-    ; MOV     SI, 0x21FC
-    ; CALL    PrintLine
-
-    ; Reads a sector through ATA PIO from the HDD
-    MOV     BX, 4           ; Number of sectors to read
-    MOV     ECX, 3          ; LBA
-    MOV     EDI, 0x3000     ; Destination address
-    CALL    ReadSector
-
-    ; Print out the loaded data
-    MOV     SI, 0x3000
-    CALL    PrintLine
-    MOV     SI, 0x3200
-    CALL    PrintLine
-    MOV     SI, 0x3400
-    CALL    PrintLine
-    MOV     SI, 0x3600
-    CALL    PrintLine
-    MOV     SI, 0x37FD
-    CALL    PrintLine
-
     ; Print out a boot message
     MOV     SI, BootMessage
     CALL    PrintLine
 
-    JMP     $
+    ; Load the KAOSLDR.BIN file into memory
+    MOV     CX, 11
+    LEA     SI, [SecondStageFileName]
+    LEA     DI, [FileName]
+    REP     MOVSB
+    CALL    LoadFileIntoMemory
+
+    ; Execute the loaded loader...
+    CALL     KAOSLDR_OFFSET
 
 ; Include some helper functions
-%INCLUDE "../boot/ata.asm"
+%INCLUDE "../boot/functions.asm"
 
 ; OxA: New Line
 ; 0xD: Carriage Return
 ; 0x0: Null Terminated String
 BootMessage: DB 'Booting KAOS...', 0xD, 0xA, 0x0
-
 ROOTDIRECTORY_AND_FAT_OFFSET        EQU 0x500
 KAOSLDR_OFFSET                      EQU 0x2000
 Loader_Offset                       DW 0x0000
-Sector                              DB 0x00
-Head                                DB 0x00
-Track                               DB 0x00
 FileName                            DB 11 DUP (" ")
 SecondStageFileName                 DB "KAOSLDR BIN"
-FileReadError                       DB 'Failure', 0
+FileReadError                       DB 'file not found...', 0
 Cluster                             DW 0x0000
-DiskReadErrorMessage:               DB 'Disk Error', 0
-DataSectorBeginning:                DW 0x0000
+CRLF:                               DB 0xD, 0xA, 0x0
 
 ; Padding and magic number
 TIMES 510 - ($-$$) DB 0
