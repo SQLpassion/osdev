@@ -9,3 +9,6 @@ Real Mode
 
 Long Mode
 =========
+0x030000 - 0x031BFF: Root Directory Buffer used by KLDR64.BIN
+0x031C00 - 0x033FFF: FAT Buffer used by KLDR64.BIN
+0x100000 - 0x200000: KERNEL.BIN

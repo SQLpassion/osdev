@@ -1,71 +1,70 @@
 #include "misc.h"
 #include "ata.h"
 
-#define STATUS_BSY 0x80
-#define STATUS_RDY 0x40
-#define STATUS_DRQ 0x08
-#define STATUS_DF  0x20
-#define STATUS_ERR 0x01
-
-void ReadSectors(unsigned char *target_address, unsigned int LBA, unsigned char sector_count)
+// Reads a given number of disk sectors (512 bytes) from the starting LBA address into the target memory address.
+void ReadSectors(unsigned char *TargetAddress, unsigned int LBA, unsigned char SectorCount)
 {
-    ATA_Wait_BSY();
-    outb(0x1F2, sector_count);
+    WaitForBSYFlag();
+
+    outb(0x1F2, SectorCount);
     outb(0x1F3, (unsigned char) LBA);
     outb(0x1F4, (unsigned char)(LBA >> 8));
     outb(0x1F5, (unsigned char)(LBA >> 16)); 
     outb(0x1F6, 0xE0 | ((LBA >> 24) & 0xF));
     outb(0x1F7, 0x20);
 
-    for (int j =0; j < sector_count; j++)
+    for (int j =0; j < SectorCount; j++)
     {
-        ATA_Wait_BSY();
-        ATA_Wait_DRQ();
+        WaitForBSYFlag();
+        WaitForDRQFlag();
 
         for (int i = 0; i < 256; i++)
         {
             // Retrieve a single 16-byte value from the input port
-            unsigned short read_buffer = inw(0x1F0);
+            unsigned short readBuffer = inw(0x1F0);
 
             // Write the 2 retrieved 8-byte values to their target address
-            target_address[i] = read_buffer & 0xFF;
-            target_address++;
-            target_address[i] = (read_buffer >> 8) & 0xFF;
+            TargetAddress[i] = readBuffer & 0xFF;
+            TargetAddress++;
+            TargetAddress[i] = (readBuffer >> 8) & 0xFF;
         }
         
-        target_address += 512;
+        TargetAddress += 512;
     }
 }
 
-void WriteSectors(unsigned int LBA, unsigned char sector_count, unsigned int *source_address)
+// Writes a given number of disk sectors (512 bytes) to the starting LBA address of the disk from the source memory address.
+void WriteSectors(unsigned int *SourceAddress, unsigned int LBA, unsigned char SectorCount)
 {
-    ATA_Wait_BSY();
-    outb(0x1F6, 0xE0 | ((LBA >>24) & 0xF));
-    outb(0x1F2, sector_count);
+    WaitForBSYFlag();
+
+    outb(0x1F2, SectorCount);
     outb(0x1F3, (unsigned char) LBA);
     outb(0x1F4, (unsigned char)(LBA >> 8));
     outb(0x1F5, (unsigned char)(LBA >> 16)); 
+    outb(0x1F6, 0xE0 | ((LBA >>24) & 0xF));
     outb(0x1F7, 0x30);
 
-    for (int j = 0; j < sector_count; j++)
+    for (int j = 0; j < SectorCount; j++)
     {
-        ATA_Wait_BSY();
-        ATA_Wait_DRQ();
+        WaitForBSYFlag();
+        WaitForDRQFlag();
 
         for (int i = 0; i < 256; i++)
         {
-            outl(0x1F0, source_address[i]);
+            outl(0x1F0, SourceAddress[i]);
         }
     }
 }
 
-static void ATA_Wait_BSY()   //Wait for bsy to be 0
+// Waits until the BSY flag is cleared.
+static void WaitForBSYFlag()
 {
     while (inb(0x1F7) & STATUS_BSY);
 }
 
-
-static void ATA_Wait_DRQ()  //Wait fot drq to be 1
+// Waits until the DRQ flag is set.
+static void WaitForDRQFlag()
 {
-    while (!(inb(0x1F7) & STATUS_RDY));
+    while (!(inb(0x1F7) & STATUS_DRQ));
 }

@@ -136,6 +136,7 @@ void print_char(char character)
         }
     }
 
+    // Scroll();
     MoveCursor();
 }
 
@@ -157,6 +158,14 @@ void printf_int(int i, int base)
     printf(str);
 }
 
+// Prints out a long value for a specific base (base 10 => decimal, base 16 => hex).
+void printf_long(long i, int base)
+{
+	char str[32] = "";
+	ltoa(i, base, str);
+	printf(str);
+}
+
 // Converts an integer value to a string value for a specific base (base 10 => decimal, base 16 => hex)
 void itoa(int i, unsigned base, char *buf)
 {
@@ -174,6 +183,50 @@ void itoa(int i, unsigned base, char *buf)
 // Helper function for the itoa function.
 // The static keyword means that this function is only available within the scope of this object file.
 static void itoa_helper(unsigned short i, unsigned base, char *buf)
+{
+    int pos = 0;
+    int opos = 0;
+    int top = 0;
+    
+    if (i == 0 || base > 16)
+    {
+        buf[0] = '0';
+        buf[1] = '\0';
+        return;
+    }
+    
+    while (i != 0)
+    {
+        tbuf[pos] = bchars[i % base];
+        pos++;
+        i /= base;
+    }
+    
+    top = pos--;
+    
+    for (opos = 0; opos < top; pos--,opos++)
+    {
+        buf[opos] = tbuf[pos];
+    }
+    
+    buf[opos] = 0;
+}
+
+// Converts a long value to a string value for a specific base (base 10 => decimal, base 16 => hex)
+void ltoa(unsigned long i, unsigned base, char *buf)
+{
+    if (base > 16) return;
+    
+    if (i < 0)
+    {
+        *buf++ = '-';
+        i *= -1;
+    }
+    
+    ltoa_helper(i, base, buf);
+}
+
+static void ltoa_helper(unsigned i, unsigned base, char *buf)
 {
     int pos = 0;
     int opos = 0;
