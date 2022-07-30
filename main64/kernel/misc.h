@@ -5,7 +5,7 @@
 #define NULL ((void *) 0)
 
 // Video output memory address
-#define VIDEO_MEMORY 0xB8000
+#define VIDEO_MEMORY 0xFFFF8000000B8000
 
 // The number of rows of the video memory
 #define ROWS 25
@@ -101,7 +101,7 @@ void printf(char *string);
 void printf_int(int i, int base);
 
 // Prints out a long value for a specific base (base 10 => decimal, base 16 => hex).
-void printf_long(long i, int base);
+void printf_long(unsigned long i, int base);
 
 // Converts an integer value to a string value for a specific base (base 10 => decimal, base 16 => hex)
 void itoa(int i, unsigned base, char *buf);
@@ -113,7 +113,7 @@ static void itoa_helper(unsigned short i, unsigned base, char *buf);
 void ltoa(unsigned long i, unsigned base, char *buf);
 
 // Helper function for the ltoa function.
-static void ltoa_helper(unsigned i, unsigned base, char *buf);
+static void ltoa_helper(unsigned long i, unsigned base, char *buf);
 
 // A simple strcmp implementation
 int strcmp(char *s1, char *s2, int len);

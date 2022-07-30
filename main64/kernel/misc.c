@@ -159,7 +159,7 @@ void printf_int(int i, int base)
 }
 
 // Prints out a long value for a specific base (base 10 => decimal, base 16 => hex).
-void printf_long(long i, int base)
+void printf_long(unsigned long i, int base)
 {
 	char str[32] = "";
 	ltoa(i, base, str);
@@ -226,7 +226,7 @@ void ltoa(unsigned long i, unsigned base, char *buf)
     ltoa_helper(i, base, buf);
 }
 
-static void ltoa_helper(unsigned i, unsigned base, char *buf)
+static void ltoa_helper(unsigned long i, unsigned base, char *buf)
 {
     int pos = 0;
     int opos = 0;

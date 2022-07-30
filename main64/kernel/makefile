@@ -8,6 +8,7 @@ kaos64.img : bootsector.bin kernel.bin
 	fat_imgen -m -f ../kaos64.img -i ../kaosldr_16/kldr16.bin
 	fat_imgen -m -f ../kaos64.img -i ../kaosldr_64/kldr64.bin
 	fat_imgen -m -f ../kaos64.img -i ../kernel/kernel.bin
+	# x86_64-elf-objdump -M intel -S --disassemble kernel.o > kernel_generated.asm
 
 # Builds the boot sector
 bootsector.bin: ../boot/bootsector.asm

@@ -6,7 +6,7 @@ const int EOF = 0x0FF0;
 
 unsigned char *rootDirectoryBuffer = (unsigned char *)0x30000;
 unsigned char *fatBuffer = (unsigned char *)0x31C00;
-unsigned char *kernelBuffer = (unsigned char *)0x100000;
+unsigned char *kernelBuffer = (unsigned char *)0xFFFF800000100000;
 
 // Loads the given Kernel file into memory
 void LoadKernelIntoMemory(char *FileName)

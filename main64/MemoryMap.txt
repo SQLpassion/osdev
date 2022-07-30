@@ -6,6 +6,14 @@ Real Mode
 0x003000 - 0x007BFF: KLDR64.BIN
 0x007c00 - 0x007e00: Boot Sector
 0x007e00 - 0x008000: Real Mode Stack (512 Bytes)
+0x009000 to 0x009FFF: Page Map Level 4
+0x010000 to 0x010FFF: Page Directory Pointer Table
+0x011000 to 0x011FFF: Page Directory Table
+0x012000 to 0x012FFF: Page Table 1 (Identity Mapping of 0 - 2 MB: 0x000000 to 0x1FFFFF)
+0x013000 to 0x013FFF: Page Table 2 (Identity Mapping of 2 - 4 MB: 0x200000 to 0x3FFFFF)
+0x014000 to 0x014FFF: Page Directory Pointer Table for the Higher Half Mapping of the Kernel
+0x015000 to 0x015FFF: Page Directory Table for the Higher Half Mapping of the Kernel
+0x016000 to 0x016FFF: Page Table for the Higher Half Mapping of the Kernel
 
 Long Mode
 =========

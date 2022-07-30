@@ -6,8 +6,8 @@ void kernel_main()
     InitializeScreen();
 
     // Print a welcome message
-    printf("Executing the x64 OS Kernel at physical address 0x");
-    printf_long((long)&kernel_main, 16);
+    printf("Executing the x64 OS Kernel at virtual address 0x");
+    printf_long((unsigned long)&kernel_main, 16);
     printf("...\n");
     printf("\n");
 
