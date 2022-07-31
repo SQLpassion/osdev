@@ -166,7 +166,6 @@ LoadFileIntoMemory:
 
     .LoadImage:
         ; Print out the current offset where the cluster is loaded into memory
-        ; This introduces a short delay, which is somehow needed by the ATA PIO code...?
         MOV     AX, DI
         CALL    PrintDecimal
         MOV     SI, CRLF
