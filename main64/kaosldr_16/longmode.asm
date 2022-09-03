@@ -22,49 +22,50 @@ IDT:
 ; Memory Layout of the various Page Tables
 ; =========================================
 ; [Page Map Level 4 at 0x9000]
-; Entry 001: 0x10000 (ES:DI + 0x1000)
+; Entry 000: 0x10000 (ES:DI + 0x1000)
 ; Entry ...
-; Entry 512
+; Entry 511
 
 ; [Page Directory Pointer Table at 0x10000]
-; Entry 001: 0x11000 (ES:DI + 0x2000)
+; Entry 000: 0x11000 (ES:DI + 0x2000)
 ; Entry ...
-; Entry 512
+; Entry 511
 
 ; [Page Directory Table at 0x11000]
-; Entry 001: 0x12000 (ES:DI + 0x3000)
+; Entry 000: 0x12000 (ES:DI + 0x3000)
 ; Entry ...
-; Entry 512
+; Entry 511
 
 ; [Page Table 1 at 0x12000]
-; Entry 001: 0x000000
+; Entry 000: 0x000000
 ; Entry ...
-; Entry 512: 0x1FF000
+; Entry 511: 0x1FF000
 
-; [Page Table 2 at 0x13000]
-; Entry 001: 0x200000
-; Entry ...
-; Entry 512: 0x2FF000
-
-; ==========================================================================
+; =============================================================================
 ; The following tables are needed for the Higher Half Mapping of the Kernel
-; ==========================================================================
+;
+; Beginning virtual address:
+; 0xFFFF800000000000
+; 1111111111111111 100000000  000000000  000000000  000000000  000000000000
+; Sign Extension   PML4T      PDPT       PDT        PT         Offset
+;                  Entry 256  Entry 0    Entry 0    Entry 0
+; =============================================================================
 ; [Page Directory Pointer Table at 0x14000]
-; Entry 001: 0x14000 (ES:DI + 0x6000)
+; Entry 000: 0x15000 (ES:DI + 0x6000)
 ; Entry ...
-; Entry 512
+; Entry 511
 
 ; [Page Directory Table at 0x15000]
-; Entry 001: 0x15000 (ES:DI + 0x7000)
+; Entry 000: 0x16000 (ES:DI + 0x7000)
 ; Entry ...
-; Entry 512
+; Entry 511
 
 ; [Page Table 1 at 0x16000]
-; Entry 001: 0x000000
-; Entry 002: 0x001000
-; Entry 003: 0x002000
+; Entry 000: 0x000000
+; Entry 001: 0x001000
+; Entry 002: 0x002000
 ; Entry ...
-; Entry 512: 0x200000
+; Entry 511: 0x1FF000
 
 SwitchToLongMode:
     MOV     EDI, 0x9000
@@ -111,11 +112,6 @@ SwitchToLongMode:
     LEA     EAX, [ES:DI + 0x3000]               ; Put the address of the Page Table in to EAX.
     OR      EAX, PAGE_PRESENT | PAGE_WRITE      ; Or EAX with the flags - present flag, writeable flag.
     MOV     [ES:DI + 0x2000], EAX               ; Store to value of EAX as the first PDE.
-
-    ; Build the Page Directory (PD Entry 2 for 2 - 4 MB)
-    LEA     EAX, [ES:DI + 0x4000]               ; Put the address of the Page Table in to EAX.
-    OR      EAX, PAGE_PRESENT | PAGE_WRITE      ; Or EAX with the flags - present flag, writeable flag.
-    MOV     [ES:DI + 0x2008], EAX               ; Store to value of EAX as the second PDE.
 
     ; =================================================
     ; Needed for the Higher Half Mapping of the Kernel
@@ -256,7 +252,7 @@ LongMode:
     MOV     SS, AX
 
     ; Setup the stack
-    mov     RAX, QWORD 0xFFFF800000050000
+    MOV     RAX, QWORD 0xFFFF800000050000
     MOV     RSP, RAX
     MOV     RBP, RSP
     XOR     RBP, RBP
