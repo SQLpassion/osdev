@@ -84,3 +84,7 @@ ENV PATH="$HOME/opt/cross/bin:$PATH"
 # docker image build -t sqlpassion/kaos-buildenv:latest .
 # docker run --rm -it -v d:\GitHub\SQLpassion/osdev:/src sqlpassion/kaos-buildenv /bin/sh /src/main64/build.sh
 # docker run --rm -it -v $HOME/Documents/GitHub/SQLpassion/osdev:/src sqlpassion/kaos-buildenv /bin/sh /src/main64/build.sh
+
+# Windows ARM with WSL2
+# sudo docker run --rm -it -v /mnt/c/Users/klaus/documents/github/SQLpassion/osdev:/src sqlpassion/kaos-buildenv /bin/sh /src/main64/build.sh
+# sudo docker run --rm -it -v /mnt/c/Users/klaus/documents/github/SQLpassion/osdev:/src sqlpassion/kaos-buildenv /bin/sh /src/main64/clean.sh
