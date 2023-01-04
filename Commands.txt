@@ -19,3 +19,18 @@ git push origin main
 # Delete branch locally and remote:
 git branch -d MyFeatureBranch
 git push origin --delete MyFeatureBranch
+
+##########################
+# Building on Windows ARM
+##########################
+- Start WSL2 on the command line:
+    wsl
+- Start Docker inside WSL2:
+    sudo service docker Start
+- Start the Build Environment:
+    sudo docker run --rm -it -v /mnt/c/Users/klaus/documents/github/SQLpassion/osdev:/src sqlpassion/kaos-buildenv /bin/sh /src/main64/clean.sh
+    sudo docker run --rm -it -v /mnt/c/Users/klaus/documents/github/SQLpassion/osdev:/src sqlpassion/kaos-buildenv /bin/sh /src/main64/build.sh
+- Build the final image on the Windows ARM command line
+    fatgen.bat
+- Execute
+    bochsrc.bxrc
