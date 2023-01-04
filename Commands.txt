@@ -1,24 +1,14 @@
-# Write the final FAT12 image to a virtual disk (on Windows): http://www.chrysocome.net/dd
-./dd.exe if=d:\github\sqlpassion\osdev\main64\kaos64.img od=d:\HDD-flat.vmdk
-
-# Write the final FAT12 image to a virtual disk (on Mac OS):
-dd if=kaos64.img of=HDD.vmdk conv=notrunc
-
-# Write the final FAT12 image to a physical disk (where /dev/disk2 is the attached physical hard disk!):
-dd if=kaos64.img of=/dev/disk2
-
-# Build from the command line
-clear; docker run --rm -it -v d:\GitHub\SQLpassion/osdev:/src sqlpassion/kaos-buildenv /bin/sh /src/main64/build.sh; ./dd.exe if=d:\github\sqlpassion\osdev\main64\kaos64.img of=d:\HDD-flat.vmdk
-clear; docker run --rm -it -v $HOME/Documents/GitHub/SQLpassion/osdev:/src sqlpassion/kaos-buildenv /bin/sh /src/main64/build.sh; sudo dd if="$HOME/Documents/GitHub/SQLpassion/osdev/main64/kaos64.img" of="$HOME/Documents/Virtual Machines/KAOS.vmwarevm/Virtual Disk-flat.vmdk" conv=notrunc
-
-# Merge feature branch into main:
-git checkout main
-git merge --no-ff MyFeatureBranch
-git push origin main
-
-# Delete branch locally and remote:
-git branch -d MyFeatureBranch
-git push origin --delete MyFeatureBranch
+##########################
+# Building on Windows x64
+##########################
+- Open Terminal Shell (PowerShell):
+    terminal
+    d:
+- Start the Build Environment:
+    docker run --rm -it -v d:\GitHub\SQLpassion/osdev:/src sqlpassion/kaos-buildenv /bin/sh /src/main64/clean.sh
+    docker run --rm -it -v d:\GitHub\SQLpassion/osdev:/src sqlpassion/kaos-buildenv /bin/sh /src/main64/build.sh
+- Write the final FAT12 image to a virtual disk (on Windows): http://www.chrysocome.net/dd
+    ./dd.exe if=d:\github\sqlpassion\osdev\main64\kaos64.img of=d:\HDD-flat.vmdk
 
 ##########################
 # Building on Windows ARM
@@ -34,3 +24,31 @@ git push origin --delete MyFeatureBranch
     fatgen.bat
 - Execute
     bochsrc.bxrc
+
+#####################
+# Building on Mac OS
+#####################
+- Open Terminal:
+    docker run --rm -it -v $HOME/Documents/GitHub/SQLpassion/osdev:/src sqlpassion/kaos-buildenv /bin/sh /src/main64/clean.sh
+    docker run --rm -it -v $HOME/Documents/GitHub/SQLpassion/osdev:/src sqlpassion/kaos-buildenv /bin/sh /src/main64/build.sh
+- Write the final FAT12 image to a virtual disk:
+    sudo dd if="$HOME/Documents/GitHub/SQLpassion/osdev/main64/kaos64.img" of="$HOME/Documents/Virtual Machines/KAOS.vmwarevm/Virtual Disk-flat.vmdk" conv=notrunc
+
+###########################
+# Run on physical Notebook
+###########################
+- Write the final FAT12 image to a physical disk (where /dev/disk2 is the attached physical hard disk!):
+    sudo dd if=kaos64.img of=/dev/disk2
+
+###############
+# Git Commands
+###############
+
+# Merge feature branch into main:
+git checkout main
+git merge --no-ff MyFeatureBranch
+git push origin main
+
+# Delete branch locally and remote:
+git branch -d MyFeatureBranch
+git push origin --delete MyFeatureBranch
