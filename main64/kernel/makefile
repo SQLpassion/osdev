@@ -15,7 +15,7 @@ bootsector.bin: ../boot/bootsector.asm
 	nasm -fbin ../boot/bootsector.asm -o ../boot/bootsector.bin
 
 # Links the C kernel
-kernel.bin: kernel.o misc.o ${OBJ}
+kernel.bin: kernel.o common.o drivers/screen.o ${OBJ}
 	x86_64-elf-ld -o $@ -Tlink.ld $^ --oformat binary -z max-page-size=0x1000 -Map kernel.map
 
 # Compiles the C kernel
@@ -27,3 +27,4 @@ clean:
 	rm -f ../boot/bootsector.bin
 	rm -f ../kaos64.img
 	rm -f *.o *.map *.bin
+	rm -f drivers/*.o

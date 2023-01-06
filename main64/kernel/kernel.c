@@ -1,4 +1,5 @@
-#include "misc.h"
+#include "common.h"
+#include "drivers/screen.h"
 
 void kernel_main()
 {
