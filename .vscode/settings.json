@@ -1,5 +1,7 @@
 {
     "files.associations": {
-        "common.h": "c"
+        "common.h": "c",
+        "idt.h": "c",
+        "screen.h": "c"
     }
 }

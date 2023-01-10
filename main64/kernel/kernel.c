@@ -1,12 +1,16 @@
 #include "common.h"
 #include "drivers/screen.h"
+#include "isr/idt.h"
 
 void kernel_main()
 {
-    // Initializes and clears the screen
+    // Initialize and clear the screen
     InitializeScreen();
 
-    // Print a welcome message
+    // Initialize the ISR & IRQ routines
+    InitIdt();
+
+    // Print out a welcome message
     printf("Executing the x64 OS Kernel at virtual address 0x");
     printf_long((unsigned long)&kernel_main, 16);
     printf("...\n");
@@ -33,6 +37,11 @@ void kernel_main()
     printf("Second: ");
     printf_int(bib->Second, 10);
     printf("\n");
+
+    // This causes a Divide by Zero Exception - which calls the ISR0 routine
+    int a = 5;
+    int b = 0;
+    int c = a / b;
 
     // Halt the system
     while (1 == 1) {}

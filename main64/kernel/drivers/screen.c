@@ -1,4 +1,5 @@
 #include "screen.h"
+#include "../common.h"
 
 // Define a variable for the screen location information
 ScreenLocation screenLocation;
