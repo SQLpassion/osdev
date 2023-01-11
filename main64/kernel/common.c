@@ -71,10 +71,10 @@ int strlen(char *string)
     int len = 0;
 
     while (*string != '\0')
-	{
-		len++;
+    {
+        len++;
         string++;
-	}
+    }
 
     return len;
 }
@@ -82,26 +82,26 @@ int strlen(char *string)
 // A simple strcpy implementation
 char *strcpy(char *destination, const char *source)
 {
-	// return if no memory is allocated to the destination
-	if (destination == 0x0)
-		return 0x0;
+    // return if no memory is allocated to the destination
+    if (destination == 0x0)
+        return 0x0;
 
-	// take a pointer pointing to the beginning of destination string
-	char *ptr = destination;
-	
-	// copy the C-string pointed by source into the array pointed by destination
-	while (*source != '\0')
-	{
-		*destination = *source;
-		destination++;
-		source++;
-	}
+    // take a pointer pointing to the beginning of destination string
+    char *ptr = destination;
+    
+    // copy the C-string pointed by source into the array pointed by destination
+    while (*source != '\0')
+    {
+        *destination = *source;
+        destination++;
+        source++;
+    }
 
-	// include the terminating null character
-	*destination = '\0';
+    // include the terminating null character
+    *destination = '\0';
 
-	// destination is returned by standard strcpy()
-	return ptr;
+    // destination is returned by standard strcpy()
+    return ptr;
 }
 
 // A simple strcmp implementation

@@ -2,7 +2,7 @@
 #define IDT_H
 
 // Virtual address where the IDT table is stored
-#define IDT_START_OFFSET    0xFFFF800000060000
+#define IDT_START_OFFSET    0x60000
 
 // Number of IDT entries
 #define IDT_ENTRIES         256
@@ -76,6 +76,12 @@ void DisplayException(int Number, RegisterState *Registers);
 
 // Loads the IDT table into the processor register (implemented in Assembler)
 extern void IdtFlush(unsigned long);
+
+// Disables the hardware interrupts
+extern void DisableInterrupts();
+
+// Enables the hardware interrupts
+extern void EnableInterrupts();
 
 // The 32 ISR routines (implemented in Assembler)
 extern void Isr0();     // Divide Error Exception

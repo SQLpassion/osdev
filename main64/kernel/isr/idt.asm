@@ -1,17 +1,29 @@
 [BITS 64]
 [EXTERN IsrHandler]
 
-; Needed that the C code can call the Assembler function "IdtFlush"
+; Needed, so that the C code can call the assembly functions
 [GLOBAL IdtFlush]
+[GLOBAL DisableInterrupts]
+[GLOBAL EnableInterrupts]
 
 ; Virtual address where the RegisterState structure will be stored
-REGISTERSTATE_OFFSET    EQU 0xFFFF800000061000
+REGISTERSTATE_OFFSET    EQU 0x61000
 
 ; Loads the IDT table
 IdtFlush:
     ; The first function parameter is provided in the RDI register on the x64 architecture
     ; RDI points to the variable idtPointer (defined in the C code)
     LIDT    [RDI]
+    RET
+
+; Disables the hardware interrupts
+DisableInterrupts:
+    CLI
+    RET
+
+; Enables the hardware interrupts
+EnableInterrupts:
+    STI
     RET
 
 ; The following macro emits the ISR assembly routine

@@ -2,6 +2,7 @@
     "files.associations": {
         "common.h": "c",
         "idt.h": "c",
-        "screen.h": "c"
+        "screen.h": "c",
+        "irq.h": "c"
     }
 }

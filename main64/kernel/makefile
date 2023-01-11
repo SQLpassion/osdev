@@ -21,13 +21,17 @@ bootsector.bin: ../boot/bootsector.asm
 isr/idt_asm.o : isr/idt.asm
 	nasm -felf64 isr/idt.asm -o isr/idt_asm.o
 
+# Builds the IRQ handlers written in Assembler
+isr/irq_asm.o : isr/irq.asm
+	nasm -felf64 isr/irq.asm -o isr/irq_asm.o
+
 # Compiles the C kernel
 %.o : %.c ${HEADERS}
 	x86_64-elf-gcc -ffreestanding -mcmodel=large -mno-red-zone -mno-mmx -mno-sse -mno-sse2 -c $< -o $@
 
 # Links the C kernel
 # The file "kernel.o" is specified explicitly, so that it is the first part of the file "kernel.bin"
-kernel.bin: kernel.o isr/idt_asm.o ${OBJ}
+kernel.bin: kernel.o isr/idt_asm.o isr/irq_asm.o ${OBJ}
 	x86_64-elf-ld -o $@ -Tlink.ld $^ --oformat binary -z max-page-size=0x1000 -Map kernel.map
 
 # Clean up

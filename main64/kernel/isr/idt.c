@@ -1,4 +1,5 @@
 #include "idt.h"
+#include "irq.h"
 #include "../common.h"
 #include "../drivers/screen.h"
 
@@ -15,7 +16,7 @@ void InitIdt()
     idtPointer.Base = (unsigned long)idtEntries;
     memset(idtEntries, 0, sizeof(IdtEntry) * IDT_ENTRIES);
 
-    // Setup the 32 Exception handler - as described in Volume 3A: 6.15
+    // Setup the 32 Exception handlers - as described in Volume 3A: 6.15
     IdtSetGate(0,  (unsigned long)Isr0,  IDT_TRAP_GATE);        // Divide Error Exception
     IdtSetGate(1,  (unsigned long)Isr1,  IDT_TRAP_GATE);        // Debug Exception
     IdtSetGate(2,  (unsigned long)Isr2,  IDT_TRAP_GATE);        // Non-Maskable Interrupt
@@ -31,23 +32,41 @@ void InitIdt()
     IdtSetGate(12, (unsigned long)Isr12, IDT_INTERRUPT_GATE);   // Stack Fault Exception
     IdtSetGate(13, (unsigned long)Isr13, IDT_INTERRUPT_GATE);   // General Protection Exception
     IdtSetGate(14, (unsigned long)Isr14, IDT_INTERRUPT_GATE);   // Page Fault Exception
-    IdtSetGate(15, (unsigned long)Isr15, IDT_TRAP_GATE);        // Unassigned!
+    IdtSetGate(15, (unsigned long)Isr15, IDT_TRAP_GATE);        // Unassigned
     IdtSetGate(16, (unsigned long)Isr16, IDT_TRAP_GATE);        // x87 FPU Floating Point Error
     IdtSetGate(17, (unsigned long)Isr17, IDT_TRAP_GATE);        // Alignment Check Exception
     IdtSetGate(18, (unsigned long)Isr18, IDT_TRAP_GATE);        // Machine Check Exception
     IdtSetGate(19, (unsigned long)Isr19, IDT_TRAP_GATE);        // SIMD Floating Point Exception
     IdtSetGate(20, (unsigned long)Isr20, IDT_TRAP_GATE);        // Virtualization Exception
     IdtSetGate(21, (unsigned long)Isr21, IDT_TRAP_GATE);        // Control Protection Exception
-    IdtSetGate(22, (unsigned long)Isr22, IDT_TRAP_GATE);        // Reserved!
-    IdtSetGate(23, (unsigned long)Isr23, IDT_TRAP_GATE);        // Reserved!
-    IdtSetGate(24, (unsigned long)Isr24, IDT_TRAP_GATE);        // Reserved!
-    IdtSetGate(25, (unsigned long)Isr25, IDT_TRAP_GATE);        // Reserved!
-    IdtSetGate(26, (unsigned long)Isr26, IDT_TRAP_GATE);        // Reserved!
-    IdtSetGate(27, (unsigned long)Isr27, IDT_TRAP_GATE);        // Reserved!
-    IdtSetGate(28, (unsigned long)Isr28, IDT_TRAP_GATE);        // Reserved!
-    IdtSetGate(29, (unsigned long)Isr29, IDT_TRAP_GATE);        // Reserved!
-    IdtSetGate(30, (unsigned long)Isr30, IDT_TRAP_GATE);        // Reserved!
-    IdtSetGate(31, (unsigned long)Isr31, IDT_TRAP_GATE);        // Reserved!
+    IdtSetGate(22, (unsigned long)Isr22, IDT_TRAP_GATE);        // Reserved
+    IdtSetGate(23, (unsigned long)Isr23, IDT_TRAP_GATE);        // Reserved
+    IdtSetGate(24, (unsigned long)Isr24, IDT_TRAP_GATE);        // Reserved
+    IdtSetGate(25, (unsigned long)Isr25, IDT_TRAP_GATE);        // Reserved
+    IdtSetGate(26, (unsigned long)Isr26, IDT_TRAP_GATE);        // Reserved
+    IdtSetGate(27, (unsigned long)Isr27, IDT_TRAP_GATE);        // Reserved
+    IdtSetGate(28, (unsigned long)Isr28, IDT_TRAP_GATE);        // Reserved
+    IdtSetGate(29, (unsigned long)Isr29, IDT_TRAP_GATE);        // Reserved
+    IdtSetGate(30, (unsigned long)Isr30, IDT_TRAP_GATE);        // Reserved
+    IdtSetGate(31, (unsigned long)Isr31, IDT_TRAP_GATE);        // Reserved
+
+    // Setup the 16 IRQ handlers
+    IdtSetGate(32, (unsigned long)Irq0,  IDT_INTERRUPT_GATE);   // Timer
+    IdtSetGate(33, (unsigned long)Irq1,  IDT_INTERRUPT_GATE);   // Keyboard
+    IdtSetGate(34, (unsigned long)Irq2,  IDT_INTERRUPT_GATE);   // Cascade for 8259A Slave Controller
+    IdtSetGate(35, (unsigned long)Irq3,  IDT_INTERRUPT_GATE);   // Serial Port 2
+    IdtSetGate(36, (unsigned long)Irq4,  IDT_INTERRUPT_GATE);   // Serial Port 1
+    IdtSetGate(37, (unsigned long)Irq5,  IDT_INTERRUPT_GATE);   // AT systems: Parallel Port 2. PS/2 systems: Reserved
+    IdtSetGate(38, (unsigned long)Irq6,  IDT_INTERRUPT_GATE);   // Floppy Drive
+    IdtSetGate(39, (unsigned long)Irq7,  IDT_INTERRUPT_GATE);   // Parallel Port 1
+    IdtSetGate(40, (unsigned long)Irq8,  IDT_INTERRUPT_GATE);   // CMOS Real Time Clock
+    IdtSetGate(41, (unsigned long)Irq9,  IDT_INTERRUPT_GATE);   // CGA Vertical Retrace
+    IdtSetGate(42, (unsigned long)Irq10, IDT_INTERRUPT_GATE);   // Reserved
+    IdtSetGate(43, (unsigned long)Irq11, IDT_INTERRUPT_GATE);   // Reserved
+    IdtSetGate(44, (unsigned long)Irq12, IDT_INTERRUPT_GATE);   // AT systems: Reserved. PS/2: Auxiliary Device
+    IdtSetGate(45, (unsigned long)Irq13, IDT_INTERRUPT_GATE);   // FPU
+    IdtSetGate(46, (unsigned long)Irq14, IDT_INTERRUPT_GATE);   // Hard Disk Controller
+    IdtSetGate(47, (unsigned long)Irq15, IDT_INTERRUPT_GATE);   // Reserved
 
     // Loads the IDT table into the processor register (Assembler function)
     IdtFlush((unsigned long)&idtPointer);
