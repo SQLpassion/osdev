@@ -1,10 +1,17 @@
 #ifndef IDT_H
 #define IDT_H
 
-#define IDT_START_OFFSET 0x98000
-#define IDT_ENTRIES 256
-#define IDT_INTERRUPT_GATE 0xE
-#define IDT_TRAP_GATE 0xF
+// Virtual address where the IDT table is stored
+#define IDT_START_OFFSET    0xFFFF800000060000
+
+// Number of IDT entries
+#define IDT_ENTRIES         256
+
+// Constant for an Interrupt Gate
+#define IDT_INTERRUPT_GATE  0xE
+
+// Constant for a Trap Gate
+#define IDT_TRAP_GATE       0xF
 
 // Represents an Interrupt Gate - 128 Bit long
 // As described in Volume 3A: 6.14.1
@@ -12,12 +19,12 @@ struct _idtEntry
 {
     unsigned short OffsetLow;           // 16 Bit
     unsigned short Selector;            // 16 Bit
-    unsigned InterruptStackTable : 3;
-    unsigned Reserved1 : 5;
-    unsigned Type : 4;
-    unsigned Reserved2 : 1;
-    unsigned DPL : 2;
-    unsigned Present : 1;
+    unsigned InterruptStackTable : 3;   // 3 Bit
+    unsigned Reserved1 : 5;             // 5 Bit
+    unsigned Type : 4;                  // 4 Bit
+    unsigned Reserved2 : 1;             // 1 Bit
+    unsigned DPL : 2;                   // 2 Bit
+    unsigned Present : 1;               // 1 Bit
     unsigned short OffsetMiddle;        // 16 Bit
     unsigned int OffsetHigh;            // 32 Bit
     unsigned int Reserved3;             // 32 Bit
@@ -33,10 +40,10 @@ typedef struct _registerState
     unsigned long RSI;
     unsigned long RBP;
     unsigned long RSP;
-    unsigned long RBX;
-    unsigned long RDX;
-    unsigned long RCX;
     unsigned long RAX;
+    unsigned long RBX;
+    unsigned long RCX;
+    unsigned long RDX;
     unsigned long R8;
     unsigned long R9;
     unsigned long R10;
@@ -61,14 +68,14 @@ void InitIdt();
 // Installs the corresponding ISR routine in the IDT table
 void IdtSetGate(unsigned char Entry, unsigned long BaseAddress, unsigned char Type);
 
-// Our generic ISR handler
-void IsrHandler(int Number, unsigned long cr2, RegisterState *Registers);
-
-// Loads the IDT table into the processor register (implemented in Assembler)
-extern void IdtFlush(unsigned long);
+// Our generic ISR handler, which is called from the assembly code.
+void IsrHandler(int InterruptNumber, unsigned long cr2, RegisterState *Registers);
 
 // Displays the state of the general purpose registers when the exception has occured.
 void DisplayException(int Number, RegisterState *Registers);
+
+// Loads the IDT table into the processor register (implemented in Assembler)
+extern void IdtFlush(unsigned long);
 
 // The 32 ISR routines (implemented in Assembler)
 extern void Isr0();     // Divide Error Exception

@@ -1,8 +1,11 @@
 [BITS 64]
-[extern IsrHandler]
+[EXTERN IsrHandler]
 
 ; Needed that the C code can call the Assembler function "IdtFlush"
 [GLOBAL IdtFlush]
+
+; Virtual address where the RegisterState structure will be stored
+REGISTERSTATE_OFFSET    EQU 0xFFFF800000061000
 
 ; Loads the IDT table
 IdtFlush:
@@ -12,7 +15,7 @@ IdtFlush:
     RET
 
 ; The following macro emits the ISR assembly routine
-%macro ISR_NOERRORCODE 1
+%MACRO ISR_NOERRORCODE 1
     [GLOBAL Isr%1]
     Isr%1:
         CLI
@@ -27,10 +30,10 @@ IdtFlush:
         PUSH    RSI    ; [RSP + 112]
         PUSH    RBP    ; [RSP + 104]
         PUSH    RSP    ; [RSP + 96]
-        PUSH    RBX    ; [RSP + 88]
-        PUSH    RDX    ; [RSP + 80]
+        PUSH    RAX    ; [RSP + 88]
+        PUSH    RBX    ; [RSP + 80]
         PUSH    RCX    ; [RSP + 72]
-        PUSH    RAX    ; [RSP + 64]
+        PUSH    RDX    ; [RSP + 64]
         PUSH    R8     ; [RSP + 56]
         PUSH    R9     ; [RSP + 48]
         PUSH    R10    ; [RSP + 40]
@@ -47,10 +50,10 @@ IdtFlush:
         ; [RSP + 112]: Original RSI register value 
         ; [RSP + 104]: Original RBP register value
         ; [RSP +  96]: Original RSP register value
-        ; [RSP +  88]: Original RBX register value
-        ; [RSP +  80]: Original RDX register value
+        ; [RSP +  88]: Original RAX register value
+        ; [RSP +  80]: Original RBX register value
         ; [RSP +  72]: Original RCX register value
-        ; [RSP +  64]: Original RAX register value
+        ; [RSP +  64]: Original RDX register value
         ; [RSP +  56]: Original R8 register value
         ; [RSP +  48]: Original R9 register value
         ; [RSP +  40]: Original R10 register value
@@ -61,7 +64,7 @@ IdtFlush:
         ; [RSP +   0]: Original R15 register value
         
         ; Store the RIP
-        MOV     RAX, 0x99000
+        MOV     RAX, REGISTERSTATE_OFFSET
         MOV     RBX, [RSP + 136]
         MOV     [RAX], RBX
 
@@ -90,12 +93,12 @@ IdtFlush:
         MOV     RBX, [RSP + 96]
         MOV     [RAX], RBX
 
-        ; Store the RBX register
+        ; Store the RAX register
         ADD     RAX, 0x8
         MOV     RBX, [RSP + 88]
         MOV     [RAX], RBX
 
-        ; Store the RDX register
+        ; Store the RBX register
         ADD     RAX, 0x8
         MOV     RBX, [RSP + 80]
         MOV     [RAX], RBX
@@ -105,7 +108,7 @@ IdtFlush:
         MOV     RBX, [RSP + 72]
         MOV     [RAX], RBX
 
-        ; Store the RAX register
+        ; Store the RDX register
         ADD     RAX, 0x8
         MOV     RBX, [RSP + 64]
         MOV     [RAX], RBX
@@ -151,9 +154,9 @@ IdtFlush:
         MOV     [RAX], RBX
 
         ; Call the ISR handler that is implemented in C
-        MOV     RDI, %1          ; 1st parameter
-        MOV     RSI, CR2         ; 2nd parameter
-        MOV     RDX, 0x99000     ; Set the 3rd parameter to the memory location where the structure with the RegisterState is stored
+        MOV     RDI, %1                     ; 1st parameter
+        MOV     RSI, CR2                    ; 2nd parameter
+        MOV     RDX, REGISTERSTATE_OFFSET   ; Set the 3rd parameter to the memory location where the structure with the RegisterState is stored
         CALL    IsrHandler
 
         ; Restore the *original* general purpose register values from the Stack
@@ -165,10 +168,10 @@ IdtFlush:
         POP     R10
         POP     R9
         POP     R8
-        POP     RAX
-        POP     RCX
         POP     RDX
+        POP     RCX
         POP     RBX
+        POP     RAX
         POP     RSP
         POP     RBP
         POP     RSI
@@ -179,17 +182,17 @@ IdtFlush:
 
         STI
         IRETQ
-%endmacro
+%ENDMACRO
 
 ; The following macro emits the ISR assembly routine
-%macro ISR_ERRORCODE 1
+%MACRO ISR_ERRORCODE 1
     [GLOBAL Isr%1]
     Isr%1:
         CLI
 
         ; Produce a new Stack Frame
         PUSH    RBP    ; [RSP + 128]
-        mov     RBP, RSP
+        MOV     RBP, RSP
         
         ; Save the *original* general purpose register values on the Stack, when the interrupt has occured.
         ; These *original* values will be passed through the structure "RegisterState" to the C function "IsrHandler".
@@ -197,10 +200,10 @@ IdtFlush:
         PUSH    RSI    ; [RSP + 112]
         PUSH    RBP    ; [RSP + 104]
         PUSH    RSP    ; [RSP + 96]
-        PUSH    RBX    ; [RSP + 88]
-        PUSH    RDX    ; [RSP + 80]
+        PUSH    RAX    ; [RSP + 88]
+        PUSH    RBX    ; [RSP + 80]
         PUSH    RCX    ; [RSP + 72]
-        PUSH    RAX    ; [RSP + 64]
+        PUSH    RDX    ; [RSP + 64]
         PUSH    R8     ; [RSP + 56]
         PUSH    R9     ; [RSP + 48]
         PUSH    R10    ; [RSP + 40]
@@ -218,10 +221,10 @@ IdtFlush:
         ; [RSP + 112]: Original RSI register value 
         ; [RSP + 104]: Original RBP register value
         ; [RSP +  96]: Original RSP register value
-        ; [RSP +  88]: Original RBX register value
-        ; [RSP +  80]: Original RDX register value
+        ; [RSP +  88]: Original RAX register value
+        ; [RSP +  80]: Original RBX register value
         ; [RSP +  72]: Original RCX register value
-        ; [RSP +  64]: Original RAX register value
+        ; [RSP +  64]: Original RDX register value
         ; [RSP +  56]: Original R8 register value
         ; [RSP +  48]: Original R9 register value
         ; [RSP +  40]: Original R10 register value
@@ -232,7 +235,7 @@ IdtFlush:
         ; [RSP +   0]: Original R15 register value
         
         ; Store the RIP
-        MOV     RAX, 0x99000
+        MOV     RAX, REGISTERSTATE_OFFSET
         MOV     RBX, [RSP + 144]
         MOV     [RAX], RBX
 
@@ -261,12 +264,12 @@ IdtFlush:
         MOV     RBX, [RSP + 96]
         MOV     [RAX], RBX
 
-        ; Store the RBX register
+        ; Store the RAX register
         ADD     RAX, 0x8
         MOV     RBX, [RSP + 88]
         MOV     [RAX], RBX
 
-        ; Store the RDX register
+        ; Store the RBX register
         ADD     RAX, 0x8
         MOV     RBX, [RSP + 80]
         MOV     [RAX], RBX
@@ -276,7 +279,7 @@ IdtFlush:
         MOV     RBX, [RSP + 72]
         MOV     [RAX], RBX
 
-        ; Store the RAX register
+        ; Store the RDX register
         ADD     RAX, 0x8
         MOV     RBX, [RSP + 64]
         MOV     [RAX], RBX
@@ -322,9 +325,9 @@ IdtFlush:
         MOV     [RAX], RBX
 
         ; Call the ISR handler that is implemented in C
-        MOV     RDI, %1          ; 1st parameter
-        MOV     RSI, CR2         ; 2nd parameter
-        MOV     RDX, 0x99000     ; Set the 3rd parameter to the memory location where the structure with the RegisterState is stored
+        MOV     RDI, %1                     ; 1st parameter
+        MOV     RSI, CR2                    ; 2nd parameter
+        MOV     RDX, REGISTERSTATE_OFFSET   ; Set the 3rd parameter to the memory location where the structure with the RegisterState is stored
         CALL    IsrHandler
 
         ; Restore the *original* general purpose register values from the Stack
@@ -336,10 +339,10 @@ IdtFlush:
         POP     R10
         POP     R9
         POP     R8
-        POP     RAX
-        POP     RCX
         POP     RDX
+        POP     RCX
         POP     RBX
+        POP     RAX
         POP     RSP
         POP     RBP
         POP     RSI
@@ -354,7 +357,7 @@ IdtFlush:
         ; Return from the ISR routine...
         STI
         IRETQ
-%endmacro
+%ENDMACRO
 
 ; Emitting our 32 ISR assembly routines
 ISR_NOERRORCODE 0   ; Divide Error Exception

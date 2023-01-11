@@ -2,6 +2,7 @@
 #include "drivers/screen.h"
 #include "isr/idt.h"
 
+// The main entry of our kernel
 void kernel_main()
 {
     // Initialize and clear the screen
@@ -11,7 +12,7 @@ void kernel_main()
     InitIdt();
 
     // Print out a welcome message
-    printf("Executing the x64 OS Kernel at virtual address 0x");
+    printf("Executing the x64 KAOS Kernel at virtual address 0x");
     printf_long((unsigned long)&kernel_main, 16);
     printf("...\n");
     printf("\n");
