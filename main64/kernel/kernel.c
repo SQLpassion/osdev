@@ -1,6 +1,7 @@
 #include "kernel.h"
 #include "common.h"
 #include "drivers/screen.h"
+#include "drivers/keyboard.h"
 #include "isr/pic.h"
 #include "isr/idt.h"
 
@@ -19,8 +20,8 @@ void KernelMain()
     // Display the BIOS Information Block
     DisplayBiosInformationBlock();
 
-    // Causes a Divide by Zero Exception
-    DivideByZeroException();
+    // Test the functionality of the keyboard
+    KeyboardTest();
 
     // Halt the system
     while (1 == 1) {}
@@ -42,6 +43,9 @@ void InitKernel()
 
     // Initialize the ISR & IRQ routines
     InitIdt();
+
+    // Initialize the keyboard
+    InitKeyboard();
     
     // Enable the hardware interrupts again
     EnableInterrupts();
@@ -80,4 +84,16 @@ void DivideByZeroException()
     int a = 5;
     int b = 0;
     int c = a / b;
+}
+
+// Tests the functionality of the keyboard
+void KeyboardTest()
+{
+    char input[100] = "";
+
+    printf("Please enter your name: ");
+    scanf(input, 98);
+
+    printf("Your name is ");
+    printf(input);
 }

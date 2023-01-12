@@ -3,6 +3,7 @@
         "common.h": "c",
         "idt.h": "c",
         "screen.h": "c",
-        "irq.h": "c"
+        "irq.h": "c",
+        "keyboard.h": "c"
     }
 }

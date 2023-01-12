@@ -13,4 +13,7 @@ void DisplayBiosInformationBlock();
 // Causes a Divide by Zero Exception
 void DivideByZeroException();
 
+// Tests the functionality of the keyboard
+void KeyboardTest();
+
 #endif
