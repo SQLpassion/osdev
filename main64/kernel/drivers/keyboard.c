@@ -1,11 +1,3 @@
-//
-//  keyboard.c
-//  KAOS
-//
-//  Created by Klaus Aschenbrenner on 23.02.2014.
-//  Copyright (c) 2014 Klaus Aschenbrenner. All rights reserved.
-//
-
 #include "../common.h"
 #include "../isr/irq.h"
 #include "screen.h"
@@ -142,7 +134,7 @@ static void DiscardLastKey()
 static void KeyboardCallback(int Number)
 {
     // Check if the keyboard controller output buffer is full
-	if (ReadStatus() & KYBRD_CTRL_STATS_MASK_OUT_BUF)
+    if (ReadStatus() & KYBRD_CTRL_STATS_MASK_OUT_BUF)
     {
         // Read the scan code
         int code = ReadBuffer();

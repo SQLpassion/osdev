@@ -101,6 +101,11 @@ void IsrHandler(int InterruptNumber, unsigned long cr2, RegisterState *Registers
 // Displays the state of the general purpose registers when the exception has occured.
 void DisplayException(int Number, RegisterState *Registers)
 {
+    // Set the Blue Screen color
+    unsigned int color = (COLOR_BLUE << 4) | (COLOR_WHITE & 0x0F);
+    SetColor(color);
+    ClearScreen();
+
     printf("A fatal error has occured!\n");
     printf("ISR: 0x");
     printf_int(Number, 16);
