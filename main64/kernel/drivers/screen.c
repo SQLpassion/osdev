@@ -74,6 +74,15 @@ void ClearScreen()
     MoveCursor();
 }
 
+int SetScreenRow(int Row)
+{
+    int currentRow = screenLocation.Row;
+    screenLocation.Row = Row;
+    screenLocation.Col = 1;
+
+    return currentRow;
+}
+
 // Scrolls the screen, when we have used more than 25 rows
 void Scroll()
 {
@@ -98,7 +107,7 @@ void Scroll()
            video_memory[i + 1] = attributeByte;
        }
 
-       screenLocation.Row = 25;
+       screenLocation.Row = ROWS;
    }
 }
 
@@ -107,13 +116,22 @@ void printf(char *string)
 {
     while (*string != '\0')
     {
-        print_char(*string);
+        print_char(*string, 1);
+        string++;
+    }
+}
+
+void printf_noscrolling(char *string)
+{
+    while (*string != '\0')
+    {
+        print_char(*string, 0);
         string++;
     }
 }
 
 // Prints a single character on the screen
-void print_char(char character)
+void print_char(char character, int scrolling)
 {
     char* video_memory = (char *)VIDEO_MEMORY;
     
@@ -144,8 +162,11 @@ void print_char(char character)
         }
     }
 
-    Scroll();
-    MoveCursor();
+    if (scrolling)
+    {
+        Scroll();
+        MoveCursor();
+    }
 }
 
 // Prints out an integer value

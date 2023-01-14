@@ -17,11 +17,13 @@ void KernelMain()
     printf("...\n");
     printf("\n");
 
-    // Display the BIOS Information Block
-    DisplayBiosInformationBlock();
+    DisplayStatusLine();
 
-    // Test the functionality of the keyboard
-    KeyboardTest();
+    int i = 0;
+    for (i = 0; i < 30; i++)
+    {
+        KeyboardTest();
+    }
 
     // Halt the system
     while (1 == 1) {}
@@ -52,29 +54,48 @@ void InitKernel()
 }
 
 // Displays the BIOS Information Block
-void DisplayBiosInformationBlock()
+void DisplayStatusLine()
 {
+    char str[32] = "";
+
     // Getting a reference to the BIOS Information Block
     BiosInformationBlock *bib = (BiosInformationBlock*)BIB_OFFSET;
-    printf("Getting the BIOS Information Block:\n");
-    printf("Year: ");
-    printf_int(bib->Year, 10);
-    printf("\n");
-    printf("Month: ");
-    printf_int(bib->Month, 10);
-    printf("\n");
-    printf("Day: ");
-    printf_int(bib->Day, 10);
-    printf("\n");
-    printf("Hour: ");
-    printf_int(bib->Hour, 10);
-    printf("\n");
-    printf("Minute: ");
-    printf_int(bib->Minute, 10);
-    printf("\n");
-    printf("Second: ");
-    printf_int(bib->Second, 10);
-    printf("\n");
+
+    // Set a green background color
+    unsigned int color = (COLOR_GREEN << 4) | (COLOR_BLACK & 0x0F);
+    int oldColor = SetColor(color);
+    int oldRow = SetScreenRow(25);
+
+    printf_noscrolling("Date: ");
+    itoa(bib->Year, 10, str);
+    printf_noscrolling(str);
+    printf_noscrolling("-");
+
+    itoa(bib->Month, 10, str);
+
+    if (bib->Month < 10)
+        printf_noscrolling("0");
+
+    printf_noscrolling(str);
+    printf_noscrolling("-");
+
+    itoa(bib->Day, 10, str);
+    printf_noscrolling(str);
+    printf_noscrolling(", ");
+
+    itoa(bib->Hour, 10, str);
+    printf_noscrolling(str);
+    printf_noscrolling(":");
+
+    itoa(bib->Minute, 10, str);
+    printf_noscrolling(str);
+    printf_noscrolling(":");
+
+    itoa(bib->Second, 10, str);
+    printf_noscrolling(str);
+
+    SetScreenRow(oldRow);
+    SetColor(oldColor);
 }
 
 // Causes a Divide by Zero Exception

@@ -5,7 +5,7 @@
 #define VIDEO_MEMORY 0xFFFF8000000B8000
 
 // The number of rows of the video memory
-#define ROWS 25
+#define ROWS 24
 
 // The number of columns of the video memory
 #define COLS 80
@@ -65,14 +65,18 @@ void MoveCursor();
 // Clears the screen
 void ClearScreen();
 
+int SetScreenRow(int Row);
+
 // Scrolls the screen, when we have used more than 25 rows
 void Scroll();
 
 // Prints a null-terminated string
 void printf(char *string);
 
+void printf_noscrolling(char *string);
+
 // Prints a single character
-void print_char(char character);
+void print_char(char character, int scrolling);
 
 // Prints out an integer value
 void printf_int(int i, int base);
