@@ -77,249 +77,294 @@ Disassembly of section .text:
  112:	48 ba 00 00 00 00 00 	movabs rdx,0x0
  119:	00 00 00 
  11c:	ff d2                	call   rdx
- 11e:	b8 00 00 00 00       	mov    eax,0x0
- 123:	48 ba 00 00 00 00 00 	movabs rdx,0x0
- 12a:	00 00 00 
- 12d:	ff d2                	call   rdx
- 12f:	90                   	nop
- 130:	5d                   	pop    rbp
- 131:	c3                   	ret    
+ 11e:	bf e8 03 00 00       	mov    edi,0x3e8
+ 123:	b8 00 00 00 00       	mov    eax,0x0
+ 128:	48 ba 00 00 00 00 00 	movabs rdx,0x0
+ 12f:	00 00 00 
+ 132:	ff d2                	call   rdx
+ 134:	b8 00 00 00 00       	mov    eax,0x0
+ 139:	48 ba 00 00 00 00 00 	movabs rdx,0x0
+ 140:	00 00 00 
+ 143:	ff d2                	call   rdx
+ 145:	90                   	nop
+ 146:	5d                   	pop    rbp
+ 147:	c3                   	ret    
 
-0000000000000132 <DisplayStatusLine>:
- 132:	55                   	push   rbp
- 133:	48 89 e5             	mov    rbp,rsp
- 136:	48 83 ec 40          	sub    rsp,0x40
- 13a:	48 c7 45 cc 00 00 00 	mov    QWORD PTR [rbp-0x34],0x0
- 141:	00 
- 142:	48 c7 45 d4 00 00 00 	mov    QWORD PTR [rbp-0x2c],0x0
- 149:	00 
- 14a:	48 c7 45 dc 00 00 00 	mov    QWORD PTR [rbp-0x24],0x0
- 151:	00 
- 152:	48 c7 45 e4 00 00 00 	mov    QWORD PTR [rbp-0x1c],0x0
- 159:	00 
- 15a:	48 c7 45 f8 00 10 00 	mov    QWORD PTR [rbp-0x8],0x1000
- 161:	00 
- 162:	c7 45 f4 20 00 00 00 	mov    DWORD PTR [rbp-0xc],0x20
- 169:	8b 45 f4             	mov    eax,DWORD PTR [rbp-0xc]
- 16c:	89 c7                	mov    edi,eax
- 16e:	48 b8 00 00 00 00 00 	movabs rax,0x0
- 175:	00 00 00 
- 178:	ff d0                	call   rax
- 17a:	89 45 f0             	mov    DWORD PTR [rbp-0x10],eax
- 17d:	bf 19 00 00 00       	mov    edi,0x19
- 182:	48 b8 00 00 00 00 00 	movabs rax,0x0
- 189:	00 00 00 
- 18c:	ff d0                	call   rax
- 18e:	89 45 ec             	mov    DWORD PTR [rbp-0x14],eax
- 191:	48 b8 00 00 00 00 00 	movabs rax,0x0
- 198:	00 00 00 
- 19b:	48 89 c7             	mov    rdi,rax
- 19e:	48 b8 00 00 00 00 00 	movabs rax,0x0
- 1a5:	00 00 00 
- 1a8:	ff d0                	call   rax
- 1aa:	48 8b 45 f8          	mov    rax,QWORD PTR [rbp-0x8]
- 1ae:	8b 00                	mov    eax,DWORD PTR [rax]
- 1b0:	48 8d 55 cc          	lea    rdx,[rbp-0x34]
- 1b4:	be 0a 00 00 00       	mov    esi,0xa
- 1b9:	89 c7                	mov    edi,eax
- 1bb:	48 b8 00 00 00 00 00 	movabs rax,0x0
- 1c2:	00 00 00 
- 1c5:	ff d0                	call   rax
- 1c7:	48 8d 45 cc          	lea    rax,[rbp-0x34]
- 1cb:	48 89 c7             	mov    rdi,rax
- 1ce:	48 b8 00 00 00 00 00 	movabs rax,0x0
- 1d5:	00 00 00 
- 1d8:	ff d0                	call   rax
- 1da:	48 b8 00 00 00 00 00 	movabs rax,0x0
- 1e1:	00 00 00 
- 1e4:	48 89 c7             	mov    rdi,rax
- 1e7:	48 b8 00 00 00 00 00 	movabs rax,0x0
- 1ee:	00 00 00 
- 1f1:	ff d0                	call   rax
- 1f3:	48 8b 45 f8          	mov    rax,QWORD PTR [rbp-0x8]
- 1f7:	0f b7 40 04          	movzx  eax,WORD PTR [rax+0x4]
- 1fb:	98                   	cwde   
- 1fc:	48 8d 55 cc          	lea    rdx,[rbp-0x34]
- 200:	be 0a 00 00 00       	mov    esi,0xa
- 205:	89 c7                	mov    edi,eax
- 207:	48 b8 00 00 00 00 00 	movabs rax,0x0
- 20e:	00 00 00 
- 211:	ff d0                	call   rax
- 213:	48 8b 45 f8          	mov    rax,QWORD PTR [rbp-0x8]
- 217:	0f b7 40 04          	movzx  eax,WORD PTR [rax+0x4]
- 21b:	66 83 f8 09          	cmp    ax,0x9
- 21f:	7f 19                	jg     23a <DisplayStatusLine+0x108>
- 221:	48 b8 00 00 00 00 00 	movabs rax,0x0
- 228:	00 00 00 
- 22b:	48 89 c7             	mov    rdi,rax
- 22e:	48 b8 00 00 00 00 00 	movabs rax,0x0
- 235:	00 00 00 
- 238:	ff d0                	call   rax
- 23a:	48 8d 45 cc          	lea    rax,[rbp-0x34]
- 23e:	48 89 c7             	mov    rdi,rax
- 241:	48 b8 00 00 00 00 00 	movabs rax,0x0
- 248:	00 00 00 
- 24b:	ff d0                	call   rax
- 24d:	48 b8 00 00 00 00 00 	movabs rax,0x0
- 254:	00 00 00 
- 257:	48 89 c7             	mov    rdi,rax
- 25a:	48 b8 00 00 00 00 00 	movabs rax,0x0
- 261:	00 00 00 
- 264:	ff d0                	call   rax
- 266:	48 8b 45 f8          	mov    rax,QWORD PTR [rbp-0x8]
- 26a:	0f b7 40 06          	movzx  eax,WORD PTR [rax+0x6]
- 26e:	98                   	cwde   
- 26f:	48 8d 55 cc          	lea    rdx,[rbp-0x34]
- 273:	be 0a 00 00 00       	mov    esi,0xa
- 278:	89 c7                	mov    edi,eax
- 27a:	48 b8 00 00 00 00 00 	movabs rax,0x0
- 281:	00 00 00 
- 284:	ff d0                	call   rax
- 286:	48 8d 45 cc          	lea    rax,[rbp-0x34]
- 28a:	48 89 c7             	mov    rdi,rax
- 28d:	48 b8 00 00 00 00 00 	movabs rax,0x0
- 294:	00 00 00 
- 297:	ff d0                	call   rax
- 299:	48 b8 00 00 00 00 00 	movabs rax,0x0
- 2a0:	00 00 00 
- 2a3:	48 89 c7             	mov    rdi,rax
- 2a6:	48 b8 00 00 00 00 00 	movabs rax,0x0
- 2ad:	00 00 00 
- 2b0:	ff d0                	call   rax
- 2b2:	48 8b 45 f8          	mov    rax,QWORD PTR [rbp-0x8]
- 2b6:	0f b7 40 08          	movzx  eax,WORD PTR [rax+0x8]
- 2ba:	98                   	cwde   
- 2bb:	48 8d 55 cc          	lea    rdx,[rbp-0x34]
- 2bf:	be 0a 00 00 00       	mov    esi,0xa
- 2c4:	89 c7                	mov    edi,eax
- 2c6:	48 b8 00 00 00 00 00 	movabs rax,0x0
- 2cd:	00 00 00 
- 2d0:	ff d0                	call   rax
- 2d2:	48 8d 45 cc          	lea    rax,[rbp-0x34]
- 2d6:	48 89 c7             	mov    rdi,rax
- 2d9:	48 b8 00 00 00 00 00 	movabs rax,0x0
- 2e0:	00 00 00 
- 2e3:	ff d0                	call   rax
- 2e5:	48 b8 00 00 00 00 00 	movabs rax,0x0
- 2ec:	00 00 00 
- 2ef:	48 89 c7             	mov    rdi,rax
- 2f2:	48 b8 00 00 00 00 00 	movabs rax,0x0
- 2f9:	00 00 00 
- 2fc:	ff d0                	call   rax
- 2fe:	48 8b 45 f8          	mov    rax,QWORD PTR [rbp-0x8]
- 302:	0f b7 40 0a          	movzx  eax,WORD PTR [rax+0xa]
- 306:	98                   	cwde   
- 307:	48 8d 55 cc          	lea    rdx,[rbp-0x34]
- 30b:	be 0a 00 00 00       	mov    esi,0xa
- 310:	89 c7                	mov    edi,eax
- 312:	48 b8 00 00 00 00 00 	movabs rax,0x0
- 319:	00 00 00 
- 31c:	ff d0                	call   rax
- 31e:	48 8d 45 cc          	lea    rax,[rbp-0x34]
- 322:	48 89 c7             	mov    rdi,rax
- 325:	48 b8 00 00 00 00 00 	movabs rax,0x0
- 32c:	00 00 00 
- 32f:	ff d0                	call   rax
- 331:	48 b8 00 00 00 00 00 	movabs rax,0x0
- 338:	00 00 00 
- 33b:	48 89 c7             	mov    rdi,rax
- 33e:	48 b8 00 00 00 00 00 	movabs rax,0x0
- 345:	00 00 00 
- 348:	ff d0                	call   rax
- 34a:	48 8b 45 f8          	mov    rax,QWORD PTR [rbp-0x8]
- 34e:	0f b7 40 0c          	movzx  eax,WORD PTR [rax+0xc]
- 352:	98                   	cwde   
- 353:	48 8d 55 cc          	lea    rdx,[rbp-0x34]
- 357:	be 0a 00 00 00       	mov    esi,0xa
- 35c:	89 c7                	mov    edi,eax
- 35e:	48 b8 00 00 00 00 00 	movabs rax,0x0
- 365:	00 00 00 
- 368:	ff d0                	call   rax
- 36a:	48 8d 45 cc          	lea    rax,[rbp-0x34]
- 36e:	48 89 c7             	mov    rdi,rax
- 371:	48 b8 00 00 00 00 00 	movabs rax,0x0
- 378:	00 00 00 
- 37b:	ff d0                	call   rax
- 37d:	8b 45 ec             	mov    eax,DWORD PTR [rbp-0x14]
- 380:	89 c7                	mov    edi,eax
- 382:	48 b8 00 00 00 00 00 	movabs rax,0x0
- 389:	00 00 00 
- 38c:	ff d0                	call   rax
- 38e:	8b 45 f0             	mov    eax,DWORD PTR [rbp-0x10]
- 391:	89 c7                	mov    edi,eax
- 393:	48 b8 00 00 00 00 00 	movabs rax,0x0
- 39a:	00 00 00 
- 39d:	ff d0                	call   rax
- 39f:	90                   	nop
- 3a0:	c9                   	leave  
- 3a1:	c3                   	ret    
+0000000000000148 <DisplayStatusLine>:
+ 148:	55                   	push   rbp
+ 149:	48 89 e5             	mov    rbp,rsp
+ 14c:	48 83 ec 40          	sub    rsp,0x40
+ 150:	48 c7 45 cc 00 00 00 	mov    QWORD PTR [rbp-0x34],0x0
+ 157:	00 
+ 158:	48 c7 45 d4 00 00 00 	mov    QWORD PTR [rbp-0x2c],0x0
+ 15f:	00 
+ 160:	48 c7 45 dc 00 00 00 	mov    QWORD PTR [rbp-0x24],0x0
+ 167:	00 
+ 168:	48 c7 45 e4 00 00 00 	mov    QWORD PTR [rbp-0x1c],0x0
+ 16f:	00 
+ 170:	48 c7 45 f8 00 10 00 	mov    QWORD PTR [rbp-0x8],0x1000
+ 177:	00 
+ 178:	c7 45 f4 20 00 00 00 	mov    DWORD PTR [rbp-0xc],0x20
+ 17f:	8b 45 f4             	mov    eax,DWORD PTR [rbp-0xc]
+ 182:	89 c7                	mov    edi,eax
+ 184:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 18b:	00 00 00 
+ 18e:	ff d0                	call   rax
+ 190:	89 45 f0             	mov    DWORD PTR [rbp-0x10],eax
+ 193:	bf 19 00 00 00       	mov    edi,0x19
+ 198:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 19f:	00 00 00 
+ 1a2:	ff d0                	call   rax
+ 1a4:	89 45 ec             	mov    DWORD PTR [rbp-0x14],eax
+ 1a7:	48 8b 45 f8          	mov    rax,QWORD PTR [rbp-0x8]
+ 1ab:	8b 00                	mov    eax,DWORD PTR [rax]
+ 1ad:	48 8d 55 cc          	lea    rdx,[rbp-0x34]
+ 1b1:	be 0a 00 00 00       	mov    esi,0xa
+ 1b6:	89 c7                	mov    edi,eax
+ 1b8:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 1bf:	00 00 00 
+ 1c2:	ff d0                	call   rax
+ 1c4:	48 8d 45 cc          	lea    rax,[rbp-0x34]
+ 1c8:	48 89 c7             	mov    rdi,rax
+ 1cb:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 1d2:	00 00 00 
+ 1d5:	ff d0                	call   rax
+ 1d7:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 1de:	00 00 00 
+ 1e1:	48 89 c7             	mov    rdi,rax
+ 1e4:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 1eb:	00 00 00 
+ 1ee:	ff d0                	call   rax
+ 1f0:	48 8b 45 f8          	mov    rax,QWORD PTR [rbp-0x8]
+ 1f4:	0f b7 40 04          	movzx  eax,WORD PTR [rax+0x4]
+ 1f8:	98                   	cwde   
+ 1f9:	48 8d 55 cc          	lea    rdx,[rbp-0x34]
+ 1fd:	be 0a 00 00 00       	mov    esi,0xa
+ 202:	89 c7                	mov    edi,eax
+ 204:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 20b:	00 00 00 
+ 20e:	ff d0                	call   rax
+ 210:	48 8b 45 f8          	mov    rax,QWORD PTR [rbp-0x8]
+ 214:	0f b7 40 04          	movzx  eax,WORD PTR [rax+0x4]
+ 218:	66 83 f8 09          	cmp    ax,0x9
+ 21c:	7f 19                	jg     237 <DisplayStatusLine+0xef>
+ 21e:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 225:	00 00 00 
+ 228:	48 89 c7             	mov    rdi,rax
+ 22b:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 232:	00 00 00 
+ 235:	ff d0                	call   rax
+ 237:	48 8d 45 cc          	lea    rax,[rbp-0x34]
+ 23b:	48 89 c7             	mov    rdi,rax
+ 23e:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 245:	00 00 00 
+ 248:	ff d0                	call   rax
+ 24a:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 251:	00 00 00 
+ 254:	48 89 c7             	mov    rdi,rax
+ 257:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 25e:	00 00 00 
+ 261:	ff d0                	call   rax
+ 263:	48 8b 45 f8          	mov    rax,QWORD PTR [rbp-0x8]
+ 267:	0f b7 40 06          	movzx  eax,WORD PTR [rax+0x6]
+ 26b:	98                   	cwde   
+ 26c:	48 8d 55 cc          	lea    rdx,[rbp-0x34]
+ 270:	be 0a 00 00 00       	mov    esi,0xa
+ 275:	89 c7                	mov    edi,eax
+ 277:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 27e:	00 00 00 
+ 281:	ff d0                	call   rax
+ 283:	48 8b 45 f8          	mov    rax,QWORD PTR [rbp-0x8]
+ 287:	0f b7 40 06          	movzx  eax,WORD PTR [rax+0x6]
+ 28b:	66 83 f8 09          	cmp    ax,0x9
+ 28f:	7f 19                	jg     2aa <DisplayStatusLine+0x162>
+ 291:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 298:	00 00 00 
+ 29b:	48 89 c7             	mov    rdi,rax
+ 29e:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 2a5:	00 00 00 
+ 2a8:	ff d0                	call   rax
+ 2aa:	48 8d 45 cc          	lea    rax,[rbp-0x34]
+ 2ae:	48 89 c7             	mov    rdi,rax
+ 2b1:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 2b8:	00 00 00 
+ 2bb:	ff d0                	call   rax
+ 2bd:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 2c4:	00 00 00 
+ 2c7:	48 89 c7             	mov    rdi,rax
+ 2ca:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 2d1:	00 00 00 
+ 2d4:	ff d0                	call   rax
+ 2d6:	48 8b 45 f8          	mov    rax,QWORD PTR [rbp-0x8]
+ 2da:	0f b7 40 08          	movzx  eax,WORD PTR [rax+0x8]
+ 2de:	98                   	cwde   
+ 2df:	48 8d 55 cc          	lea    rdx,[rbp-0x34]
+ 2e3:	be 0a 00 00 00       	mov    esi,0xa
+ 2e8:	89 c7                	mov    edi,eax
+ 2ea:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 2f1:	00 00 00 
+ 2f4:	ff d0                	call   rax
+ 2f6:	48 8b 45 f8          	mov    rax,QWORD PTR [rbp-0x8]
+ 2fa:	0f b7 40 08          	movzx  eax,WORD PTR [rax+0x8]
+ 2fe:	66 83 f8 09          	cmp    ax,0x9
+ 302:	7f 19                	jg     31d <DisplayStatusLine+0x1d5>
+ 304:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 30b:	00 00 00 
+ 30e:	48 89 c7             	mov    rdi,rax
+ 311:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 318:	00 00 00 
+ 31b:	ff d0                	call   rax
+ 31d:	48 8d 45 cc          	lea    rax,[rbp-0x34]
+ 321:	48 89 c7             	mov    rdi,rax
+ 324:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 32b:	00 00 00 
+ 32e:	ff d0                	call   rax
+ 330:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 337:	00 00 00 
+ 33a:	48 89 c7             	mov    rdi,rax
+ 33d:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 344:	00 00 00 
+ 347:	ff d0                	call   rax
+ 349:	48 8b 45 f8          	mov    rax,QWORD PTR [rbp-0x8]
+ 34d:	0f b7 40 0a          	movzx  eax,WORD PTR [rax+0xa]
+ 351:	98                   	cwde   
+ 352:	48 8d 55 cc          	lea    rdx,[rbp-0x34]
+ 356:	be 0a 00 00 00       	mov    esi,0xa
+ 35b:	89 c7                	mov    edi,eax
+ 35d:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 364:	00 00 00 
+ 367:	ff d0                	call   rax
+ 369:	48 8b 45 f8          	mov    rax,QWORD PTR [rbp-0x8]
+ 36d:	0f b7 40 0a          	movzx  eax,WORD PTR [rax+0xa]
+ 371:	66 83 f8 09          	cmp    ax,0x9
+ 375:	7f 19                	jg     390 <DisplayStatusLine+0x248>
+ 377:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 37e:	00 00 00 
+ 381:	48 89 c7             	mov    rdi,rax
+ 384:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 38b:	00 00 00 
+ 38e:	ff d0                	call   rax
+ 390:	48 8d 45 cc          	lea    rax,[rbp-0x34]
+ 394:	48 89 c7             	mov    rdi,rax
+ 397:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 39e:	00 00 00 
+ 3a1:	ff d0                	call   rax
+ 3a3:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 3aa:	00 00 00 
+ 3ad:	48 89 c7             	mov    rdi,rax
+ 3b0:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 3b7:	00 00 00 
+ 3ba:	ff d0                	call   rax
+ 3bc:	48 8b 45 f8          	mov    rax,QWORD PTR [rbp-0x8]
+ 3c0:	0f b7 40 0c          	movzx  eax,WORD PTR [rax+0xc]
+ 3c4:	98                   	cwde   
+ 3c5:	48 8d 55 cc          	lea    rdx,[rbp-0x34]
+ 3c9:	be 0a 00 00 00       	mov    esi,0xa
+ 3ce:	89 c7                	mov    edi,eax
+ 3d0:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 3d7:	00 00 00 
+ 3da:	ff d0                	call   rax
+ 3dc:	48 8b 45 f8          	mov    rax,QWORD PTR [rbp-0x8]
+ 3e0:	0f b7 40 0c          	movzx  eax,WORD PTR [rax+0xc]
+ 3e4:	66 83 f8 09          	cmp    ax,0x9
+ 3e8:	7f 19                	jg     403 <DisplayStatusLine+0x2bb>
+ 3ea:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 3f1:	00 00 00 
+ 3f4:	48 89 c7             	mov    rdi,rax
+ 3f7:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 3fe:	00 00 00 
+ 401:	ff d0                	call   rax
+ 403:	48 8d 45 cc          	lea    rax,[rbp-0x34]
+ 407:	48 89 c7             	mov    rdi,rax
+ 40a:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 411:	00 00 00 
+ 414:	ff d0                	call   rax
+ 416:	8b 45 ec             	mov    eax,DWORD PTR [rbp-0x14]
+ 419:	89 c7                	mov    edi,eax
+ 41b:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 422:	00 00 00 
+ 425:	ff d0                	call   rax
+ 427:	8b 45 f0             	mov    eax,DWORD PTR [rbp-0x10]
+ 42a:	89 c7                	mov    edi,eax
+ 42c:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 433:	00 00 00 
+ 436:	ff d0                	call   rax
+ 438:	90                   	nop
+ 439:	c9                   	leave  
+ 43a:	c3                   	ret    
 
-00000000000003a2 <DivideByZeroException>:
- 3a2:	55                   	push   rbp
- 3a3:	48 89 e5             	mov    rbp,rsp
- 3a6:	48 83 ec 10          	sub    rsp,0x10
- 3aa:	c7 45 fc 05 00 00 00 	mov    DWORD PTR [rbp-0x4],0x5
- 3b1:	c7 45 f8 00 00 00 00 	mov    DWORD PTR [rbp-0x8],0x0
- 3b8:	8b 45 fc             	mov    eax,DWORD PTR [rbp-0x4]
- 3bb:	99                   	cdq    
- 3bc:	f7 7d f8             	idiv   DWORD PTR [rbp-0x8]
- 3bf:	89 45 f4             	mov    DWORD PTR [rbp-0xc],eax
- 3c2:	90                   	nop
- 3c3:	c9                   	leave  
- 3c4:	c3                   	ret    
+000000000000043b <DivideByZeroException>:
+ 43b:	55                   	push   rbp
+ 43c:	48 89 e5             	mov    rbp,rsp
+ 43f:	48 83 ec 10          	sub    rsp,0x10
+ 443:	c7 45 fc 05 00 00 00 	mov    DWORD PTR [rbp-0x4],0x5
+ 44a:	c7 45 f8 00 00 00 00 	mov    DWORD PTR [rbp-0x8],0x0
+ 451:	8b 45 fc             	mov    eax,DWORD PTR [rbp-0x4]
+ 454:	99                   	cdq    
+ 455:	f7 7d f8             	idiv   DWORD PTR [rbp-0x8]
+ 458:	89 45 f4             	mov    DWORD PTR [rbp-0xc],eax
+ 45b:	90                   	nop
+ 45c:	c9                   	leave  
+ 45d:	c3                   	ret    
 
-00000000000003c5 <KeyboardTest>:
- 3c5:	55                   	push   rbp
- 3c6:	48 89 e5             	mov    rbp,rsp
- 3c9:	48 83 ec 70          	sub    rsp,0x70
- 3cd:	48 c7 45 9c 00 00 00 	mov    QWORD PTR [rbp-0x64],0x0
- 3d4:	00 
- 3d5:	48 c7 45 a4 00 00 00 	mov    QWORD PTR [rbp-0x5c],0x0
- 3dc:	00 
- 3dd:	48 c7 45 ac 00 00 00 	mov    QWORD PTR [rbp-0x54],0x0
- 3e4:	00 
- 3e5:	48 c7 45 b4 00 00 00 	mov    QWORD PTR [rbp-0x4c],0x0
- 3ec:	00 
- 3ed:	48 c7 45 bc 00 00 00 	mov    QWORD PTR [rbp-0x44],0x0
- 3f4:	00 
- 3f5:	48 c7 45 c4 00 00 00 	mov    QWORD PTR [rbp-0x3c],0x0
- 3fc:	00 
- 3fd:	48 c7 45 cc 00 00 00 	mov    QWORD PTR [rbp-0x34],0x0
- 404:	00 
- 405:	48 c7 45 d4 00 00 00 	mov    QWORD PTR [rbp-0x2c],0x0
- 40c:	00 
- 40d:	48 c7 45 dc 00 00 00 	mov    QWORD PTR [rbp-0x24],0x0
- 414:	00 
- 415:	48 c7 45 e4 00 00 00 	mov    QWORD PTR [rbp-0x1c],0x0
- 41c:	00 
- 41d:	48 c7 45 ec 00 00 00 	mov    QWORD PTR [rbp-0x14],0x0
- 424:	00 
- 425:	48 c7 45 f4 00 00 00 	mov    QWORD PTR [rbp-0xc],0x0
- 42c:	00 
- 42d:	c7 45 fc 00 00 00 00 	mov    DWORD PTR [rbp-0x4],0x0
- 434:	48 b8 00 00 00 00 00 	movabs rax,0x0
- 43b:	00 00 00 
- 43e:	48 89 c7             	mov    rdi,rax
- 441:	48 b8 00 00 00 00 00 	movabs rax,0x0
- 448:	00 00 00 
- 44b:	ff d0                	call   rax
- 44d:	48 8d 45 9c          	lea    rax,[rbp-0x64]
- 451:	be 62 00 00 00       	mov    esi,0x62
- 456:	48 89 c7             	mov    rdi,rax
- 459:	48 b8 00 00 00 00 00 	movabs rax,0x0
- 460:	00 00 00 
- 463:	ff d0                	call   rax
- 465:	48 b8 00 00 00 00 00 	movabs rax,0x0
- 46c:	00 00 00 
- 46f:	48 89 c7             	mov    rdi,rax
- 472:	48 b8 00 00 00 00 00 	movabs rax,0x0
- 479:	00 00 00 
- 47c:	ff d0                	call   rax
- 47e:	48 8d 45 9c          	lea    rax,[rbp-0x64]
- 482:	48 89 c7             	mov    rdi,rax
- 485:	48 b8 00 00 00 00 00 	movabs rax,0x0
- 48c:	00 00 00 
- 48f:	ff d0                	call   rax
- 491:	90                   	nop
- 492:	c9                   	leave  
- 493:	c3                   	ret    
+000000000000045e <KeyboardTest>:
+ 45e:	55                   	push   rbp
+ 45f:	48 89 e5             	mov    rbp,rsp
+ 462:	48 83 ec 70          	sub    rsp,0x70
+ 466:	48 c7 45 9c 00 00 00 	mov    QWORD PTR [rbp-0x64],0x0
+ 46d:	00 
+ 46e:	48 c7 45 a4 00 00 00 	mov    QWORD PTR [rbp-0x5c],0x0
+ 475:	00 
+ 476:	48 c7 45 ac 00 00 00 	mov    QWORD PTR [rbp-0x54],0x0
+ 47d:	00 
+ 47e:	48 c7 45 b4 00 00 00 	mov    QWORD PTR [rbp-0x4c],0x0
+ 485:	00 
+ 486:	48 c7 45 bc 00 00 00 	mov    QWORD PTR [rbp-0x44],0x0
+ 48d:	00 
+ 48e:	48 c7 45 c4 00 00 00 	mov    QWORD PTR [rbp-0x3c],0x0
+ 495:	00 
+ 496:	48 c7 45 cc 00 00 00 	mov    QWORD PTR [rbp-0x34],0x0
+ 49d:	00 
+ 49e:	48 c7 45 d4 00 00 00 	mov    QWORD PTR [rbp-0x2c],0x0
+ 4a5:	00 
+ 4a6:	48 c7 45 dc 00 00 00 	mov    QWORD PTR [rbp-0x24],0x0
+ 4ad:	00 
+ 4ae:	48 c7 45 e4 00 00 00 	mov    QWORD PTR [rbp-0x1c],0x0
+ 4b5:	00 
+ 4b6:	48 c7 45 ec 00 00 00 	mov    QWORD PTR [rbp-0x14],0x0
+ 4bd:	00 
+ 4be:	48 c7 45 f4 00 00 00 	mov    QWORD PTR [rbp-0xc],0x0
+ 4c5:	00 
+ 4c6:	c7 45 fc 00 00 00 00 	mov    DWORD PTR [rbp-0x4],0x0
+ 4cd:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 4d4:	00 00 00 
+ 4d7:	48 89 c7             	mov    rdi,rax
+ 4da:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 4e1:	00 00 00 
+ 4e4:	ff d0                	call   rax
+ 4e6:	48 8d 45 9c          	lea    rax,[rbp-0x64]
+ 4ea:	be 62 00 00 00       	mov    esi,0x62
+ 4ef:	48 89 c7             	mov    rdi,rax
+ 4f2:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 4f9:	00 00 00 
+ 4fc:	ff d0                	call   rax
+ 4fe:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 505:	00 00 00 
+ 508:	48 89 c7             	mov    rdi,rax
+ 50b:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 512:	00 00 00 
+ 515:	ff d0                	call   rax
+ 517:	48 8d 45 9c          	lea    rax,[rbp-0x64]
+ 51b:	48 89 c7             	mov    rdi,rax
+ 51e:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 525:	00 00 00 
+ 528:	ff d0                	call   rax
+ 52a:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 531:	00 00 00 
+ 534:	48 89 c7             	mov    rdi,rax
+ 537:	48 b8 00 00 00 00 00 	movabs rax,0x0
+ 53e:	00 00 00 
+ 541:	ff d0                	call   rax
+ 543:	90                   	nop
+ 544:	c9                   	leave  
+ 545:	c3                   	ret    

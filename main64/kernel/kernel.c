@@ -17,6 +17,7 @@ void KernelMain()
     printf("...\n");
     printf("\n");
 
+    // Displays the Status Line
     DisplayStatusLine();
 
     int i = 0;
@@ -48,12 +49,16 @@ void InitKernel()
 
     // Initialize the keyboard
     InitKeyboard();
+
+    // Initialize the timer to fire every 1ms
+    InitTimer(1000);
     
     // Enable the hardware interrupts again
     EnableInterrupts();
 }
 
-// Displays the BIOS Information Block
+// Displays the Status Line, with some information
+// from the BIOS Information Block.
 void DisplayStatusLine()
 {
     char str[32] = "";
@@ -66,7 +71,6 @@ void DisplayStatusLine()
     int oldColor = SetColor(color);
     int oldRow = SetScreenRow(25);
 
-    printf_noscrolling("Date: ");
     itoa(bib->Year, 10, str);
     printf_noscrolling(str);
     printf_noscrolling("-");
@@ -80,18 +84,34 @@ void DisplayStatusLine()
     printf_noscrolling("-");
 
     itoa(bib->Day, 10, str);
+
+    if (bib->Day < 10)
+        printf_noscrolling("0");
+
     printf_noscrolling(str);
     printf_noscrolling(", ");
 
     itoa(bib->Hour, 10, str);
+
+    if (bib->Hour < 10)
+        printf_noscrolling("0");
+
     printf_noscrolling(str);
     printf_noscrolling(":");
 
     itoa(bib->Minute, 10, str);
+
+    if (bib->Minute < 10)
+        printf_noscrolling("0");
+
     printf_noscrolling(str);
     printf_noscrolling(":");
 
     itoa(bib->Second, 10, str);
+
+    if (bib->Second < 10)
+        printf_noscrolling("0");
+
     printf_noscrolling(str);
 
     SetScreenRow(oldRow);
@@ -117,4 +137,5 @@ void KeyboardTest()
 
     printf("Your name is ");
     printf(input);
+    printf("\n");
 }

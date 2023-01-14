@@ -73,6 +73,8 @@ void Scroll();
 // Prints a null-terminated string
 void printf(char *string);
 
+// Prints out a null-terminated string, without scrolling
+// the terminal window.
 void printf_noscrolling(char *string);
 
 // Prints a single character
