@@ -120,6 +120,25 @@ int strcmp(char *s1, char *s2)
     return *(unsigned char *)s1 - *(unsigned char *)s2;
 }
 
+// A simple strcat implementation
+char *strcat(char *destination, char *source)
+{
+    // "ptr" points to the end of the destination string
+    char *ptr = destination + strlen(destination);
+ 
+    // Add the source characters to the destination string
+    while (*source != '\0')
+    {
+        *ptr++ = *source++;
+    }
+ 
+    // Null terminate the destination string
+    *ptr = '\0';
+ 
+    // Return the final string
+    return destination;
+}
+
 // Returns a substring from a given string
 int substring(char *source, int from, int n, char *target)
 {
@@ -290,4 +309,23 @@ int atoi(char *str)
     }
 
     return res;
+}
+
+// Formats an Integer value with a leading zero.
+void FormatInteger(int Value, char *Buffer)
+{
+    char str[32] = "";
+
+    // Empty the buffer
+    strcpy(Buffer, "");
+
+    // Add a leading zero - if necessary
+    if (Value < 10)
+    {
+        strcat(Buffer, "0");
+    }
+
+    // Add the integer value
+    itoa(Value, 10, str);
+    strcat(Buffer, str);
 }

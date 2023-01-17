@@ -4,6 +4,7 @@
         "idt.h": "c",
         "screen.h": "c",
         "irq.h": "c",
-        "keyboard.h": "c"
+        "keyboard.h": "c",
+        "date.h": "c"
     }
 }

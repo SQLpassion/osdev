@@ -1,7 +1,9 @@
 #include "kernel.h"
 #include "common.h"
+#include "date.h"
 #include "drivers/screen.h"
 #include "drivers/keyboard.h"
+#include "drivers/timer.h"
 #include "isr/pic.h"
 #include "isr/idt.h"
 
@@ -15,11 +17,11 @@ void KernelMain()
     printf("Executing the x64 KAOS Kernel at virtual address 0x");
     printf_long((unsigned long)&KernelMain, 16);
     printf("...\n");
-    printf("\n");
 
-    // Displays the Status Line
-    DisplayStatusLine();
-
+    // Set a custom system date
+    // SetDate(2023, 2, 28);
+    // SetTime(22, 40, 3);
+    
     int i = 0;
     for (i = 0; i < 30; i++)
     {
@@ -34,7 +36,7 @@ void KernelMain()
 void InitKernel()
 {
     // Initialize and clear the screen
-    InitializeScreen();
+    InitializeScreen(80, 24);
 
     // Disable the hardware interrupts
     DisableInterrupts();
@@ -55,67 +57,6 @@ void InitKernel()
     
     // Enable the hardware interrupts again
     EnableInterrupts();
-}
-
-// Displays the Status Line, with some information
-// from the BIOS Information Block.
-void DisplayStatusLine()
-{
-    char str[32] = "";
-
-    // Getting a reference to the BIOS Information Block
-    BiosInformationBlock *bib = (BiosInformationBlock*)BIB_OFFSET;
-
-    // Set a green background color
-    unsigned int color = (COLOR_GREEN << 4) | (COLOR_BLACK & 0x0F);
-    int oldColor = SetColor(color);
-    int oldRow = SetScreenRow(25);
-
-    itoa(bib->Year, 10, str);
-    printf_noscrolling(str);
-    printf_noscrolling("-");
-
-    itoa(bib->Month, 10, str);
-
-    if (bib->Month < 10)
-        printf_noscrolling("0");
-
-    printf_noscrolling(str);
-    printf_noscrolling("-");
-
-    itoa(bib->Day, 10, str);
-
-    if (bib->Day < 10)
-        printf_noscrolling("0");
-
-    printf_noscrolling(str);
-    printf_noscrolling(", ");
-
-    itoa(bib->Hour, 10, str);
-
-    if (bib->Hour < 10)
-        printf_noscrolling("0");
-
-    printf_noscrolling(str);
-    printf_noscrolling(":");
-
-    itoa(bib->Minute, 10, str);
-
-    if (bib->Minute < 10)
-        printf_noscrolling("0");
-
-    printf_noscrolling(str);
-    printf_noscrolling(":");
-
-    itoa(bib->Second, 10, str);
-
-    if (bib->Second < 10)
-        printf_noscrolling("0");
-
-    printf_noscrolling(str);
-
-    SetScreenRow(oldRow);
-    SetColor(oldColor);
 }
 
 // Causes a Divide by Zero Exception

@@ -44,7 +44,7 @@ void scanf(char *buffer, int buffer_size)
         // When we have hit the ENTER key, we have finished entering our input data
         if (key == KEY_RETURN)
         {
-            print_char('\n', 1);
+            print_char('\n');
             break;
         }
         
@@ -66,7 +66,7 @@ void scanf(char *buffer, int buffer_size)
                 // Clear out the last printed key
                 // This also moves the cursor one character forward, so we have to go back
                 // again with the cursor in the next step
-                print_char(' ', 1);
+                print_char(' ');
                 
                 // Move the cursor position one character back again
                 GetCursorPosition(&row, &col);
@@ -84,7 +84,7 @@ void scanf(char *buffer, int buffer_size)
             // If we have pressed a non-printable key, the character is not printed out
             if (key != 0)
             {
-                print_char(key, 1);
+                print_char(key);
             }
         
             // Write the entered character into the provided buffer
