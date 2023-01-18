@@ -4,12 +4,6 @@
 // Video output memory address
 #define VIDEO_MEMORY 0xFFFF8000000B8000
 
-// The number of rows of the video memory
-#define ROWS 25
-
-// The number of columns of the video memory
-#define COLS 80
-
 #define CRLF '\n'
 #define TAB '\t'
 
@@ -48,7 +42,7 @@ typedef struct ScreenLocation
 } ScreenLocation;
 
 // Initializes the screen
-void InitializeScreen();
+void InitializeScreen(int Cols, int Rows);
 
 // Sets the specific color
 int SetColor(int Color);
@@ -67,6 +61,9 @@ void ClearScreen();
 
 // Scrolls the screen, when we have used more than 25 rows
 void Scroll();
+
+// Prints out a status line string
+void PrintStatusLine(char *string);
 
 // Prints a null-terminated string
 void printf(char *string);

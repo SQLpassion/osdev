@@ -7,8 +7,9 @@ void KernelMain();
 // Initializes the whole Kernel
 void InitKernel();
 
-// Displays the BIOS Information Block
-void DisplayBiosInformationBlock();
+// Displays the Status Line, with some information
+// from the BIOS Information Block.
+void DisplayStatusLine();
 
 // Causes a Divide by Zero Exception
 void DivideByZeroException();

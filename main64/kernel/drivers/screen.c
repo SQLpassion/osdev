@@ -4,9 +4,21 @@
 // Define a variable for the screen location information
 ScreenLocation screenLocation;
 
+// The number of rows of the video memory
+int NumberOfRows;
+
+// The number of columns of the video memory
+int NumberOfColumns;
+
+// The blank character
+unsigned char BLANK = 0x20;
+
 // Initializes the screen
-void InitializeScreen()
+void InitializeScreen(int Cols, int Rows)
 {
+    NumberOfColumns = Cols;
+    NumberOfRows = Rows;
+
     screenLocation.Row = 1;
     screenLocation.Col = 1;
     screenLocation.Attributes = COLOR_WHITE;
@@ -41,7 +53,7 @@ void SetCursorPosition(int Row, int Col)
 void MoveCursor()
 {
    // Calculate the linear offset of the cursor
-   short cursorLocation = (screenLocation.Row - 1) * COLS + (screenLocation.Col - 1);
+   short cursorLocation = (screenLocation.Row - 1) * NumberOfColumns + (screenLocation.Col - 1);
 
    // Setting the cursor's high byte
    outb(0x3D4, 14);
@@ -58,12 +70,12 @@ void ClearScreen()
     char *video_memory = (char *)VIDEO_MEMORY;
     int row, col;
 
-    for (row = 0; row < ROWS; row++)
+    for (row = 0; row < NumberOfRows; row++)
     {
-        for (col = 0; col < COLS; col++)
+        for (col = 0; col < NumberOfColumns; col++)
         {
-            int offset = row * COLS * 2 + col * 2;
-            video_memory[offset] = 0x20; // Blank
+            int offset = row * NumberOfColumns * 2 + col * 2;
+            video_memory[offset] = BLANK;
             video_memory[offset + 1] = screenLocation.Attributes;
         }
     }
@@ -77,28 +89,27 @@ void ClearScreen()
 // Scrolls the screen, when we have used more than 25 rows
 void Scroll()
 {
-   // Get a space character with the default colour attributes.
-   unsigned char attributeByte = (0 /*black*/ << 4) | (15 /*white*/ & 0x0F);
-   unsigned short blank = 0x20 /* space */ | (attributeByte << 8);
-   char* video_memory = (char *)VIDEO_MEMORY;
+   unsigned char attributeByte = (COLOR_BLACK << 4) | (COLOR_WHITE & 0x0F);
+   char *video_memory = (char *)VIDEO_MEMORY;
+   int i;
 
-   // Row 25 is the end, this means we need to scroll up
-   if (screenLocation.Row > ROWS)
+   // Check if we have reached the last row of the screen.
+   // This means we need to scroll up
+   if (screenLocation.Row > NumberOfRows)
    {
-       int i;
-       for (i = 0; i < COLS * 2 * (ROWS - 1); i++)
+       for (i = 0; i < NumberOfColumns * 2 * (NumberOfRows - 1); i++)
        {
-           video_memory[i] = video_memory[i + (COLS * 2)];
+           video_memory[i] = video_memory[i + (NumberOfColumns * 2)];
        }
 
        // Blank the last line
-       for (i = (ROWS - 1) * COLS * 2; i < ROWS * COLS * 2; i += 2)
+       for (i = (NumberOfRows - 1) * NumberOfColumns * 2; i < NumberOfRows * NumberOfColumns * 2; i += 2)
        {
-           video_memory[i] = blank;
+           video_memory[i] = BLANK;
            video_memory[i + 1] = attributeByte;
        }
 
-       screenLocation.Row = 25;
+       screenLocation.Row = NumberOfRows;
    }
 }
 
@@ -112,10 +123,28 @@ void printf(char *string)
     }
 }
 
+// Prints out the status line string
+void PrintStatusLine(char *string)
+{
+    unsigned char color = (COLOR_GREEN << 4) | (COLOR_BLACK & 0x0F);
+    char *video_memory = (char *)VIDEO_MEMORY;
+    int colStatusLine = 1;
+
+    while (*string != '\0')
+    {
+        int offset = (25 - 1) * NumberOfColumns * 2 + (colStatusLine - 1) * 2;
+        video_memory[offset] = *string;
+        video_memory[offset + 1] = color;
+        colStatusLine++;
+
+        string++;
+    }
+}
+
 // Prints a single character on the screen
 void print_char(char character)
 {
-    char* video_memory = (char *)VIDEO_MEMORY;
+    char *video_memory = (char *)VIDEO_MEMORY;
     
     switch(character)
     {
@@ -135,7 +164,7 @@ void print_char(char character)
         }
         default:
         {
-            int offset = (screenLocation.Row - 1) * COLS * 2 + (screenLocation.Col - 1) * 2;
+            int offset = (screenLocation.Row - 1) * NumberOfColumns * 2 + (screenLocation.Col - 1) * 2;
             video_memory[offset] = character;
             video_memory[offset + 1] = screenLocation.Attributes;
             screenLocation.Col++;

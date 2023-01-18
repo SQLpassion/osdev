@@ -48,6 +48,9 @@ char *strcpy(char *destination, const char *source);
 // A simple strcmp implementation
 int strcmp(char *s1, char *s2);
 
+// A simple strcat implementation
+char *strcat(char *destination, char *source);
+
 // Returns a substring from a given string
 int substring(char *source, int from, int n, char *target);
 
@@ -77,5 +80,8 @@ static void ltoa_helper(unsigned long i, unsigned base, char *buf);
 
 // Converts an ASCII string to its integer value
 int atoi(char *str);
+
+// Formats an Integer value with a leading zero.
+void FormatInteger(int Value, char *Buffer);
 
 #endif

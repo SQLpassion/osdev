@@ -1,7 +1,9 @@
 #include "kernel.h"
 #include "common.h"
+#include "date.h"
 #include "drivers/screen.h"
 #include "drivers/keyboard.h"
+#include "drivers/timer.h"
 #include "isr/pic.h"
 #include "isr/idt.h"
 
@@ -15,13 +17,16 @@ void KernelMain()
     printf("Executing the x64 KAOS Kernel at virtual address 0x");
     printf_long((unsigned long)&KernelMain, 16);
     printf("...\n");
-    printf("\n");
 
-    // Display the BIOS Information Block
-    DisplayBiosInformationBlock();
-
-    // Test the functionality of the keyboard
-    KeyboardTest();
+    // Set a custom system date
+    // SetDate(2023, 2, 28);
+    // SetTime(22, 40, 3);
+    
+    int i = 0;
+    for (i = 0; i < 30; i++)
+    {
+        KeyboardTest();
+    }
 
     // Halt the system
     while (1 == 1) {}
@@ -31,7 +36,7 @@ void KernelMain()
 void InitKernel()
 {
     // Initialize and clear the screen
-    InitializeScreen();
+    InitializeScreen(80, 24);
 
     // Disable the hardware interrupts
     DisableInterrupts();
@@ -46,35 +51,12 @@ void InitKernel()
 
     // Initialize the keyboard
     InitKeyboard();
+
+    // Initialize the timer to fire every 1ms
+    InitTimer(1000);
     
     // Enable the hardware interrupts again
     EnableInterrupts();
-}
-
-// Displays the BIOS Information Block
-void DisplayBiosInformationBlock()
-{
-    // Getting a reference to the BIOS Information Block
-    BiosInformationBlock *bib = (BiosInformationBlock*)BIB_OFFSET;
-    printf("Getting the BIOS Information Block:\n");
-    printf("Year: ");
-    printf_int(bib->Year, 10);
-    printf("\n");
-    printf("Month: ");
-    printf_int(bib->Month, 10);
-    printf("\n");
-    printf("Day: ");
-    printf_int(bib->Day, 10);
-    printf("\n");
-    printf("Hour: ");
-    printf_int(bib->Hour, 10);
-    printf("\n");
-    printf("Minute: ");
-    printf_int(bib->Minute, 10);
-    printf("\n");
-    printf("Second: ");
-    printf_int(bib->Second, 10);
-    printf("\n");
 }
 
 // Causes a Divide by Zero Exception
@@ -96,4 +78,5 @@ void KeyboardTest()
 
     printf("Your name is ");
     printf(input);
+    printf("\n");
 }
