@@ -54,3 +54,7 @@ git push origin main
 # Delete branch locally and remote:
 git branch -d MyFeatureBranch
 git push origin --delete MyFeatureBranch
+
+# Tag the current state, and push it to the remote repository
+git tag MyTagName main
+git push origin MyTagName 
