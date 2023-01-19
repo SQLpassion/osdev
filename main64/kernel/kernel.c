@@ -18,15 +18,17 @@ void KernelMain()
     printf_long((unsigned long)&KernelMain, 16);
     printf("...\n");
 
+    DumpMemoryMap();
+
     // Set a custom system date
     // SetDate(2023, 2, 28);
     // SetTime(22, 40, 3);
     
-    int i = 0;
+    /* int i = 0;
     for (i = 0; i < 30; i++)
     {
         KeyboardTest();
-    }
+    } */
 
     // Halt the system
     while (1 == 1) {}
@@ -79,4 +81,69 @@ void KeyboardTest()
     printf("Your name is ");
     printf(input);
     printf("\n");
+}
+
+// 3218997248
+
+// Dumps out the Memory Map
+void DumpMemoryMap()
+{
+	MemoryRegion *region = (MemoryRegion *)0x8004;
+	char str[32] = "";
+	int i;
+    int *length = (int *)0x8000;
+
+	printf("Detected Memory Map:");
+	printf("\n");
+	printf("=============================================================================");
+	printf("\n");
+
+	// for (i = 0; i < *length; i++)
+    for (i = 0; i < 12; i++)
+	{
+        printf("Type: ");
+		ltoa(region[i].Type, 16, str);
+		printf(str);
+        printf("  ");
+
+		ltoa(region[i].Start, 16, str);
+		printf("Start: 0x");
+		printf(str);
+        printf("\t");
+
+		if (strlen(str) < 6)
+		{
+			printf("\t");
+		}
+
+        printf("End: 0x");
+		ltoa(region[i].Start + region[i].Size - 1, 16, str);
+		printf(str);
+        printf("\t");
+
+        if (strlen(str) < 9)
+		{
+			printf("\t");
+		}
+
+        printf("Size: 0x");
+        ltoa(region[i].Size, 16, str);
+        printf(str);
+        printf("\t");
+
+        if (strlen(str) < 9)
+		{
+			// printf("\t");
+		}
+
+        /* printf("Type: ");
+		ltoa(region[i].Type, 16, str);
+		printf(str); */
+
+		// printf(" (");
+		// printf(MemoryRegionType[region[i].Type - 1]);
+		// printf(")");
+
+		printf("\n");
+	}
 }

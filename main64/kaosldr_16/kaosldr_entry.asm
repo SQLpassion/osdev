@@ -10,6 +10,11 @@ Main:
     ; Get the current time from the BIOS
     CALL    GetTime
 
+    ; Get the Memory Map from the BIOS
+    MOV     DI, 0x8004
+    CALL    GetMemoryMap
+    ; call do_e820
+
     ; Enables the A20 gate
     CALL    EnableA20
 
