@@ -16,6 +16,8 @@ typedef struct BiosInformationBlock
     short Hour;
     short Minute;
     short Second;
+
+    short MemoryMapEntries;
 } BiosInformationBlock;
 
 // Reads a single char (8 bytes) from the specified port
@@ -83,5 +85,8 @@ int atoi(char *str);
 
 // Formats an Integer value with a leading zero.
 void FormatInteger(int Value, char *Buffer);
+
+// Formats a Hex string with the given number of leading zeros.
+void FormatHexString(char *string, int length);
 
 #endif

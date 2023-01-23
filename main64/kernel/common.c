@@ -329,3 +329,23 @@ void FormatInteger(int Value, char *Buffer)
     itoa(Value, 10, str);
     strcat(Buffer, str);
 }
+
+// Formats a Hex string with the given number of leading zeros.
+void FormatHexString(char *string, int length)
+{
+    int oldLength = strlen(string);
+    int diff = length - oldLength;
+    char newString[32] = "";
+
+    if (diff > 0)
+    {
+        while (diff > 0)
+        {
+            strcat(newString, "0");
+            diff--;
+        }
+    }
+
+    strcat(newString, string);
+    strcpy(string, newString);
+}
