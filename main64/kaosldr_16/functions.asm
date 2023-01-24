@@ -11,7 +11,8 @@ STRUC BiosInformationBlock
     .Minute:            RESW 1
     .Second:            RESW 1
 
-    .MemoryMapEntries   RESW  1 ; Number of Memory Map entries
+    .MemoryMapEntries   RESW 1 ; Number of Memory Map entries
+    .AvailableMemory    RESQ 1 ; Available Memory - will be calculated by the Kernel
 ENDSTRUC
 
 ; This structure represents a memory map entry that we have retrieved from the BIOS

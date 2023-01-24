@@ -14,6 +14,9 @@ typedef struct MemoryRegion
     int	Reserved;			// Reserved
 } MemoryRegion;
 
+// Initializes the physical Memory Manager
+void InitMemoryManager();
+
 // Prints out the memory map that we have obtained from the BIOS
 void PrintMemoryMap();
 

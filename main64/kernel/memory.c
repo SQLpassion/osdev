@@ -12,12 +12,29 @@ char *MemoryRegionType[] =
     "ACPI NVS Memory"
 };
 
+// Initializes the physical Memory Manager
+void InitMemoryManager()
+{
+    BiosInformationBlock *bib = (BiosInformationBlock *)BIB_OFFSET;
+    MemoryRegion *region = (MemoryRegion *)MEMORYMAP_OFFSET;
+    int i;
+
+    // Loop over each entry
+    for (i = 0; i < bib->MemoryMapEntries; i++)
+    {
+        if (region[i].Type == 1)
+        {
+            // Available
+            bib->AvailableMemory += region[i].Size;
+        }
+    }
+}
+
 // Prints out the memory map that we have obtained from the BIOS
 void PrintMemoryMap()
 {
     BiosInformationBlock *bib = (BiosInformationBlock *)BIB_OFFSET;
-	MemoryRegion *region = (MemoryRegion *)MEMORYMAP_OFFSET;
-    long availableMemory = 0;;
+    MemoryRegion *region = (MemoryRegion *)MEMORYMAP_OFFSET;
     char str[32] = "";
     int i;
     
@@ -28,12 +45,11 @@ void PrintMemoryMap()
 
     // Loop over each entry
     for (i = 0; i < bib->MemoryMapEntries; i++)
-	{
+    {
         if (region[i].Type == 1)
         {
             // Available
             SetColor(COLOR_GREEN);
-            availableMemory += region[i].Size;
         }
         else
         {
@@ -43,15 +59,15 @@ void PrintMemoryMap()
 
         // Start
         printf("0x");
-		ltoa(region[i].Start, 16, str);
+        ltoa(region[i].Start, 16, str);
         FormatHexString(str, 10);
         printf(str);
 
         // End
         printf(" - 0x");
-		ltoa(region[i].Start + region[i].Size - 1, 16, str);
+        ltoa(region[i].Start + region[i].Size - 1, 16, str);
         FormatHexString(str, 10);
-		printf(str);
+        printf(str);
 
         // Size
         printf(" Size: 0x");
@@ -68,7 +84,7 @@ void PrintMemoryMap()
         // If possible, print out the available size also in MB
         if (region[i].Size > 1024 * 1024)
         {
-            ltoa(region[i].Size  / 1024  / 1024, 10, str);
+            ltoa(region[i].Size / 1024  / 1024, 10, str);
             printf(" = ");
             printf(str);
             printf(" MB");
@@ -77,18 +93,18 @@ void PrintMemoryMap()
         // Memory Region Type
         printf(" (");
         printf(MemoryRegionType[region[i].Type - 1]);
-		printf(")");
+        printf(")");
         printf("\n");
 
         // Wait for ENTER
         // scanf(str, 10);
-	}
+    }
 
     // Reset the color to white
     SetColor(COLOR_WHITE);
 
     printf("Available Memory: ");
-    ltoa(availableMemory / 1024 / 1024 + 1, 10, str);
+    ltoa(bib->AvailableMemory / 1024 / 1024 + 1, 10, str);
     printf(str);
     printf(" MB");
 }

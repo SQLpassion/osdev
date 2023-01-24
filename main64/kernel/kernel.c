@@ -23,7 +23,7 @@ void KernelMain()
     SetColor(COLOR_WHITE);
 
     // Print out the memory map that we have obtained from the BIOS
-    PrintMemoryMap();
+    // PrintMemoryMap();
 
     // Halt the system
     while (1 == 1) {}
@@ -34,6 +34,9 @@ void InitKernel()
 {
     // Initialize and clear the screen
     InitializeScreen(80, 24);
+
+    // Initialize the physical Memory Manager
+    InitMemoryManager();
 
     // Disable the hardware interrupts
     DisableInterrupts();

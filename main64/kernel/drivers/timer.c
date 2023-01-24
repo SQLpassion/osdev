@@ -84,6 +84,12 @@ void RefreshStatusLine()
     FormatInteger(bib->Second, tmp);
     strcat(buffer, tmp);
 
+    // Print out the available memory
+    strcat(buffer, ", Memory: ");
+    ltoa(bib->AvailableMemory / 1024 / 1024 + 1, 10, str);
+    strcat(buffer, str);
+    strcat(buffer, " MB");
+
     // Pad the remaining columns with a blank, so that the status line goes
     // over the whole row
     int len = 80 - strlen(buffer);

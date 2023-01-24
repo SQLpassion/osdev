@@ -18,6 +18,7 @@ typedef struct BiosInformationBlock
     short Second;
 
     short MemoryMapEntries;
+    long AvailableMemory;
 } BiosInformationBlock;
 
 // Reads a single char (8 bytes) from the specified port
