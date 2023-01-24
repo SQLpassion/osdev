@@ -5,6 +5,7 @@
         "screen.h": "c",
         "irq.h": "c",
         "keyboard.h": "c",
-        "date.h": "c"
+        "date.h": "c",
+        "pic.h": "c"
     }
 }
