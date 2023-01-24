@@ -252,7 +252,7 @@ LongMode:
     MOV     SS, AX
 
     ; Setup the stack
-    MOV     RAX, QWORD 0xFFFF800000050000
+    MOV     RAX, 0x50000
     MOV     RSP, RAX
     MOV     RBP, RSP
     XOR     RBP, RBP
