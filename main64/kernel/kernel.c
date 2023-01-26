@@ -9,10 +9,10 @@
 #include "memory.h"
 
 // The main entry of our Kernel
-void KernelMain()
+void KernelMain(int KernelSize)
 {
     // Initialize the Kernel
-    InitKernel();
+    InitKernel(KernelSize);
 
     // Print out a welcome message
     SetColor(COLOR_LIGHT_BLUE);
@@ -30,13 +30,13 @@ void KernelMain()
 }
 
 // Initializes the whole Kernel
-void InitKernel()
+void InitKernel(int KernelSize)
 {
     // Initialize and clear the screen
     InitializeScreen(80, 24);
 
     // Initialize the physical Memory Manager
-    InitMemoryManager();
+    InitPhysicalMemoryManager(KernelSize);
 
     // Disable the hardware interrupts
     DisableInterrupts();

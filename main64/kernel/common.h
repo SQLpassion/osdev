@@ -4,8 +4,11 @@
 // Defines the NULL pointer
 #define NULL ((void *) 0)
 
-// The offset where the BIOS Information Block is stored
+// The physical memory offset where the BIOS Information Block is stored
 #define BIB_OFFSET 0x1000
+
+// The physical memory offset where the KERNEL.BIN file was loaded
+#define KERNEL_OFFSET 0x100000
 
 // This structure stores all the information that we retrieve from the BIOS while we are in x16 Real Mode
 typedef struct BiosInformationBlock
@@ -70,10 +73,10 @@ void toupper(char *s);
 void tolower(char *s);
 
 // Converts an integer value to a string value for a specific base (base 10 => decimal, base 16 => hex)
-void itoa(int i, unsigned base, char *buf);
+void itoa(unsigned int i, unsigned base, char *buf);
 
 // Helper function for the itoa function.
-static void itoa_helper(unsigned short i, unsigned base, char *buf);
+static void itoa_helper(unsigned int i, unsigned base, char *buf);
 
 // Converts a long value to a string value for a specific base (base 10 => decimal, base 16 => hex)
 void ltoa(unsigned long i, unsigned base, char *buf);
@@ -89,5 +92,14 @@ void FormatInteger(int Value, char *Buffer);
 
 // Formats a Hex string with the given number of leading zeros.
 void FormatHexString(char *string, int length);
+
+// Aligns the Number to the given Alignment.
+int AlignNumber(int Number, int Alignment);
+
+// Sets the given Bit in the provided Bitmap mask.
+void SetBit(unsigned long Bit, unsigned long *BitmapMask);
+
+// Tests if a given Bit is set in the provided Bitmap mask.
+int TestBit(unsigned long Bit, unsigned long *BitmapMask);
 
 #endif

@@ -2,10 +2,10 @@
 #define KERNEL_H
 
 // The main entry of our Kernel
-void KernelMain();
+void KernelMain(int KernelSize);
 
 // Initializes the whole Kernel
-void InitKernel();
+void InitKernel(int KernelSize);
 
 // Causes a Divide by Zero Exception
 void DivideByZeroException();

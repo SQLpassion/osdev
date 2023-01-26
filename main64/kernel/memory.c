@@ -45,17 +45,17 @@ char *MemoryRegionType[] =
 // 
 // The following memory layout can be used to store the information of the Descriptors.
 // Number of Memory Region Descriptors
-//      => Region #1 Descriptor (24 bytes long)
+//      => Region #1 Descriptor (32 bytes long)
 //          => Physical Start Address
 //          => Number of physical Page Frames (4096 Bytes large) available
 //              => 785888 (3218997248 / 4096)
 //          => Pointer to the physical Bitmap: PTR1
-//      => Region #2 Descriptor (24 bytes long)
+//      => Region #2 Descriptor (32 bytes long)
 //          => Physical Start Address
 //          => Number of physical Page Frames (4096 Bytes large) available
 //              => 256 (1048576 / 4096)
 //          => Pointer to the physical Bitmap: PTR2
-//      => Region #3 Descriptor (24 bytes long)
+//      => Region #3 Descriptor (32 bytes long)
 //          => Physical Start Address
 //          => Number of physical Page Frames (4096 Bytes large) available
 //              => 262144 (1073741824 / 4096)
@@ -69,16 +69,16 @@ char *MemoryRegionType[] =
 // Physical Bitmap for Descriptor #3: PTR3
 //      => Size depends on the number of Page Frames managed by this Descriptor
 //      => 262144 / 8 bits/byte = 32768 bytes long
-void InitMemoryManager()
+void InitPhysicalMemoryManager(int KernelSize)
 {
     BiosInformationBlock *bib = (BiosInformationBlock *)BIB_OFFSET;
-    MemoryRegion *region = (MemoryRegion *)MEMORYMAP_OFFSET;
+    BiosMemoryRegion *region = (BiosMemoryRegion *)MEMORYMAP_OFFSET;
     char str[32] = "";
     int i;
 
-    // The PhysicalMemoryLayout structure will be physically placed directly after the
-    // file KERNEL.BIN in memory.
-    unsigned long startAddress = 0x2000;
+    // The structure PhysicalMemoryLayout will be placed directly after the
+    // file KERNEL.BIN in physical memory - aligned at the next 4K boundary.
+    unsigned long startAddress = KERNEL_OFFSET + AlignNumber(KernelSize, PAGE_SIZE);
     PhysicalMemoryLayout *memLayout = (PhysicalMemoryLayout *)startAddress;
     memLayout->MemoryRegionCount = 0;
 
@@ -88,20 +88,24 @@ void InitMemoryManager()
         // Check, if we deal with a free memory region
         if (region[i].Type == 1)
         {
-            // Available
+            // Calculate the available physical memory
             bib->AvailableMemory += region[i].Size;
 
             // To be on the safe side, we ignore all memory regions below the 1MB mark...
-            if (region[i].Start >= 0x100000)
+            if (region[i].Start >= MARK_1MB)
             {
                 // Create a new MemoryRegionDescriptor.
-                // Its memory address is +8 bytes after the start address of the PhysicalMemoryLayout structure.
-                MemoryRegionDescriptor *descriptor = (MemoryRegionDescriptor *)((memLayout->MemoryRegionCount * sizeof(MemoryRegionDescriptor)) + startAddress + 8);
+                // Its memory address is 8 bytes after the start address of the PhysicalMemoryLayout structure.
+                PhysicalMemoryRegionDescriptor *descriptor = (PhysicalMemoryRegionDescriptor *)((memLayout->MemoryRegionCount *
+                    sizeof(PhysicalMemoryRegionDescriptor)) + startAddress + 8);
+
                 descriptor->PhysicalMemoryStartAddress = region[i].Start;
-                descriptor->AvailablePageFrames = region[i].Size / 4096;
+                descriptor->AvailablePageFrames = region[i].Size / PAGE_SIZE;
+                descriptor->BitmapMaskSize = region[i].Size / PAGE_SIZE / BITS_PER_BYTE;
+                descriptor->FreePageFrames = descriptor->AvailablePageFrames;
 
                 // Store the MemoryRegionDescriptor in the array
-                memLayout->Regions[memLayout->MemoryRegionCount] = *descriptor;
+                memLayout->MemoryRegions[memLayout->MemoryRegionCount] = *descriptor;
 
                 // Increment the Memory Region count
                 memLayout->MemoryRegionCount++;
@@ -109,22 +113,89 @@ void InitMemoryManager()
         }
     }
 
+    // Calculate the memory address for the bitmap mask of the first Memory Region Descriptor.
+    // It is stored in memory directly after the last Memory Region Descriptor.
+    unsigned long bitmapMaskStartAddress = (memLayout->MemoryRegionCount * sizeof(PhysicalMemoryRegionDescriptor) + startAddress + 8);
+
+    // Iterate over each Memory Region Descriptor and store the calcuated bitmap mask memory address
     for (i = 0; i < memLayout->MemoryRegionCount; i++)
     {
-        ltoa(memLayout->Regions[i].PhysicalMemoryStartAddress, 16, str);
-        printf(str);
-        printf("   ");
-        ltoa(memLayout->Regions[i].AvailablePageFrames, 10, str);
-        printf(str);
-        printf("\n");
+        // Set the memory address of the bitmap mask
+        memLayout->MemoryRegions[i].BitmapMaskStartAddress = bitmapMaskStartAddress;
+
+        // Initialize the whole bitmap mask to zero values
+        memset((unsigned long *)memLayout->MemoryRegions[i].BitmapMaskStartAddress, 0x00, memLayout->MemoryRegions[i].BitmapMaskSize);
+    
+        // The next bitmap mask will be stored in memory directly after the current one
+        bitmapMaskStartAddress += memLayout->MemoryRegions[i].BitmapMaskSize;
     }
+
+    // TODO:
+    // The Page Frames that are used by the Kernel and the Physical Memory Manager itself, must be marked as used
+    // in the Bitmap Mask. They are starting at the 1 MB mark.
+    // ...
+
+    // Mark the Page Frames used by the Kernel as used
+    int usedPageFrames = AlignNumber(KernelSize, PAGE_SIZE) / PAGE_SIZE;
+    printf_int(usedPageFrames, 10);
+    printf("\n");
+
+
+
+
+
+
+    // Tests the Bitmap mask functionality
+    // TestBitmapMask(memLayout);
+
+    // Tests the Physical Memory Manager by allocating Page Frames in the various
+    // available memory regions...
+    TestPhysicalMemoryManager(memLayout);
+}
+
+// Allocates the first free Page Frame and returns the Page Frame number.
+unsigned long AllocatePageFrame(PhysicalMemoryLayout *MemoryLayout)
+{
+    for (int k = 0; k < MemoryLayout->MemoryRegionCount; k++)
+    {
+        PhysicalMemoryRegionDescriptor *descriptor = &MemoryLayout->MemoryRegions[k];
+        unsigned long *bitmapMask = (unsigned long *)descriptor->BitmapMaskStartAddress;
+        unsigned long i = 0;
+
+        for (i = 0; i < descriptor->BitmapMaskSize / 8; i++)
+        {
+            if (bitmapMask[i] != 0xFFFFFFFFFFFFFFFF)
+            {
+                for (int j = 0; j < 64; j++)
+                {
+                    // Test each bit
+                    unsigned long bit = (unsigned long)1 << j;
+
+                    if (!(bitmapMask[i] & bit))
+                    {
+                        // Allocate the Page Frame in the bitmap mask
+                        unsigned long frame = (i * 64) + j;
+                        SetBit(frame, bitmapMask);
+
+                        // Decrement the number of free Page Frames
+                        descriptor->FreePageFrames--;
+
+                        // Return the Page Frame number
+                        return (frame + (descriptor->PhysicalMemoryStartAddress / PAGE_SIZE));
+                    }
+                }
+            }
+        }
+    }
+
+    return -1;
 }
 
 // Prints out the memory map that we have obtained from the BIOS
 void PrintMemoryMap()
 {
     BiosInformationBlock *bib = (BiosInformationBlock *)BIB_OFFSET;
-    MemoryRegion *region = (MemoryRegion *)MEMORYMAP_OFFSET;
+    BiosMemoryRegion *region = (BiosMemoryRegion *)MEMORYMAP_OFFSET;
     char str[32] = "";
     int i;
     
@@ -197,4 +268,134 @@ void PrintMemoryMap()
     ltoa(bib->AvailableMemory / 1024 / 1024 + 1, 10, str);
     printf(str);
     printf(" MB");
+}
+
+// Tests the Bitmap mask functionality
+void TestBitmapMask(PhysicalMemoryLayout *memLayout)
+{
+    unsigned long *address = (unsigned long*)memLayout->MemoryRegions[0].BitmapMaskStartAddress;
+    memset((void *)memLayout->MemoryRegions[0].BitmapMaskStartAddress, 0x00, memLayout->MemoryRegions[0].BitmapMaskSize);
+    char str[32] = "";
+    int i;
+
+    // Print out the information from the PhysicalMemoryRegionDescriptors
+    for (i = 0; i < memLayout->MemoryRegionCount; i++)
+    {
+        printf("0x");
+        ltoa(memLayout->MemoryRegions[i].PhysicalMemoryStartAddress, 16, str);
+        printf(str);
+        printf("   ");
+        ltoa(memLayout->MemoryRegions[i].AvailablePageFrames, 10, str);
+        printf(str);
+        printf("   ");
+        ltoa(memLayout->MemoryRegions[i].BitmapMaskSize, 10, str);
+        printf(str);
+        printf("   ");
+        printf("0x");
+        ltoa(memLayout->MemoryRegions[i].BitmapMaskStartAddress, 16, str);
+        printf(str);
+        printf("\n");
+    }
+
+    printf("\n");
+
+    // 1st unsigned long value in the bitmap mask
+    SetBit(7, (unsigned long*)memLayout->MemoryRegions[0].BitmapMaskStartAddress);
+    SetBit(63, (unsigned long*)memLayout->MemoryRegions[0].BitmapMaskStartAddress);
+
+    // 2nd unsigned long value in the bitmap mask
+    SetBit(64 + 9, (unsigned long*)memLayout->MemoryRegions[0].BitmapMaskStartAddress);
+    SetBit(64 + 63, (unsigned long*)memLayout->MemoryRegions[0].BitmapMaskStartAddress);
+
+    // 3rd unsigned long value in the bitmap mask
+    SetBit(64 + 64 + 7, (unsigned long*)memLayout->MemoryRegions[0].BitmapMaskStartAddress);
+    SetBit(64 + 64 + 63, (unsigned long*)memLayout->MemoryRegions[0].BitmapMaskStartAddress);
+
+    printf("The value at address 0x");
+    printf_long((unsigned long)address, 16);
+    printf(" is: 0x");
+    printf_long(*address, 16);
+    printf("\n");
+
+    address++;
+    printf("The value at address 0x");
+    printf_long((unsigned long)address, 16);
+    printf(" is: 0x");
+    printf_long(*address, 16);
+    printf("\n");
+
+    address++;
+    printf("The value at address 0x");
+    printf_long((unsigned long)address, 16);
+    printf(" is: 0x");
+    printf_long(*address, 16);
+    printf("\n");
+    printf("\n");
+
+    // Check if a specific bit is set
+    int result = TestBit(64 + 64 + 63, (unsigned long*)memLayout->MemoryRegions[0].BitmapMaskStartAddress);
+
+    printf_int(result, 10);
+    printf("\n");
+}
+
+// Tests the Physical Memory Manager by allocating Page Frames in the various
+// available memory regions...
+void TestPhysicalMemoryManager(PhysicalMemoryLayout *memLayout)
+{
+    char str[32] = "";
+    int i;
+
+    // The following Page Frames are allocated in the 1st available memory block
+    for (i = 0; i < 785855; i++)
+    {
+        AllocatePageFrame(memLayout);
+    }
+
+    // This is the last Page Frame allocated in the 1st available memory block
+    unsigned long frame = AllocatePageFrame(memLayout);
+    printf("Last Page Frame in 1st memory region: ");
+    printf_long(frame, 10);
+    printf("\n");
+
+    // These Page Frames are allocated in the 2nd available memory block
+    for (i = 0; i < 255; i++)
+    {
+        AllocatePageFrame(memLayout);
+    }
+
+    // This is the last Page Frame allocated in the 2nd available memory block
+    frame = AllocatePageFrame(memLayout);
+    printf("Last Page Frame in 2nd memory region: ");
+    printf_long(frame, 10);
+    printf("\n");
+
+    // This Page Frame is allocated in the 3rd available memory block
+    frame = AllocatePageFrame(memLayout);
+    printf("First Page Frame in 3rd memory region: ");
+    printf_long(frame, 10);
+    printf("\n");
+    printf("\n");
+
+    // Print out the information from the PhysicalMemoryRegionDescriptors
+    for (i = 0; i < memLayout->MemoryRegionCount; i++)
+    {
+        printf("0x");
+        ltoa(memLayout->MemoryRegions[i].PhysicalMemoryStartAddress, 16, str);
+        printf(str);
+        printf("   ");
+        ltoa(memLayout->MemoryRegions[i].AvailablePageFrames, 10, str);
+        printf(str);
+        printf("   ");
+        ltoa(memLayout->MemoryRegions[i].BitmapMaskSize, 10, str);
+        printf(str);
+        printf("   ");
+        printf("0x");
+        ltoa(memLayout->MemoryRegions[i].BitmapMaskStartAddress, 16, str);
+        printf(str);
+        printf("   ");
+        ltoa(memLayout->MemoryRegions[i].FreePageFrames, 10, str);
+        printf(str);
+        printf("\n");
+    }
 }

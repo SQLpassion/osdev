@@ -1,7 +1,7 @@
 #include "fat12.h"
 
 // Implemented in assembly, continues at memory location 0x100000 where the Kernel was loaded
-extern void ExecuteKernel();
+extern void ExecuteKernel(int KernelSize);
 
 // Entry point of KLDR64.BIN
 // The only purpose of the KLDR64.BIN file is to load the KERNEL.BIN file to the physical 
@@ -13,11 +13,12 @@ extern void ExecuteKernel();
 void kaosldr_main()
 {
     // Load the x64 OS Kernel into memory for its execution...
-    LoadKernelIntoMemory("KERNEL  BIN");
+    int kernelSize = LoadKernelIntoMemory("KERNEL  BIN");
+    kernelSize *= 512;
 
     // Execute the Kernel.
     // This function call will never return...
-    ExecuteKernel();
+    ExecuteKernel(kernelSize);
 
     // This code block will never be reached - it's just there for safety
     while (1 == 1) {}

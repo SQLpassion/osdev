@@ -4,24 +4,31 @@
 // The offset where the Memory Map is stored
 #define MEMORYMAP_OFFSET 0x1200
 
-// Describes a Memory Map Entry that we have
-// obtained from the BIOS.
-typedef struct MemoryRegion
-{
-    unsigned long Start;	// Physical Start Address
-    unsigned long Size;		// Length in Bytes
-    int	Type;				// Type - see MemoryRegionType below
-    int	Reserved;			// Reserved
-} MemoryRegion;
+#define PAGE_SIZE 4096
+#define BITS_PER_BYTE 8
+#define MARK_1MB 0x100000
 
-// Describes a single Memory Region that is managed by the
-// Physical Memory Manager.
-typedef struct MemoryRegionDescriptor
+#define INDEX_FROM_BIT(a) (a / ( 8 * 4 * 2))
+#define OFFSET_FROM_BIT(a) (a % ( 8 * 4 * 2))
+
+// Describes a Memory Map Entry that we have obtained from the BIOS.
+typedef struct BiosMemoryRegion
 {
-    unsigned long PhysicalMemoryStartAddress;
-    unsigned long AvailablePageFrames;
-    unsigned long BitmapMaskStartAddress;
-} MemoryRegionDescriptor;
+    unsigned long Start;    // Physical Start Address
+    unsigned long Size;     // Length in Bytes
+    int	Type;               // Type - see MemoryRegionType below
+    int	Reserved;           // Reserved
+} BiosMemoryRegion;
+
+// Describes a single Memory Region that is managed by the Physical Memory Manager.
+typedef struct PhysicalMemoryRegionDescriptor
+{
+    unsigned long PhysicalMemoryStartAddress;   // Physical memory address, where the memory region starts
+    unsigned long AvailablePageFrames;          // The number of physical Page Frames that are available
+    unsigned long BitmapMaskStartAddress;       // Physical memory address, where the bitmap mask is stored
+    unsigned long BitmapMaskSize;               // The size of the bitmap mask in bytes
+    unsigned long FreePageFrames;               // The number of free (unallocated) Page Frames
+} PhysicalMemoryRegionDescriptor;
 
 // Describes the whole memory layout that is managed by the
 // Physical Memory Manager.
@@ -36,15 +43,25 @@ typedef struct PhysicalMemoryLayout
     // at a multiple of 8 bytes.
     unsigned int padding;
 
-    // The MemoryRegionDescriptor array is at the end of this struct, because
+    // The PhysicalMemoryRegionDescriptor array is at the end of this struct, because
     // it has a dynamic size based on the number of memory regions.
-    MemoryRegionDescriptor Regions[];
+    PhysicalMemoryRegionDescriptor MemoryRegions[];
 } PhysicalMemoryLayout;
 
-// Initializes the physical Memory Manager
-void InitMemoryManager();
+// Initializes the physical Memory Manager.
+void InitPhysicalMemoryManager(int KernelSize);
+
+// Allocates the first free Page Frame and returns the Page Frame number.
+unsigned long AllocatePageFrame(PhysicalMemoryLayout *MemoryLayout);
 
 // Prints out the memory map that we have obtained from the BIOS
 void PrintMemoryMap();
+
+// Tests the Bitmap mask functionality
+void TestBitmapMask(PhysicalMemoryLayout *memLayout);
+
+// Tests the Physical Memory Manager by allocating Page Frames in the various
+// available memory regions...
+void TestPhysicalMemoryManager(PhysicalMemoryLayout *memLayout);
 
 #endif
