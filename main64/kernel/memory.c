@@ -43,19 +43,19 @@ char *MemoryRegionType[] =
 // The Descriptors needed by the Physical Memory Manager are stored in memory directly
 // after KERNEL.BIN. Therefore, we need to know the size of the loaded Kernel.
 // 
-// The following memory layout can be used to store the information of the Descriptors.
+// The following memory layout is used to store the information of the Descriptors.
 // Number of Memory Region Descriptors
-//      => Region #1 Descriptor (32 bytes long)
+//      => Region #1 Descriptor (40 bytes long)
 //          => Physical Start Address
 //          => Number of physical Page Frames (4096 Bytes large) available
 //              => 785888 (3218997248 / 4096)
 //          => Pointer to the physical Bitmap: PTR1
-//      => Region #2 Descriptor (32 bytes long)
+//      => Region #2 Descriptor (40 bytes long)
 //          => Physical Start Address
 //          => Number of physical Page Frames (4096 Bytes large) available
 //              => 256 (1048576 / 4096)
 //          => Pointer to the physical Bitmap: PTR2
-//      => Region #3 Descriptor (32 bytes long)
+//      => Region #3 Descriptor (40 bytes long)
 //          => Physical Start Address
 //          => Number of physical Page Frames (4096 Bytes large) available
 //              => 262144 (1073741824 / 4096)
@@ -82,6 +82,9 @@ void InitPhysicalMemoryManager(int KernelSize)
     PhysicalMemoryLayout *memLayout = (PhysicalMemoryLayout *)startAddress;
     memLayout->MemoryRegionCount = 0;
 
+    // Store the reference to the PhysicalMemoryLayout structure in the BIB
+    bib->PhysicalMemoryLayout = memLayout;
+
     // Loop over each Memory Map entry that we got from the BIOS
     for (i = 0; i < bib->MemoryMapEntries; i++)
     {
@@ -89,7 +92,8 @@ void InitPhysicalMemoryManager(int KernelSize)
         if (region[i].Type == 1)
         {
             // Calculate the available physical memory
-            bib->AvailableMemory += region[i].Size;
+            bib->MaxMemory += region[i].Size;
+            bib->AvailablePageFrames += region[i].Size / PAGE_SIZE;
 
             // To be on the safe side, we ignore all memory regions below the 1MB mark...
             if (region[i].Start >= MARK_1MB)
@@ -130,35 +134,23 @@ void InitPhysicalMemoryManager(int KernelSize)
         bitmapMaskStartAddress += memLayout->MemoryRegions[i].BitmapMaskSize;
     }
 
-    // TODO:
-    // The Page Frames that are used by the Kernel and the Physical Memory Manager itself, must be marked as used
-    // in the Bitmap Mask. They are starting at the 1 MB mark.
-    // ...
-
-    // Mark the Page Frames used by the Kernel as used
-    int usedPageFrames = AlignNumber(KernelSize, PAGE_SIZE) / PAGE_SIZE;
-    printf_int(usedPageFrames, 10);
-    printf("\n");
-
-
-
-
-
-
-    // Tests the Bitmap mask functionality
-    // TestBitmapMask(memLayout);
-
-    // Tests the Physical Memory Manager by allocating Page Frames in the various
-    // available memory regions...
-    TestPhysicalMemoryManager(memLayout);
+    // Mark/Allocate the Page Frames used by the Kernel and the Physical Memory Manager itself as used
+    for (i = 0; i < GetUsedPageFrames(memLayout); i++)
+    {
+        // The first n Page Frames in the first Bitmap Mask are marked as used
+        AllocatePageFrame();
+    }
 }
 
 // Allocates the first free Page Frame and returns the Page Frame number.
-unsigned long AllocatePageFrame(PhysicalMemoryLayout *MemoryLayout)
+unsigned long AllocatePageFrame()
 {
-    for (int k = 0; k < MemoryLayout->MemoryRegionCount; k++)
+    BiosInformationBlock *bib = (BiosInformationBlock *)BIB_OFFSET;
+    PhysicalMemoryLayout *memLayout = bib->PhysicalMemoryLayout;
+
+    for (int k = 0; k < memLayout->MemoryRegionCount; k++)
     {
-        PhysicalMemoryRegionDescriptor *descriptor = &MemoryLayout->MemoryRegions[k];
+        PhysicalMemoryRegionDescriptor *descriptor = &memLayout->MemoryRegions[k];
         unsigned long *bitmapMask = (unsigned long *)descriptor->BitmapMaskStartAddress;
         unsigned long i = 0;
 
@@ -179,6 +171,7 @@ unsigned long AllocatePageFrame(PhysicalMemoryLayout *MemoryLayout)
 
                         // Decrement the number of free Page Frames
                         descriptor->FreePageFrames--;
+                        bib->AvailablePageFrames--;
 
                         // Return the Page Frame number
                         return (frame + (descriptor->PhysicalMemoryStartAddress / PAGE_SIZE));
@@ -264,15 +257,28 @@ void PrintMemoryMap()
     // Reset the color to white
     SetColor(COLOR_WHITE);
 
-    printf("Available Memory: ");
-    ltoa(bib->AvailableMemory / 1024 / 1024 + 1, 10, str);
+    printf("Max Memory: ");
+    ltoa(bib->MaxMemory / 1024 / 1024 + 1, 10, str);
     printf(str);
     printf(" MB");
 }
 
-// Tests the Bitmap mask functionality
-void TestBitmapMask(PhysicalMemoryLayout *memLayout)
+// Returns the number of used physical Page Frames by the Kernel and the Physical Memory Manager itself
+int GetUsedPageFrames(PhysicalMemoryLayout *MemoryLayout)
 {
+    // Calculate the last physical memory address used by the Physical Memory Manager
+    PhysicalMemoryRegionDescriptor *lastMemoryRegion = &MemoryLayout->MemoryRegions[MemoryLayout->MemoryRegionCount - 1];
+    unsigned long lastUsedMemoryAddress = lastMemoryRegion->BitmapMaskStartAddress + lastMemoryRegion->BitmapMaskSize;
+    unsigned long usedMemory = lastUsedMemoryAddress - KERNEL_OFFSET;
+    
+    return usedMemory / PAGE_SIZE + 1;;
+}
+
+// Tests the Bitmap mask functionality
+void TestBitmapMask()
+{
+    BiosInformationBlock *bib = (BiosInformationBlock *)BIB_OFFSET;
+    PhysicalMemoryLayout *memLayout = bib->PhysicalMemoryLayout;
     unsigned long *address = (unsigned long*)memLayout->MemoryRegions[0].BitmapMaskStartAddress;
     memset((void *)memLayout->MemoryRegions[0].BitmapMaskStartAddress, 0x00, memLayout->MemoryRegions[0].BitmapMaskSize);
     char str[32] = "";
@@ -341,19 +347,21 @@ void TestBitmapMask(PhysicalMemoryLayout *memLayout)
 
 // Tests the Physical Memory Manager by allocating Page Frames in the various
 // available memory regions...
-void TestPhysicalMemoryManager(PhysicalMemoryLayout *memLayout)
+void TestPhysicalMemoryManager()
 {
+    BiosInformationBlock *bib = (BiosInformationBlock *)BIB_OFFSET;
+    PhysicalMemoryLayout *memLayout = bib->PhysicalMemoryLayout;
     char str[32] = "";
     int i;
 
     // The following Page Frames are allocated in the 1st available memory block
-    for (i = 0; i < 785855; i++)
+    for (i = 0; i < 785812; i++)
     {
-        AllocatePageFrame(memLayout);
+        AllocatePageFrame();
     }
 
     // This is the last Page Frame allocated in the 1st available memory block
-    unsigned long frame = AllocatePageFrame(memLayout);
+    unsigned long frame = AllocatePageFrame();
     printf("Last Page Frame in 1st memory region: ");
     printf_long(frame, 10);
     printf("\n");
@@ -361,17 +369,17 @@ void TestPhysicalMemoryManager(PhysicalMemoryLayout *memLayout)
     // These Page Frames are allocated in the 2nd available memory block
     for (i = 0; i < 255; i++)
     {
-        AllocatePageFrame(memLayout);
+        AllocatePageFrame();
     }
 
     // This is the last Page Frame allocated in the 2nd available memory block
-    frame = AllocatePageFrame(memLayout);
+    frame = AllocatePageFrame();
     printf("Last Page Frame in 2nd memory region: ");
     printf_long(frame, 10);
     printf("\n");
 
     // This Page Frame is allocated in the 3rd available memory block
-    frame = AllocatePageFrame(memLayout);
+    frame = AllocatePageFrame();
     printf("First Page Frame in 3rd memory region: ");
     printf_long(frame, 10);
     printf("\n");

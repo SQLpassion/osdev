@@ -11,6 +11,8 @@
 // The main entry of our Kernel
 void KernelMain(int KernelSize)
 {
+    BiosInformationBlock *bib = (BiosInformationBlock *)BIB_OFFSET;
+
     // Initialize the Kernel
     InitKernel(KernelSize);
 
@@ -21,6 +23,9 @@ void KernelMain(int KernelSize)
     printf("...\n");
     printf("===============================================================================\n\n");
     SetColor(COLOR_WHITE);
+
+    // Tests the Physical Memory Manager
+    TestPhysicalMemoryManager();
 
     // Print out the memory map that we have obtained from the BIOS
     // PrintMemoryMap();

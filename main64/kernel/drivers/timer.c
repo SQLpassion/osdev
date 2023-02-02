@@ -85,8 +85,11 @@ void RefreshStatusLine()
     strcat(buffer, tmp);
 
     // Print out the available memory
-    strcat(buffer, ", Memory: ");
-    ltoa(bib->AvailableMemory / 1024 / 1024 + 1, 10, str);
+    strcat(buffer, ", Physical Memory: ");
+    ltoa(bib->MaxMemory / 1024 / 1024 + 1, 10, str);
+    strcat(buffer, str);
+    strcat(buffer, " MB, Free Memory: ");
+    ltoa(bib->AvailablePageFrames * PAGE_SIZE / 1024 / 1024, 10, str);
     strcat(buffer, str);
     strcat(buffer, " MB");
 

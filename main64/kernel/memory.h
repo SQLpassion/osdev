@@ -52,16 +52,19 @@ typedef struct PhysicalMemoryLayout
 void InitPhysicalMemoryManager(int KernelSize);
 
 // Allocates the first free Page Frame and returns the Page Frame number.
-unsigned long AllocatePageFrame(PhysicalMemoryLayout *MemoryLayout);
+unsigned long AllocatePageFrame();
 
 // Prints out the memory map that we have obtained from the BIOS
 void PrintMemoryMap();
 
+// Returns the number of used physical Page Frames by the Kernel and the Physical Memory Manager itself
+static int GetUsedPageFrames(PhysicalMemoryLayout *MemoryLayout);
+
 // Tests the Bitmap mask functionality
-void TestBitmapMask(PhysicalMemoryLayout *memLayout);
+void TestBitmapMask();
 
 // Tests the Physical Memory Manager by allocating Page Frames in the various
 // available memory regions...
-void TestPhysicalMemoryManager(PhysicalMemoryLayout *memLayout);
+void TestPhysicalMemoryManager();
 
 #endif

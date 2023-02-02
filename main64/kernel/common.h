@@ -1,6 +1,8 @@
 #ifndef COMMON_H
 #define COMMON_H
 
+#include "memory.h"
+
 // Defines the NULL pointer
 #define NULL ((void *) 0)
 
@@ -20,8 +22,16 @@ typedef struct BiosInformationBlock
     short Minute;
     short Second;
 
+    // The number of Memory Map Entries that the BIOS reported
     short MemoryMapEntries;
-    long AvailableMemory;
+
+    // The maximum physical RAM reported by the BIOS
+    long MaxMemory;
+
+    // The current available physical Page Frames (managed by the Physical Memory Manager)
+    long AvailablePageFrames;
+
+    PhysicalMemoryLayout *PhysicalMemoryLayout;
 } BiosInformationBlock;
 
 // Reads a single char (8 bytes) from the specified port
