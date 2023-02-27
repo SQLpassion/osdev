@@ -1,12 +1,12 @@
 #include "drivers/screen.h"
 #include "drivers/keyboard.h"
 #include "drivers/timer.h"
+#include "memory/physical-memory.h"
 #include "isr/pic.h"
 #include "isr/idt.h"
 #include "kernel.h"
 #include "common.h"
 #include "date.h"
-#include "memory.h"
 
 // The main entry of our Kernel
 void KernelMain(int KernelSize)
@@ -25,10 +25,10 @@ void KernelMain(int KernelSize)
     SetColor(COLOR_WHITE);
 
     // Tests the Physical Memory Manager
-    TestPhysicalMemoryManager();
+    // TestPhysicalMemoryManager();
 
     // Print out the memory map that we have obtained from the BIOS
-    // PrintMemoryMap();
+    PrintMemoryMap();
 
     // Halt the system
     while (1 == 1) {}

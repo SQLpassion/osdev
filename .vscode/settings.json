@@ -7,6 +7,7 @@
         "keyboard.h": "c",
         "date.h": "c",
         "pic.h": "c",
-        "fat12.h": "c"
+        "fat12.h": "c",
+        "timer.h": "c"
     }
 }

@@ -1,7 +1,7 @@
-#include "drivers/screen.h"
-#include "drivers/keyboard.h"
-#include "common.h"
-#include "memory.h"
+#include "../drivers/screen.h"
+#include "../drivers/keyboard.h"
+#include "../common.h"
+#include "physical-memory.h"
 
 // Memory Region Type
 char *MemoryRegionType[] =

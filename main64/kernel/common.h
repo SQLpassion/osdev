@@ -1,7 +1,7 @@
 #ifndef COMMON_H
 #define COMMON_H
 
-#include "memory.h"
+#include "memory/physical-memory.h"
 
 // Defines the NULL pointer
 #define NULL ((void *) 0)
