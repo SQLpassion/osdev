@@ -75,6 +75,6 @@ void print_char(char character);
 void printf_int(int i, int base);
 
 // Prints out a long value
-void printf_long(long i, int base);
+void printf_long(unsigned long i, int base);
 
 #endif

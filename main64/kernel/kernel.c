@@ -1,42 +1,47 @@
-#include "kernel.h"
-#include "common.h"
-#include "date.h"
 #include "drivers/screen.h"
 #include "drivers/keyboard.h"
 #include "drivers/timer.h"
 #include "isr/pic.h"
 #include "isr/idt.h"
+#include "kernel.h"
+#include "common.h"
+#include "date.h"
+#include "memory.h"
 
 // The main entry of our Kernel
-void KernelMain()
+void KernelMain(int KernelSize)
 {
+    BiosInformationBlock *bib = (BiosInformationBlock *)BIB_OFFSET;
+
     // Initialize the Kernel
-    InitKernel();
+    InitKernel(KernelSize);
 
     // Print out a welcome message
-    printf("Executing the x64 KAOS Kernel at virtual address 0x");
+    SetColor(COLOR_LIGHT_BLUE);
+    printf("Executing the x64 KAOS Kernel at the virtual address 0x");
     printf_long((unsigned long)&KernelMain, 16);
     printf("...\n");
+    printf("===============================================================================\n\n");
+    SetColor(COLOR_WHITE);
 
-    // Set a custom system date
-    // SetDate(2023, 2, 28);
-    // SetTime(22, 40, 3);
-    
-    int i = 0;
-    for (i = 0; i < 30; i++)
-    {
-        KeyboardTest();
-    }
+    // Tests the Physical Memory Manager
+    TestPhysicalMemoryManager();
+
+    // Print out the memory map that we have obtained from the BIOS
+    // PrintMemoryMap();
 
     // Halt the system
     while (1 == 1) {}
 }
 
 // Initializes the whole Kernel
-void InitKernel()
+void InitKernel(int KernelSize)
 {
     // Initialize and clear the screen
     InitializeScreen(80, 24);
+
+    // Initialize the physical Memory Manager
+    InitPhysicalMemoryManager(KernelSize);
 
     // Disable the hardware interrupts
     DisableInterrupts();

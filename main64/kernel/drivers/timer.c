@@ -84,6 +84,15 @@ void RefreshStatusLine()
     FormatInteger(bib->Second, tmp);
     strcat(buffer, tmp);
 
+    // Print out the available memory
+    strcat(buffer, ", Physical Memory: ");
+    ltoa(bib->MaxMemory / 1024 / 1024 + 1, 10, str);
+    strcat(buffer, str);
+    strcat(buffer, " MB, Free Memory: ");
+    ltoa(bib->AvailablePageFrames * PAGE_SIZE / 1024 / 1024, 10, str);
+    strcat(buffer, str);
+    strcat(buffer, " MB");
+
     // Pad the remaining columns with a blank, so that the status line goes
     // over the whole row
     int len = 80 - strlen(buffer);
