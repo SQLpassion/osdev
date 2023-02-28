@@ -2,6 +2,7 @@
 #include "irq.h"
 #include "../common.h"
 #include "../drivers/screen.h"
+#include "../memory/virtual-memory.h"
 
 // The 256 possible Interrupt Gates are stored from 0xFFFF800000060000 to 0xFFFF800000060FFF (4096 Bytes long - each Entry is 16 Bytes)
 IdtEntry *idtEntries = (IdtEntry *)IDT_START_OFFSET;
@@ -91,11 +92,21 @@ void IdtSetGate(unsigned char Entry, unsigned long BaseAddress, unsigned char Ty
 // Our generic ISR handler, which is called from the assembly code.
 void IsrHandler(int InterruptNumber, unsigned long cr2, RegisterState *Registers)
 {
-    // Display the occured exception
-    DisplayException(InterruptNumber, Registers);
+    if (InterruptNumber == EXCEPTION_PAGE_FAULT)
+    {
+        // Handle the Page Fault
+        HandlePageFault(cr2);
+    }
+    else
+    {
+        // Every other exception just stops the system
+        
+        // Display the occured exception
+        DisplayException(InterruptNumber, Registers);
 
-    // Halt the system
-    while (1 == 1) {}
+        // Halt the system
+        while (1 == 1) {}
+    }
 }
 
 // Displays the state of the general purpose registers when the exception has occured.

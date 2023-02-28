@@ -1,5 +1,6 @@
 #include "virtual-memory.h"
 #include "physical-memory.h"
+#include "../drivers/screen.h"
 #include "../common.h"
 
 // Initializes the necessary data structures for the 4-level x64 paging.
@@ -123,9 +124,107 @@ void SwitchPageDirectory(PageMapLevel4Table *PML4)
     asm volatile("mov %0, %%cr3":: "r"(PML4));
 }
 
+// Handles a Page Fault.
+// The function allocates a new physical Page Frame with the Physical Memory Manager,
+// and adds the necessary entries in the Paging data structures.
+// The Paging Tables are accessed through the Recursive Page Table Mapping technique.
+void HandlePageFault(unsigned long VirtualAddress)
+{
+    // Get references to the various Page Tables through the Recursive Page Table Mapping
+    PageMapLevel4Table *pml4 = (PageMapLevel4Table *)PML4_TABLE;
+    PageDirectoryPointerTable *pdp = (PageDirectoryPointerTable *)PDP_TABLE(VirtualAddress);
+    PageDirectoryTable *pd = (PageDirectoryTable *)PD_TABLE(VirtualAddress);
+    PageTable *pt = (PageTable *)PT_TABLE(VirtualAddress);
+    char str[32] = "";
+
+    // Set the screen text color to Green
+    int color = SetColor(COLOR_GREEN);
+
+    // Debugging Output
+    ltoa(VirtualAddress, 16, str);
+    printf("Page Fault at virtual address 0x");
+    printf(str);
+    printf("\n");
+
+    if (pml4->Entries[PML4_INDEX(VirtualAddress)].Present == 0)
+    {
+        // Allocate a physical frame for the missing PML4 entry
+        pml4->Entries[PML4_INDEX(VirtualAddress)].Frame = AllocatePageFrame();
+        pml4->Entries[PML4_INDEX(VirtualAddress)].Present = 1;
+        pml4->Entries[PML4_INDEX(VirtualAddress)].ReadWrite = 1;
+        pml4->Entries[PML4_INDEX(VirtualAddress)].User = 1;
+
+        // Debugging Output
+        PageFaultDebugPrint(PML4_INDEX(VirtualAddress), "PML4", pml4->Entries[PML4_INDEX(VirtualAddress)].Frame);
+    }
+
+    if (pdp->Entries[PDP_INDEX(VirtualAddress)].Present == 0)
+    {
+        // Allocate a physical frame for the missing PDP entry
+        pdp->Entries[PDP_INDEX(VirtualAddress)].Frame = AllocatePageFrame();
+        pdp->Entries[PDP_INDEX(VirtualAddress)].Present = 1;
+        pdp->Entries[PDP_INDEX(VirtualAddress)].ReadWrite = 1;
+        pdp->Entries[PDP_INDEX(VirtualAddress)].User = 1;
+
+        // Debugging Output
+        PageFaultDebugPrint(PDP_INDEX(VirtualAddress), "PDP", pdp->Entries[PDP_INDEX(VirtualAddress)].Frame);
+    }
+
+    if (pd->Entries[PD_INDEX(VirtualAddress)].Present == 0)
+    {
+        // Allocate a physical frame for the missing PD entry
+        pd->Entries[PD_INDEX(VirtualAddress)].Frame = AllocatePageFrame();
+        pd->Entries[PD_INDEX(VirtualAddress)].Present = 1;
+        pd->Entries[PD_INDEX(VirtualAddress)].ReadWrite = 1;
+        pd->Entries[PD_INDEX(VirtualAddress)].User = 1;
+
+        // Debugging Output
+        PageFaultDebugPrint(PD_INDEX(VirtualAddress), "PD", pd->Entries[PD_INDEX(VirtualAddress)].Frame);
+    }
+
+    if (pt->Entries[PT_INDEX(VirtualAddress)].Present == 0)
+    {
+        // Allocate a physical frame for the missing PT entry
+        pt->Entries[PT_INDEX(VirtualAddress)].Frame = AllocatePageFrame();
+        pt->Entries[PT_INDEX(VirtualAddress)].Present = 1;
+        pt->Entries[PT_INDEX(VirtualAddress)].ReadWrite = 1;
+        pt->Entries[PT_INDEX(VirtualAddress)].User = 1;
+
+        // Debugging Output
+        PageFaultDebugPrint(PT_INDEX(VirtualAddress), "PT", pt->Entries[PT_INDEX(VirtualAddress)].Frame);
+    }
+
+    printf("\n");
+
+    // Reset the screen tet color
+    SetColor(color);
+}
+
+static void PageFaultDebugPrint(unsigned long PageTableIndex, char *PageTableName, unsigned long PhysicalFrame)
+{
+    char str[32] = "";
+
+    // Log the Page Fault to the Console Window
+    ltoa(PhysicalFrame, 16, str);
+    printf("Allocated the physical Page Frame 0x" );
+    printf(str);
+    printf(" for the ");
+    printf(PageTableName);
+    printf(" entry 0x");
+    ltoa(PageTableIndex, 16, str);
+    printf(str);
+    printf("\n");
+}
+
 // Tests the Virtual Memory Manager.
 void TestVirtualMemoryManager()
 {
-    char *ptr1 = 0xFFFF8000001FFFFF;
-    ptr1[0] = 'A';
+    char *ptr1 = (char *)0xFFFF8000001FFFFF;
+    ptr1[1] = 'A';
+
+    char *ptr2 = (char *)0xFFFF800000201000;
+    ptr2[0] = 'A';
+
+    char *ptr3 = (char *)0xFFFF8FFFFF201000;
+    ptr3[0] = 'A';
 }

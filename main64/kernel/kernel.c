@@ -25,8 +25,6 @@ void KernelMain(int KernelSize)
     printf("===============================================================================\n\n");
     SetColor(COLOR_WHITE);
 
-    KeyboardTest();
-
     TestVirtualMemoryManager();
 
     // Halt the system
