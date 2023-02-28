@@ -1,5 +1,5 @@
-#ifndef MEMORY_H
-#define MEMORY_H
+#ifndef PHYSICAL_MEMORY_H
+#define PHYSICAL_MEMORY_H
 
 // The offset where the Memory Map is stored
 #define MEMORYMAP_OFFSET 0x1200

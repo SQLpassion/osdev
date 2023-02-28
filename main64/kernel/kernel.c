@@ -2,6 +2,7 @@
 #include "drivers/keyboard.h"
 #include "drivers/timer.h"
 #include "memory/physical-memory.h"
+#include "memory/virtual-memory.h"
 #include "isr/pic.h"
 #include "isr/idt.h"
 #include "kernel.h"
@@ -59,6 +60,8 @@ void InitKernel(int KernelSize)
 
     // Initialize the timer to fire every 1ms
     InitTimer(1000);
+
+    InitVirtualMemoryManager();
     
     // Enable the hardware interrupts again
     EnableInterrupts();
