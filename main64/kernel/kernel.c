@@ -25,11 +25,9 @@ void KernelMain(int KernelSize)
     printf("===============================================================================\n\n");
     SetColor(COLOR_WHITE);
 
-    // Tests the Physical Memory Manager
-    // TestPhysicalMemoryManager();
+    KeyboardTest();
 
-    // Print out the memory map that we have obtained from the BIOS
-    PrintMemoryMap();
+    TestVirtualMemoryManager();
 
     // Halt the system
     while (1 == 1) {}
@@ -41,11 +39,14 @@ void InitKernel(int KernelSize)
     // Initialize and clear the screen
     InitializeScreen(80, 24);
 
+    // Disable the hardware interrupts
+    DisableInterrupts();
+
     // Initialize the physical Memory Manager
     InitPhysicalMemoryManager(KernelSize);
 
-    // Disable the hardware interrupts
-    DisableInterrupts();
+    // Initialize the virtual Memory Manager
+    InitVirtualMemoryManager();
 
     // Initializes the PIC, and remap the IRQ handlers.
     // The 1st PIC handles the hardware interrupts 32 - 39 (input value 0x20).
@@ -60,8 +61,6 @@ void InitKernel(int KernelSize)
 
     // Initialize the timer to fire every 1ms
     InitTimer(1000);
-
-    InitVirtualMemoryManager();
     
     // Enable the hardware interrupts again
     EnableInterrupts();

@@ -2,11 +2,19 @@
 #include "physical-memory.h"
 #include "../common.h"
 
-// Initializes the Paging Data Structures
+// Initializes the necessary data structures for the 4-level x64 paging.
+// The first 2 MB of physical RAM (0x000000 - 0x1FFFFF) are Identity Mapped to 0x000000 - 0x1FFFFF.
+// In addition this memory range is also mapped to the virtual address range 0xFFFF800000000000 - 0xFFFF8000001FFFFF,
+// where the x64 OS Kernel resides (starting at 0xFFFF800000100000).
+
+// NOTE: *ALL* other virtual memory addresses are currently *NOT* mapped, which means accessing them triggers a Page Fault.
+// The Page Fault Handler will resolve the triggered Page Fault by allocating a new physical Page Frame
+// (somewhere physically after the the end of the Kernel), and adding the necessary entries into the Paging Data Structures.
+
+// Access to the physical Paging Structures in the Page Fault Handler happens through a Recursive Page Table Mapping which
+// is installed in the last 511th entry of the PML4 data structure.
 void InitVirtualMemoryManager()
 {
-    int i = 0;
-
     // =====================================================================
     // Allocate some 4K large pages for the necessary Page Table structures.
     // =====================================================================
@@ -16,45 +24,64 @@ void InitVirtualMemoryManager()
     // This means that the following allocations are *NOT* triggering a Page Fault as long as the Physical Memory Manager
     // returns Page Frames in the identity mapped area. (0x000000 - 0x1FFFFF).
     //
-    // NOTE: If the Physical Memory Manager returns a physical Page Frame outside of the identity mapped area (>= 0x200000),
-    // it would trigger a Page Fault that we can't really handle, because the necessary paging structures are not initialized yet.
+    // NOTE: If the Physical Memory Manager returns in the initialization code a physical Page Frame outside of the
+    // identity mapped area (>= 0x200000), it would trigger a Page Fault that we can't really handle, because the
+    // necessary paging structures are not initialized yet.
     // This could happen if the Kernel gets larger and larger, and consumes more and more memory in the identity mapped area.
-    // In that case the identity mapped area must be enlarged by another 2 MB by KLDR16.BIN.
-
+    // In that case, the identity mapped area must be enlarged by another 2 MB by KLDR16.BIN.
+    
+    // The following 4K pages are necessary for the inital 4-level x64 paging structure
     PageMapLevel4Table *pml4 = (PageMapLevel4Table *)(AllocatePageFrame() * SMALL_PAGE_SIZE);
-    PageDirectoryPointerTable *pdp = (PageDirectoryPointerTable *)(AllocatePageFrame() * SMALL_PAGE_SIZE);
-    PageDirectoryTable *pd = (PageDirectoryTable *)(AllocatePageFrame() * SMALL_PAGE_SIZE);
-    PageTable *pt1 = (PageTable *)(AllocatePageFrame() * SMALL_PAGE_SIZE);
-    PageTable *pt2 = (PageTable *)(AllocatePageFrame() * SMALL_PAGE_SIZE);
+    PageDirectoryPointerTable *pdpHigherHalfKernel = (PageDirectoryPointerTable *)(AllocatePageFrame() * SMALL_PAGE_SIZE);
+    PageDirectoryTable *pdHigherHalfKernel = (PageDirectoryTable *)(AllocatePageFrame() * SMALL_PAGE_SIZE);
+    PageTable *pt1HigherHalfKernel = (PageTable *)(AllocatePageFrame() * SMALL_PAGE_SIZE);
     PageDirectoryPointerTable *pdpIdentityMapped = (PageDirectoryPointerTable *)(AllocatePageFrame() * SMALL_PAGE_SIZE);
     PageDirectoryTable *pdIdentityMapped = (PageDirectoryTable *)(AllocatePageFrame() * SMALL_PAGE_SIZE);
     PageTable *ptIdentityMapped = (PageTable *)(AllocatePageFrame() * SMALL_PAGE_SIZE);
+    int i = 0;
     
     // Zero initialize the allocated 4K pages
     memset(pml4, 0, sizeof(PageMapLevel4Table));
-    memset(pdp, 0, sizeof(PageDirectoryPointerTable));
-    memset(pd, 0, sizeof(PageDirectoryTable));
-    memset(pt1, 0, sizeof(PageTable));
-    memset(pt2, 0, sizeof(PageTable));
+    memset(pdpHigherHalfKernel, 0, sizeof(PageDirectoryPointerTable));
+    memset(pdHigherHalfKernel, 0, sizeof(PageDirectoryTable));
+    memset(pt1HigherHalfKernel, 0, sizeof(PageTable));
     memset(pdpIdentityMapped, 0, sizeof(PageDirectoryPointerTable));
     memset(pdIdentityMapped, 0, sizeof(PageDirectoryTable));
     memset(ptIdentityMapped, 0, sizeof(PageTable));
 
-    // Point in the 1st PDP entry to the PD
+    // Point in the 1st PML4 entry to the PDP of the Identity Mapping
+    pml4->Entries[0].Frame = (unsigned long)pdpIdentityMapped / SMALL_PAGE_SIZE;
+    pml4->Entries[0].Present = 1;
+    pml4->Entries[0].ReadWrite = 1;
+    pml4->Entries[0].User = 1;
+
+    // Point in the 256th PML4 entry to the PDP of the Higher Half Kernel mapping
+    pml4->Entries[256].Frame = (unsigned long)pdpHigherHalfKernel / SMALL_PAGE_SIZE;
+    pml4->Entries[256].Present = 1;
+    pml4->Entries[256].ReadWrite = 1;
+    pml4->Entries[256].User = 1;
+
+    // Install the Recursive Page Table Mapping in the 511th PML4 entry
+    pml4->Entries[511].Frame = (unsigned long)pml4 / SMALL_PAGE_SIZE;
+    pml4->Entries[511].Present = 1;
+    pml4->Entries[511].ReadWrite = 1;
+    pml4->Entries[511].User = 1;
+
+    // Point in the 1st PDP entry to the PD of the Identity Mapping
     pdpIdentityMapped->Entries[0].Frame = (unsigned long)pdIdentityMapped / SMALL_PAGE_SIZE;
     pdpIdentityMapped->Entries[0].Present = 1;
     pdpIdentityMapped->Entries[0].ReadWrite = 1;
     pdpIdentityMapped->Entries[0].User = 1;
 
-    // Point in the 1st PD entry to the PT
+    // Point in the 1st PD entry to the PT of the Identity Mapping
     pdIdentityMapped->Entries[0].Frame = (unsigned long)ptIdentityMapped / SMALL_PAGE_SIZE;
     pdIdentityMapped->Entries[0].Present = 1;
     pdIdentityMapped->Entries[0].ReadWrite = 1;
     pdIdentityMapped->Entries[0].User = 1;
 
-    // Identity Mapping of the first 256 small pages of 4K (0 - 1 MB Virtual Address Space)
+    // Identity Mapping of the first 512 small pages of 4K (0 - 2 MB Virtual Address Space)
     // In that area we have all the various I/O ports and the above allocated Page Table Structure
-    for (i = 0; i < 256; i++)
+    for (i = 0; i < PT_ENTRIES; i++)
     {
         ptIdentityMapped->Entries[i].Frame = i;
         ptIdentityMapped->Entries[i].Present = 1;
@@ -62,64 +89,31 @@ void InitVirtualMemoryManager()
         ptIdentityMapped->Entries[i].User = 1;
     }
 
-    // Identity Mapping of 0 - 1 MB (up to 0x100000 - just below the Kernel), so that the above allocated Page Tables can be still accessed
-    // after we have switched the Page Directory
-    pml4->Entries[0].Frame = (unsigned long)pdpIdentityMapped / SMALL_PAGE_SIZE;
-    pml4->Entries[0].Present = 1;
-    pml4->Entries[0].ReadWrite = 1;
-    pml4->Entries[0].User = 1;
+    // Point in the 1st PDP entry to the PD of the Higher Half Kernel mapping
+    pdpHigherHalfKernel->Entries[0].Frame = (unsigned long)pdHigherHalfKernel / SMALL_PAGE_SIZE;
+    pdpHigherHalfKernel->Entries[0].Present = 1;
+    pdpHigherHalfKernel->Entries[0].ReadWrite = 1;
+    pdpHigherHalfKernel->Entries[0].User = 1;
 
-    // Point in the 1st PML4 entry to the PDP
-    pml4->Entries[256].Frame = (unsigned long)pdp / SMALL_PAGE_SIZE;
-    pml4->Entries[256].Present = 1;
-    pml4->Entries[256].ReadWrite = 1;
-    pml4->Entries[256].User = 1;
-
-    // Install the Recursive Page Table Mapping
-    pml4->Entries[511].Frame = (unsigned long)pml4 / SMALL_PAGE_SIZE;
-    pml4->Entries[511].Present = 1;
-    pml4->Entries[511].ReadWrite = 1;
-    pml4->Entries[511].User = 1;
-
-    // Point in the 1st PDP entry to the PD
-    pdp->Entries[0].Frame = (unsigned long)pd / SMALL_PAGE_SIZE;
-    pdp->Entries[0].Present = 1;
-    pdp->Entries[0].ReadWrite = 1;
-    pdp->Entries[0].User = 1;
-
-    // Point in the 1st PD entry to the PT
-    pd->Entries[0].Frame = (unsigned long)pt1 / SMALL_PAGE_SIZE;
-    pd->Entries[0].Present = 1;
-    pd->Entries[0].ReadWrite = 1;
-    pd->Entries[0].User = 1;
+    // Point in the 1st PD entry to the PT of the Higher Half Kernel mapping
+    pdHigherHalfKernel->Entries[0].Frame = (unsigned long)pt1HigherHalfKernel / SMALL_PAGE_SIZE;
+    pdHigherHalfKernel->Entries[0].Present = 1;
+    pdHigherHalfKernel->Entries[0].ReadWrite = 1;
+    pdHigherHalfKernel->Entries[0].User = 1;
 
     // Mapping of the first 512 small pages of 4K (0 - 2 MB Virtual Address Space)
     // with a base offset of 0xFFFF800000000000
     for (i = 0; i < PT_ENTRIES; i++)
     {
-        pt1->Entries[i].Frame = i;
-        pt1->Entries[i].Present = 1;
-        pt1->Entries[i].ReadWrite = 1;
-        pt1->Entries[i].User = 1;
+        pt1HigherHalfKernel->Entries[i].Frame = i;
+        pt1HigherHalfKernel->Entries[i].Present = 1;
+        pt1HigherHalfKernel->Entries[i].ReadWrite = 1;
+        pt1HigherHalfKernel->Entries[i].User = 1;
     }
 
-    // Point in the 2nd PD entry to the 2nd PT
-    pd->Entries[1].Frame = (unsigned long)pt2 / SMALL_PAGE_SIZE;;
-    pd->Entries[1].Present = 1;
-    pd->Entries[1].ReadWrite = 1;
-    pd->Entries[1].User = 1;
-
-    // Mapping of the next 512 small pages of 4K (2 - 4 MB Virtual Address Space)
-    // with a base offset of 0xFFFF800000000000
-    for (i = 0; i < PT_ENTRIES; i++)
-    {
-        pt2->Entries[i].Frame = i + (PT_ENTRIES * 1);
-        pt2->Entries[i].Present = 1;
-        pt2->Entries[i].ReadWrite = 1;
-        pt2->Entries[i].User = 1;
-    }
-
-    // Stores the Memory Address of PML4 in the CR3 register
+    // Store the memory address of the newly created PML4 data structure in the CR3 register.
+    // This switches the Paging data structures to the current ones, and "forgets" the temporary
+    // Paging data structures that we have created in KLDR16.BIN.
     SwitchPageDirectory(pml4);
 }
 
@@ -127,4 +121,11 @@ void InitVirtualMemoryManager()
 void SwitchPageDirectory(PageMapLevel4Table *PML4)
 {
     asm volatile("mov %0, %%cr3":: "r"(PML4));
+}
+
+// Tests the Virtual Memory Manager.
+void TestVirtualMemoryManager()
+{
+    char *ptr1 = 0xFFFF8000001FFFFF;
+    ptr1[0] = 'A';
 }

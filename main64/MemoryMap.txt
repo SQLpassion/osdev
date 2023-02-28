@@ -15,11 +15,22 @@ Real Mode
 0x015000 to 0x015FFF: Page Directory Table for the Higher Half Mapping of the Kernel
 0x016000 to 0x016FFF: Page Table for the Higher Half Mapping of the Kernel
 
-Long Mode
-=========
+Long Mode Physical Memory
+=========================
+0x001000 - 0x001FFF: BIOS Information Block
 0x030000 - 0x031BFF: Root Directory Buffer used by KLDR64.BIN
 0x031C00 - 0x033FFF: FAT Buffer used by KLDR64.BIN
 0x034000 - 0x050000: x64 Kernel Stack
 0x060000 - 0x060FFF: x64 IDT Table
 0x061000 - 0x061FFF: Structure "RegisterState" for Exception Handlers
-0x100000 - 0x200000: KERNEL.BIN
+0x100000 - 0x1?????: KERNEL.BIN
+Afterwards:          Physical Memory Manager Structures
+                     Physical Page Frames allocated by the Physical Memory Manager
+
+Long Mode Virtual Memory
+========================
+0xFFFF800000030000 - 0xFFFF800000050000: x64 Kernel Stack
+0xFFFF800000060000 - 0xFFFF800000060FFF: x64 IDT Table
+0xFFFF800000061000 - 0xFFFF800000061FFF: Structure "RegisterState" for Exception Handlers
+0xFFFF800000100000 - 0xFFFF8000001?????: KERNEL.BIN
+Afterwards:                              Physical Memory Manager Structures

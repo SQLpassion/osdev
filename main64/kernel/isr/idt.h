@@ -2,7 +2,7 @@
 #define IDT_H
 
 // Virtual address where the IDT table is stored
-#define IDT_START_OFFSET    0x60000
+#define IDT_START_OFFSET    0xFFFF800000060000
 
 // Number of IDT entries
 #define IDT_ENTRIES         256
@@ -12,6 +12,41 @@
 
 // Constant for a Trap Gate
 #define IDT_TRAP_GATE       0xF
+
+// The various CPU exceptions
+#define EXCEPTION_DIVIDE                        0
+#define EXCEPTION_DEBUG                         1
+#define EXCEPTION_NON_MASKABLE_INTERRUPT        2
+#define EXCEPTION_BREAKPOINT                    3
+#define EXCEPTION_OVERFLOW                      4
+#define EXCEPTION_BOUND_RANGE                   5
+#define EXCEPTION_INVALID_OPCODE                6
+#define EXCEPTION_DEVICE_NOT_AVAILABLE          7
+#define EXCEPTION_DOUBLE_FAULT                  8
+#define EXCEPTION_COPROCESSOR_SEGMENT_OVERRUN   9
+#define EXCEPTION_INVALID_TSS                   10
+#define EXCEPTION_SEGMENT_NOT_PRESENT           11
+#define EXCEPTION_STACK_FAULT                   12
+#define EXCEPTION_GENERAL_PROTECTION            13
+#define EXCEPTION_PAGE_FAULT                    14
+#define EXCEPTION_UNASSGIGNED                   15
+#define EXCEPTION_X87_FPU                       16
+#define EXCEPTION_ALIGNMENT_CHECK               17
+#define EXCEPTION_MACHINE_CHECK                 18
+#define EXCEPTION_SIMD_FLOATING_POINT           19
+#define EXCEPTION_VIRTUALIZATION                20
+#define EXCEPTION_CONTROL_PROTECTION            21
+#define EXCEPTION_RESERVED_22                   22
+#define EXCEPTION_RESERVED_23                   23
+#define EXCEPTION_RESERVED_24                   24
+#define EXCEPTION_RESERVED_25                   25
+#define EXCEPTION_RESERVED_26                   26
+#define EXCEPTION_RESERVED_27                   27
+#define EXCEPTION_RESERVED_28                   28
+#define EXCEPTION_RESERVED_29                   29
+#define EXCEPTION_RESERVED_30                   30
+#define EXCEPTION_RESERVED_31                   31
+
 
 // Represents an Interrupt Gate - 128 Bit long
 // As described in Volume 3A: 6.14.1

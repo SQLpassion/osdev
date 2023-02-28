@@ -97,10 +97,13 @@ typedef struct PageTable
     PTEntry Entries[512];
 } PageTable;
 
-// Initializes the Paging Data Structures
+// Initializes the Paging Data Structures.
 void InitVirtualMemoryManager();
 
-// Switches the PML4 Page Table Offset in the CR3 Register
+// Switches the PML4 Page Table Offset in the CR3 Register.
 void SwitchPageDirectory(PageMapLevel4Table *PML4);
+
+// Tests the Virtual Memory Manager.
+void TestVirtualMemoryManager();
 
 #endif
