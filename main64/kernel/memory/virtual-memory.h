@@ -163,7 +163,7 @@ typedef struct PageTable
 } PageTable;
 
 // Initializes the Paging Data Structures.
-void InitVirtualMemoryManager();
+void InitVirtualMemoryManager(int DebugOutput);
 
 // Switches the PML4 Page Table Offset in the CR3 Register.
 void SwitchPageDirectory(PageMapLevel4Table *PML4);
@@ -174,6 +174,7 @@ void HandlePageFault(unsigned long VirtualAddress);
 // Tests the Virtual Memory Manager.
 void TestVirtualMemoryManager();
 
+// Prints out some debug information about a Page Fault.
 static void PageFaultDebugPrint(unsigned long PageTableIndex, char *PageTableName, unsigned long PhysicalFrame);
 
 #endif

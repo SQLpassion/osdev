@@ -3,6 +3,9 @@
 #include "../drivers/screen.h"
 #include "../common.h"
 
+// This flag controls if the Page Fault Handler outputs debug information.
+int debugEnabled = 0;
+
 // Initializes the necessary data structures for the 4-level x64 paging.
 // The first 2 MB of physical RAM (0x000000 - 0x1FFFFF) are Identity Mapped to 0x000000 - 0x1FFFFF.
 // In addition this memory range is also mapped to the virtual address range 0xFFFF800000000000 - 0xFFFF8000001FFFFF,
@@ -14,8 +17,10 @@
 
 // Access to the physical Paging Structures in the Page Fault Handler happens through a Recursive Page Table Mapping which
 // is installed in the last 511th entry of the PML4 data structure.
-void InitVirtualMemoryManager()
+void InitVirtualMemoryManager(int DebugOutput)
 {
+    debugEnabled = DebugOutput;
+
     // =====================================================================
     // Allocate some 4K large pages for the necessary Page Table structures.
     // =====================================================================
@@ -26,8 +31,8 @@ void InitVirtualMemoryManager()
     // returns Page Frames in the identity mapped area. (0x000000 - 0x1FFFFF).
     //
     // NOTE: If the Physical Memory Manager returns in the initialization code a physical Page Frame outside of the
-    // identity mapped area (>= 0x200000), it would trigger a Page Fault that we can't really handle, because the
-    // necessary paging structures are not initialized yet.
+    // identity mapped area (>= 0x200000), it would trigger a Page Fault that we can't  handle, because the interrupts
+    // are currently disabled. This would crash the system!
     // This could happen if the Kernel gets larger and larger, and consumes more and more memory in the identity mapped area.
     // In that case, the identity mapped area must be enlarged by another 2 MB by KLDR16.BIN.
     
@@ -136,15 +141,19 @@ void HandlePageFault(unsigned long VirtualAddress)
     PageDirectoryTable *pd = (PageDirectoryTable *)PD_TABLE(VirtualAddress);
     PageTable *pt = (PageTable *)PT_TABLE(VirtualAddress);
     char str[32] = "";
+    int color = COLOR_WHITE;
 
-    // Set the screen text color to Green
-    int color = SetColor(COLOR_GREEN);
+    if (debugEnabled)
+    {
+        // Set the screen text color to Green
+        color = SetColor(COLOR_GREEN);
 
-    // Debugging Output
-    ltoa(VirtualAddress, 16, str);
-    printf("Page Fault at virtual address 0x");
-    printf(str);
-    printf("\n");
+        // Debugging Output
+        ltoa(VirtualAddress, 16, str);
+        printf("Page Fault at virtual address 0x");
+        printf(str);
+        printf("\n");
+    }
 
     if (pml4->Entries[PML4_INDEX(VirtualAddress)].Present == 0)
     {
@@ -155,7 +164,8 @@ void HandlePageFault(unsigned long VirtualAddress)
         pml4->Entries[PML4_INDEX(VirtualAddress)].User = 1;
 
         // Debugging Output
-        PageFaultDebugPrint(PML4_INDEX(VirtualAddress), "PML4", pml4->Entries[PML4_INDEX(VirtualAddress)].Frame);
+        if (debugEnabled)
+            PageFaultDebugPrint(PML4_INDEX(VirtualAddress), "PML4", pml4->Entries[PML4_INDEX(VirtualAddress)].Frame);
     }
 
     if (pdp->Entries[PDP_INDEX(VirtualAddress)].Present == 0)
@@ -167,7 +177,8 @@ void HandlePageFault(unsigned long VirtualAddress)
         pdp->Entries[PDP_INDEX(VirtualAddress)].User = 1;
 
         // Debugging Output
-        PageFaultDebugPrint(PDP_INDEX(VirtualAddress), "PDP", pdp->Entries[PDP_INDEX(VirtualAddress)].Frame);
+        if (debugEnabled)
+            PageFaultDebugPrint(PDP_INDEX(VirtualAddress), "PDP", pdp->Entries[PDP_INDEX(VirtualAddress)].Frame);
     }
 
     if (pd->Entries[PD_INDEX(VirtualAddress)].Present == 0)
@@ -179,7 +190,8 @@ void HandlePageFault(unsigned long VirtualAddress)
         pd->Entries[PD_INDEX(VirtualAddress)].User = 1;
 
         // Debugging Output
-        PageFaultDebugPrint(PD_INDEX(VirtualAddress), "PD", pd->Entries[PD_INDEX(VirtualAddress)].Frame);
+        if (debugEnabled)
+            PageFaultDebugPrint(PD_INDEX(VirtualAddress), "PD", pd->Entries[PD_INDEX(VirtualAddress)].Frame);
     }
 
     if (pt->Entries[PT_INDEX(VirtualAddress)].Present == 0)
@@ -191,15 +203,32 @@ void HandlePageFault(unsigned long VirtualAddress)
         pt->Entries[PT_INDEX(VirtualAddress)].User = 1;
 
         // Debugging Output
-        PageFaultDebugPrint(PT_INDEX(VirtualAddress), "PT", pt->Entries[PT_INDEX(VirtualAddress)].Frame);
+        if (debugEnabled)
+            PageFaultDebugPrint(PT_INDEX(VirtualAddress), "PT", pt->Entries[PT_INDEX(VirtualAddress)].Frame);
     }
 
-    printf("\n");
-
-    // Reset the screen tet color
-    SetColor(color);
+    // Reset the screen text color
+    if (debugEnabled)
+    {
+        printf("\n");
+        SetColor(color);
+    }
 }
 
+// Tests the Virtual Memory Manager.
+void TestVirtualMemoryManager()
+{
+    char *ptr1 = (char *)0xFFFF8000001FFFFF;
+    ptr1[1] = 'A';
+
+    char *ptr2 = (char *)0xFFFF800000201000;
+    ptr2[0] = 'A';
+
+    char *ptr3 = (char *)0xFFFF8FFFFF201000;
+    ptr3[0] = 'A';
+}
+
+// Prints out some debug information about a Page Fault.
 static void PageFaultDebugPrint(unsigned long PageTableIndex, char *PageTableName, unsigned long PhysicalFrame)
 {
     char str[32] = "";
@@ -214,17 +243,4 @@ static void PageFaultDebugPrint(unsigned long PageTableIndex, char *PageTableNam
     ltoa(PageTableIndex, 16, str);
     printf(str);
     printf("\n");
-}
-
-// Tests the Virtual Memory Manager.
-void TestVirtualMemoryManager()
-{
-    char *ptr1 = (char *)0xFFFF8000001FFFFF;
-    ptr1[1] = 'A';
-
-    char *ptr2 = (char *)0xFFFF800000201000;
-    ptr2[0] = 'A';
-
-    char *ptr3 = (char *)0xFFFF8FFFFF201000;
-    ptr3[0] = 'A';
 }

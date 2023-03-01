@@ -3,6 +3,7 @@
 #include "drivers/timer.h"
 #include "memory/physical-memory.h"
 #include "memory/virtual-memory.h"
+#include "memory/heap.h"
 #include "isr/pic.h"
 #include "isr/idt.h"
 #include "kernel.h"
@@ -25,7 +26,7 @@ void KernelMain(int KernelSize)
     printf("===============================================================================\n\n");
     SetColor(COLOR_WHITE);
 
-    TestVirtualMemoryManager();
+    TestHeapManager();
 
     // Halt the system
     while (1 == 1) {}
@@ -44,7 +45,7 @@ void InitKernel(int KernelSize)
     InitPhysicalMemoryManager(KernelSize);
 
     // Initialize the virtual Memory Manager
-    InitVirtualMemoryManager();
+    InitVirtualMemoryManager(0);
 
     // Initializes the PIC, and remap the IRQ handlers.
     // The 1st PIC handles the hardware interrupts 32 - 39 (input value 0x20).
@@ -62,6 +63,10 @@ void InitKernel(int KernelSize)
     
     // Enable the hardware interrupts again
     EnableInterrupts();
+
+    // Initialize the Heap.
+    // It generates Page Faults, therefore the interrupts must be already re-enabled.
+    InitHeap();
 }
 
 // Causes a Divide by Zero Exception
