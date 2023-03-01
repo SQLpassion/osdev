@@ -13,10 +13,12 @@ int InitHeap()
 {
     // Initially the whole Heap is unallocated
     HeapBlock *heap = (HeapBlock *)HEAP_START_OFFSET;
+    HEAP_END_OFFSET = HEAP_START_OFFSET + INITIAL_HEAP_SIZE;
+    memset(heap, 0x00, INITIAL_HEAP_SIZE);
+
+    // Initialize the Header of the first Heap Block
     heap->InUse = 0;
     heap->Size = INITIAL_HEAP_SIZE;
-
-    HEAP_END_OFFSET = HEAP_START_OFFSET + INITIAL_HEAP_SIZE;
     
     // Return the size of the whole Heap
     return heap->Size;
@@ -49,7 +51,6 @@ void DumpHeap()
 }
 
 // Performs an allocation on the Heap.
-// The memory allocation must happen single threaded, because otherwise we could corrupt the Heap Data Structure...
 void *malloc(int Size)
 {
     // Add the size of the Header to the requested size
@@ -73,7 +74,8 @@ void *malloc(int Size)
     else
     {
         // We don't have found any free Heap Block.
-        // Let's allocate another 4K page for the Heap
+        // Let's allocate another 4K page for the Heap by just changing the HEAP_END_OFFSET variable.
+        // This will also trigger a Page Fault in the background, which will be handled transparently by allocating another physical Page Frame.
         HeapBlock *lastBlock = GetLastHeapBlock();
         lastBlock->InUse = 0;
         lastBlock->Size = HEAP_GROWTH;
@@ -82,7 +84,9 @@ void *malloc(int Size)
         // Merge the last free block with the newly allocated block together
         Merge();
 
-        // Try to allocate the requested block after the expansion of the Heap...
+        // Try to allocate the requested block after the expansion of the Heap.
+        // If the Heap is still too small after the current expansion, the next recursive malloc() call will again expand
+        // the Heap, until we have reached the necessary Heap size.
         return malloc(Size - HEADER_SIZE);
     }
 }
@@ -94,47 +98,8 @@ void free(void *ptr)
     HeapBlock *block = ptr - HEADER_SIZE;
     block->InUse = 0;
 
-    // Merge free blocks together
-    int mergedBlocks = Merge();
-    
-    if (mergedBlocks > 0)
-    {
-        // If we have merged some free blocks together, we try it again
-        // mergedBlocks = Merge();
-    }
-}
-
-// Tests the Heap Manager
-void TestHeapManager()
-{
-    char input[100] = "";
-
-    void *ptr1 = malloc(100);
-    void *ptr2 = malloc(100);
-    printf("After malloc():\n");
-    DumpHeap();
-    scanf(input, 98);
-
-	free(ptr1);
-    printf("After free():\n");
-	DumpHeap();
-    scanf(input, 98);
-
-    void *ptr3 = malloc(50);
-    printf("After malloc():\n");
-    DumpHeap();
-    scanf(input, 98);
-
-    void *ptr4 = malloc(44);
-    printf("After malloc():\n");
-    DumpHeap();
-    scanf(input, 98);
-
-    free(ptr2);
-    free(ptr3);
-    free(ptr4);
-    printf("After free():\n");
-	DumpHeap();
+    // Merge all free blocks together
+    while (Merge() > 1) {}
 }
 
 // Finds a free block of the requested size on the Heap
@@ -204,23 +169,20 @@ static void Allocate(HeapBlock *Block, int Size)
 // Merges 2 free blocks into one larger free block
 static int Merge()
 {
-    HeapBlock *block = (HeapBlock *)HEAP_START_OFFSET;
     int mergedBlocks = 0;
-
+    
     // Iterate over the various Heap Blocks
-    while (block->Size > 0)
+    for (HeapBlock *block = (HeapBlock *)HEAP_START_OFFSET; block->Size > 0; block = NextHeapBlock(block))
     {
         HeapBlock *nextBlock = NextHeapBlock(block);
 
         // If the current and the next block are free, merge them together
-        if (block->InUse == 0 && nextBlock->InUse == 0)
+        if ((block->InUse == 0) && (nextBlock->InUse == 0))
         {
             // Merge with the next free Heap Block
             block->Size = block->Size + nextBlock->Size;
             mergedBlocks++;
         }
-
-        block = NextHeapBlock(block);
     }
 
     // Return the number of merged blocks
@@ -252,5 +214,293 @@ static void PrintHeapBlock(HeapBlock *Block)
         int color = SetColor(COLOR_LIGHT_RED);
         printf("ALLOCATED\n\n");
         SetColor(color);
+    }
+}
+
+// Tests the Heap Manager with simple malloc()/free() calls
+void TestHeapManager(int DebugOutput)
+{
+    char input[100] = "";
+
+    // 104 bytes are allocated (100 + 4 byte Header)
+    void *ptr1 = malloc(100);
+
+    // 104 bytes are allocated (100 + 4 byte Header)
+    void *ptr2 = malloc(100);
+
+    if (DebugOutput)
+    {
+        // Heap Block Adress: 0xFFFF800000500000
+        // Heap Block Size: 104 (*ptr1)
+        // Heap Block Status: ALLOCATED
+
+        // Heap Block Adress: 0xFFFF800000500068
+        // Heap Block Size: 104 (*ptr2)
+        // Heap Block Status: ALLOCATED
+
+        // Heap Block Adress: 0xFFFF8000005000D0
+        // Heap Block Size: 3888
+        // Heap Block Status: FREE
+        ClearScreen();
+        DumpHeap();
+        scanf(input, 98);
+    }
+
+    // Release a Heap Block of 104 bytes
+    free(ptr1);
+
+    if (DebugOutput)
+    {
+        // Heap Block Adress: 0xFFFF800000500000
+        // Heap Block Size: 104
+        // Heap Block Status: FREE
+
+        // Heap Block Adress: 0xFFFF800000500068
+        // Heap Block Size: 104 (*ptr2)
+        // Heap Block Status: ALLOCATED
+
+        // Heap Block Adress: 0xFFFF8000005000D0
+        // Heap Block Size: 3888
+        // Heap Block Status: FREE
+        ClearScreen();
+        DumpHeap();
+        scanf(input, 98);
+    }
+
+    // 56 bytes are allocated (52 [adjusted to a 4-byte boundary] + 4 byte Header)
+    void *ptr3 = malloc(50);
+
+    if (DebugOutput)
+    {
+        // Heap Block Adress: 0xFFFF800000500000
+        // Heap Block Size: 56 (*ptr3)
+        // Heap Block Status: ALLOCATED
+
+        // Heap Block Adress: 0xFFFF800000500038
+        // Heap Block Size: 48
+        // Heap Block Status: FREE
+
+        // Heap Block Adress: 0xFFFF800000500068
+        // Heap Block Size: 104 (*ptr2)
+        // Heap Block Status: ALLOCATED
+
+        // Heap Block Adress: 0xFFFF8000005000D0
+        // Heap Block Size: 3888
+        // Heap Block Status: FREE
+        ClearScreen();
+        DumpHeap();
+        scanf(input, 98);
+    }
+
+    // 48 bytes are allocated (44 + 4 byte Header)
+    void *ptr4 = malloc(44);
+
+    if (DebugOutput)
+    {
+        // Heap Block Adress: 0xFFFF800000500000
+        // Heap Block Size: 56 (*ptr3)
+        // Heap Block Status: ALLOCATED
+
+        // Heap Block Adress: 0xFFFF800000500038
+        // Heap Block Size: 48 (*ptr4)
+        // Heap Block Status: ALLOCATED
+
+        // Heap Block Adress: 0xFFFF800000500068
+        // Heap Block Size: 104 (*ptr2)
+        // Heap Block Status: ALLOCATED
+
+        // Heap Block Adress: 0xFFFF8000005000D0
+        // Heap Block Size: 3888
+        // Heap Block Status: FREE
+        ClearScreen();
+        DumpHeap();
+        scanf(input, 98);
+    }
+
+    // Release a Heap Block of 104 bytes
+    free(ptr2);
+
+    if (DebugOutput)
+    {
+        // Heap Block Adress: 0xFFFF800000500000
+        // Heap Block Size: 56 (*ptr3)
+        // Heap Block Status: ALLOCATED
+
+        // Heap Block Adress: 0xFFFF800000500038
+        // Heap Block Size: 48 (*ptr4)
+        // Heap Block Status: ALLOCATED
+
+        // Heap Block Adress: 0xFFFF8000005000D0
+        // Heap Block Size: 3992
+        // Heap Block Status: FREE
+        ClearScreen();
+        DumpHeap();
+        scanf(input, 98);
+    }
+
+    // Release a Heap Block of 56 bytes
+    free(ptr3);
+
+    if (DebugOutput)
+    {
+        // Heap Block Adress: 0xFFFF800000500000
+        // Heap Block Size: 56
+        // Heap Block Status: FREE
+
+        // Heap Block Adress: 0xFFFF800000500038
+        // Heap Block Size: 48 (*ptr4)
+        // Heap Block Status: ALLOCATED
+
+        // Heap Block Adress: 0xFFFF8000005000D0
+        // Heap Block Size: 3992
+        // Heap Block Status: FREE
+        ClearScreen();
+        DumpHeap();
+        scanf(input, 98);
+    }
+
+    // Release the last Heap Block of 48 bytes
+    free(ptr4);
+
+    if (DebugOutput)
+    {
+        // Heap Block Adress: 0xFFFF800000500000
+        // Heap Block Size: 4096
+        // Heap Block Status: FREE
+        ClearScreen();
+        DumpHeap();
+        scanf(input, 98);
+    }
+}
+
+// Tests the Heap Manaager across Page boundaries.
+void TestHeapManagerAcrossPageBoundaries(int DebugOutput)
+{
+    char input[100] = "";
+
+    // 2504 bytes are allocated (2500 + 4 byte Header)
+    void *ptr1 = malloc(2500);
+
+    if (DebugOutput)
+    {
+        // Heap Block Adress: 0xFFFF800000500000
+        // Heap Block Size: 2504 (*ptr1)
+        // Heap Block Status: ALLOCATED
+
+        // Heap Block Adress: 0xFFFF8000005009C8
+        // Heap Block Size: 1592
+        // Heap Block Status: FREE
+        ClearScreen();
+        DumpHeap();
+        scanf(input, 98);
+    }
+
+    // 2504 bytes are allocated (2500 + 4 byte Header)
+    void *ptr2 = malloc(2500);
+
+    if (DebugOutput)
+    {
+        // Heap Block Adress: 0xFFFF800000500000
+        // Heap Block Size: 2504 (*ptr1)
+        // Heap Block Status: ALLOCATED
+
+        // Heap Block Adress: 0xFFFF8000005009C8
+        // Heap Block Size: 2504 (*ptr2)
+        // Heap Block Status: ALLOCATED
+
+        // Heap Block Adress: 0xFFFF800000501390
+        // Heap Block Size: 3184
+        // Heap Block Status: FREE
+        ClearScreen();
+        DumpHeap();
+        scanf(input, 98);
+    }
+
+    // Release a Heap Block of 2504 bytes
+    free(ptr2);
+
+    if (DebugOutput)
+    {
+        // Heap Block Adress: 0xFFFF800000500000
+        // Heap Block Size: 2504 (*ptr1)
+        // Heap Block Status: ALLOCATED
+
+        // Heap Block Adress: 0xFFFF8000005009C8
+        // Heap Block Size: 5688
+        // Heap Block Status: FREE
+        ClearScreen();
+        DumpHeap();
+        scanf(input, 98);
+    }
+
+    // Release a Heap Block of 2504 bytes
+    free(ptr1);
+
+    if (DebugOutput)
+    {
+        // Heap Block Adress: 0xFFFF800000500000
+        // Heap Block Size: 8192
+        // Heap Block Status: FREE
+        ClearScreen();
+        DumpHeap();
+        scanf(input, 98);
+    }
+}
+
+// Tests the Heap Manager with huge allocation requests.
+void TestHeapManagerWithHugeAllocations(int DebugOutput)
+{
+    char input[100] = "";
+
+    // 104 bytes are allocated (100 + 4 byte Header)
+    void *ptr1 = malloc(100);
+
+    if (DebugOutput)
+    {
+        // Heap Block Adress: 0xFFFF800000500000
+        // Heap Block Size: 104 (*ptr1)
+        // Heap Block Status: ALLOCATED
+
+        // Heap Block Adress: 0xFFFF800000500068
+        // Heap Block Size: 3992
+        // Heap Block Status: FREE
+        ClearScreen();
+        DumpHeap();
+        scanf(input, 98);
+    }
+
+    // 20004 bytes are allocated (20000 + 4 byte Header)
+    void *ptr2 = malloc(20000);
+
+    if (DebugOutput)
+    {
+        // Heap Block Adress: 0xFFFF800000500000
+        // Heap Block Size: 104 (*ptr1)
+        // Heap Block Status: ALLOCATED
+
+        // Heap Block Adress: 0xFFFF800000500068
+        // Heap Block Size: 20004 (*ptr2)
+        // Heap Block Status: ALLOCATED
+
+        // Heap Block Adress: 0xFFFF800000504E8C
+        // Heap Block Size: 372
+        // Heap Block Status: FREE
+        ClearScreen();
+        DumpHeap();
+        scanf(input, 98);
+    }
+
+    // Release all Heap Blocks
+    free(ptr1);
+    free(ptr2);
+
+    if (DebugOutput)
+    {
+        // Heap Block Adress: 0xFFFF800000500000
+        // Heap Block Size: 20480
+        // Heap Block Status: FREE
+        ClearScreen();
+        DumpHeap();
+        scanf(input, 98);
     }
 }

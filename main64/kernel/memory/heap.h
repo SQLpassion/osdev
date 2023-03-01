@@ -25,8 +25,14 @@ void *malloc(int Size);
 // Frees up a Heap Block
 void free(void *ptr);
 
-// Tests the Heap Manager
-void TestHeapManager();
+// Tests the Heap Manager with simple malloc()/free() calls.
+void TestHeapManager(int DebugOutput);
+
+// Tests the Heap Manaager across Page boundaries.
+void TestHeapManagerAcrossPageBoundaries(int DebugOutput);
+
+// Tests the Heap Manager with huge allocation requests.
+void TestHeapManagerWithHugeAllocations(int DebugOutput);
 
 // Finds a free block of the requested size on the Heap
 static HeapBlock *Find(int Size);

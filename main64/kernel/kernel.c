@@ -26,7 +26,7 @@ void KernelMain(int KernelSize)
     printf("===============================================================================\n\n");
     SetColor(COLOR_WHITE);
 
-    TestHeapManager();
+    TestHeapManagerWithHugeAllocations(0);
 
     // Halt the system
     while (1 == 1) {}
@@ -45,7 +45,7 @@ void InitKernel(int KernelSize)
     InitPhysicalMemoryManager(KernelSize);
 
     // Initialize the virtual Memory Manager
-    InitVirtualMemoryManager(0);
+    InitVirtualMemoryManager(1);
 
     // Initializes the PIC, and remap the IRQ handlers.
     // The 1st PIC handles the hardware interrupts 32 - 39 (input value 0x20).
