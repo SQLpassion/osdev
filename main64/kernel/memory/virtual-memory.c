@@ -1,5 +1,6 @@
 #include "virtual-memory.h"
 #include "physical-memory.h"
+#include "heap.h"
 #include "../drivers/screen.h"
 #include "../common.h"
 
@@ -36,7 +37,8 @@ void InitVirtualMemoryManager(int DebugOutput)
     // This could happen if the Kernel gets larger and larger, and consumes more and more memory in the identity mapped area.
     // In that case, the identity mapped area must be enlarged by another 2 MB by KLDR16.BIN.
     
-    // The following 4K pages are necessary for the inital 4-level x64 paging structure
+    // The following 4K pages are necessary for the inital 4-level x64 paging structure.
+    // The allocated Page Frames are not tracked by the Kernel, because the Heap is not yet initalized.
     PageMapLevel4Table *pml4 = (PageMapLevel4Table *)(AllocatePageFrame() * SMALL_PAGE_SIZE);
     PageDirectoryPointerTable *pdpHigherHalfKernel = (PageDirectoryPointerTable *)(AllocatePageFrame() * SMALL_PAGE_SIZE);
     PageDirectoryTable *pdHigherHalfKernel = (PageDirectoryTable *)(AllocatePageFrame() * SMALL_PAGE_SIZE);

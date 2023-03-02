@@ -8,6 +8,8 @@ unsigned long HEAP_END_OFFSET =   0xFFFF800000500000;
 unsigned long INITIAL_HEAP_SIZE = 0x1000;
 unsigned long HEAP_GROWTH =       0x1000;
 
+int isHeapInitialized = 0;
+
 // Initializes the Heap Manager
 int InitHeap()
 {
@@ -19,9 +21,18 @@ int InitHeap()
     // Initialize the Header of the first Heap Block
     heap->InUse = 0;
     heap->Size = INITIAL_HEAP_SIZE;
+
+    // The Heap Manager is now fully initialized, and can be used by other components
+    isHeapInitialized = 1;
     
     // Return the size of the whole Heap
     return heap->Size;
+}
+
+// Returns if the Heap Manager is fully initialized
+int IsHeapInitialized()
+{
+    return isHeapInitialized;
 }
 
 // Dumps out the status of each Heap Block

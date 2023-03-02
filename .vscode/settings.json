@@ -8,7 +8,9 @@
         "date.h": "c",
         "pic.h": "c",
         "fat12.h": "c",
-        "timer.h": "c"
+        "timer.h": "c",
+        "physical-memory.h": "c"
     },
-    "C_Cpp.errorSquiggles": "disabled"
+    "C_Cpp.errorSquiggles": "disabled",
+    "cmake.configureOnOpen": false
 }

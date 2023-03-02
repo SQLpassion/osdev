@@ -26,7 +26,31 @@ void KernelMain(int KernelSize)
     printf("===============================================================================\n\n");
     SetColor(COLOR_WHITE);
 
-    TestHeapManagerWithHugeAllocations(0);
+    unsigned long pfn = AllocatePageFrame();
+    AllocatePageFrame();
+    AllocatePageFrame();
+    pfn = AllocatePageFrame();
+    AllocatePageFrame();
+    AllocatePageFrame();
+
+    printf("\n");
+    printf("\n");
+    PrintTrackedPageFrameList();
+
+    ReleasePageFrame(pfn);
+    printf("\n");
+    printf("\n");
+    PrintTrackedPageFrameList();
+
+    pfn = AllocatePageFrame();
+    printf("\n");
+    printf("\n");
+    PrintTrackedPageFrameList();
+
+    pfn = AllocatePageFrame();
+    printf("\n");
+    printf("\n");
+    PrintTrackedPageFrameList();
 
     // Halt the system
     while (1 == 1) {}

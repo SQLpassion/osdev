@@ -13,8 +13,11 @@ typedef struct HeapBlock
     unsigned char Payload[0];
 } HeapBlock;
 
-// Initializes the Heap Manager
+// Initializes the Heap Manager.
 int InitHeap();
+
+// Returns if the Heap Manager is fully initialized.
+int IsHeapInitialized();
 
 // Dumps out the status of each Heap Block
 void DumpHeap();
