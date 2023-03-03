@@ -85,13 +85,13 @@ void RefreshStatusLine()
     strcat(buffer, tmp);
 
     // Print out the available memory
-    strcat(buffer, ", Physical Memory: ");
+    strcat(buffer, ", PMEM: ");
     ltoa(bib->MaxMemory / 1024 / 1024 + 1, 10, str);
     strcat(buffer, str);
-    strcat(buffer, " MB, Free Memory: ");
-    ltoa(bib->AvailablePageFrames * PAGE_SIZE / 1024 / 1024, 10, str);
+    strcat(buffer, " MB, FMEM: ");
+    ltoa(bib->AvailablePageFrames, 10, str);
     strcat(buffer, str);
-    strcat(buffer, " MB");
+    strcat(buffer, " Page Frames");
 
     // Pad the remaining columns with a blank, so that the status line goes
     // over the whole row

@@ -13,8 +13,6 @@
 // The main entry of our Kernel
 void KernelMain(int KernelSize)
 {
-    BiosInformationBlock *bib = (BiosInformationBlock *)BIB_OFFSET;
-
     // Initialize the Kernel
     InitKernel(KernelSize);
 
@@ -25,32 +23,6 @@ void KernelMain(int KernelSize)
     printf("...\n");
     printf("===============================================================================\n\n");
     SetColor(COLOR_WHITE);
-
-    unsigned long pfn = AllocatePageFrame();
-    AllocatePageFrame();
-    AllocatePageFrame();
-    pfn = AllocatePageFrame();
-    AllocatePageFrame();
-    AllocatePageFrame();
-
-    printf("\n");
-    printf("\n");
-    PrintTrackedPageFrameList();
-
-    ReleasePageFrame(pfn);
-    printf("\n");
-    printf("\n");
-    PrintTrackedPageFrameList();
-
-    pfn = AllocatePageFrame();
-    printf("\n");
-    printf("\n");
-    PrintTrackedPageFrameList();
-
-    pfn = AllocatePageFrame();
-    printf("\n");
-    printf("\n");
-    PrintTrackedPageFrameList();
 
     // Halt the system
     while (1 == 1) {}
@@ -69,7 +41,7 @@ void InitKernel(int KernelSize)
     InitPhysicalMemoryManager(KernelSize);
 
     // Initialize the virtual Memory Manager
-    InitVirtualMemoryManager(1);
+    InitVirtualMemoryManager(0);
 
     // Initializes the PIC, and remap the IRQ handlers.
     // The 1st PIC handles the hardware interrupts 32 - 39 (input value 0x20).

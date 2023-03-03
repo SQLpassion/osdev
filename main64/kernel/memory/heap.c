@@ -46,6 +46,7 @@ void DumpHeap()
     {
         size += block->Size;
         PrintHeapBlock(block);
+        scanf(str, 30);
     }
 
     printf("Heap Start Offset: 0x");
@@ -106,7 +107,7 @@ void *malloc(int Size)
 void free(void *ptr)
 {
     // Mark the Heap Block as Free
-    HeapBlock *block = ptr - HEADER_SIZE;
+    HeapBlock *block = (HeapBlock *)((unsigned char *)ptr - HEADER_SIZE);
     block->InUse = 0;
 
     // Merge all free blocks together
@@ -181,7 +182,7 @@ static void Allocate(HeapBlock *Block, int Size)
 static int Merge()
 {
     int mergedBlocks = 0;
-    
+
     // Iterate over the various Heap Blocks
     for (HeapBlock *block = (HeapBlock *)HEAP_START_OFFSET; block->Size > 0; block = NextHeapBlock(block))
     {
@@ -192,8 +193,9 @@ static int Merge()
         {
             // Merge with the next free Heap Block
             block->Size = block->Size + nextBlock->Size;
+           
             mergedBlocks++;
-        }
+        } 
     }
 
     // Return the number of merged blocks

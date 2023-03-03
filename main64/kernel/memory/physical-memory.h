@@ -80,12 +80,6 @@ void ReleasePageFrame(unsigned long PageFrameNumber);
 // This function adds the Page Frame to the TrackedPageFrameList
 static void AddPageFrameToTrackedList(unsigned long PageFrameNumber, int MemoryRegionIndex);
 
-// Finds a TrackedPageFrameListEntry by the Page Frame Number in the Tracked list.
-static TrackedPageFrameListEntry *FindTrackedPageFrameListEntry(unsigned long PageFrameNumber);
-
-// Removes the provided PageFrameNumber from the Tracked list.
-static void RemoveTrackedPageFrameListEntry(TrackedPageFrameListEntry *PageFrameEntry);
-
 // This function prints out the currently tracked Page Frames.
 void PrintTrackedPageFrameList();
 
@@ -101,5 +95,8 @@ void TestBitmapMask();
 // Tests the Physical Memory Manager by allocating Page Frames in the various
 // available memory regions...
 void TestPhysicalMemoryManager();
+
+// Tests the Page Frame Tracking
+void TestPageFrameTracking();
 
 #endif
