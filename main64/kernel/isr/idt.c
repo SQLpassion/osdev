@@ -2,8 +2,9 @@
 #include "irq.h"
 #include "../common.h"
 #include "../drivers/screen.h"
+#include "../memory/virtual-memory.h"
 
-// The 256 possible Interrupt Gates are stored from 0x40000 to 0x40FFF (4096 Bytes long - each Entry is 16 Bytes)
+// The 256 possible Interrupt Gates are stored from 0xFFFF800000060000 to 0xFFFF800000060FFF (4096 Bytes long - each Entry is 16 Bytes)
 IdtEntry *idtEntries = (IdtEntry *)IDT_START_OFFSET;
 
 // The pointer that points to the Interrupt Gates
@@ -17,38 +18,38 @@ void InitIdt()
     memset(idtEntries, 0, sizeof(IdtEntry) * IDT_ENTRIES);
 
     // Setup the 32 Exception handlers - as described in Volume 3A: 6.15
-    IdtSetGate(0,  (unsigned long)Isr0,  IDT_TRAP_GATE);        // Divide Error Exception
-    IdtSetGate(1,  (unsigned long)Isr1,  IDT_TRAP_GATE);        // Debug Exception
-    IdtSetGate(2,  (unsigned long)Isr2,  IDT_TRAP_GATE);        // Non-Maskable Interrupt
-    IdtSetGate(3,  (unsigned long)Isr3,  IDT_TRAP_GATE);        // Breakpoint Exception
-    IdtSetGate(4,  (unsigned long)Isr4,  IDT_TRAP_GATE);        // Overflow Exception
-    IdtSetGate(5,  (unsigned long)Isr5,  IDT_TRAP_GATE);        // Bound Range Exceeded Exception
-    IdtSetGate(6,  (unsigned long)Isr6,  IDT_TRAP_GATE);        // Invalid Opcode Exception
-    IdtSetGate(7,  (unsigned long)Isr7,  IDT_TRAP_GATE);        // Device Not Available Exception
-    IdtSetGate(8,  (unsigned long)Isr8,  IDT_INTERRUPT_GATE);   // Double Fault Exception
-    IdtSetGate(9,  (unsigned long)Isr9,  IDT_TRAP_GATE);        // Coprocessor Segment Overrun
-    IdtSetGate(10, (unsigned long)Isr10, IDT_INTERRUPT_GATE);   // Invalid TSS Exception
-    IdtSetGate(11, (unsigned long)Isr11, IDT_INTERRUPT_GATE);   // Segment Not Present
-    IdtSetGate(12, (unsigned long)Isr12, IDT_INTERRUPT_GATE);   // Stack Fault Exception
-    IdtSetGate(13, (unsigned long)Isr13, IDT_INTERRUPT_GATE);   // General Protection Exception
-    IdtSetGate(14, (unsigned long)Isr14, IDT_INTERRUPT_GATE);   // Page Fault Exception
-    IdtSetGate(15, (unsigned long)Isr15, IDT_TRAP_GATE);        // Unassigned
-    IdtSetGate(16, (unsigned long)Isr16, IDT_TRAP_GATE);        // x87 FPU Floating Point Error
-    IdtSetGate(17, (unsigned long)Isr17, IDT_TRAP_GATE);        // Alignment Check Exception
-    IdtSetGate(18, (unsigned long)Isr18, IDT_TRAP_GATE);        // Machine Check Exception
-    IdtSetGate(19, (unsigned long)Isr19, IDT_TRAP_GATE);        // SIMD Floating Point Exception
-    IdtSetGate(20, (unsigned long)Isr20, IDT_TRAP_GATE);        // Virtualization Exception
-    IdtSetGate(21, (unsigned long)Isr21, IDT_TRAP_GATE);        // Control Protection Exception
-    IdtSetGate(22, (unsigned long)Isr22, IDT_TRAP_GATE);        // Reserved
-    IdtSetGate(23, (unsigned long)Isr23, IDT_TRAP_GATE);        // Reserved
-    IdtSetGate(24, (unsigned long)Isr24, IDT_TRAP_GATE);        // Reserved
-    IdtSetGate(25, (unsigned long)Isr25, IDT_TRAP_GATE);        // Reserved
-    IdtSetGate(26, (unsigned long)Isr26, IDT_TRAP_GATE);        // Reserved
-    IdtSetGate(27, (unsigned long)Isr27, IDT_TRAP_GATE);        // Reserved
-    IdtSetGate(28, (unsigned long)Isr28, IDT_TRAP_GATE);        // Reserved
-    IdtSetGate(29, (unsigned long)Isr29, IDT_TRAP_GATE);        // Reserved
-    IdtSetGate(30, (unsigned long)Isr30, IDT_TRAP_GATE);        // Reserved
-    IdtSetGate(31, (unsigned long)Isr31, IDT_TRAP_GATE);        // Reserved
+    IdtSetGate(EXCEPTION_DIVIDE, (unsigned long)Isr0, IDT_TRAP_GATE);                       // Divide Error Exception
+    IdtSetGate(EXCEPTION_DEBUG, (unsigned long)Isr1, IDT_TRAP_GATE);                        // Debug Exception
+    IdtSetGate(EXCEPTION_NON_MASKABLE_INTERRUPT, (unsigned long)Isr2, IDT_TRAP_GATE);       // Non-Maskable Interrupt
+    IdtSetGate(EXCEPTION_BREAKPOINT, (unsigned long)Isr3, IDT_TRAP_GATE);                   // Breakpoint Exception
+    IdtSetGate(EXCEPTION_OVERFLOW, (unsigned long)Isr4, IDT_TRAP_GATE);                     // Overflow Exception
+    IdtSetGate(EXCEPTION_BOUND_RANGE, (unsigned long)Isr5, IDT_TRAP_GATE);                  // Bound Range Exceeded Exception
+    IdtSetGate(EXCEPTION_INVALID_OPCODE, (unsigned long)Isr6, IDT_TRAP_GATE);               // Invalid Opcode Exception
+    IdtSetGate(EXCEPTION_DEVICE_NOT_AVAILABLE, (unsigned long)Isr7, IDT_TRAP_GATE);         // Device Not Available Exception
+    IdtSetGate(EXCEPTION_DOUBLE_FAULT, (unsigned long)Isr8, IDT_INTERRUPT_GATE);            // Double Fault Exception
+    IdtSetGate(EXCEPTION_COPROCESSOR_SEGMENT_OVERRUN, (unsigned long)Isr9, IDT_TRAP_GATE);  // Coprocessor Segment Overrun
+    IdtSetGate(EXCEPTION_INVALID_TSS, (unsigned long)Isr10, IDT_INTERRUPT_GATE);            // Invalid TSS Exception
+    IdtSetGate(EXCEPTION_SEGMENT_NOT_PRESENT, (unsigned long)Isr11, IDT_INTERRUPT_GATE);    // Segment Not Present
+    IdtSetGate(EXCEPTION_STACK_FAULT, (unsigned long)Isr12, IDT_INTERRUPT_GATE);            // Stack Fault Exception
+    IdtSetGate(EXCEPTION_GENERAL_PROTECTION, (unsigned long)Isr13, IDT_INTERRUPT_GATE);     // General Protection Exception
+    IdtSetGate(EXCEPTION_PAGE_FAULT, (unsigned long)Isr14, IDT_INTERRUPT_GATE);             // Page Fault Exception
+    IdtSetGate(EXCEPTION_UNASSGIGNED, (unsigned long)Isr15, IDT_TRAP_GATE);                 // Unassigned
+    IdtSetGate(EXCEPTION_X87_FPU, (unsigned long)Isr16, IDT_TRAP_GATE);                     // x87 FPU Floating Point Error
+    IdtSetGate(EXCEPTION_ALIGNMENT_CHECK, (unsigned long)Isr17, IDT_TRAP_GATE);             // Alignment Check Exception
+    IdtSetGate(EXCEPTION_MACHINE_CHECK, (unsigned long)Isr18, IDT_TRAP_GATE);               // Machine Check Exception
+    IdtSetGate(EXCEPTION_SIMD_FLOATING_POINT, (unsigned long)Isr19, IDT_TRAP_GATE);         // SIMD Floating Point Exception
+    IdtSetGate(EXCEPTION_VIRTUALIZATION, (unsigned long)Isr20, IDT_TRAP_GATE);              // Virtualization Exception
+    IdtSetGate(EXCEPTION_CONTROL_PROTECTION, (unsigned long)Isr21, IDT_TRAP_GATE);          // Control Protection Exception
+    IdtSetGate(EXCEPTION_RESERVED_22, (unsigned long)Isr22, IDT_TRAP_GATE);                 // Reserved
+    IdtSetGate(EXCEPTION_RESERVED_23, (unsigned long)Isr23, IDT_TRAP_GATE);                 // Reserved
+    IdtSetGate(EXCEPTION_RESERVED_24, (unsigned long)Isr24, IDT_TRAP_GATE);                 // Reserved
+    IdtSetGate(EXCEPTION_RESERVED_25, (unsigned long)Isr25, IDT_TRAP_GATE);                 // Reserved
+    IdtSetGate(EXCEPTION_RESERVED_26, (unsigned long)Isr26, IDT_TRAP_GATE);                 // Reserved
+    IdtSetGate(EXCEPTION_RESERVED_27, (unsigned long)Isr27, IDT_TRAP_GATE);                 // Reserved
+    IdtSetGate(EXCEPTION_RESERVED_28, (unsigned long)Isr28, IDT_TRAP_GATE);                 // Reserved
+    IdtSetGate(EXCEPTION_RESERVED_29, (unsigned long)Isr29, IDT_TRAP_GATE);                 // Reserved
+    IdtSetGate(EXCEPTION_RESERVED_30, (unsigned long)Isr30, IDT_TRAP_GATE);                 // Reserved
+    IdtSetGate(EXCEPTION_RESERVED_31, (unsigned long)Isr31, IDT_TRAP_GATE);                 // Reserved
 
     // Setup the 16 IRQ handlers
     IdtSetGate(32, (unsigned long)Irq0,  IDT_INTERRUPT_GATE);   // Timer
@@ -91,11 +92,21 @@ void IdtSetGate(unsigned char Entry, unsigned long BaseAddress, unsigned char Ty
 // Our generic ISR handler, which is called from the assembly code.
 void IsrHandler(int InterruptNumber, unsigned long cr2, RegisterState *Registers)
 {
-    // Display the occured exception
-    DisplayException(InterruptNumber, Registers);
+    if (InterruptNumber == EXCEPTION_PAGE_FAULT)
+    {
+        // Handle the Page Fault
+        HandlePageFault(cr2);
+    }
+    else
+    {
+        // Every other exception just stops the system
+        
+        // Display the occured exception
+        DisplayException(InterruptNumber, Registers);
 
-    // Halt the system
-    while (1 == 1) {}
+        // Halt the system
+        while (1 == 1) {}
+    }
 }
 
 // Displays the state of the general purpose registers when the exception has occured.

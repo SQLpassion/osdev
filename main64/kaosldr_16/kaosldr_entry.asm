@@ -10,6 +10,9 @@ Main:
     ; Get the current time from the BIOS
     CALL    GetTime
 
+    ; Get the Memory Map from the BIOS
+    CALL    GetMemoryMap
+    
     ; Enables the A20 gate
     CALL    EnableA20
 
@@ -27,6 +30,7 @@ Main:
 %INCLUDE "longmode.asm"                                                                                                                               
 
 BIB_OFFSET      EQU 0x1000  ; BIOS Information Block
+MEM_OFFSET      EQU 0X1200  ; Memmory Map
 Year1           DW 0x00
 Year2           DW 0x00
 BootMessage:    DB 'Booting KLDR16.BIN...', 0xD, 0xA, 0x0

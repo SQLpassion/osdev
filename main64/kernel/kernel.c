@@ -1,45 +1,47 @@
-#include "kernel.h"
-#include "common.h"
-#include "date.h"
 #include "drivers/screen.h"
 #include "drivers/keyboard.h"
 #include "drivers/timer.h"
+#include "memory/physical-memory.h"
+#include "memory/virtual-memory.h"
+#include "memory/heap.h"
 #include "isr/pic.h"
 #include "isr/idt.h"
+#include "kernel.h"
+#include "common.h"
+#include "date.h"
 
 // The main entry of our Kernel
-void KernelMain()
+void KernelMain(int KernelSize)
 {
     // Initialize the Kernel
-    InitKernel();
+    InitKernel(KernelSize);
 
     // Print out a welcome message
-    printf("Executing the x64 KAOS Kernel at virtual address 0x");
+    SetColor(COLOR_LIGHT_BLUE);
+    printf("Executing the x64 KAOS Kernel at the virtual address 0x");
     printf_long((unsigned long)&KernelMain, 16);
     printf("...\n");
-
-    // Set a custom system date
-    // SetDate(2023, 2, 28);
-    // SetTime(22, 40, 3);
-    
-    int i = 0;
-    for (i = 0; i < 30; i++)
-    {
-        KeyboardTest();
-    }
+    printf("===============================================================================\n\n");
+    SetColor(COLOR_WHITE);
 
     // Halt the system
     while (1 == 1) {}
 }
 
 // Initializes the whole Kernel
-void InitKernel()
+void InitKernel(int KernelSize)
 {
     // Initialize and clear the screen
     InitializeScreen(80, 24);
 
     // Disable the hardware interrupts
     DisableInterrupts();
+
+    // Initialize the physical Memory Manager
+    InitPhysicalMemoryManager(KernelSize);
+
+    // Initialize the virtual Memory Manager
+    InitVirtualMemoryManager(0);
 
     // Initializes the PIC, and remap the IRQ handlers.
     // The 1st PIC handles the hardware interrupts 32 - 39 (input value 0x20).
@@ -57,6 +59,10 @@ void InitKernel()
     
     // Enable the hardware interrupts again
     EnableInterrupts();
+
+    // Initialize the Heap.
+    // It generates Page Faults, therefore the interrupts must be already re-enabled.
+    InitHeap();
 }
 
 // Causes a Divide by Zero Exception

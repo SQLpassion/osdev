@@ -9,6 +9,8 @@
     docker run --rm -it -v d:\GitHub\SQLpassion/osdev:/src sqlpassion/kaos-buildenv /bin/sh /src/main64/build.sh
 - Write the final FAT12 image to a virtual disk (on Windows): http://www.chrysocome.net/dd
     ./dd.exe if=d:\github\sqlpassion\osdev\main64\kaos64.img of=d:\HDD-flat.vmdk
+- Everything in one command:
+    clear; docker run --rm -it -v d:\GitHub\SQLpassion/osdev:/src sqlpassion/kaos-buildenv /bin/sh /src/main64/clean.sh; docker run --rm -it -v d:\GitHub\SQLpassion/osdev:/src sqlpassion/kaos-buildenv /bin/sh /src/main64/build.sh; ./dd.exe if=d:\github\sqlpassion\osdev\main64\kaos64.img of=d:\HDD-flat.vmdk
 
 ##########################
 # Building on Windows ARM

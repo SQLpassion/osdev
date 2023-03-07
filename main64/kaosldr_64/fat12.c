@@ -9,7 +9,7 @@ unsigned char *fatBuffer = (unsigned char *)0x31C00;
 unsigned char *kernelBuffer = (unsigned char *)0xFFFF800000100000;
 
 // Loads the given Kernel file into memory
-void LoadKernelIntoMemory(char *FileName)
+int LoadKernelIntoMemory(char *FileName)
 {
     // Load the whole Root Directory (14 sectors) into memory
     ReadSectors(rootDirectoryBuffer, 19, 14);
@@ -23,7 +23,7 @@ void LoadKernelIntoMemory(char *FileName)
         ReadSectors(fatBuffer, 1, 18);
 
         // Load the Kernel into memory
-        LoadFileIntoMemory(entry);
+        return LoadFileIntoMemory(entry);
     }
     else
     {
@@ -62,10 +62,13 @@ static RootDirectoryEntry* FindRootDirectoryEntry(char *FileName)
 }
 
 // Load all Clusters for the given Root Directory Entry into memory
-static void LoadFileIntoMemory(RootDirectoryEntry *Entry)
+static int LoadFileIntoMemory(RootDirectoryEntry *Entry)
 {
+    int sectorCount = 0;
+
     // Read the first cluster of the file into memory
     ReadSectors(kernelBuffer, Entry->FirstCluster + 33 - 2, 1);
+    sectorCount++;
     unsigned short nextCluster = FATRead(Entry->FirstCluster);
 
     // Read the whole file into memory until we reach the EOF mark
@@ -73,10 +76,14 @@ static void LoadFileIntoMemory(RootDirectoryEntry *Entry)
     {
         kernelBuffer += 512;
         ReadSectors(kernelBuffer, nextCluster + 33 - 2, 1);
+        sectorCount++;
         
         // Read the next Cluster from the FAT table
         nextCluster = FATRead(nextCluster);
     }
+
+    // Return the number of read sectors
+    return sectorCount;
 }
 
 // Reads the next FAT Entry from the FAT Tables

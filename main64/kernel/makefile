@@ -1,6 +1,6 @@
 # Automatically generate lists of sources using wildcards.
-C_SOURCES = $(wildcard *.c drivers/*.c isr/*.c)
-HEADERS = $(wildcard *.h drivers/*.h isr/*.h)
+C_SOURCES = $(wildcard *.c drivers/*.c isr/*.c memory/*.c)
+HEADERS = $(wildcard *.h drivers/*.h isr/*.h memory/*.h)
 
 # Convert the *.c filenames to *.o to give a list of object files to build
 OBJ = ${C_SOURCES:.c=.o}

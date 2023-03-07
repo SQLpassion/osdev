@@ -208,7 +208,7 @@ void tolower(char *s)
 }
 
 // Converts an integer value to a string value for a specific base (base 10 => decimal, base 16 => hex)
-void itoa(int i, unsigned base, char *buf)
+void itoa(unsigned int i, unsigned base, char *buf)
 {
     if (base > 16) return;
     
@@ -222,7 +222,7 @@ void itoa(int i, unsigned base, char *buf)
 }
 
 // Helper function for the itoa function.
-static void itoa_helper(unsigned short i, unsigned base, char *buf)
+static void itoa_helper(unsigned int i, unsigned base, char *buf)
 {
     int pos = 0;
     int opos = 0;
@@ -328,4 +328,58 @@ void FormatInteger(int Value, char *Buffer)
     // Add the integer value
     itoa(Value, 10, str);
     strcat(Buffer, str);
+}
+
+// Formats a Hex string with the given number of leading zeros.
+void FormatHexString(char *string, int length)
+{
+    int oldLength = strlen(string);
+    int diff = length - oldLength;
+    char newString[32] = "";
+
+    if (diff > 0)
+    {
+        while (diff > 0)
+        {
+            strcat(newString, "0");
+            diff--;
+        }
+    }
+
+    strcat(newString, string);
+    strcpy(string, newString);
+}
+
+// Aligns the Number to the given Alignment.
+int AlignNumber(int Number, int Alignment)
+{
+    int alignedNumber = Number / Alignment;
+
+    if (alignedNumber * Alignment < Number)
+        alignedNumber++;
+
+    return alignedNumber * Alignment;
+}
+
+// Sets the given Bit in the provided Bitmap mask
+void SetBit(unsigned long Bit, unsigned long *BitmapMask)
+{
+    BitmapMask[Bit / 64] |= ((unsigned long)1 << (Bit % 64));
+}
+
+// Clears the given Bit in the provided Bitmap mask
+void ClearBit(unsigned long Bit, unsigned long *BitmapMask)
+{
+    BitmapMask[Bit / 64] &= ~((unsigned long)1 << (Bit % 64));
+}
+
+// Tests if a given Bit is set in the provided Bitmap mask
+int TestBit(unsigned long Bit, unsigned long *BitmapMask)
+{
+    unsigned long result = BitmapMask[Bit / 64] & ((unsigned long)1 << (Bit % 64));
+
+    if (result > 0)
+        return 1;
+    else
+        return 0;
 }

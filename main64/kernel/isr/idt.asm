@@ -7,7 +7,7 @@
 [GLOBAL EnableInterrupts]
 
 ; Virtual address where the RegisterState structure will be stored
-REGISTERSTATE_OFFSET    EQU 0x61000
+REGISTERSTATE_OFFSET    EQU 0xFFFF800000061000
 
 ; Loads the IDT table
 IdtFlush:
