@@ -15,8 +15,6 @@ char *MemoryRegionType[] =
 };
 
 // This list stores the Page Frames that are currently tracked by the Kernel
-TrackedPageFrameListEntry *TrackedPageFramesList = 0x0;
-
 List *TrackedPageFrames = 0x0;
 
 // Memory Map 4 GB - VMware Fusion
@@ -219,7 +217,7 @@ void ReleasePageFrame(unsigned long PageFrameNumber)
         ClearBit(PageFrameNumber, bitmapMask);
 
         // Remove the Page Frame from the Tracked list
-        RemoveEntryFromList(TrackedPageFrames, entry);
+        RemoveEntryFromList(TrackedPageFrames, entry, 1);
 
         // Release the memory of the PageFrame structure on the Heap
         free(frame);

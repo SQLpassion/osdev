@@ -15,6 +15,7 @@ typedef struct List
 {
     int Count;
     ListEntry *RootEntry;
+    void (*PrintFunctionPtr)(void);
 } List;
 
 // Creates a new Double Linked List
@@ -27,7 +28,7 @@ void AddEntryToList(List *List, void *Payload, unsigned long Key);
 ListEntry *GetEntryFromList(List *List, unsigned long Key);
 
 // Removes an entry from the given Double Linked List
-void RemoveEntryFromList(List *List, ListEntry *Node);
+void RemoveEntryFromList(List *List, ListEntry *Node, int FreeMemory);
 
 // This function prints out the content of the Double Linked List
 void PrintList(List *List);

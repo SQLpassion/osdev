@@ -4,6 +4,7 @@
 #include "memory/physical-memory.h"
 #include "memory/virtual-memory.h"
 #include "memory/heap.h"
+#include "multi-tasking/task.h"
 #include "isr/pic.h"
 #include "isr/idt.h"
 #include "kernel.h"
@@ -63,6 +64,9 @@ void InitKernel(int KernelSize)
     // Initialize the Heap.
     // It generates Page Faults, therefore the interrupts must be already re-enabled.
     InitHeap();
+
+    // Create the initial OS tasks
+    CreateInitialTasks();
 }
 
 // Causes a Divide by Zero Exception

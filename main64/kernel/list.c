@@ -61,7 +61,7 @@ ListEntry *GetEntryFromList(List *List, unsigned long Key)
 }
 
 // Removes a Node from the given Double Linked List
-void RemoveEntryFromList(List *List, ListEntry *Entry)
+void RemoveEntryFromList(List *List, ListEntry *Entry, int FreeMemory)
 {
     ListEntry *nextEntry = 0x0;
     ListEntry *previousEntry = 0x0;
@@ -85,7 +85,8 @@ void RemoveEntryFromList(List *List, ListEntry *Entry)
     List->Count--;
 
     // Release the memory of the ListNode structure on the Heap
-    free(Entry);
+    if (FreeMemory)
+        free(Entry);
 }
 
 // This function prints out the content of the Double Linked List
@@ -95,18 +96,10 @@ void PrintList(List *List)
 
     printf("Number of List entries: ");
     printf_int(List->Count, 10);
-    printf("\n");
-  
-    // Iterate over the whole list
-    while (currentEntry != 0x0)
-    {
-        printf("Key of the current List entry: ");
-        printf_long(currentEntry->Key, 10);
-        printf("\n");
-    
-        // Move to the next entry in the Double Linked List
-        currentEntry = currentEntry->Next;
-    }
+    printf("\n\n");
+
+    // Call the custom print function for the Double Linked List
+    List->PrintFunctionPtr();
 }
 
 // Creates a new ListEntry structure

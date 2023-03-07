@@ -9,7 +9,8 @@
         "pic.h": "c",
         "fat12.h": "c",
         "timer.h": "c",
-        "physical-memory.h": "c"
+        "physical-memory.h": "c",
+        "heap.h": "c"
     },
     "C_Cpp.errorSquiggles": "disabled",
     "cmake.configureOnOpen": false
