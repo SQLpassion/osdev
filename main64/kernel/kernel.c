@@ -18,12 +18,21 @@ void KernelMain(int KernelSize)
     InitKernel(KernelSize);
 
     // Print out a welcome message
-    SetColor(COLOR_LIGHT_BLUE);
+    /* SetColor(COLOR_LIGHT_BLUE);
     printf("Executing the x64 KAOS Kernel at the virtual address 0x");
     printf_long((unsigned long)&KernelMain, 16);
     printf("...\n");
     printf("===============================================================================\n\n");
-    SetColor(COLOR_WHITE);
+    SetColor(COLOR_WHITE); */
+
+    /* char input[32] = "";
+
+    while (1 == 1)
+    {
+        PrintTaskList();
+        MoveToNextTask();
+        scanf(input, 2);
+    } */
 
     // Halt the system
     while (1 == 1) {}
@@ -42,7 +51,7 @@ void InitKernel(int KernelSize)
     InitPhysicalMemoryManager(KernelSize);
 
     // Initialize the virtual Memory Manager
-    InitVirtualMemoryManager(0);
+    InitVirtualMemoryManager(1);
 
     // Initializes the PIC, and remap the IRQ handlers.
     // The 1st PIC handles the hardware interrupts 32 - 39 (input value 0x20).
@@ -56,7 +65,8 @@ void InitKernel(int KernelSize)
     InitKeyboard();
 
     // Initialize the timer to fire every 1ms
-    InitTimer(1000);
+    // InitTimer(1000);
+    InitTimer(250);
     
     // Enable the hardware interrupts again
     EnableInterrupts();
@@ -65,8 +75,13 @@ void InitKernel(int KernelSize)
     // It generates Page Faults, therefore the interrupts must be already re-enabled.
     InitHeap();
 
+    // Initializes the GDT and TSS structures
+    // InitGdt();
+
     // Create the initial OS tasks
     CreateInitialTasks();
+
+    InitTimerForContextSwitching();
 }
 
 // Causes a Divide by Zero Exception

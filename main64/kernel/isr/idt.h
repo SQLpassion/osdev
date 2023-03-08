@@ -109,6 +109,9 @@ void IsrHandler(int InterruptNumber, unsigned long cr2, RegisterState *Registers
 // Displays the state of the general purpose registers when the exception has occured.
 void DisplayException(int Number, RegisterState *Registers);
 
+// Installs the IRQ0 interrupt handler that performs the Context Switching between the various tasks
+void InitTimerForContextSwitching();
+
 // Loads the IDT table into the processor register (implemented in Assembler)
 extern void IdtFlush(unsigned long);
 

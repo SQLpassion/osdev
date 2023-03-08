@@ -53,6 +53,9 @@ typedef struct Task
     int Status;
 } Task;
 
+// The Context Switching routine implemented in Assembler
+extern void Irq0_ContextSwitching();
+
 // Creates a new Kernel Task
 Task* CreateKernelModeTask(void *TaskCode, int PID, unsigned long KernelModeStack);
 

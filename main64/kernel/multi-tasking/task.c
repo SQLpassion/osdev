@@ -1,6 +1,7 @@
 #include "task.h"
 #include "../list.h"
 #include "../memory/heap.h"
+#include "../memory/virtual-memory.h"
 #include "../drivers/screen.h"
 
 // Stores all Tasks to be executed
@@ -24,10 +25,10 @@ Task* CreateKernelModeTask(void *TaskCode, int PID, unsigned long KernelModeStac
     newTask->r12 = 0;
     newTask->r13 = 0;
     // newTask->r14 = 0;           // Register R14 is currently not used, because it stores *globally* a reference to the KPCR Data Structure!
-    newTask->r15 = (unsigned long)newTask;     // We store the state of the Task in register R15
-    newTask->cr3 = 0x90000;     // Page Table Address
+    newTask->r15 = newTask;     // We store the state of the Task in register R15
+    // newTask->cr3 = *PML4_TABLE;     // Page Table Address
     newTask->rdi = 0;
-    newTask->rip = (unsigned long)TaskCode;
+    newTask->rip = TaskCode;
     newTask->rflags = 0x2202;
     newTask->PID = PID;
     newTask->Status = TASK_STATUS_CREATED;
@@ -39,12 +40,14 @@ Task* CreateKernelModeTask(void *TaskCode, int PID, unsigned long KernelModeStac
 
     // Prepare the stack of the new Task so that it looks like a traditional Stack Frame from an interrupt.
     // When we restore the state of this Task the first time, that Stack Frame is used during the IRETQ opcode.
-    long *stack = KernelModeStack - 5;
-    newTask->rsp = (unsigned long)stack;
-    stack[0] = (unsigned long)TaskCode; // RIP
+    unsigned long *stack = KernelModeStack - 40;
+
+    newTask->rsp = stack;
+    stack[0] = TaskCode;                // RIP
     stack[1] = 0x8;                     // Code Segment/Selector for Ring 0
     stack[2] = 0x2202;                  // RFLAGS
-    stack[3] = KernelModeStack;         // Stack Pointer
+    // stack[3] = KernelModeStack;         // Stack Pointer
+    stack[3] = stack;         // Stack Pointer
     stack[4] = 0x10;                    // Stack Segment/Selector for Ring 0
 
     // Add the newly created Task to the end of the Task queue
@@ -64,14 +67,6 @@ void CreateInitialTasks()
     CreateKernelModeTask(Dummy1, 1, 0xFFFF800001100000);
     CreateKernelModeTask(Dummy2, 2, 0xFFFF800001200000);
     CreateKernelModeTask(Dummy3, 3, 0xFFFF800001300000);
-
-    PrintList(TaskList);
-    MoveToNextTask();
-    PrintList(TaskList);
-    MoveToNextTask();
-    PrintList(TaskList);
-    MoveToNextTask();
-    PrintList(TaskList);
 }
 
 // Moves the current Task from the head of the TaskList to the tail of the TaskList.
@@ -80,7 +75,7 @@ Task* MoveToNextTask()
     // Remove the old head from the TaskList and set its status to TASK_STATUS_RUNNABLE
     ListEntry *oldHead = TaskList->RootEntry;
     ((Task *)oldHead->Payload)->Status = TASK_STATUS_RUNNABLE;
-    RemoveEntryFromList(TaskList, oldHead, 0);
+    RemoveEntryFromList(TaskList, oldHead);
 
     // Add the old head to the end of the TaskList
     AddEntryToList(TaskList, oldHead->Payload, oldHead->Key);
@@ -101,7 +96,9 @@ void PrintTaskList()
     // Iterate over the whole list
     while (currentEntry != 0x0)
     {
-        printf("PID: ");
+        printf("0x");
+        printf_long((unsigned long)currentEntry, 16);
+        printf(", PID: ");
         printf_long(task->PID, 10);
         printf(", KernelModeStack: 0x");
         printf_long(task->KernelModeStack, 16);
@@ -113,6 +110,8 @@ void PrintTaskList()
         currentEntry = currentEntry->Next;
         task = (Task *)currentEntry->Payload;
     } 
+
+    printf("\n");
 }
 
 // Prints out the status as text
@@ -123,18 +122,42 @@ static void PrintStatus(int Status)
         case 0: printf("CREATED"); break;
         case 1: printf("RUNNABLE"); break;
         case 2: printf("RUNNING"); break;
-        case 3:  printf("WAITING"); break;
+        case 3: printf("WAITING"); break;
     }
 }
 
 void Dummy1()
 {
+    while (1 == 1)
+    {
+        SetColor(COLOR_LIGHT_BLUE);
+        printf("1");
+        printf("\n");
+
+        // void *ptr = malloc(100);
+    }
 }
 
 void Dummy2()
 {
+    while (1 == 1)
+    {
+        SetColor(COLOR_LIGHT_GREEN);
+        printf("2");
+        printf("\n");
+
+        // void *ptr = malloc(100);
+    }
 }
 
 void Dummy3()
 {
+    while (1 == 1)
+    {
+        SetColor(COLOR_LIGHT_RED);
+        printf("3");
+        printf("\n");
+
+        // void *ptr = malloc(100);
+    }
 }

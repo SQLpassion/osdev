@@ -1,6 +1,8 @@
 #include "../common.h"
 #include "../isr/irq.h"
 #include "../date.h"
+#include "../multi-tasking/task.h"
+#include "../kernel.h"
 #include "timer.h"
 #include "screen.h"
 
@@ -23,10 +25,10 @@ void InitTimer(int Hertz)
     outb(0x40, h);
 
     // Registers the IRQ callback function for the hardware timer
-    RegisterIrqHandler(32, &TimerCallback);
+    // RegisterIrqHandler(32, &TimerCallback);
 
     // Refresh the status line
-    RefreshStatusLine();
+    // RefreshStatusLine();
 }
 
 // IRQ callback function

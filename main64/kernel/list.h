@@ -28,7 +28,7 @@ void AddEntryToList(List *List, void *Payload, unsigned long Key);
 ListEntry *GetEntryFromList(List *List, unsigned long Key);
 
 // Removes an entry from the given Double Linked List
-void RemoveEntryFromList(List *List, ListEntry *Node, int FreeMemory);
+void RemoveEntryFromList(List *List, ListEntry *Node);
 
 // This function prints out the content of the Double Linked List
 void PrintList(List *List);

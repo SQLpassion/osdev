@@ -10,6 +10,7 @@ unsigned long HEAP_GROWTH =       0x1000;
 
 int isHeapInitialized = 0;
 
+
 // Initializes the Heap Manager
 int InitHeap()
 {

@@ -184,7 +184,7 @@ unsigned long AllocatePageFrame()
                         unsigned long pfn = (frame + (descriptor->PhysicalMemoryStartAddress / PAGE_SIZE));
 
                         // Add the allocated Page Frame to the Tracked list
-                        AddPageFrameToTrackedList(pfn, k);
+                        // AddPageFrameToTrackedList(pfn, k);
 
                         // Return the Page Frame number
                         return pfn;
@@ -217,7 +217,7 @@ void ReleasePageFrame(unsigned long PageFrameNumber)
         ClearBit(PageFrameNumber, bitmapMask);
 
         // Remove the Page Frame from the Tracked list
-        RemoveEntryFromList(TrackedPageFrames, entry, 1);
+        RemoveEntryFromList(TrackedPageFrames, entry);
 
         // Release the memory of the PageFrame structure on the Heap
         free(frame);

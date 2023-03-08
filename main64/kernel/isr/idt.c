@@ -1,6 +1,7 @@
 #include "idt.h"
 #include "irq.h"
 #include "../common.h"
+#include "../multi-tasking/task.h"
 #include "../drivers/screen.h"
 #include "../memory/virtual-memory.h"
 
@@ -107,6 +108,15 @@ void IsrHandler(int InterruptNumber, unsigned long cr2, RegisterState *Registers
         // Halt the system
         while (1 == 1) {}
     }
+}
+
+// Installs the IRQ0 interrupt handler that performs the Context Switching between the various tasks
+void InitTimerForContextSwitching()
+{
+    IdtSetGate(32, (unsigned long)Irq0_ContextSwitching, IDT_INTERRUPT_GATE);
+
+    // Loads the IDT table into the processor register (Assembler function)
+    IdtFlush((unsigned long)&idtPointer);
 }
 
 // Displays the state of the general purpose registers when the exception has occured.

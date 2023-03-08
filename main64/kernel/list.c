@@ -61,7 +61,7 @@ ListEntry *GetEntryFromList(List *List, unsigned long Key)
 }
 
 // Removes a Node from the given Double Linked List
-void RemoveEntryFromList(List *List, ListEntry *Entry, int FreeMemory)
+void RemoveEntryFromList(List *List, ListEntry *Entry)
 {
     ListEntry *nextEntry = 0x0;
     ListEntry *previousEntry = 0x0;
@@ -85,8 +85,7 @@ void RemoveEntryFromList(List *List, ListEntry *Entry, int FreeMemory)
     List->Count--;
 
     // Release the memory of the ListNode structure on the Heap
-    if (FreeMemory)
-        free(Entry);
+    free(Entry);
 }
 
 // This function prints out the content of the Double Linked List
