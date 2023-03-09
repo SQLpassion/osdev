@@ -21,33 +21,35 @@ Task* CreateKernelModeTask(void *TaskCode, int PID, unsigned long KernelModeStac
     newTask->PID = PID;
     newTask->Status = TASK_STATUS_CREATED;
     newTask->rip = (unsigned long)TaskCode;
-    newTask->rflags = 0x2202;
-    newTask->rax = 0;
-    newTask->rbx = 0;
-    newTask->rcx = 0;
-    newTask->rdx = 0;
+    newTask->rflags = 0x0;
+
+    // Set the General Purpose Registers
+    newTask->rax = 0x0;
+    newTask->rbx = 0x0;
+    newTask->rcx = 0x0;
+    newTask->rdx = 0x0;
     newTask->rbp = KernelModeStack;
     newTask->rsp = KernelModeStack;
-    newTask->rsi = 0;
-    newTask->rdi = 0;
-    newTask->r8 = 0;
-    newTask->r9 = 0;
-    newTask->r10 = 0;
-    newTask->r11 = 0;
-    newTask->r12 = 0;
-    newTask->r13 = 0;
-    newTask->r14 = 0;
+    newTask->rsi = 0x0;
+    newTask->rdi = 0x0;
+    newTask->r8 = 0x0;
+    newTask->r9 = 0x0;
+    newTask->r10 = 0x0;
+    newTask->r11 = 0x0;
+    newTask->r12 = 0x0;
+    newTask->r13 = 0x0;
+    newTask->r14 = 0x0;
     newTask->r15 = (unsigned long)newTask; // The address of the Task structure is stored in the R15 register
+
+    // Set the remaining segment registers
+    newTask->es = 0x0;
+    newTask->fs = 0x0;
+    newTask->gs = 0x0;
 
     // Set the Selectors for Ring 0
     newTask->cs = 0x8;
     newTask->ss = 0x10;
     newTask->ds = 0x10;
-
-    // Set the remaining segment registers
-    newTask->es = 0;
-    newTask->fs = 0;
-    newTask->gs = 0;
 
     // Touch the virtual address of the Kernel Mode Stack (8 bytes below the starting address), so that we can
     // be sure that the virtual address will get mapped to a physical Page Frame through the Page Fault Handler.
@@ -72,13 +74,10 @@ void CreateInitialTasks()
     TaskList = NewList();
     TaskList->PrintFunctionPtr = &PrintTaskList;
 
-    // Create the Kernel Mode Tasks
+    // Create the initial Kernel Mode Tasks
     CreateKernelModeTask(Dummy1, 1, 0xFFFF800001100000);
     CreateKernelModeTask(Dummy2, 2, 0xFFFF800001200000);
     CreateKernelModeTask(Dummy3, 3, 0xFFFF800001300000);
-
-    // Refresh the status line
-    RefreshStatusLine();
 }
 
 // Moves the current Task from the head of the TaskList to the tail of the TaskList.

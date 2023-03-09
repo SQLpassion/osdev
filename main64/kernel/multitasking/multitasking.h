@@ -7,37 +7,41 @@
 #define TASK_STATUS_RUNNING       0x2
 #define TASK_STATUS_WAITING       0x3
 
-// Represents a Task
+// Represents the state of a Task
 typedef struct Task
 {
+    // Instruction Pointer and Flags Registers
+    unsigned long rip;      // Offset   +0
+    unsigned long rflags;   // Offset   +8
+    
     // General Purpose Registers
-    unsigned long rax;
-    unsigned long rbx;
-    unsigned long rcx;
-    unsigned long rdx;
-    unsigned long rbp;
-    unsigned long rsi;
-    unsigned long r8;
-    unsigned long r9;
-    unsigned long r10;
-    unsigned long r11;
-    unsigned long r12;
-    unsigned long r13;
-    unsigned long r14;
-    unsigned long r15;
-    unsigned long cr3;
+    unsigned long rax;      // Offset  +16
+    unsigned long rbx;      // Offset  +24
+    unsigned long rcx;      // Offset  +32
+    unsigned long rdx;      // Offset  +40
+    unsigned long rsi;      // Offset  +48
+    unsigned long rdi;      // Offset  +56
+    unsigned long rbp;      // Offset  +64
+    unsigned long rsp;      // Offset  +72
+    unsigned long r8;       // Offset  +80
+    unsigned long r9;       // Offset  +88
+    unsigned long r10;      // Offset  +96
+    unsigned long r11;      // Offset +104
+    unsigned long r12;      // Offset +112
+    unsigned long r13;      // Offset +120
+    unsigned long r14;      // Offset +128
+    unsigned long r15;      // Offset +136
+    
+    // Segment Registers
+    unsigned long ss;       // Offset +144
+    unsigned long cs;       // Offset +152
+    unsigned long ds;       // Offset +160
+    unsigned long es;       // Offset +168
+    unsigned long fs;       // Offset +176
+    unsigned long gs;       // Offset +184
 
-    unsigned long rdi;
-    unsigned long rip;
-    unsigned long cs;
-    unsigned long rflags;
-    unsigned long rsp;
-    unsigned long ss;
-
-    unsigned long ds;
-    unsigned long es;
-    unsigned long fs;
-    unsigned long gs;
+    // Control Registers
+    unsigned long cr3;      // Offset +192
 
     // The ID of the running Task
     int PID;

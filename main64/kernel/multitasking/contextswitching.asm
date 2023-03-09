@@ -3,32 +3,58 @@
 [GLOBAL GetTaskState]
 [EXTERN MoveToNextTask]
 
-; Defines the various offsets into the C structure "Task"
-%define TaskState_RAX       0
-%define TaskState_RBX       8
-%define TaskState_RCX       16
-%define TaskState_RDX       24 
-%define TaskState_RBP       32
-%define TaskState_RSI       40
-%define TaskState_R8        48
-%define TaskState_R9        56
-%define TaskState_R10       64
-%define TaskState_R11       72
-%define TaskState_R12       80
-%define TaskState_R13       88
-%define TaskState_R14       96
-%define TaskState_R15       104
-%define TaskState_CR3       112
-%define TaskState_RDI       120
-%define TaskState_RIP       128
-%define TaskState_CS        136
-%define TaskState_RFLAGS    144
-%define TaskState_RSP       152
-%define TaskState_SS        160
-%define TaskState_DS        168
-%define TaskState_ES        176
-%define TaskState_FS        184
-%define TaskState_GS        192
+; =======================================================================
+; The following constants defines the offsets into the C structure "Task"
+; =======================================================================
+
+; Instruction Pointer and Flags Registers
+%DEFINE TaskState_RIP       0
+%DEFINE TaskState_RFLAGS    8
+
+; General Purpose Registers
+%DEFINE TaskState_RAX       16
+%DEFINE TaskState_RBX       24
+%DEFINE TaskState_RCX       32
+%DEFINE TaskState_RDX       40 
+%DEFINE TaskState_RSI       48
+%DEFINE TaskState_RDI       56
+%DEFINE TaskState_RBP       64
+%DEFINE TaskState_RSP       72
+%DEFINE TaskState_R8        80
+%DEFINE TaskState_R9        88
+%DEFINE TaskState_R10       96
+%DEFINE TaskState_R11       104
+%DEFINE TaskState_R12       112
+%DEFINE TaskState_R13       120
+%DEFINE TaskState_R14       128
+%DEFINE TaskState_R15       136
+
+; Segment Registers
+%DEFINE TaskState_SS        144
+%DEFINE TaskState_CS        152
+%DEFINE TaskState_DS        160
+%DEFINE TaskState_ES        168
+%DEFINE TaskState_FS        176
+%DEFINE TaskState_GS        184
+
+; Control Registers
+%DEFINE TaskState_CR3       192
+
+; ============================================================================
+; The following constants defines the offsets into the IRQ Stack Frame Layout
+; IRQ STACK FRAME LAYOUT (based on the current RSP):
+; ============================================================================
+; Return SS:        +32
+; Return RSP:       +24
+; Return RFLAGS:    +16
+; Return CS:        +8
+; Return RIP:       +0
+; 
+%DEFINE StackFrame_RIP      0
+%DEFINE StackFrame_CS       8
+%DEFINE StackFrame_RFLAGS   16
+%DEFINE StackFrame_RSP      24
+%DEFINE StackFrame_SS       32
 
 ; This function is called as soon as the Timer Interrupt is raised
 ; 
@@ -36,147 +62,147 @@
 ; where the interrupts are disabled/enabled automatically by the CPU!
 Irq0_ContextSwitching:
     ; Save RDI on the Stack, so that we can store it later in the Task structure
-    push rdi
+    PUSH    RDI
 
     ; The first initial code execution path (entry point of KERNEL.BIN) that was started by KLDR64.BIN,
     ; has no Task structure assigned in register R15.
     ; Therefore we only save the current Task State if we have a Task structure assigned in R15.
-    mov rdi, r15
-    cmp rdi, 0x0
-    je NoTaskStateSaveNecessary
+    MOV     RDI, R15
+    CMP     RDI, 0x0
+    JE      NoTaskStateSaveNecessary
     
     ; Save the current general purpose registers
-    mov [rdi + TaskState_RAX], rax
-    mov [rdi + TaskState_RBX], rbx
-    mov [rdi + TaskState_RCX], rcx
-    mov [rdi + TaskState_RDX], rdx
-    mov [rdi + TaskState_RBP], rbp
-    mov [rdi + TaskState_RSI], rsi
-    mov [rdi + TaskState_R8],  r8
-    mov [rdi + TaskState_R9],  r9
-    mov [rdi + TaskState_R10], r10
-    mov [rdi + TaskState_R11], r11
-    mov [rdi + TaskState_R12], r12
-    mov [rdi + TaskState_R13], r13
-    mov [rdi + TaskState_R14], r14
-    mov [rdi + TaskState_R15], r15
+    MOV     [RDI + TaskState_RAX], RAX
+    MOV     [RDI + TaskState_RBX], RBX
+    MOV     [RDI + TaskState_RCX], RCX
+    MOV     [RDI + TaskState_RDX], RDX
+    MOV     [RDI + TaskState_RSI], RSI
+    MOV     [RDI + TaskState_RBP], RBP
+    MOV     [RDI + TaskState_R8],  R8
+    MOV     [RDI + TaskState_R9],  R9
+    MOV     [RDI + TaskState_R10], R10
+    MOV     [RDI + TaskState_R11], R11
+    MOV     [RDI + TaskState_R12], R12
+    MOV     [RDI + TaskState_R13], R13
+    MOV     [RDI + TaskState_R14], R14
+    MOV     [RDI + TaskState_R15], R15
 
     ; Save RDI
-    pop rax ; Pop the initial content of RDI off the Stack
-    mov [rdi + TaskState_RDI], rax
+    POP     RAX ; Pop the initial content of RDI off the Stack
+    MOV     [RDI + TaskState_RDI], RAX
 
     ; Save the Segment Registers
-    mov [rdi + TaskState_DS], ds
-    mov [rdi + TaskState_ES], es
-    mov [rdi + TaskState_FS], fs
-    mov [rdi + TaskState_GS], gs
+    MOV     [RDI + TaskState_DS], DS
+    MOV     [RDI + TaskState_ES], ES
+    MOV     [RDI + TaskState_FS], FS
+    MOV     [RDI + TaskState_GS], GS
 
     ; IRQ STACK FRAME LAYOUT (based on the current RSP)
     ; ==================================================
-    ; Return SS:        + 32
-    ; Return RSP:       + 24
-    ; Return RFLAGS:    + 16
-    ; Return CS:        + 8
-    ; Return RIP:       + 0
+    ; Return SS:        +32
+    ; Return RSP:       +24
+    ; Return RFLAGS:    +16
+    ; Return CS:        +8
+    ; Return RIP:       +0
 
     ; Save the current register RIP from the Stack
-    mov rax, [rsp + 0]
-    mov [rdi + TaskState_RIP], rax
+    MOV     RAX, [RSP + StackFrame_RIP]
+    MOV     [RDI + TaskState_RIP], RAX
 
     ; Save the current register CS from the Stack
-    mov rax, [rsp + 8]
-    mov [rdi + TaskState_CS], rax
+    MOV     RAX, [RSP + StackFrame_CS]
+    MOV     [RDI + TaskState_CS], RAX
 
     ; Save the current register RFLAGS from the Stack
-    mov rax, [rsp + 16]
-    mov [rdi + TaskState_RFLAGS], rax
+    MOV     RAX, [RSP + StackFrame_RFLAGS]
+    MOV     [RDI + TaskState_RFLAGS], RAX
 
     ; Save the current register RSP from the Stack
-    mov rax, [rsp + 24]
-    mov [rdi + TaskState_RSP], rax
+    MOV     RAX, [RSP + StackFrame_RSP]
+    MOV     [RDI + TaskState_RSP], RAX
 
     ; Save the current register SS from the Stack
-    mov rax, [rsp + 32]
-    mov [rdi + TaskState_SS], rax
+    MOV     RAX, [RSP + StackFrame_SS]
+    MOV     [RDI + TaskState_SS], RAX
 
-    jmp Continue
+    JMP     Continue
 
 NoTaskStateSaveNecessary:
     ; Pop the initial content of RDI off the Stack
-    pop rax
+    POP     RAX
 
 Continue:
     ; Move to the next Task to be executed
-    call MoveToNextTask
+    CALL    MoveToNextTask
 
     ; Store the pointer to the current Task in the register RDI.
     ; It was returned in the register RAX from the previous function call.
-    mov rdi, rax
+    MOV     RDI, RAX
     
     ; Restore the general purpose registers of the next Task to be executed
-    mov rbx, [rdi + TaskState_RBX]
-    mov rcx, [rdi + TaskState_RCX]
-    mov rdx, [rdi + TaskState_RDX]
-    mov rbp, [rdi + TaskState_RBP]
-    mov rsi, [rdi + TaskState_RSI]
-    mov r8, [rdi + TaskState_R8]
-    mov r9, [rdi + TaskState_R9]
-    mov r10, [rdi + TaskState_R10]
-    mov r11, [rdi + TaskState_R11]
-    mov r12, [rdi + TaskState_R12]
-    mov r13, [rdi + TaskState_R13]
-    mov r14, [rdi + TaskState_R14]
-    mov r15, [rdi + TaskState_R15]
+    MOV     RBX, [RDI + TaskState_RBX]
+    MOV     RCX, [RDI + TaskState_RCX]
+    MOV     RDX, [RDI + TaskState_RDX]
+    MOV     RSI, [RDI + TaskState_RSI]
+    MOV     RBP, [RDI + TaskState_RBP]
+    MOV     R8,  [RDI + TaskState_R8]
+    MOV     R9,  [RDI + TaskState_R9]
+    MOV     R10, [RDI + TaskState_R10]
+    MOV     R11, [RDI + TaskState_R11]
+    MOV     R12, [RDI + TaskState_R12]
+    MOV     R13, [RDI + TaskState_R13]
+    MOV     R14, [RDI + TaskState_R14]
+    MOV     R15, [RDI + TaskState_R15]
 
     ; IRQ STACK FRAME LAYOUT (based on the current RSP)
     ; ==================================================
-    ; Return SS:        + 32
-    ; Return RSP:       + 24
-    ; Return RFLAGS:    + 16
-    ; Return CS:        + 8
-    ; Return RIP:       + 0
+    ; Return SS:        +32
+    ; Return RSP:       +24
+    ; Return RFLAGS:    +16
+    ; Return CS:        +8
+    ; Return RIP:       +0
 
     ; Restore the register RIP of the next Task onto the stack
-    mov rax, [rdi + TaskState_RIP]
-    mov [rsp + 0], rax
+    MOV     RAX, [RDI + TaskState_RIP]
+    MOV     [RSP + StackFrame_RIP], RAX
 
     ; Restore the register CS of the next Task onto the stack
-    mov rax, [rdi + TaskState_CS]
-    mov [rsp + 8], rax
+    MOV     RAX, [RDI + TaskState_CS]
+    MOV     [RSP + StackFrame_CS], RAX
 
     ; Restore the register RFLAGS of the next Task onto the stack
-    mov rax, [rdi + TaskState_RFLAGS]
-    mov [rsp + 16], rax
+    MOV     RAX, [RDI + TaskState_RFLAGS]
+    MOV     [RSP + StackFrame_RFLAGS], RAX
 
     ; Restore the register RSP of the next Task onto the stack
-    mov rax, [rdi + TaskState_RSP]
-    mov [rsp + 24], rax
+    MOV     RAX, [RDI + TaskState_RSP]
+    MOV     [RSP + StackFrame_RSP], RAX
 
     ; Restore the register SS of the next Task onto the stack
-    mov rax, [rdi + TaskState_SS]
-    mov [rsp + 32], rax
+    MOV     RAX, [RDI + TaskState_SS]
+    MOV     [RSP + StackFrame_SS], RAX
 
     ; Restore the register RAX register of the next Task
-    mov rax, [rdi + TaskState_RAX]
+    MOV     RAX, [RDI + TaskState_RAX]
 
     ; Restore the remaining Segment Registers
-    mov ds, [rdi + TaskState_DS]
-    mov es, [rdi + TaskState_ES]
-    mov fs, [rdi + TaskState_FS]
-    mov gs, [rdi + TaskState_GS]
+    MOV     DS, [RDI + TaskState_DS]
+    MOV     ES, [RDI + TaskState_ES]
+    MOV     FS, [RDI + TaskState_FS]
+    MOV     GS, [RDI + TaskState_GS]
 
     ; Send the reset signal to the master PIC...
-    push rax
-    mov rax, 0x20
-    out 0x20, eax
-    pop rax
+    PUSH    RAX
+    MOV     RAX, 0x20
+    OUT     0x20, EAX
+    POP     RAX
 
     ; Return from the Interrupt Handler
     ; Because we have patched the Stack Frame of the Interrupt Handler, we continue with the execution of 
     ; the next Task - based on the restored register RIP on the Stack...
-    iretq
+    IRETQ
 
 ; This function returns a pointer to the Task structure of the current executing Task
 GetTaskState:
-    mov rax, r15
-    ret
+    MOV     RAX, R15
+    RET

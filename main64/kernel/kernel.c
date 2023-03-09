@@ -80,6 +80,9 @@ void InitKernel(int KernelSize)
     // Create the initial OS tasks
     CreateInitialTasks();
 
+    // Refresh the status line
+    RefreshStatusLine();
+
     // Register the Context Switching IRQ Handler when the Timer fires
     InitTimerForContextSwitching();
 }
