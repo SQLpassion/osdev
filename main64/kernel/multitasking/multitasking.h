@@ -44,7 +44,7 @@ typedef struct Task
     unsigned long cr3;      // Offset +192
 
     // The ID of the running Task
-    int PID;
+    unsigned long PID;
 
     // The used Kernel Mode Stack
     unsigned long KernelModeStack;
@@ -63,14 +63,20 @@ typedef struct Task
 // The Context Switching routine implemented in Assembler
 extern void Irq0_ContextSwitching();
 
+// The GetTaskState function implemented in Assembler
+extern Task *GetTaskState();
+
 // Creates a new Kernel Task
-Task* CreateKernelModeTask(void *TaskCode, int PID, unsigned long KernelModeStack);
+Task* CreateKernelModeTask(void *TaskCode, unsigned long PID, unsigned long KernelModeStack);
 
 // Creates all initial OS tasks
 void CreateInitialTasks();
 
 // Moves the current Task from the head of the TaskList to the tail of the TaskList
 Task* MoveToNextTask();
+
+// Terminates the Kernel Mode Task with the given PID
+void TerminateTask(unsigned long PID);
 
 // Refreshs the status line
 void RefreshStatusLine();

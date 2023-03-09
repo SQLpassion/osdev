@@ -14,7 +14,7 @@ List *TaskList = 0x0;
 unsigned long counter = 0;
 
 // Creates a new Kernel Mode Task
-Task* CreateKernelModeTask(void *TaskCode, int PID, unsigned long KernelModeStack)
+Task* CreateKernelModeTask(void *TaskCode, unsigned long PID, unsigned long KernelModeStack)
 {
     Task *newTask = (Task *)malloc(sizeof(Task));
     newTask->KernelModeStack = KernelModeStack;
@@ -22,7 +22,7 @@ Task* CreateKernelModeTask(void *TaskCode, int PID, unsigned long KernelModeStac
     newTask->Status = TASK_STATUS_CREATED;
     newTask->rip = (unsigned long)TaskCode;
 
-    // 	The "Interrupt Enable Flag" (Bit 9) must be set
+    // The "Interrupt Enable Flag" (Bit 9) must be set
     newTask->rflags = 0x200;
 
     // Set the General Purpose Registers
@@ -96,6 +96,9 @@ Task* MoveToNextTask()
     // Set the status of the new head to TASK_STATUS_RUNNING
     ((Task *)TaskList->RootEntry->Payload)->Status = TASK_STATUS_RUNNING;
 
+    // Record the Context Switch
+    ((Task *)TaskList->RootEntry->Payload)->ContextSwitches++;
+
     // Increment the clock counter
     counter++;
 
@@ -111,6 +114,16 @@ Task* MoveToNextTask()
 
     // Return the new head
     return ((Task *)TaskList->RootEntry->Payload);
+}
+
+// Terminates the Kernel Mode Task with the given PID
+void TerminateTask(unsigned long PID)
+{
+    // Find the Task which needs to be terminated
+    ListEntry *task = GetEntryFromList(TaskList, PID);
+
+    // Remove the Task from the TaskList
+    RemoveEntryFromList(TaskList, task);
 }
 
 // Refreshs the status line
@@ -216,10 +229,24 @@ static void PrintStatus(int Status)
 
 void Dummy1()
 {
+    int loopCounter = 0;
+
     while (1 == 1)
     {
         SetColor(COLOR_LIGHT_BLUE);
-        printf("1");
+        // printf("1");
+        // printf("\n");
+
+        if (loopCounter == 100)
+        {
+            TerminateTask(3);
+        }
+
+        loopCounter++;
+
+        // Print out the number of Context Switches
+        Task *task = GetTaskState();
+        printf_long(task->ContextSwitches, 10);
         printf("\n");
 
         // void *ptr = malloc(100);
@@ -231,10 +258,15 @@ void Dummy2()
     while (1 == 1)
     {
         SetColor(COLOR_LIGHT_GREEN);
-        printf("2");
-        printf("\n");
+        // printf("2");
+        // printf("\n");
 
         // void *ptr = malloc(100);
+
+        // Print out the number of Context Switches
+        Task *task = GetTaskState();
+        printf_long(task->ContextSwitches, 10);
+        printf("\n");
     }
 }
 
@@ -243,9 +275,14 @@ void Dummy3()
     while (1 == 1)
     {
         SetColor(COLOR_LIGHT_RED);
-        printf("3");
-        printf("\n");
+        // printf("3");
+        // printf("\n");
 
         // void *ptr = malloc(100);
+
+        // Print out the number of Context Switches
+        Task *task = GetTaskState();
+        printf_long(task->ContextSwitches, 10);
+        printf("\n");
     }
 }
