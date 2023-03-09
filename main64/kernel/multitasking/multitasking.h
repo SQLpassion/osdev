@@ -35,6 +35,9 @@ typedef struct Task
     unsigned long ss;
 
     unsigned long ds;
+    unsigned long es;
+    unsigned long fs;
+    unsigned long gs;
 
     // The ID of the running Task
     int PID;

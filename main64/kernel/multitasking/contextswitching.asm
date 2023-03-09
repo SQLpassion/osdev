@@ -19,25 +19,30 @@
 %define TaskState_R14       96
 %define TaskState_R15       104
 %define TaskState_CR3       112
-
 %define TaskState_RDI       120
 %define TaskState_RIP       128
 %define TaskState_CS        136
 %define TaskState_RFLAGS    144
 %define TaskState_RSP       152
 %define TaskState_SS        160
-
 %define TaskState_DS        168
+%define TaskState_ES        176
+%define TaskState_FS        184
+%define TaskState_GS        192
 
 ; This function is called as soon as the Timer Interrupt is raised
+; 
+; NOTE: We don't need to disable/enable the interrupts explicitly, because the IRQ0 is an Interrupt Gate,
+; where the interrupts are disabled/enabled automatically by the CPU!
 Irq0_ContextSwitching:
-    cli
-
-    ; The first initial code execution path (entry point of kernel.bin) that was started by KAOSLDR has no Task structure assigned in register R15.
-    ; Therefore we only save the current Task State if we have a Task structure assigned in R15.
+    ; Save RDI on the Stack, so that we can store it later in the Task structure
     push rdi
+
+    ; The first initial code execution path (entry point of KERNEL.BIN) that was started by KLDR64.BIN,
+    ; has no Task structure assigned in register R15.
+    ; Therefore we only save the current Task State if we have a Task structure assigned in R15.
     mov rdi, r15
-    cmp rdi, qword 0xFFFF800000110000   ; A random, dummy, marker value set by KAOSLDR prior executing the Kernel
+    cmp rdi, 0x0
     je NoTaskStateSaveNecessary
     
     ; Save the current general purpose registers
@@ -53,15 +58,18 @@ Irq0_ContextSwitching:
     mov [rdi + TaskState_R11], r11
     mov [rdi + TaskState_R12], r12
     mov [rdi + TaskState_R13], r13
-    ; mov [rdi + TaskState_R14], r14 ; Register R14 is currently not used, because it stores *globally* a reference to the KPCR Data Structure!
+    mov [rdi + TaskState_R14], r14
     mov [rdi + TaskState_R15], r15
 
     ; Save RDI
-    pop rax
+    pop rax ; Pop the initial content of RDI off the Stack
     mov [rdi + TaskState_RDI], rax
 
-    ; Save the DS register
+    ; Save the Segment Registers
     mov [rdi + TaskState_DS], ds
+    mov [rdi + TaskState_ES], es
+    mov [rdi + TaskState_FS], fs
+    mov [rdi + TaskState_GS], gs
 
     ; IRQ STACK FRAME LAYOUT (based on the current RSP)
     ; ==================================================
@@ -94,12 +102,10 @@ Irq0_ContextSwitching:
     jmp Continue
 
 NoTaskStateSaveNecessary:
+    ; Pop the initial content of RDI off the Stack
     pop rax
 
 Continue:
-    push rbp
-    mov rbp, rsp
-
     ; Move to the next Task to be executed
     call MoveToNextTask
 
@@ -119,7 +125,7 @@ Continue:
     mov r11, [rdi + TaskState_R11]
     mov r12, [rdi + TaskState_R12]
     mov r13, [rdi + TaskState_R13]
-    ; mov r14, [rdi + TaskState_R14] ; Register R14 is currently not used, because it stores *globally* a reference to the KPCR Data Structure!
+    mov r14, [rdi + TaskState_R14]
     mov r15, [rdi + TaskState_R15]
 
     ; IRQ STACK FRAME LAYOUT (based on the current RSP)
@@ -155,9 +161,9 @@ Continue:
 
     ; Restore the remaining Segment Registers
     mov ds, [rdi + TaskState_DS]
-    mov es, [rdi + TaskState_DS]
-    mov fs, [rdi + TaskState_DS]
-    mov gs, [rdi + TaskState_DS]
+    mov es, [rdi + TaskState_ES]
+    mov fs, [rdi + TaskState_FS]
+    mov gs, [rdi + TaskState_GS]
 
     ; Send the reset signal to the master PIC...
     push rax
@@ -168,7 +174,6 @@ Continue:
     ; Return from the Interrupt Handler
     ; Because we have patched the Stack Frame of the Interrupt Handler, we continue with the execution of 
     ; the next Task - based on the restored register RIP on the Stack...
-    sti
     iretq
 
 ; This function returns a pointer to the Task structure of the current executing Task

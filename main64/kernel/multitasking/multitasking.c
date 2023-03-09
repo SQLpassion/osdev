@@ -1,6 +1,7 @@
 #include "multitasking.h"
 #include "../common.h"
 #include "../list.h"
+#include "../date.h"
 #include "../memory/heap.h"
 #include "../memory/virtual-memory.h"
 #include "../drivers/screen.h"
@@ -8,54 +9,59 @@
 // Stores all Tasks to be executed
 List *TaskList = 0x0;
 
+// This counter stores how often Context Switching was performed, 
+// and drives the system date calculation.
 unsigned long counter = 0;
 
-// Creates a new Kernel Task
+// Creates a new Kernel Mode Task
 Task* CreateKernelModeTask(void *TaskCode, int PID, unsigned long KernelModeStack)
 {
     Task *newTask = (Task *)malloc(sizeof(Task));
     newTask->KernelModeStack = KernelModeStack;
+    newTask->PID = PID;
+    newTask->Status = TASK_STATUS_CREATED;
+    newTask->rip = (unsigned long)TaskCode;
+    newTask->rflags = 0x2202;
     newTask->rax = 0;
     newTask->rbx = 0;
     newTask->rcx = 0;
     newTask->rdx = 0;
     newTask->rbp = KernelModeStack;
+    newTask->rsp = KernelModeStack;
     newTask->rsi = 0;
+    newTask->rdi = 0;
     newTask->r8 = 0;
     newTask->r9 = 0;
     newTask->r10 = 0;
     newTask->r11 = 0;
     newTask->r12 = 0;
     newTask->r13 = 0;
-    // newTask->r14 = 0;           // Register R14 is currently not used, because it stores *globally* a reference to the KPCR Data Structure!
-    newTask->r15 = newTask;     // We store the state of the Task in register R15
-    // newTask->cr3 = *PML4_TABLE;     // Page Table Address
-    newTask->rdi = 0;
-    newTask->rip = TaskCode;
-    newTask->rflags = 0x2202;
-    newTask->PID = PID;
-    newTask->Status = TASK_STATUS_CREATED;
+    newTask->r14 = 0;
+    newTask->r15 = (unsigned long)newTask; // The address of the Task structure is stored in the R15 register
 
     // Set the Selectors for Ring 0
     newTask->cs = 0x8;
     newTask->ss = 0x10;
     newTask->ds = 0x10;
 
-    // Prepare the stack of the new Task so that it looks like a traditional Stack Frame from an interrupt.
-    // When we restore the state of this Task the first time, that Stack Frame is used during the IRETQ opcode.
-    unsigned long *stack = KernelModeStack - 40;
-    
-    newTask->rsp = stack;
-    stack[0] = TaskCode;                // RIP
-    stack[1] = 0x8;                     // Code Segment/Selector for Ring 0
-    stack[2] = 0x2202;                  // RFLAGS
-    // stack[3] = KernelModeStack;         // Stack Pointer
-    stack[3] = stack;         // Stack Pointer
-    stack[4] = 0x10;                    // Stack Segment/Selector for Ring 0
+    // Set the remaining segment registers
+    newTask->es = 0;
+    newTask->fs = 0;
+    newTask->gs = 0;
 
-    // Add the newly created Task to the end of the Task queue
+    // Touch the virtual address of the Kernel Mode Stack (8 bytes below the starting address), so that we can
+    // be sure that the virtual address will get mapped to a physical Page Frame through the Page Fault Handler.
+    // 
+    // NOTE: If we don't do that, and the virtual address is unmapped, the OS will crash during the Context
+    // Switching routine, because a Page Fault would occur (when we prepare the return Stack Frame), which
+    // can'be be handled, because the interrupts are disabled!
+    unsigned long *ptr = (unsigned long *)KernelModeStack - 8;
+    ptr[0] = ptr[0]; // This read/write operation causes a Page Fault!
+
+    // Add the newly created Kernel Mode Task to the end of the TaskList
     AddEntryToList(TaskList, newTask, PID);
 
+    // Return a reference to the newly created Kernel Mode Task
     return newTask;
 }
 
@@ -92,6 +98,7 @@ Task* MoveToNextTask()
     // Increment the clock counter
     counter++;
 
+    // The timer is fired every 4 milliseconds
     if (counter % 250 == 0)
     {
         // Increment the system date by 1 second
