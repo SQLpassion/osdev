@@ -65,6 +65,9 @@ void CreateInitialTasks();
 // Moves the current Task from the head of the TaskList to the tail of the TaskList
 Task* MoveToNextTask();
 
+// Refreshs the status line
+void RefreshStatusLine();
+
 // Prints out the TaskList entries
 void PrintTaskList();
 

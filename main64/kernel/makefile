@@ -1,6 +1,6 @@
 # Automatically generate lists of sources using wildcards.
-C_SOURCES = $(wildcard *.c drivers/*.c isr/*.c memory/*.c multi-tasking/*.c)
-HEADERS = $(wildcard *.h drivers/*.h isr/*.h memory/*.h multi-tasking/*.h)
+C_SOURCES = $(wildcard *.c drivers/*.c isr/*.c memory/*.c multitasking/*.c)
+HEADERS = $(wildcard *.h drivers/*.h isr/*.h memory/*.h multitasking/*.h)
 
 # Convert the *.c filenames to *.o to give a list of object files to build
 OBJ = ${C_SOURCES:.c=.o}
@@ -26,8 +26,8 @@ isr/irq_asm.o : isr/irq.asm
 	nasm -felf64 isr/irq.asm -o isr/irq_asm.o
 
 # Builds the Task Switching functionality written in Assembler
-multi-tasking/taskswitch.o : multi-tasking/taskswitch.asm
-	nasm -felf64 multi-tasking/taskswitch.asm -o multi-tasking/taskswitch.o
+multitasking/contextswitching.o : multitasking/contextswitching.asm
+	nasm -felf64 multitasking/contextswitching.asm -o multitasking/contextswitching.o
 
 # Compiles the C kernel
 %.o : %.c ${HEADERS}
@@ -35,7 +35,7 @@ multi-tasking/taskswitch.o : multi-tasking/taskswitch.asm
 
 # Links the C kernel
 # The file "kernel.o" is specified explicitly, so that it is the first part of the file "kernel.bin"
-kernel.bin: kernel.o isr/idt_asm.o isr/irq_asm.o multi-tasking/taskswitch.o ${OBJ}
+kernel.bin: kernel.o isr/idt_asm.o isr/irq_asm.o multitasking/contextswitching.o ${OBJ}
 	x86_64-elf-ld -o $@ -Tlink.ld $^ --oformat binary -z max-page-size=0x1000 -Map kernel.map
 
 # Clean up
@@ -46,5 +46,5 @@ clean:
 	rm -f drivers/*.o
 	rm -f isr/*.o
 	rm -f memory/*.o
-	rm -f multi-tasking/*.o
+	rm -f multitasking/*.o
 	rm -f *.generated

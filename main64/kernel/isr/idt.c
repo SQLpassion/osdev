@@ -1,7 +1,7 @@
 #include "idt.h"
 #include "irq.h"
 #include "../common.h"
-#include "../multi-tasking/task.h"
+#include "../multitasking/multitasking.h"
 #include "../drivers/screen.h"
 #include "../memory/virtual-memory.h"
 

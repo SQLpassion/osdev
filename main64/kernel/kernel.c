@@ -4,7 +4,7 @@
 #include "memory/physical-memory.h"
 #include "memory/virtual-memory.h"
 #include "memory/heap.h"
-#include "multi-tasking/task.h"
+#include "multitasking/multitasking.h"
 #include "isr/pic.h"
 #include "isr/idt.h"
 #include "kernel.h"
@@ -64,8 +64,7 @@ void InitKernel(int KernelSize)
     // Initialize the keyboard
     InitKeyboard();
 
-    // Initialize the timer to fire every 1ms
-    // InitTimer(1000);
+    // Initialize the timer to fire every 4ms
     InitTimer(250);
     
     // Enable the hardware interrupts again
@@ -81,6 +80,7 @@ void InitKernel(int KernelSize)
     // Create the initial OS tasks
     CreateInitialTasks();
 
+    // Register the Context Switching IRQ Handler when the Timer fires
     InitTimerForContextSwitching();
 }
 

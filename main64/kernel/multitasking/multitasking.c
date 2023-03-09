@@ -1,4 +1,5 @@
-#include "task.h"
+#include "multitasking.h"
+#include "../common.h"
 #include "../list.h"
 #include "../memory/heap.h"
 #include "../memory/virtual-memory.h"
@@ -6,6 +7,8 @@
 
 // Stores all Tasks to be executed
 List *TaskList = 0x0;
+
+unsigned long counter = 0;
 
 // Creates a new Kernel Task
 Task* CreateKernelModeTask(void *TaskCode, int PID, unsigned long KernelModeStack)
@@ -41,7 +44,7 @@ Task* CreateKernelModeTask(void *TaskCode, int PID, unsigned long KernelModeStac
     // Prepare the stack of the new Task so that it looks like a traditional Stack Frame from an interrupt.
     // When we restore the state of this Task the first time, that Stack Frame is used during the IRETQ opcode.
     unsigned long *stack = KernelModeStack - 40;
-
+    
     newTask->rsp = stack;
     stack[0] = TaskCode;                // RIP
     stack[1] = 0x8;                     // Code Segment/Selector for Ring 0
@@ -67,6 +70,9 @@ void CreateInitialTasks()
     CreateKernelModeTask(Dummy1, 1, 0xFFFF800001100000);
     CreateKernelModeTask(Dummy2, 2, 0xFFFF800001200000);
     CreateKernelModeTask(Dummy3, 3, 0xFFFF800001300000);
+
+    // Refresh the status line
+    RefreshStatusLine();
 }
 
 // Moves the current Task from the head of the TaskList to the tail of the TaskList.
@@ -83,8 +89,82 @@ Task* MoveToNextTask()
     // Set the status of the new head to TASK_STATUS_RUNNING
     ((Task *)TaskList->RootEntry->Payload)->Status = TASK_STATUS_RUNNING;
 
+    // Increment the clock counter
+    counter++;
+
+    if (counter % 250 == 0)
+    {
+        // Increment the system date by 1 second
+        IncrementSystemDate();
+
+        // Refresh the status line
+        RefreshStatusLine();
+    }
+
     // Return the new head
     return ((Task *)TaskList->RootEntry->Payload);
+}
+
+// Refreshs the status line
+void RefreshStatusLine()
+{
+    char buffer[80] = "";
+    char str[32] = "";
+    char tmp[2] = "";
+
+    // Getting a reference to the BIOS Information Block
+    BiosInformationBlock *bib = (BiosInformationBlock *)BIB_OFFSET;
+
+    // Print out the year
+    itoa(bib->Year, 10, str);
+    strcat(buffer, str);
+    strcat(buffer, "-");
+
+    // Print out the month
+    FormatInteger(bib->Month, tmp);
+    strcat(buffer, tmp);
+    strcat(buffer, "-");
+
+    // Print out the day
+    FormatInteger(bib->Day, tmp);
+    strcat(buffer, tmp);
+    strcat(buffer, ", ");
+
+    // Print out the hour
+    FormatInteger(bib->Hour, tmp);
+    strcat(buffer, tmp);
+    strcat(buffer, ":");
+
+    // Print out the minute
+    FormatInteger(bib->Minute, tmp);
+    strcat(buffer, tmp);
+    strcat(buffer, ":");
+
+    // Print out the second
+    FormatInteger(bib->Second, tmp);
+    strcat(buffer, tmp);
+
+    // Print out the available memory
+    strcat(buffer, ", PMEM: ");
+    ltoa(bib->MaxMemory / 1024 / 1024 + 1, 10, str);
+    strcat(buffer, str);
+    strcat(buffer, " MB, FMEM: ");
+    ltoa(bib->AvailablePageFrames, 10, str);
+    strcat(buffer, str);
+    strcat(buffer, " Page Frames");
+
+    // Pad the remaining columns with a blank, so that the status line goes
+    // over the whole row
+    int len = 80 - strlen(buffer);
+
+    while (len > 0)
+    {
+        strcat(buffer, " ");
+        len--;
+    }
+
+    // Print out the status line
+    PrintStatusLine(buffer);
 }
 
 // Prints out the TaskList entries
