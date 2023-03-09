@@ -21,7 +21,9 @@ Task* CreateKernelModeTask(void *TaskCode, int PID, unsigned long KernelModeStac
     newTask->PID = PID;
     newTask->Status = TASK_STATUS_CREATED;
     newTask->rip = (unsigned long)TaskCode;
-    newTask->rflags = 0x0;
+
+    // 	The "Interrupt Enable Flag" (Bit 9) must be set
+    newTask->rflags = 0x200;
 
     // Set the General Purpose Registers
     newTask->rax = 0x0;
