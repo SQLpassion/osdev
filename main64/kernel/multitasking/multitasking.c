@@ -20,38 +20,38 @@ Task* CreateKernelModeTask(void *TaskCode, unsigned long PID, unsigned long Kern
     newTask->KernelModeStack = KernelModeStack;
     newTask->PID = PID;
     newTask->Status = TASK_STATUS_CREATED;
-    newTask->rip = (unsigned long)TaskCode;
+    newTask->RIP = (unsigned long)TaskCode;
 
     // The "Interrupt Enable Flag" (Bit 9) must be set
-    newTask->rflags = 0x200;
+    newTask->RFLAGS = 0x200;
 
     // Set the General Purpose Registers
-    newTask->rax = 0x0;
-    newTask->rbx = 0x0;
-    newTask->rcx = 0x0;
-    newTask->rdx = 0x0;
-    newTask->rbp = KernelModeStack;
-    newTask->rsp = KernelModeStack;
-    newTask->rsi = 0x0;
-    newTask->rdi = 0x0;
-    newTask->r8 = 0x0;
-    newTask->r9 = 0x0;
-    newTask->r10 = 0x0;
-    newTask->r11 = 0x0;
-    newTask->r12 = 0x0;
-    newTask->r13 = 0x0;
-    newTask->r14 = 0x0;
-    newTask->r15 = (unsigned long)newTask; // The address of the Task structure is stored in the R15 register
-
-    // Set the remaining segment registers
-    newTask->es = 0x0;
-    newTask->fs = 0x0;
-    newTask->gs = 0x0;
+    newTask->RAX = 0x0;
+    newTask->RBX = 0x0;
+    newTask->RCX = 0x0;
+    newTask->RDX = 0x0;
+    newTask->RBP = KernelModeStack;
+    newTask->RSP = KernelModeStack;
+    newTask->RSI = 0x0;
+    newTask->RDI = 0x0;
+    newTask->R8 =  0x0;
+    newTask->R9 =  0x0;
+    newTask->R10 = 0x0;
+    newTask->R11 = 0x0;
+    newTask->R12 = 0x0;
+    newTask->R13 = 0x0;
+    newTask->R14 = 0x0;
+    newTask->R15 = (unsigned long)newTask; // The address of the Task structure is stored in the R15 register
 
     // Set the Selectors for Ring 0
-    newTask->cs = 0x8;
-    newTask->ss = 0x10;
-    newTask->ds = 0x10;
+    newTask->SS = 0x10;
+    newTask->CS = 0x8;
+    newTask->DS = 0x10;
+
+    // Set the remaining Segment Registers
+    newTask->ES = 0x0;
+    newTask->FS = 0x0;
+    newTask->GS = 0x0;
 
     // Touch the virtual address of the Kernel Mode Stack (8 bytes below the starting address), so that we can
     // be sure that the virtual address will get mapped to a physical Page Frame through the Page Fault Handler.
@@ -240,10 +240,6 @@ void Dummy1()
         if (loopCounter == 20)
         {
             // TerminateTask(3);
-
-            int a = 5;
-            int b = 0;
-            int c = a / b;
         }
 
         loopCounter++;
@@ -253,7 +249,7 @@ void Dummy1()
         printf_long(task->ContextSwitches, 10);
         printf("\n");
 
-        // void *ptr = malloc(100);
+        void *ptr = malloc(100);
     }
 }
 
@@ -265,7 +261,7 @@ void Dummy2()
         // printf("2");
         // printf("\n");
 
-        // void *ptr = malloc(100);
+        void *ptr = malloc(100);
 
         // Print out the number of Context Switches
         Task *task = GetTaskState();
@@ -282,7 +278,7 @@ void Dummy3()
         // printf("3");
         // printf("\n");
 
-        // void *ptr = malloc(100);
+        void *ptr = malloc(100);
 
         // Print out the number of Context Switches
         Task *task = GetTaskState();

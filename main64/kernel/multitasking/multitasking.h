@@ -11,37 +11,37 @@
 typedef struct Task
 {
     // Instruction Pointer and Flags Registers
-    unsigned long rip;      // Offset   +0
-    unsigned long rflags;   // Offset   +8
+    unsigned long RIP;      // Offset   +0
+    unsigned long RFLAGS;   // Offset   +8
     
     // General Purpose Registers
-    unsigned long rax;      // Offset  +16
-    unsigned long rbx;      // Offset  +24
-    unsigned long rcx;      // Offset  +32
-    unsigned long rdx;      // Offset  +40
-    unsigned long rsi;      // Offset  +48
-    unsigned long rdi;      // Offset  +56
-    unsigned long rbp;      // Offset  +64
-    unsigned long rsp;      // Offset  +72
-    unsigned long r8;       // Offset  +80
-    unsigned long r9;       // Offset  +88
-    unsigned long r10;      // Offset  +96
-    unsigned long r11;      // Offset +104
-    unsigned long r12;      // Offset +112
-    unsigned long r13;      // Offset +120
-    unsigned long r14;      // Offset +128
-    unsigned long r15;      // Offset +136
+    unsigned long RAX;      // Offset  +16
+    unsigned long RBX;      // Offset  +24
+    unsigned long RCX;      // Offset  +32
+    unsigned long RDX;      // Offset  +40
+    unsigned long RSI;      // Offset  +48
+    unsigned long RDI;      // Offset  +56
+    unsigned long RBP;      // Offset  +64
+    unsigned long RSP;      // Offset  +72
+    unsigned long R8;       // Offset  +80
+    unsigned long R9;       // Offset  +88
+    unsigned long R10;      // Offset  +96
+    unsigned long R11;      // Offset +104
+    unsigned long R12;      // Offset +112
+    unsigned long R13;      // Offset +120
+    unsigned long R14;      // Offset +128
+    unsigned long R15;      // Offset +136
     
     // Segment Registers
-    unsigned long ss;       // Offset +144
-    unsigned long cs;       // Offset +152
-    unsigned long ds;       // Offset +160
-    unsigned long es;       // Offset +168
-    unsigned long fs;       // Offset +176
-    unsigned long gs;       // Offset +184
+    unsigned long SS;       // Offset +144
+    unsigned long CS;       // Offset +152
+    unsigned long DS;       // Offset +160
+    unsigned long ES;       // Offset +168
+    unsigned long FS;       // Offset +176
+    unsigned long GS;       // Offset +184
 
     // Control Registers
-    unsigned long cr3;      // Offset +192
+    unsigned long CR3;      // Offset +192
 
     // The ID of the running Task
     unsigned long PID;
