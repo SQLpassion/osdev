@@ -26,6 +26,10 @@ isr/idt_asm.o : isr/idt.asm
 isr/irq_asm.o : isr/irq.asm
 	nasm -felf64 isr/irq.asm -o isr/irq_asm.o
 
+# Builds the GDT functions written in Assembler
+multitasking/gdt_asm.o : multitasking/gdt.asm
+	nasm -felf64 multitasking/gdt.asm -o multitasking/gdt_asm.o
+
 # Builds the Task Switching functionality written in Assembler
 multitasking/contextswitching.o : multitasking/contextswitching.asm
 	nasm -felf64 multitasking/contextswitching.asm -o multitasking/contextswitching.o
@@ -36,7 +40,7 @@ multitasking/contextswitching.o : multitasking/contextswitching.asm
 
 # Links the C kernel
 # The file "kernel.o" is specified explicitly, so that it is the first part of the file "kernel.bin"
-kernel.bin: kernel.o isr/idt_asm.o isr/irq_asm.o multitasking/contextswitching.o ${OBJ}
+kernel.bin: kernel.o isr/idt_asm.o isr/irq_asm.o multitasking/contextswitching.o multitasking/gdt_asm.o ${OBJ}
 	x86_64-elf-ld -o $@ -Tlink.ld $^ --oformat binary -z max-page-size=0x1000 -Map kernel.map
 
 # Clean up

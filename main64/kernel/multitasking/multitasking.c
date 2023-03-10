@@ -1,4 +1,5 @@
 #include "multitasking.h"
+#include "gdt.h"
 #include "../common.h"
 #include "../list.h"
 #include "../date.h"
@@ -44,11 +45,11 @@ Task* CreateKernelModeTask(void *TaskCode, unsigned long PID, unsigned long Kern
     newTask->R15 = (unsigned long)newTask; // The address of the Task structure is stored in the R15 register
 
     // Set the Selectors for Ring 0
-    newTask->SS = 0x10;
-    newTask->CS = 0x8;
-    newTask->DS = 0x10;
+    newTask->CS = GDT_KERNEL_CODE_SEGMENT;
+    newTask->DS = GDT_KERNEL_DATA_SEGMENT;
+    newTask->SS = GDT_KERNEL_DATA_SEGMENT;
 
-    // Set the remaining Segment Registers
+    // Set the remaining Segment Registers to zero
     newTask->ES = 0x0;
     newTask->FS = 0x0;
     newTask->GS = 0x0;

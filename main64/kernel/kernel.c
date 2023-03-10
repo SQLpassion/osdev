@@ -5,6 +5,7 @@
 #include "memory/virtual-memory.h"
 #include "memory/heap.h"
 #include "multitasking/multitasking.h"
+#include "multitasking/gdt.h"
 #include "isr/pic.h"
 #include "isr/idt.h"
 #include "kernel.h"
@@ -75,7 +76,7 @@ void InitKernel(int KernelSize)
     InitHeap();
 
     // Initializes the GDT and TSS structures
-    // InitGdt();
+    InitGdt();
 
     // Create the initial OS tasks
     CreateInitialTasks();
