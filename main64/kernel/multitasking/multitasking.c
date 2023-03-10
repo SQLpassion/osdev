@@ -237,9 +237,13 @@ void Dummy1()
         // printf("1");
         // printf("\n");
 
-        if (loopCounter == 100)
+        if (loopCounter == 20)
         {
-            TerminateTask(3);
+            // TerminateTask(3);
+
+            int a = 5;
+            int b = 0;
+            int c = a / b;
         }
 
         loopCounter++;

@@ -47,10 +47,9 @@
 #define EXCEPTION_RESERVED_30                   30
 #define EXCEPTION_RESERVED_31                   31
 
-
 // Represents an Interrupt Gate - 128 Bit long
 // As described in Volume 3A: 6.14.1
-struct _idtEntry
+struct IdtEntry
 {
     unsigned short OffsetLow;           // 16 Bit
     unsigned short Selector;            // 16 Bit
@@ -64,38 +63,38 @@ struct _idtEntry
     unsigned int OffsetHigh;            // 32 Bit
     unsigned int Reserved3;             // 32 Bit
 } __attribute__ ((packed));
-typedef struct _idtEntry IdtEntry;
+typedef struct IdtEntry IdtEntry;
 
 // Represents the state of the registers when an exception has occured.
-typedef struct _registerState
+typedef struct RegisterState
 {
-    unsigned long RIP;
-    unsigned long ErrorCode;
-    unsigned long RDI;
-    unsigned long RSI;
-    unsigned long RBP;
-    unsigned long RSP;
-    unsigned long RAX;
-    unsigned long RBX;
-    unsigned long RCX;
-    unsigned long RDX;
-    unsigned long R8;
-    unsigned long R9;
-    unsigned long R10;
-    unsigned long R11;
-    unsigned long R12;
-    unsigned long R13;
-    unsigned long R14;
-    unsigned long R15;
+    unsigned long RIP;          // Offset     +0
+    unsigned long ErrorCode;    // Offset     +8
+    unsigned long RAX;          // Offset    +16
+    unsigned long RBX;          // Offset    +24
+    unsigned long RCX;          // Offset    +32
+    unsigned long RDX;          // Offset    +40
+    unsigned long RSI;          // Offset    +48
+    unsigned long RDI;          // Offset    +56
+    unsigned long RBP;          // Offset    +64
+    unsigned long RSP;          // Offset    +72
+    unsigned long R8;           // Offset    +80
+    unsigned long R9;           // Offset    +88
+    unsigned long R10;          // Offset    +96
+    unsigned long R11;          // Offset   +104
+    unsigned long R12;          // Offset   +112
+    unsigned long R13;          // Offset   +120
+    unsigned long R14;          // Offset   +128
+    unsigned long R15;          // Offset   +136
 } RegisterState;
 
 // Represents the pointer to the interrupt gates
-struct _idtPointer
+struct IdtPointer
 {
     unsigned short Limit;
     unsigned long Base;
 } __attribute((packed));
-typedef struct _idtPointer IdtPointer;
+typedef struct IdtPointer IdtPointer;
 
 // Initializes the IDT table for the ISR routines.
 void InitIdt();

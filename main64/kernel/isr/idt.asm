@@ -6,8 +6,30 @@
 [GLOBAL DisableInterrupts]
 [GLOBAL EnableInterrupts]
 
+; =======================================================================
+; The following constants defines the offsets for the various registers
+; which are pushed onto the stack.
+; =======================================================================
+%DEFINE StackOffset_RAX     120
+%DEFINE StackOffset_RBX     112
+%DEFINE StackOffset_RCX     104
+%DEFINE StackOffset_RDX     96
+%DEFINE StackOffset_RSI     88
+%DEFINE StackOffset_RDI     80
+%DEFINE StackOffset_RBP     72
+%DEFINE StackOffset_RSP     64
+%DEFINE StackOffset_R8      56
+%DEFINE StackOffset_R9      48
+%DEFINE StackOffset_R10     40
+%DEFINE StackOffset_R11     32
+%DEFINE StackOffset_R12     24
+%DEFINE StackOffset_R13     16
+%DEFINE StackOffset_R14     8
+%DEFINE StackOffset_R15     0
+
 ; Virtual address where the RegisterState structure will be stored
 REGISTERSTATE_OFFSET    EQU 0xFFFF800000061000
+
 
 ; Loads the IDT table
 IdtFlush:
@@ -38,34 +60,34 @@ EnableInterrupts:
 
         ; Save the *original* general purpose register values on the Stack, when the interrupt has occured.
         ; These *original* values will be passed through the structure "RegisterState" to the C function "IsrHandler".
-        PUSH    RDI    ; [RSP + 120]
-        PUSH    RSI    ; [RSP + 112]
-        PUSH    RBP    ; [RSP + 104]
-        PUSH    RSP    ; [RSP + 96]
-        PUSH    RAX    ; [RSP + 88]
-        PUSH    RBX    ; [RSP + 80]
-        PUSH    RCX    ; [RSP + 72]
-        PUSH    RDX    ; [RSP + 64]
-        PUSH    R8     ; [RSP + 56]
-        PUSH    R9     ; [RSP + 48]
-        PUSH    R10    ; [RSP + 40]
-        PUSH    R11    ; [RSP + 32]
-        PUSH    R12    ; [RSP + 24]
-        PUSH    R13    ; [RSP + 16]
-        PUSH    R14    ; [RSP + 8]
-        PUSH    R15    ; [RSP + 0]
+        PUSH    RAX    ; [RSP + 120]
+        PUSH    RBX    ; [RSP + 112]
+        PUSH    RCX    ; [RSP + 104]
+        PUSH    RDX    ; [RSP +  96]
+        PUSH    RSI    ; [RSP +  88]
+        PUSH    RDI    ; [RSP +  80]
+        PUSH    RBP    ; [RSP +  72]
+        PUSH    RSP    ; [RSP +  64]
+        PUSH    R8     ; [RSP +  56]
+        PUSH    R9     ; [RSP +  48]
+        PUSH    R10    ; [RSP +  40]
+        PUSH    R11    ; [RSP +  32]
+        PUSH    R12    ; [RSP +  24]
+        PUSH    R13    ; [RSP +  16]
+        PUSH    R14    ; [RSP +   8]
+        PUSH    R15    ; [RSP +   0]
 
         ; Now we have the following stack layout:
         ; [RSP + 136]: RIP where the Exception has occured
         ; [RSP + 128]: Original RBP register value when we produced the new Stack Frame
-        ; [RSP + 120]: Original RDI register value
-        ; [RSP + 112]: Original RSI register value 
-        ; [RSP + 104]: Original RBP register value
-        ; [RSP +  96]: Original RSP register value
-        ; [RSP +  88]: Original RAX register value
-        ; [RSP +  80]: Original RBX register value
-        ; [RSP +  72]: Original RCX register value
-        ; [RSP +  64]: Original RDX register value
+        ; [RSP + 120]: Original RAX register value
+        ; [RSP + 112]: Original RBX register value
+        ; [RSP + 104]: Original RCX register value
+        ; [RSP +  96]: Original RDX register value
+        ; [RSP +  88]: Original RSI register value
+        ; [RSP +  80]: Original RDI register value 
+        ; [RSP +  72]: Original RBP register value
+        ; [RSP +  64]: Original RSP register value
         ; [RSP +  56]: Original R8 register value
         ; [RSP +  48]: Original R9 register value
         ; [RSP +  40]: Original R10 register value
@@ -85,84 +107,84 @@ EnableInterrupts:
         MOV     RBX, 0x0    ; There is no Error Code
         MOV     [RAX], RBX
 
-        ; Store the RDI register
-        ADD     RAX, 0x8
-        MOV     RBX, [RSP + 120]
-        MOV     [RAX], RBX
-
-        ; Store the RSI register
-        ADD     RAX, 0x8
-        MOV     RBX, [RSP + 112]
-        MOV     [RAX], RBX
-
-        ; Store the RBP register
-        ADD     RAX, 0x8
-        MOV     RBX, [RSP + 104]
-        MOV     [RAX], RBX
-
-        ; Store the RSP register
-        ADD     RAX, 0x8
-        MOV     RBX, [RSP + 96]
-        MOV     [RAX], RBX
-
         ; Store the RAX register
         ADD     RAX, 0x8
-        MOV     RBX, [RSP + 88]
+        MOV     RBX, [RSP + StackOffset_RAX]
         MOV     [RAX], RBX
 
         ; Store the RBX register
         ADD     RAX, 0x8
-        MOV     RBX, [RSP + 80]
+        MOV     RBX, [RSP + StackOffset_RBX]
         MOV     [RAX], RBX
 
         ; Store the RCX register
         ADD     RAX, 0x8
-        MOV     RBX, [RSP + 72]
+        MOV     RBX, [RSP + StackOffset_RCX]
         MOV     [RAX], RBX
 
         ; Store the RDX register
         ADD     RAX, 0x8
-        MOV     RBX, [RSP + 64]
+        MOV     RBX, [RSP + StackOffset_RDX]
+        MOV     [RAX], RBX
+
+        ; Store the RSI register
+        ADD     RAX, 0x8
+        MOV     RBX, [RSP + StackOffset_RSI]
+        MOV     [RAX], RBX
+
+        ; Store the RDI register
+        ADD     RAX, 0x8
+        MOV     RBX, [RSP + StackOffset_RDI]
+        MOV     [RAX], RBX
+
+        ; Store the RBP register
+        ADD     RAX, 0x8
+        MOV     RBX, [RSP + StackOffset_RBP]
+        MOV     [RAX], RBX
+
+        ; Store the RSP register
+        ADD     RAX, 0x8
+        MOV     RBX, [RSP + StackOffset_RSP]
         MOV     [RAX], RBX
 
         ; Store the R8 register
         ADD     RAX, 0x8
-        MOV     RBX, [RSP + 56]
+        MOV     RBX, [RSP + StackOffset_R8]
         MOV     [RAX], RBX
 
         ; Store the R9 register
         ADD     RAX, 0x8
-        MOV     RBX, [RSP + 48]
+        MOV     RBX, [RSP + StackOffset_R9]
         MOV     [RAX], RBX
 
         ; Store the R10 register
         ADD     RAX, 0x8
-        MOV     RBX, [RSP + 40]
+        MOV     RBX, [RSP + StackOffset_R10]
         MOV     [RAX], RBX
 
         ; Store the R11 register
         ADD     RAX, 0x8
-        MOV     RBX, [RSP + 32]
+        MOV     RBX, [RSP + StackOffset_R11]
         MOV     [RAX], RBX
 
         ; Store the R12 register
         ADD     RAX, 0x8
-        MOV     RBX, [RSP + 24]
+        MOV     RBX, [RSP + StackOffset_R12]
         MOV     [RAX], RBX
 
         ; Store the R13 register
         ADD     RAX, 0x8
-        MOV     RBX, [RSP + 16]
+        MOV     RBX, [RSP + StackOffset_R13]
         MOV     [RAX], RBX
 
         ; Store the R14 register
         ADD     RAX, 0x8
-        MOV     RBX, [RSP + 8]
+        MOV     RBX, [RSP + StackOffset_R14]
         MOV     [RAX], RBX
 
         ; Store the R15 register
         ADD     RAX, 0x8
-        MOV     RBX, [RSP + 0]
+        MOV     RBX, [RSP + StackOffset_R15]
         MOV     [RAX], RBX
 
         ; Call the ISR handler that is implemented in C
@@ -180,14 +202,14 @@ EnableInterrupts:
         POP     R10
         POP     R9
         POP     R8
+        POP     RSP
+        POP     RBP
+        POP     RDI
+        POP     RSI
         POP     RDX
         POP     RCX
         POP     RBX
         POP     RAX
-        POP     RSP
-        POP     RBP
-        POP     RSI
-        POP     RDI
 
         ; Restore the Stack Base Pointer
         POP     RBP
@@ -208,35 +230,35 @@ EnableInterrupts:
         
         ; Save the *original* general purpose register values on the Stack, when the interrupt has occured.
         ; These *original* values will be passed through the structure "RegisterState" to the C function "IsrHandler".
-        PUSH    RDI    ; [RSP + 120]
-        PUSH    RSI    ; [RSP + 112]
-        PUSH    RBP    ; [RSP + 104]
-        PUSH    RSP    ; [RSP + 96]
-        PUSH    RAX    ; [RSP + 88]
-        PUSH    RBX    ; [RSP + 80]
-        PUSH    RCX    ; [RSP + 72]
-        PUSH    RDX    ; [RSP + 64]
-        PUSH    R8     ; [RSP + 56]
-        PUSH    R9     ; [RSP + 48]
-        PUSH    R10    ; [RSP + 40]
-        PUSH    R11    ; [RSP + 32]
-        PUSH    R12    ; [RSP + 24]
-        PUSH    R13    ; [RSP + 16]
-        PUSH    R14    ; [RSP + 8]
-        PUSH    R15    ; [RSP + 0]
+        PUSH    RAX    ; [RSP + 120]
+        PUSH    RBX    ; [RSP + 112]
+        PUSH    RCX    ; [RSP + 104]
+        PUSH    RDX    ; [RSP +  96]
+        PUSH    RSI    ; [RSP +  88]
+        PUSH    RDI    ; [RSP +  80]
+        PUSH    RBP    ; [RSP +  72]
+        PUSH    RSP    ; [RSP +  64]
+        PUSH    R8     ; [RSP +  56]
+        PUSH    R9     ; [RSP +  48]
+        PUSH    R10    ; [RSP +  40]
+        PUSH    R11    ; [RSP +  32]
+        PUSH    R12    ; [RSP +  24]
+        PUSH    R13    ; [RSP +  16]
+        PUSH    R14    ; [RSP +   8]
+        PUSH    R15    ; [RSP +   0]
 
         ; Now we have the following stack layout:
         ; [RSP + 144]: RIP where the Exception has occured
         ; [RSP + 136]: Error Code
         ; [RSP + 128]: Original RBP register value when we produced the new Stack Frame
-        ; [RSP + 120]: Original RDI register value
-        ; [RSP + 112]: Original RSI register value 
-        ; [RSP + 104]: Original RBP register value
-        ; [RSP +  96]: Original RSP register value
-        ; [RSP +  88]: Original RAX register value
-        ; [RSP +  80]: Original RBX register value
-        ; [RSP +  72]: Original RCX register value
-        ; [RSP +  64]: Original RDX register value
+        ; [RSP + 120]: Original RAX register value
+        ; [RSP + 112]: Original RBX register value
+        ; [RSP + 104]: Original RCX register value
+        ; [RSP +  96]: Original RDX register value
+        ; [RSP +  88]: Original RSI register value
+        ; [RSP +  80]: Original RDI register value 
+        ; [RSP +  72]: Original RBP register value
+        ; [RSP +  64]: Original RSP register value
         ; [RSP +  56]: Original R8 register value
         ; [RSP +  48]: Original R9 register value
         ; [RSP +  40]: Original R10 register value
@@ -256,84 +278,84 @@ EnableInterrupts:
         MOV     RBX, [RSP + 136]
         MOV     [RAX], RBX
 
-        ; Store the RDI register
-        ADD     RAX, 0x8
-        MOV     RBX, [RSP + 120]
-        MOV     [RAX], RBX
-
-        ; Store the RSI register
-        ADD     RAX, 0x8
-        MOV     RBX, [RSP + 112]
-        MOV     [RAX], RBX
-
-        ; Store the RBP register
-        ADD     RAX, 0x8
-        MOV     RBX, [RSP + 104]
-        MOV     [RAX], RBX
-
-        ; Store the RSP register
-        ADD     RAX, 0x8
-        MOV     RBX, [RSP + 96]
-        MOV     [RAX], RBX
-
         ; Store the RAX register
         ADD     RAX, 0x8
-        MOV     RBX, [RSP + 88]
+        MOV     RBX, [RSP + StackOffset_RAX]
         MOV     [RAX], RBX
 
         ; Store the RBX register
         ADD     RAX, 0x8
-        MOV     RBX, [RSP + 80]
+        MOV     RBX, [RSP + StackOffset_RBX]
         MOV     [RAX], RBX
 
         ; Store the RCX register
         ADD     RAX, 0x8
-        MOV     RBX, [RSP + 72]
+        MOV     RBX, [RSP + StackOffset_RCX]
         MOV     [RAX], RBX
 
         ; Store the RDX register
         ADD     RAX, 0x8
-        MOV     RBX, [RSP + 64]
+        MOV     RBX, [RSP + StackOffset_RDX]
+        MOV     [RAX], RBX
+
+        ; Store the RSI register
+        ADD     RAX, 0x8
+        MOV     RBX, [RSP + StackOffset_RSI]
+        MOV     [RAX], RBX
+
+        ; Store the RDI register
+        ADD     RAX, 0x8
+        MOV     RBX, [RSP + StackOffset_RDI]
+        MOV     [RAX], RBX
+
+        ; Store the RBP register
+        ADD     RAX, 0x8
+        MOV     RBX, [RSP + StackOffset_RBP]
+        MOV     [RAX], RBX
+
+        ; Store the RSP register
+        ADD     RAX, 0x8
+        MOV     RBX, [RSP + StackOffset_RSP]
         MOV     [RAX], RBX
 
         ; Store the R8 register
         ADD     RAX, 0x8
-        MOV     RBX, [RSP + 56]
+        MOV     RBX, [RSP + StackOffset_R8]
         MOV     [RAX], RBX
 
         ; Store the R9 register
         ADD     RAX, 0x8
-        MOV     RBX, [RSP + 48]
+        MOV     RBX, [RSP + StackOffset_R9]
         MOV     [RAX], RBX
 
         ; Store the R10 register
         ADD     RAX, 0x8
-        MOV     RBX, [RSP + 40]
+        MOV     RBX, [RSP + StackOffset_R10]
         MOV     [RAX], RBX
 
         ; Store the R11 register
         ADD     RAX, 0x8
-        MOV     RBX, [RSP + 32]
+        MOV     RBX, [RSP + StackOffset_R11]
         MOV     [RAX], RBX
 
         ; Store the R12 register
         ADD     RAX, 0x8
-        MOV     RBX, [RSP + 24]
+        MOV     RBX, [RSP + StackOffset_R12]
         MOV     [RAX], RBX
 
         ; Store the R13 register
         ADD     RAX, 0x8
-        MOV     RBX, [RSP + 16]
+        MOV     RBX, [RSP + StackOffset_R13]
         MOV     [RAX], RBX
 
         ; Store the R14 register
         ADD     RAX, 0x8
-        MOV     RBX, [RSP + 8]
+        MOV     RBX, [RSP + StackOffset_R14]
         MOV     [RAX], RBX
 
         ; Store the R15 register
         ADD     RAX, 0x8
-        MOV     RBX, [RSP + 0]
+        MOV     RBX, [RSP + StackOffset_R15]
         MOV     [RAX], RBX
 
         ; Call the ISR handler that is implemented in C
@@ -351,14 +373,14 @@ EnableInterrupts:
         POP     R10
         POP     R9
         POP     R8
+        POP     RSP
+        POP     RBP
+        POP     RDI
+        POP     RSI
         POP     RDX
         POP     RCX
         POP     RBX
         POP     RAX
-        POP     RSP
-        POP     RBP
-        POP     RSI
-        POP     RDI
 
         ; Restore the Stack Base Pointer
         POP     RBP
