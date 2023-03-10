@@ -49,6 +49,9 @@ typedef struct Task
     // The used Kernel Mode Stack
     unsigned long KernelModeStack;
 
+    // The used User Mode Stack
+    unsigned long UserModeStack;
+
     // The number of context switches of the running Task
     unsigned long ContextSwitches;
 
@@ -68,6 +71,9 @@ extern Task *GetTaskState();
 
 // Creates a new Kernel Task
 Task* CreateKernelModeTask(void *TaskCode, unsigned long PID, unsigned long KernelModeStack);
+
+// Creates a new User Mode Task
+Task* CreateUserModeTask(void *TaskCode, unsigned long PID, unsigned long KernelModeStack, unsigned long UserModeStack);
 
 // Creates all initial OS tasks
 void CreateInitialTasks();
@@ -90,5 +96,6 @@ static void PrintStatus(int Status);
 void Dummy1();
 void Dummy2();
 void Dummy3();
+void Dummy4();
 
 #endif

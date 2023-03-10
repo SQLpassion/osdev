@@ -4,24 +4,27 @@
 
 GdtPointer *gdtPointer;
 GdtEntry *gdtEntries;
+// TssEntry *tssEntry;
 
 // Installs the various need GDT Entries
 void InitGdt()
 {
     // Initialize the GDT Table
-    gdtEntries = malloc(sizeof(GdtEntry) * (GDT_ENTRIES + 1));
-    memset(gdtEntries, 0, sizeof(GdtEntry) * (GDT_ENTRIES + 1));
+    gdtEntries = (GdtEntry *)malloc(sizeof(GdtEntry) * (GDT_ENTRIES));
+    memset(gdtEntries, 0, sizeof(GdtEntry) * (GDT_ENTRIES));
 
     // Initialize the GDT Pointer
-    gdtPointer = malloc(sizeof(GdtPointer));
+    gdtPointer = (GdtPointer *)malloc(sizeof(GdtPointer));
     memset(gdtPointer, 0, sizeof(GdtPointer));
-    gdtPointer->Limit = sizeof(GdtEntry) * (GDT_ENTRIES + 1) - 1;
-    gdtPointer->Base = (unsigned long)gdtEntries;
+    gdtPointer->Limit = sizeof(GdtEntry) * (GDT_ENTRIES) - 1;
+    gdtPointer->Base = (unsigned long )gdtEntries;
 
-    // Initialize the TSS entry with the Kernel Mode Stack Pointer (RSP) for the first initial Task
-    // tssEntry = malloc(sizeof(TSSEntry));
-    // memset(tssEntry, 0, sizeof(TSSEntry));
-    // tssEntry->rsp0 = 0xFFFF800001000000;
+    /* // Initialize the TSS entry with the Kernel Mode Stack Pointer (RSP) for the first initial Task
+    tssEntry = malloc(sizeof(TssEntry));
+    memset(tssEntry, 0, sizeof(TssEntry));
+    tssEntry->rsp0 = 0xFFFF800001000000;
+    tssEntry->ist1 = 0xFFFF800011000000;
+    tssEntry->ist2 = 0xFFFF800012000000; */
 
     // The NULL Descriptor
     GdtSetGate(0, 0, 0, 0, 0);
@@ -39,16 +42,16 @@ void InitGdt()
     GdtSetGate(4, 0, 0, GDT_FLAG_RING3 | GDT_FLAG_SEGMENT | GDT_FLAG_DATASEG | GDT_FLAG_PRESENT, 0);
 
     // The TSS Entry
-    // GdtSetGate(5, tssEntry, sizeof(TSSEntry), 0x89, 0x40);
+    // GdtSetGate(5, (unsigned long)tssEntry, sizeof(TssEntry), 0x89, 0x40);
 
     // Install the new GDT
     GdtFlush((unsigned long)gdtPointer);
-
-    // Store the references to the GDT and TSS in the KPCR data structure
-    // KPCR *kpcr = (KPCR *)GetKPCR();
-    // kpcr->GDT = gdtEntries;
-    // kpcr->TSS = tssEntry;
 }
+
+/* TssEntry *GetTss()
+{
+    return tssEntry;
+} */
 
 // Sets the GDT Entry
 void GdtSetGate(unsigned char Num, unsigned long Base, unsigned long Limit, unsigned char Access, unsigned char Granularity)

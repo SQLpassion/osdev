@@ -70,6 +70,69 @@ Task* CreateKernelModeTask(void *TaskCode, unsigned long PID, unsigned long Kern
     return newTask;
 }
 
+// Creates a new User Mode Task
+Task* CreateUserModeTask(void *TaskCode, unsigned long PID, unsigned long KernelModeStack, unsigned long UserModeStack)
+{
+    Task *newTask = (Task *)malloc(sizeof(Task));
+    newTask->KernelModeStack = KernelModeStack;
+    newTask->UserModeStack = UserModeStack;
+    newTask->PID = PID;
+    newTask->Status = TASK_STATUS_CREATED;
+    newTask->RIP = (unsigned long)TaskCode;
+
+    // The "Interrupt Enable Flag" (Bit 9) must be set
+    newTask->RFLAGS = 0x200;
+
+    // Set the General Purpose Registers
+    newTask->RAX = 0x0;
+    newTask->RBX = 0x0;
+    newTask->RCX = 0x0;
+    newTask->RDX = 0x0;
+    newTask->RBP = UserModeStack;
+    newTask->RSP = UserModeStack;
+    newTask->RSI = 0x0;
+    newTask->RDI = 0x0;
+    newTask->R8 =  0x0;
+    newTask->R9 =  0x0;
+    newTask->R10 = 0x0;
+    newTask->R11 = 0x0;
+    newTask->R12 = 0x0;
+    newTask->R13 = 0x0;
+    newTask->R14 = 0x0;
+    newTask->R15 = (unsigned long)newTask; // The address of the Task structure is stored in the R15 register
+
+    // Set the Selectors for Ring 3
+    // newTask->CS = GDT_KERNEL_CODE_SEGMENT;
+    // newTask->DS = GDT_KERNEL_DATA_SEGMENT;
+    // newTask->SS = GDT_KERNEL_DATA_SEGMENT;
+    newTask->CS = 0x1b;
+    newTask->DS = 0x23;
+    newTask->SS = 0x23;
+
+    // Set the remaining Segment Registers to zero
+    newTask->ES = 0x23;
+    newTask->FS = 0x23;
+    newTask->GS = 0x23;
+
+    // Touch the virtual address of the Kernel Mode Stack (8 bytes below the starting address), so that we can
+    // be sure that the virtual address will get mapped to a physical Page Frame through the Page Fault Handler.
+    // 
+    // NOTE: If we don't do that, and the virtual address is unmapped, the OS will crash during the Context
+    // Switching routine, because a Page Fault would occur (when we prepare the return Stack Frame), which
+    // can'be be handled, because the interrupts are disabled!
+    unsigned long *ptr = (unsigned long *)KernelModeStack - 8;
+    ptr[0] = ptr[0]; // This read/write operation causes a Page Fault!
+
+    unsigned long *ptr1 = (unsigned long *)UserModeStack - 8;
+    ptr1[0] = ptr1[0]; // This read/write operation causes a Page Fault!
+
+    // Add the newly created Kernel Mode Task to the end of the TaskList
+    AddEntryToList(TaskList, newTask, PID);
+
+    // Return a reference to the newly created Kernel Mode Task
+    return newTask;
+}
+
 // Creates all initial OS tasks.
 void CreateInitialTasks()
 {
@@ -79,8 +142,22 @@ void CreateInitialTasks()
 
     // Create the initial Kernel Mode Tasks
     CreateKernelModeTask(Dummy1, 1, 0xFFFF800001100000);
+    CreateUserModeTask(Dummy4, 4, 0xFFFF800001400000, 0xFFFF800002400000);
     CreateKernelModeTask(Dummy2, 2, 0xFFFF800001200000);
     CreateKernelModeTask(Dummy3, 3, 0xFFFF800001300000);
+    
+
+    unsigned long stack = 0xFFFF800001000000;
+    unsigned long *ptr = (unsigned long *)stack - 8;
+    ptr[0] = ptr[0]; // This read/write operation causes a Page Fault!
+
+    unsigned long stack1 = 0xFFFF800011000000;
+    unsigned long *ptr1 = (unsigned long *)stack1 - 8;
+    ptr1[0] = ptr1[0]; // This read/write operation causes a Page Fault!
+
+    unsigned long stack2 = 0xFFFF800012000000;
+    unsigned long *ptr2 = (unsigned long *)stack2 - 8;
+    ptr2[0] = ptr2[0]; // This read/write operation causes a Page Fault!
 }
 
 // Moves the current Task from the head of the TaskList to the tail of the TaskList.
@@ -99,6 +176,9 @@ Task* MoveToNextTask()
 
     // Record the Context Switch
     ((Task *)TaskList->RootEntry->Payload)->ContextSwitches++;
+
+    // TssEntry *tssEntry = GetTss();
+    // tssEntry->rsp0 =  ((Task *)TaskList->RootEntry->Payload)->KernelModeStack;
 
     // Increment the clock counter
     counter++;
@@ -230,60 +310,62 @@ static void PrintStatus(int Status)
 
 void Dummy1()
 {
-    int loopCounter = 0;
-
-    while (1 == 1)
+    /* while (1 == 1)
     {
         SetColor(COLOR_LIGHT_BLUE);
-        // printf("1");
-        // printf("\n");
-
-        if (loopCounter == 20)
-        {
-            // TerminateTask(3);
-        }
-
-        loopCounter++;
-
+        
         // Print out the number of Context Switches
         Task *task = GetTaskState();
         printf_long(task->ContextSwitches, 10);
         printf("\n");
+    } */
 
-        void *ptr = malloc(100);
+    while (1 == 1)
+    {
     }
 }
 
 void Dummy2()
 {
-    while (1 == 1)
+    int counter = 0;
+    /* while (1 == 1)
     {
         SetColor(COLOR_LIGHT_GREEN);
-        // printf("2");
-        // printf("\n");
-
-        void *ptr = malloc(100);
-
+        
         // Print out the number of Context Switches
         Task *task = GetTaskState();
         printf_long(task->ContextSwitches, 10);
         printf("\n");
+    } */
+
+    while (1 == 1)
+    {
+        printf_int(counter, 10);
+        printf("\n");
+        counter++;
     }
 }
 
 void Dummy3()
 {
-    while (1 == 1)
+    /* while (1 == 1)
     {
         SetColor(COLOR_LIGHT_RED);
-        // printf("3");
-        // printf("\n");
-
-        void *ptr = malloc(100);
-
+    
         // Print out the number of Context Switches
         Task *task = GetTaskState();
         printf_long(task->ContextSwitches, 10);
         printf("\n");
+    } */
+
+    while (1 == 1)
+    {
+    }
+}
+
+void Dummy4()
+{
+    while (1 == 1)
+    {
     }
 }

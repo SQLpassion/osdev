@@ -294,7 +294,7 @@ EnableInterrupts:
         CLI
 
         ; Produce a new Stack Frame
-        PUSH    RBP    ; [RSP + 128]
+        PUSH    RBP         ; [RSP + 128]
         MOV     RBP, RSP
         
         ; Save the *original* general purpose register values on the Stack, when the interrupt has occured.

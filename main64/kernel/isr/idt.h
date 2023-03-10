@@ -115,6 +115,9 @@ void InitIdt();
 // Installs the corresponding ISR routine in the IDT table
 void IdtSetGate(unsigned char Entry, unsigned long BaseAddress, unsigned char Type);
 
+// Installs the corresponding ISR routine in the IDT table
+void IdtSetGateWithIST(unsigned char Entry, unsigned long BaseAddress, unsigned char Type, int Ist);
+
 // Our generic ISR handler, which is called from the assembly code.
 void IsrHandler(int InterruptNumber, unsigned long cr2, RegisterState *Registers);
 

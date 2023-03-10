@@ -5,21 +5,21 @@
 #define GDT_ENTRIES	5
 
 // The various GDT flags
-#define GDT_FLAG_DATASEG	        0x02
-#define GDT_FLAG_CODESEG	        0x0a
-#define GDT_FLAG_TSS		        0x09
-#define GDT_FLAG_TSS_BUSY	        0x02
-#define GDT_FLAG_SEGMENT	        0x10
-#define GDT_FLAG_RING0		        0x00
-#define GDT_FLAG_RING1		        0x20
-#define GDT_FLAG_RING2		        0x40
-#define GDT_FLAG_RING3		        0x60
+#define GDT_FLAG_DATASEG            0x02
+#define GDT_FLAG_CODESEG            0x0a
+#define GDT_FLAG_TSS                0x09
+#define GDT_FLAG_TSS_BUSY           0x02
+#define GDT_FLAG_SEGMENT            0x10
+#define GDT_FLAG_RING0              0x00
+#define GDT_FLAG_RING1              0x20
+#define GDT_FLAG_RING2              0x40
+#define GDT_FLAG_RING3              0x60
 #define GDT_FLAG_PRESENT            0x80
 #define GDT_FLAG_ACCESSED           0x01
-#define GDT_FLAG_4K_GRAN	        0x80
-#define GDT_FLAG_16_BIT		        0x00
-#define GDT_FLAG_32_BIT		        0x40
-#define GDT_FLAG_64_BIT		        0x20
+#define GDT_FLAG_4K_GRAN            0x80
+#define GDT_FLAG_16_BIT             0x00
+#define GDT_FLAG_32_BIT             0x40
+#define GDT_FLAG_64_BIT             0x20
 
 // The various Segment Selectors for the GDT
 #define GDT_KERNEL_CODE_SEGMENT     0x8
@@ -45,8 +45,28 @@ typedef struct
     unsigned long Base;
 } __attribute__ ((packed)) GdtPointer;
 
+typedef struct
+{
+    int reserved1;
+    long rsp0;
+    long rsp1;
+    long rsp2;
+    long reserved2;
+    long ist1;
+    long ist2;
+    long ist3;
+    long ist4;
+    long ist5;
+    long ist6;
+    long ist7;
+    long reserved3;
+    int reserved4;
+} __attribute__ ((packed)) TssEntry;
+
 // Initializes the GDT
 void InitGdt();
+
+// TssEntry *GetTss();
 
 // Sets the GDT Entry
 void GdtSetGate(unsigned char Num, unsigned long Base, unsigned long Limit, unsigned char Access, unsigned char Granularity);
