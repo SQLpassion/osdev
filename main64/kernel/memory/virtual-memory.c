@@ -47,7 +47,7 @@ void InitVirtualMemoryManager(int DebugOutput)
     PageDirectoryTable *pdIdentityMapped = (PageDirectoryTable *)(AllocatePageFrame() * SMALL_PAGE_SIZE);
     PageTable *ptIdentityMapped = (PageTable *)(AllocatePageFrame() * SMALL_PAGE_SIZE);
     int i = 0;
-    
+
     // Zero initialize the allocated 4K pages
     memset(pml4, 0, sizeof(PageMapLevel4Table));
     memset(pdpHigherHalfKernel, 0, sizeof(PageDirectoryPointerTable));

@@ -221,4 +221,34 @@ void DisplayException(int Number, RegisterState *Registers)
     printf("R15: 0x");
     printf_long(Registers->R15, 16);
     printf("\n");
+
+    // SS register
+    printf("SS: 0x");
+    printf_long(Registers->SS, 16);
+
+    // CS register
+    printf(", CS: 0x");
+    printf_long(Registers->CS, 16);
+
+    // DS register
+    printf(", DS: 0x");
+    printf_long(Registers->DS, 16);
+
+    // ES register
+    printf(", ES: 0x");
+    printf_long(Registers->ES, 16);
+
+    // FS register
+    printf(", FS: 0x");
+    printf_long(Registers->FS, 16);
+
+    // GS register
+    printf(", GS: 0x");
+    printf_long(Registers->GS, 16);
+    printf("\n");
+
+    // CR3 register
+    printf("CR3: 0x");
+    printf_long(Registers->CR3, 16);
+    printf("\n");
 }
