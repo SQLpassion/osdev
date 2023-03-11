@@ -2,6 +2,7 @@
 #include "irq.h"
 #include "../common.h"
 #include "../multitasking/multitasking.h"
+#include "../syscalls/syscall.h"
 #include "../drivers/screen.h"
 #include "../memory/virtual-memory.h"
 
@@ -69,6 +70,10 @@ void InitIdt()
     IdtSetGate(45, (unsigned long)Irq13, IDT_INTERRUPT_GATE);   // FPU
     IdtSetGate(46, (unsigned long)Irq14, IDT_INTERRUPT_GATE);   // Hard Disk Controller
     IdtSetGate(47, (unsigned long)Irq15, IDT_INTERRUPT_GATE);   // Reserved
+
+    // The INT 0x80 can be raised from Ring 3
+    IdtSetGate(128, (unsigned long)SysCallHandlerAsm, 0xE);
+    idtEntries[128].DPL = 3;
 
     // Loads the IDT table into the processor register (Assembler function)
     IdtFlush((unsigned long)&idtPointer);

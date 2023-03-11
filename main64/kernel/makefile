@@ -1,6 +1,6 @@
 # Automatically generate lists of sources using wildcards.
-C_SOURCES = $(wildcard *.c drivers/*.c isr/*.c memory/*.c multitasking/*.c)
-HEADERS = $(wildcard *.h drivers/*.h isr/*.h memory/*.h multitasking/*.h)
+C_SOURCES = $(wildcard *.c drivers/*.c isr/*.c memory/*.c multitasking/*.c syscalls/*.c)
+HEADERS = $(wildcard *.h drivers/*.h isr/*.h memory/*.h multitasking/*.h syscalls/*.h)
 
 # Convert the *.c filenames to *.o to give a list of object files to build
 OBJ = ${C_SOURCES:.c=.o}
@@ -36,13 +36,17 @@ multitasking/gdt_asm.o : multitasking/gdt.asm
 multitasking/contextswitching.o : multitasking/contextswitching.asm
 	nasm -felf64 multitasking/contextswitching.asm -o multitasking/contextswitching.o
 
+# Builds the SysCall functionality written in Assembler
+syscalls/syscall_asm.o : syscalls/syscall.asm
+	nasm -felf64 syscalls/syscall.asm -o syscalls/syscall_asm.o
+
 # Compiles the C kernel
 %.o : %.c ${HEADERS}
 	x86_64-elf-gcc -ffreestanding -mcmodel=large -mno-red-zone -mno-mmx -mno-sse -mno-sse2 -c $< -o $@
 
 # Links the C kernel
 # The file "kernel.o" is specified explicitly, so that it is the first part of the file "kernel.bin"
-kernel.bin: kernel.o isr/idt_asm.o isr/irq_asm.o multitasking/contextswitching.o multitasking/gdt_asm.o ${OBJ}
+kernel.bin: kernel.o isr/idt_asm.o isr/irq_asm.o multitasking/contextswitching.o multitasking/gdt_asm.o syscalls/syscall_asm.o ${OBJ}
 	x86_64-elf-ld -o $@ -Tlink.ld $^ --oformat binary -z max-page-size=0x1000 -Map kernel.map
 
 # Clean up
@@ -54,4 +58,5 @@ clean:
 	rm -f isr/*.o
 	rm -f memory/*.o
 	rm -f multitasking/*.o
+	rm -f syscalls/*.o
 	rm -f *.generated

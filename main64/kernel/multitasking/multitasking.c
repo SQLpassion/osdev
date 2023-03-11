@@ -6,6 +6,7 @@
 #include "../memory/heap.h"
 #include "../memory/virtual-memory.h"
 #include "../drivers/screen.h"
+#include "../syscalls/syscall.h"
 
 // Stores all Tasks to be executed
 List *TaskList = 0x0;
@@ -297,6 +298,7 @@ static void PrintStatus(int Status)
     }
 }
 
+// This function is executed in Kernel Mode - Ring 0
 void Dummy1()
 {
     while (1 == 1)
@@ -310,6 +312,7 @@ void Dummy1()
     }
 }
 
+// This function is executed in Kernel Mode - Ring 0
 void Dummy2()
 {
     while (1 == 1)
@@ -323,6 +326,7 @@ void Dummy2()
     }
 }
 
+// This function is executed in Kernel Mode - Ring 0
 void Dummy3()
 {
     while (1 == 1)
@@ -333,15 +337,13 @@ void Dummy3()
         Task *task = GetTaskState();
         printf_long(task->ContextSwitches, 10);
         printf("\n");
-
-        // long *value = (long *)0xFFFF800000700000;
-        // printf_long(*value, 10);
-        // printf("\n");
     }
 }
 
+// This function is executed in User Mode - Ring 3
 void Dummy4()
 {
+    char buffer[32] = "";
     int a = 10;
     int b = 0;
     long counter = 0;
@@ -351,9 +353,14 @@ void Dummy4()
     {
         // Calculate something...
         counter++;
-        long *value = (long *)0xFFFF800000700000;
-		*value = counter;
-        // printf("Test...");
-        // printf("\n");
+        ltoa(counter, 10, buffer);
+
+        // A direct printf() call doesn't work anymore in a User Mode task, 
+        // because we can't access the mapped Screen Memory anymore.
+        // It belongs to the Kernel Mode address space.
+        // Therefore, we have to raise a SysCall into the Kernel Mode space...
+        RaiseSysCall(SYSCALL_PRINTF, "Hello World from USER Mode: ");
+        RaiseSysCall(SYSCALL_PRINTF, buffer);
+        RaiseSysCall(SYSCALL_PRINTF, "\n");
     }
 }
