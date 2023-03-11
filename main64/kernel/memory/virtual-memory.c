@@ -7,6 +7,9 @@
 // This flag controls if the Page Fault Handler outputs debug information.
 int debugEnabled = 0;
 
+// The physical address of the PML4 table
+unsigned long pml4Address = 0x0;
+
 // Initializes the necessary data structures for the 4-level x64 paging.
 // The first 2 MB of physical RAM (0x000000 - 0x1FFFFF) are Identity Mapped to 0x000000 - 0x1FFFFF.
 // In addition this memory range is also mapped to the virtual address range 0xFFFF800000000000 - 0xFFFF8000001FFFFF,
@@ -47,6 +50,9 @@ void InitVirtualMemoryManager(int DebugOutput)
     PageDirectoryTable *pdIdentityMapped = (PageDirectoryTable *)(AllocatePageFrame() * SMALL_PAGE_SIZE);
     PageTable *ptIdentityMapped = (PageTable *)(AllocatePageFrame() * SMALL_PAGE_SIZE);
     int i = 0;
+
+    // Store the physical PML4 address
+    pml4Address = (unsigned long)pml4;
 
     // Zero initialize the allocated 4K pages
     memset(pml4, 0, sizeof(PageMapLevel4Table));
@@ -123,6 +129,12 @@ void InitVirtualMemoryManager(int DebugOutput)
     // This switches the Paging data structures to the current ones, and "forgets" the temporary
     // Paging data structures that we have created in KLDR16.BIN.
     SwitchPageDirectory(pml4);
+}
+
+// Returns the physical address of the PML4 table
+unsigned long GetPML4Address()
+{
+    return pml4Address;
 }
 
 // Switches the PML4 Page Table Offset in the CR3 Register

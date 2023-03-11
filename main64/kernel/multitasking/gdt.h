@@ -1,8 +1,12 @@
 #ifndef GDT_H
 #define GDT_H
 
+// Virtual address where the IDT table is stored
+#define GDT_START_OFFSET    0xFFFF800000070000
+#define TSS_START_OFFSET    0xFFFF800000080000
+
 // The number of entries in the GDT
-#define GDT_ENTRIES	5
+#define GDT_ENTRIES	6
 
 // The various GDT flags
 #define GDT_FLAG_DATASEG            0x02
@@ -26,6 +30,10 @@
 #define GDT_KERNEL_DATA_SEGMENT     0x10
 #define GDT_USER_CODE_SEGMENT       0x18
 #define GDT_USER_DATA_SEGMENT       0x20
+
+// The various used RPL levels
+#define RPL_RING0                   0x0
+#define RPL_RING3                   0x3
 
 // This structure describes a GDT entry
 typedef struct
@@ -66,7 +74,8 @@ typedef struct
 // Initializes the GDT
 void InitGdt();
 
-// TssEntry *GetTss();
+// Returns the TSS Entry
+TssEntry *GetTss();
 
 // Sets the GDT Entry
 void GdtSetGate(unsigned char Num, unsigned long Base, unsigned long Limit, unsigned char Access, unsigned char Granularity);

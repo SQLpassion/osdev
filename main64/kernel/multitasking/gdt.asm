@@ -9,8 +9,8 @@ GdtFlush:
     LGDT [RDI]
 
     ; Load the TSS
-    ; MOV AX, 0x2b ; This is the 6th entry from the GDT with the requested RPL of 3
-    ; LTR AX
+    MOV AX, 0x2B ; This is the 6th entry from the GDT with the requested RPL of 3
+    LTR AX
 
     STI
     RET

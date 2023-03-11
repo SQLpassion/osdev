@@ -165,6 +165,9 @@ typedef struct PageTable
 // Initializes the Paging Data Structures.
 void InitVirtualMemoryManager(int DebugOutput);
 
+// Returns the physical address of the PML4 table
+unsigned long GetPML4Address();
+
 // Switches the PML4 Page Table Offset in the CR3 Register.
 void SwitchPageDirectory(PageMapLevel4Table *PML4);
 

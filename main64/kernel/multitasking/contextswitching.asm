@@ -61,8 +61,6 @@
 ; NOTE: We don't need to disable/enable the interrupts explicitly, because the IRQ0 is an Interrupt Gate,
 ; where the interrupts are disabled/enabled automatically by the CPU!
 Irq0_ContextSwitching:
-    CLI
-
     ; Save RDI on the Stack, so that we can store it later in the Task structure
     PUSH    RDI
 
@@ -195,14 +193,13 @@ Continue:
 
     ; Send the reset signal to the master PIC...
     PUSH    RAX
-    MOV     RAX, 0x20
-    OUT     0x20, EAX
+    MOV     AL, 0x20
+    OUT     0x20, AL
     POP     RAX
 
     ; Return from the Interrupt Handler
     ; Because we have patched the Stack Frame of the Interrupt Handler, we continue with the execution of 
     ; the next Task - based on the restored register RIP on the Stack...
-    STI
     IRETQ
 
 ; This function returns a pointer to the Task structure of the current executing Task

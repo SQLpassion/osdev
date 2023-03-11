@@ -17,11 +17,13 @@ unsigned long counter = 0;
 // Creates a new Kernel Mode Task
 Task* CreateKernelModeTask(void *TaskCode, unsigned long PID, unsigned long KernelModeStack)
 {
+    // Allocate a new Task structure on the Heap
     Task *newTask = (Task *)malloc(sizeof(Task));
     newTask->KernelModeStack = KernelModeStack;
     newTask->PID = PID;
     newTask->Status = TASK_STATUS_CREATED;
     newTask->RIP = (unsigned long)TaskCode;
+    newTask->CR3 = GetPML4Address();
 
     // The "Interrupt Enable Flag" (Bit 9) must be set
     newTask->RFLAGS = 0x200;
@@ -45,9 +47,9 @@ Task* CreateKernelModeTask(void *TaskCode, unsigned long PID, unsigned long Kern
     newTask->R15 = (unsigned long)newTask; // The address of the Task structure is stored in the R15 register
 
     // Set the Selectors for Ring 0
-    newTask->CS = GDT_KERNEL_CODE_SEGMENT;
-    newTask->DS = GDT_KERNEL_DATA_SEGMENT;
-    newTask->SS = GDT_KERNEL_DATA_SEGMENT;
+    newTask->CS = GDT_KERNEL_CODE_SEGMENT | RPL_RING0;
+    newTask->DS = GDT_KERNEL_DATA_SEGMENT | RPL_RING0;
+    newTask->SS = GDT_KERNEL_DATA_SEGMENT | RPL_RING0;
 
     // Set the remaining Segment Registers to zero
     newTask->ES = 0x0;
@@ -60,8 +62,8 @@ Task* CreateKernelModeTask(void *TaskCode, unsigned long PID, unsigned long Kern
     // NOTE: If we don't do that, and the virtual address is unmapped, the OS will crash during the Context
     // Switching routine, because a Page Fault would occur (when we prepare the return Stack Frame), which
     // can'be be handled, because the interrupts are disabled!
-    unsigned long *ptr = (unsigned long *)KernelModeStack - 8;
-    ptr[0] = ptr[0]; // This read/write operation causes a Page Fault!
+    unsigned long *kernelModeStackPtr = (unsigned long *)KernelModeStack - 8;
+    kernelModeStackPtr[0] = kernelModeStackPtr[0]; // This read/write operation causes a Page Fault!
 
     // Add the newly created Kernel Mode Task to the end of the TaskList
     AddEntryToList(TaskList, newTask, PID);
@@ -73,12 +75,14 @@ Task* CreateKernelModeTask(void *TaskCode, unsigned long PID, unsigned long Kern
 // Creates a new User Mode Task
 Task* CreateUserModeTask(void *TaskCode, unsigned long PID, unsigned long KernelModeStack, unsigned long UserModeStack)
 {
+    // Allocate a new Task structure on the Heap
     Task *newTask = (Task *)malloc(sizeof(Task));
     newTask->KernelModeStack = KernelModeStack;
     newTask->UserModeStack = UserModeStack;
     newTask->PID = PID;
     newTask->Status = TASK_STATUS_CREATED;
     newTask->RIP = (unsigned long)TaskCode;
+    newTask->CR3 = GetPML4Address();
 
     // The "Interrupt Enable Flag" (Bit 9) must be set
     newTask->RFLAGS = 0x200;
@@ -102,17 +106,14 @@ Task* CreateUserModeTask(void *TaskCode, unsigned long PID, unsigned long Kernel
     newTask->R15 = (unsigned long)newTask; // The address of the Task structure is stored in the R15 register
 
     // Set the Selectors for Ring 3
-    // newTask->CS = GDT_KERNEL_CODE_SEGMENT;
-    // newTask->DS = GDT_KERNEL_DATA_SEGMENT;
-    // newTask->SS = GDT_KERNEL_DATA_SEGMENT;
-    newTask->CS = 0x1b;
-    newTask->DS = 0x23;
-    newTask->SS = 0x23;
+    newTask->CS = GDT_USER_CODE_SEGMENT | RPL_RING3;
+    newTask->DS = GDT_USER_DATA_SEGMENT | RPL_RING3;
+    newTask->SS = GDT_USER_DATA_SEGMENT | RPL_RING3;
 
     // Set the remaining Segment Registers to zero
-    newTask->ES = 0x23;
-    newTask->FS = 0x23;
-    newTask->GS = 0x23;
+    newTask->ES = 0x0;
+    newTask->FS = 0x0;
+    newTask->GS = 0x0;
 
     // Touch the virtual address of the Kernel Mode Stack (8 bytes below the starting address), so that we can
     // be sure that the virtual address will get mapped to a physical Page Frame through the Page Fault Handler.
@@ -120,12 +121,12 @@ Task* CreateUserModeTask(void *TaskCode, unsigned long PID, unsigned long Kernel
     // NOTE: If we don't do that, and the virtual address is unmapped, the OS will crash during the Context
     // Switching routine, because a Page Fault would occur (when we prepare the return Stack Frame), which
     // can'be be handled, because the interrupts are disabled!
-    unsigned long *ptr = (unsigned long *)KernelModeStack - 8;
-    ptr[0] = ptr[0]; // This read/write operation causes a Page Fault!
+    unsigned long *kernelModeStackPtr = (unsigned long *)KernelModeStack - 8;
+    kernelModeStackPtr[0] = kernelModeStackPtr[0]; // This read/write operation causes a Page Fault!
 
-    unsigned long *ptr1 = (unsigned long *)UserModeStack - 8;
-    ptr1[0] = ptr1[0]; // This read/write operation causes a Page Fault!
-
+    unsigned long *userModeStackPtr = (unsigned long *)UserModeStack - 8;
+    userModeStackPtr[0] = userModeStackPtr[0]; // This read/write operation causes a Page Fault!
+    
     // Add the newly created Kernel Mode Task to the end of the TaskList
     AddEntryToList(TaskList, newTask, PID);
 
@@ -142,22 +143,9 @@ void CreateInitialTasks()
 
     // Create the initial Kernel Mode Tasks
     CreateKernelModeTask(Dummy1, 1, 0xFFFF800001100000);
-    CreateUserModeTask(Dummy4, 4, 0xFFFF800001400000, 0xFFFF800002400000);
     CreateKernelModeTask(Dummy2, 2, 0xFFFF800001200000);
     CreateKernelModeTask(Dummy3, 3, 0xFFFF800001300000);
-    
-
-    unsigned long stack = 0xFFFF800001000000;
-    unsigned long *ptr = (unsigned long *)stack - 8;
-    ptr[0] = ptr[0]; // This read/write operation causes a Page Fault!
-
-    unsigned long stack1 = 0xFFFF800011000000;
-    unsigned long *ptr1 = (unsigned long *)stack1 - 8;
-    ptr1[0] = ptr1[0]; // This read/write operation causes a Page Fault!
-
-    unsigned long stack2 = 0xFFFF800012000000;
-    unsigned long *ptr2 = (unsigned long *)stack2 - 8;
-    ptr2[0] = ptr2[0]; // This read/write operation causes a Page Fault!
+    CreateUserModeTask(Dummy4, 4, 0xFFFF800001400000, 0x00007FFFF0000000);
 }
 
 // Moves the current Task from the head of the TaskList to the tail of the TaskList.
@@ -177,9 +165,10 @@ Task* MoveToNextTask()
     // Record the Context Switch
     ((Task *)TaskList->RootEntry->Payload)->ContextSwitches++;
 
-    // TssEntry *tssEntry = GetTss();
-    // tssEntry->rsp0 =  ((Task *)TaskList->RootEntry->Payload)->KernelModeStack;
-
+    // Set the Kernel Mode Stack for the next executing Task
+    TssEntry *tssEntry = GetTss();
+    tssEntry->rsp0 = ((Task *)TaskList->RootEntry->Payload)->KernelModeStack;
+    
     // Increment the clock counter
     counter++;
 
@@ -310,7 +299,7 @@ static void PrintStatus(int Status)
 
 void Dummy1()
 {
-    /* while (1 == 1)
+    while (1 == 1)
     {
         SetColor(COLOR_LIGHT_BLUE);
         
@@ -318,17 +307,12 @@ void Dummy1()
         Task *task = GetTaskState();
         printf_long(task->ContextSwitches, 10);
         printf("\n");
-    } */
-
-    while (1 == 1)
-    {
     }
 }
 
 void Dummy2()
 {
-    int counter = 0;
-    /* while (1 == 1)
+    while (1 == 1)
     {
         SetColor(COLOR_LIGHT_GREEN);
         
@@ -336,19 +320,12 @@ void Dummy2()
         Task *task = GetTaskState();
         printf_long(task->ContextSwitches, 10);
         printf("\n");
-    } */
-
-    while (1 == 1)
-    {
-        printf_int(counter, 10);
-        printf("\n");
-        counter++;
     }
 }
 
 void Dummy3()
 {
-    /* while (1 == 1)
+    while (1 == 1)
     {
         SetColor(COLOR_LIGHT_RED);
     
@@ -356,16 +333,27 @@ void Dummy3()
         Task *task = GetTaskState();
         printf_long(task->ContextSwitches, 10);
         printf("\n");
-    } */
 
-    while (1 == 1)
-    {
+        // long *value = (long *)0xFFFF800000700000;
+        // printf_long(*value, 10);
+        // printf("\n");
     }
 }
 
 void Dummy4()
 {
+    int a = 10;
+    int b = 0;
+    long counter = 0;
+    // int c = a / b;
+
     while (1 == 1)
     {
+        // Calculate something...
+        counter++;
+        long *value = (long *)0xFFFF800000700000;
+		*value = counter;
+        // printf("Test...");
+        // printf("\n");
     }
 }

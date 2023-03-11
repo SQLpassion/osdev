@@ -90,22 +90,6 @@ void IdtSetGate(unsigned char Entry, unsigned long BaseAddress, unsigned char Ty
     idtEntries[Entry].Reserved3 = 0;
 }
 
-// Installs the corresponding ISR routine in the IDT table
-void IdtSetGateWithIST(unsigned char Entry, unsigned long BaseAddress, unsigned char Type, int Ist)
-{
-    idtEntries[Entry].OffsetLow = (unsigned short)BaseAddress & 0xFFFF;
-    idtEntries[Entry].Selector = 0x8;
-    idtEntries[Entry].InterruptStackTable = 0x1;
-    idtEntries[Entry].Reserved1 = 0;
-    idtEntries[Entry].Type = Type;
-    idtEntries[Entry].Reserved2 = 0;
-    idtEntries[Entry].DPL = 0;
-    idtEntries[Entry].Present = 1;
-    idtEntries[Entry].OffsetMiddle = (unsigned short)((BaseAddress >> 16) & 0xFFFF);
-    idtEntries[Entry].OffsetHigh = (unsigned int)((BaseAddress >> 32) & 0xFFFFFFFF);
-    idtEntries[Entry].Reserved3 = 0;
-}
-
 // Our generic ISR handler, which is called from the assembly code.
 void IsrHandler(int InterruptNumber, unsigned long cr2, RegisterState *Registers)
 {

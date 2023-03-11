@@ -77,7 +77,7 @@ void InitKernel(int KernelSize)
 
     // Initializes the GDT and TSS structures
     InitGdt();
-
+    
     // Create the initial OS tasks
     CreateInitialTasks();
 
