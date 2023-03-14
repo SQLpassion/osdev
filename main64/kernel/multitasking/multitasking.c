@@ -354,13 +354,16 @@ void Dummy4()
         // Calculate something...
         counter++;
         ltoa(counter, 10, buffer);
-
+        
         // A direct printf() call doesn't work anymore in a User Mode task, 
         // because we can't access the mapped Screen Memory anymore.
         // It belongs to the Kernel Mode address space.
         // Therefore, we have to raise a SysCall into the Kernel Mode space...
-        RaiseSysCall(SYSCALL_PRINTF, "Hello World from USER Mode: ");
-        RaiseSysCall(SYSCALL_PRINTF, buffer);
-        RaiseSysCall(SYSCALL_PRINTF, "\n");
+        long result = SYSCALL3(SYSCALL_MUL, (void *)3, (void *)5, (void *)2);
+        ltoa(result, 10, buffer);
+
+        SYSCALL1(SYSCALL_PRINTF, "Hello World from USER Mode: ");
+        SYSCALL1(SYSCALL_PRINTF, buffer);
+        SYSCALL1(SYSCALL_PRINTF, "\n");
     }
 }

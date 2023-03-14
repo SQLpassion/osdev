@@ -22,7 +22,10 @@ Long Mode Physical Memory
 0x031C00 - 0x033FFF: FAT Buffer used by KLDR64.BIN
 0x034000 - 0x050000: x64 Kernel Stack
 0x060000 - 0x060FFF: x64 IDT Table
-0x061000 - 0x061FFF: Structure "RegisterState" for Exception Handlers
+0x061000 - 0x061FFF: x64 GDT Table
+0x062000 - 0x062FFF: x64 TSS Table
+0x063000 - 0x063FFF: Structure "RegisterState" for Exception Handlers
+0x064000 - 0x064FFF: Structure "SysCallRegisters" for Sys Calls
 0x100000 - 0x1?????: KERNEL.BIN
 Afterwards:          Physical Memory Manager Structures
                      Physical Page Frames allocated by the Physical Memory Manager

@@ -1,9 +1,9 @@
 #ifndef GDT_H
 #define GDT_H
 
-// Virtual address where the IDT table is stored
-#define GDT_START_OFFSET    0xFFFF800000070000
-#define TSS_START_OFFSET    0xFFFF800000080000
+// Virtual address where the GDT and TSS tables are stored
+#define GDT_START_OFFSET    0xFFFF800000061000
+#define TSS_START_OFFSET    0xFFFF800000062000
 
 // The number of entries in the GDT
 #define GDT_ENTRIES	6

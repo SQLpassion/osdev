@@ -1,20 +1,25 @@
 [BITS 64]
 [GLOBAL SysCallHandlerAsm]
-[GLOBAL RaiseSysCallAsm]
+[GLOBAL SYSCALLASM1]
+[GLOBAL SYSCALLASM2]
+[GLOBAL SYSCALLASM3]
 [EXTERN SysCallHandlerC]
+
+; Virtual address where the SysCallRegisters structure will be stored
+SYSCALLREGISTERS_OFFSET    EQU 0xFFFF800000064000
 
 SysCallHandlerAsm:
     CLI
 
     ; Save the General Purpose registers on the Stack
-    PUSH    RDI
+    PUSH    RBX
+    PUSH    RAX
+    PUSH    RCX
+    PUSH    RDX
     PUSH    RSI
+    PUSH    RDI
     PUSH    RBP
     PUSH    RSP
-    PUSH    RBX
-    PUSH    RDX
-    PUSH    RCX
-    PUSH    RAX
     PUSH    R8
     PUSH    R9
     PUSH    R10
@@ -24,9 +29,32 @@ SysCallHandlerAsm:
     PUSH    R14
     PUSH    R15
 
+    ; Store the RDI Number
+    MOV     RAX, SYSCALLREGISTERS_OFFSET
+    MOV     [RAX], RDI
+
+    ; Store the RSI register
+    ADD     RAX, 0x8
+    MOV     [RAX], RSI
+
+    ; Store the RDX register
+    ADD     RAX, 0x8
+    MOV     [RAX], RDX
+
+    ; Store the RCX register
+    ADD     RAX, 0x8
+    MOV     [RAX], RCX
+
+    ; Store the R8 register
+    ADD     RAX, 0x8
+    MOV     [RAX], R8
+
+    ; Store the R9 register
+    ADD     RAX, 0x8
+    MOV     [RAX], R9
+
     ; Call the ISR handler that is implemented in C
-    MOV     RDI, RAX
-    MOV     RSI, RBX
+    MOV     RDI, SYSCALLREGISTERS_OFFSET 
     CALL    SysCallHandlerC
 
     ; Restore the General Purpose registers from the Stack
@@ -38,26 +66,32 @@ SysCallHandlerAsm:
     POP     R10
     POP     R9
     POP     R8
-    
-    ; We don't restore the RAX register, because it contains the result of the SysCall (from the function call to "SysCallHandlerC").
-    ; So we just pop the old RAX value into RCX and then pop the old RCX value into RCX
-    POP     RCX
-    POP     RCX
-    
-    ; Restore the remaining registers from the Stack
-    POP     RDX
-    POP     RBX
     POP     RSP
     POP     RBP
-    POP     RSI
     POP     RDI
+    POP     RSI
+    POP     RDX
+    POP     RCX
+    
+    ; We don't restore the RAX register, because it contains the result of the SysCall (from the function call to "SysCallHandlerC").
+    ; So we just pop the old RAX value into RBX and then pop the old RBX value into RBX
+    POP     RBX     ; Original RAX value
+    POP     RBX
 
     STI
     IRETQ
 
 ; Raises a SysCall
-RaiseSysCallAsm:
-    MOV     RAX, RDI    ; SysCall Number
-    MOV     RBX, RSI    ; SysCall Parameter
+SYSCALLASM1:
+    INT     0x80
+    RET
+
+; Raises a SysCall
+SYSCALLASM2:
+    INT     0x80
+    RET
+
+; Raises a SysCall
+SYSCALLASM3:
     INT     0x80
     RET

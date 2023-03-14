@@ -35,7 +35,7 @@
 %DEFINE StackOffset_CR3     0
 
 ; Virtual address where the RegisterState structure will be stored
-REGISTERSTATE_OFFSET    EQU 0xFFFF800000061000
+REGISTERSTATE_OFFSET    EQU 0xFFFF800000063000
 
 ; Loads the IDT table
 IdtFlush:
