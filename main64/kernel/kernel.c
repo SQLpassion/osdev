@@ -8,6 +8,7 @@
 #include "multitasking/gdt.h"
 #include "isr/pic.h"
 #include "isr/idt.h"
+#include "io/fat12.h"
 #include "kernel.h"
 #include "common.h"
 #include "date.h"
@@ -85,7 +86,7 @@ void InitKernel(int KernelSize)
     RefreshStatusLine();
 
     // Register the Context Switching IRQ Handler when the Timer fires
-    InitTimerForContextSwitching();
+    // InitTimerForContextSwitching();
 }
 
 // Causes a Divide by Zero Exception

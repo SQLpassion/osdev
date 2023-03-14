@@ -59,4 +59,5 @@ clean:
 	rm -f memory/*.o
 	rm -f multitasking/*.o
 	rm -f syscalls/*.o
+	rm -f io/*.o
 	rm -f *.generated
