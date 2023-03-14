@@ -2,7 +2,7 @@
 #define SCREEN_H
 
 // Video output memory address
-#define VIDEO_MEMORY 0xFFFF8000000B8000
+#define VIDEO_MEMORY 0xB8000
 
 #define CRLF '\n'
 #define TAB '\t'

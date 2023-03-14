@@ -167,7 +167,7 @@ static void LoadProgramIntoMemory(RootDirectoryEntry *Entry)
     {
         program_buffer = program_buffer + BytesPerSector;
         ReadSectors((unsigned char *)program_buffer, nextCluster + 33 - 2, 1);
-        
+
         // Read the next Cluster from the FAT table
         nextCluster = FATRead(nextCluster);
     }
@@ -238,6 +238,8 @@ static RootDirectoryEntry* FindRootDirectoryEntry(unsigned char *Filename)
             // Convert the provided file name to upper case, because the
             // Root Directory Entries are also stored in upper case
             toupper(Filename);
+
+            printf(name);
 
             // Check if we got the Root Directory Entry in which we are interested in
             int pos = find(name, ' ');

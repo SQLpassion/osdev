@@ -20,21 +20,14 @@ void KernelMain(int KernelSize)
     InitKernel(KernelSize);
 
     // Print out a welcome message
-    /* SetColor(COLOR_LIGHT_BLUE);
+    SetColor(COLOR_LIGHT_BLUE);
     printf("Executing the x64 KAOS Kernel at the virtual address 0x");
     printf_long((unsigned long)&KernelMain, 16);
     printf("...\n");
     printf("===============================================================================\n\n");
-    SetColor(COLOR_WHITE); */
+    SetColor(COLOR_WHITE);
 
-    /* char input[32] = "";
-
-    while (1 == 1)
-    {
-        PrintTaskList();
-        MoveToNextTask();
-        scanf(input, 2);
-    } */
+    LoadProgram("DATE");
 
     // Halt the system
     while (1 == 1) {}

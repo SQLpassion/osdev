@@ -1,6 +1,6 @@
 # Automatically generate lists of sources using wildcards.
-C_SOURCES = $(wildcard *.c drivers/*.c isr/*.c memory/*.c multitasking/*.c syscalls/*.c)
-HEADERS = $(wildcard *.h drivers/*.h isr/*.h memory/*.h multitasking/*.h syscalls/*.h)
+C_SOURCES = $(wildcard *.c drivers/*.c isr/*.c memory/*.c multitasking/*.c syscalls/*.c io/*.c)
+HEADERS = $(wildcard *.h drivers/*.h isr/*.h memory/*.h multitasking/*.h syscalls/*.h io/*.h)
 
 # Convert the *.c filenames to *.o to give a list of object files to build
 OBJ = ${C_SOURCES:.c=.o}
@@ -11,6 +11,7 @@ kaos64.img : bootsector.bin kernel.bin
 	fat_imgen -m -f ../kaos64.img -i ../kaosldr_16/kldr16.bin
 	fat_imgen -m -f ../kaos64.img -i ../kaosldr_64/kldr64.bin
 	fat_imgen -m -f ../kaos64.img -i ../kernel/kernel.bin
+	fat_imgen -m -f ../kaos64.img -i ../kernel/date.c
 	x86_64-elf-objdump -M intel -S --disassemble kernel.o > kernel.generated
 	x86_64-elf-objdump -M intel -S --disassemble drivers/screen.o > drivers/screen.generated
 	x86_64-elf-objdump -M intel -S --disassemble multitasking/contextswitching.o > multitasking/contextswitching.generated
