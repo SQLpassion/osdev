@@ -7,6 +7,7 @@
 #include "../memory/virtual-memory.h"
 #include "../drivers/screen.h"
 #include "../syscalls/syscall.h"
+#include "../io/fat12.h"
 
 // Stores all Tasks to be executed
 List *TaskList = 0x0;
@@ -146,7 +147,11 @@ void CreateInitialTasks()
     CreateKernelModeTask(Dummy1, 1, 0xFFFF800001100000);
     CreateKernelModeTask(Dummy2, 2, 0xFFFF800001200000);
     CreateKernelModeTask(Dummy3, 3, 0xFFFF800001300000);
-    CreateUserModeTask(Dummy4, 4, 0xFFFF800001400000, 0x00007FFFF0000000);
+
+    if (LoadProgram("PROG1   BIN") != 0)
+        CreateUserModeTask((void *)0xFFFF8000FFFF0000, 4, 0xFFFF800001400000, 0x00007FFFF0000000);
+
+    // CreateKernelModeTask((void *)0xFFFF8000FFFF0000, 4, 0xFFFF800001400000);
 }
 
 // Moves the current Task from the head of the TaskList to the tail of the TaskList.
@@ -318,7 +323,7 @@ void Dummy2()
     while (1 == 1)
     {
         SetColor(COLOR_LIGHT_GREEN);
-        
+
         // Print out the number of Context Switches
         Task *task = GetTaskState();
         printf_long(task->ContextSwitches, 10);
@@ -351,19 +356,21 @@ void Dummy4()
 
     while (1 == 1)
     {
-        // Calculate something...
+        printf("Test...\n");
+
+        /* // Calculate something...
         counter++;
         ltoa(counter, 10, buffer);
         
         // A direct printf() call doesn't work anymore in a User Mode task, 
-        // because we can't access the mapped Screen Memory anymore.
-        // It belongs to the Kernel Mode address space.
+        // because we can't access the Output Ports anymore, which are used
+        // to move the screen cursor.
         // Therefore, we have to raise a SysCall into the Kernel Mode space...
         long result = SYSCALL3(SYSCALL_MUL, (void *)3, (void *)5, (void *)2);
         ltoa(result, 10, buffer);
 
         SYSCALL1(SYSCALL_PRINTF, "Hello World from USER Mode: ");
         SYSCALL1(SYSCALL_PRINTF, buffer);
-        SYSCALL1(SYSCALL_PRINTF, "\n");
+        SYSCALL1(SYSCALL_PRINTF, "\n"); */
     }
 }

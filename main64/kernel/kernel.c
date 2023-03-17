@@ -19,15 +19,13 @@ void KernelMain(int KernelSize)
     // Initialize the Kernel
     InitKernel(KernelSize);
 
-    // Print out a welcome message
+    /* // Print out a welcome message
     SetColor(COLOR_LIGHT_BLUE);
     printf("Executing the x64 KAOS Kernel at the virtual address 0x");
     printf_long((unsigned long)&KernelMain, 16);
     printf("...\n");
     printf("===============================================================================\n\n");
-    SetColor(COLOR_WHITE);
-
-    LoadProgram("DATE");
+    SetColor(COLOR_WHITE); */
 
     // Halt the system
     while (1 == 1) {}
@@ -79,7 +77,7 @@ void InitKernel(int KernelSize)
     RefreshStatusLine();
 
     // Register the Context Switching IRQ Handler when the Timer fires
-    // InitTimerForContextSwitching();
+    InitTimerForContextSwitching();
 }
 
 // Causes a Divide by Zero Exception

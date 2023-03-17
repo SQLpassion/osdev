@@ -184,7 +184,7 @@ unsigned long AllocatePageFrame()
                         unsigned long pfn = (frame + (descriptor->PhysicalMemoryStartAddress / PAGE_SIZE));
 
                         // Add the allocated Page Frame to the Tracked list
-                        // AddPageFrameToTrackedList(pfn, k);
+                        AddPageFrameToTrackedList(pfn, k);
 
                         // Return the Page Frame number
                         return pfn;
