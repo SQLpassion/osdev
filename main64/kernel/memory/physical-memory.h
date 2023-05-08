@@ -1,5 +1,5 @@
-#ifndef MEMORY_H
-#define MEMORY_H
+#ifndef PHYSICAL_MEMORY_H
+#define PHYSICAL_MEMORY_H
 
 // The offset where the Memory Map is stored
 #define MEMORYMAP_OFFSET 0x1200
@@ -48,11 +48,40 @@ typedef struct PhysicalMemoryLayout
     PhysicalMemoryRegionDescriptor MemoryRegions[];
 } PhysicalMemoryLayout;
 
+// Describes a physical Page Frame
+typedef struct PageFrame
+{
+    // The physical Page Frame Number
+    unsigned long PageFrameNumber;
+
+    // The Memory Region index in which the Page Frame was allocated.
+    // With this information we can perform a lookup into the array PhysicalMemoryLayout->MemoryRegions[]
+    // to release a Page Frame at a later point in time.
+    unsigned int MemoryRegionIndex;
+} PageFrame;
+
+// This double-linked list entry represents a Page Frame that is currently tracked by the Kernel.
+typedef struct TrackedPageFrameListEntry
+{
+    struct TrackedPageFrameListEntry *Previous; // Pointer to the previous list entry
+    struct TrackedPageFrameListEntry *Next;     // Pointer to the next list entry
+    PageFrame *PageFrame;                       // A reference to the tracked Page Frame
+} TrackedPageFrameListEntry;
+
 // Initializes the physical Memory Manager.
 void InitPhysicalMemoryManager(int KernelSize);
 
 // Allocates the first free Page Frame and returns the Page Frame number.
 unsigned long AllocatePageFrame();
+
+// Releases a physical Page Frame.
+void ReleasePageFrame(unsigned long PageFrameNumber);
+
+// This function adds the Page Frame to the TrackedPageFrameList
+static void AddPageFrameToTrackedList(unsigned long PageFrameNumber, int MemoryRegionIndex);
+
+// This function prints out the currently tracked Page Frames.
+void PrintTrackedPageFrameList();
 
 // Prints out the memory map that we have obtained from the BIOS
 void PrintMemoryMap();
@@ -66,5 +95,8 @@ void TestBitmapMask();
 // Tests the Physical Memory Manager by allocating Page Frames in the various
 // available memory regions...
 void TestPhysicalMemoryManager();
+
+// Tests the Page Frame Tracking
+void TestPageFrameTracking();
 
 #endif

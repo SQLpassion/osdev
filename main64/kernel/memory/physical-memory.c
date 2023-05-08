@@ -1,7 +1,9 @@
-#include "drivers/screen.h"
-#include "drivers/keyboard.h"
-#include "common.h"
-#include "memory.h"
+#include "../drivers/screen.h"
+#include "../drivers/keyboard.h"
+#include "../common.h"
+#include "../list.h"
+#include "physical-memory.h"
+#include "heap.h"
 
 // Memory Region Type
 char *MemoryRegionType[] =
@@ -11,6 +13,9 @@ char *MemoryRegionType[] =
     "ACPI Reclaim",
     "ACPI NVS Memory"
 };
+
+// This list stores the Page Frames that are currently tracked by the Kernel
+List *TrackedPageFrames = 0x0;
 
 // Memory Map 4 GB - VMware Fusion
 // 0x00 0000 0000 - 0x00 0009 F7FF     Size: 0x00 0009 F800         638 KB              Available           653312
@@ -137,7 +142,9 @@ void InitPhysicalMemoryManager(int KernelSize)
     // Mark/Allocate the Page Frames used by the Kernel and the Physical Memory Manager itself as used
     for (i = 0; i < GetUsedPageFrames(memLayout); i++)
     {
-        // The first n Page Frames in the first Bitmap Mask are marked as used
+        // The first n Page Frames in the first Bitmap Mask are marked as used.
+        // The allocated Page Frames are not tracked by the Kernel, because the Heap is not yet initalized.
+        // This is not really a problem, because we will *NEVER* release these Page Frames.
         AllocatePageFrame();
     }
 }
@@ -173,8 +180,14 @@ unsigned long AllocatePageFrame()
                         descriptor->FreePageFrames--;
                         bib->AvailablePageFrames--;
 
+                        // Calculate the Page Frame Number
+                        unsigned long pfn = (frame + (descriptor->PhysicalMemoryStartAddress / PAGE_SIZE));
+
+                        // Add the allocated Page Frame to the Tracked list
+                        AddPageFrameToTrackedList(pfn, k);
+
                         // Return the Page Frame number
-                        return (frame + (descriptor->PhysicalMemoryStartAddress / PAGE_SIZE));
+                        return pfn;
                     }
                 }
             }
@@ -182,6 +195,60 @@ unsigned long AllocatePageFrame()
     }
 
     return -1;
+}
+
+// Releases a physical Page Frame.
+void ReleasePageFrame(unsigned long PageFrameNumber)
+{
+    BiosInformationBlock *bib = (BiosInformationBlock *)BIB_OFFSET;
+    PhysicalMemoryLayout *memLayout = bib->PhysicalMemoryLayout;
+    ListEntry *entry = GetEntryFromList(TrackedPageFrames, PageFrameNumber);
+    PageFrame *frame = (PageFrame *)entry->Payload;
+
+    // Check if the requested Page Frame was found
+    if (frame != 0x0)
+    {
+        // Get a reference to the correct Bitmap Mask
+        PhysicalMemoryRegionDescriptor *descriptor = &memLayout->MemoryRegions[frame->MemoryRegionIndex];
+        unsigned long *bitmapMask = (unsigned long *)descriptor->BitmapMaskStartAddress;
+        PageFrameNumber = PageFrameNumber - (descriptor->PhysicalMemoryStartAddress / PAGE_SIZE);
+
+        // Clear the bit in the Bitmap Mask
+        ClearBit(PageFrameNumber, bitmapMask);
+
+        // Remove the Page Frame from the Tracked list
+        RemoveEntryFromList(TrackedPageFrames, entry);
+
+        // Release the memory of the PageFrame structure on the Heap
+        free(frame);
+    }
+}
+
+// This function adds the Page Frame to the TrackedPageFrameList
+static void AddPageFrameToTrackedList(unsigned long PageFrameNumber, int MemoryRegionIndex)
+{
+    // Check if the Heap is already initialized.
+    // If yes, we will track the allocated Page Frame, so that it can be released at a later point in time
+    if (IsHeapInitialized() == 1)
+    {
+        // Initialize the TrackedPageFrame List, if needed
+        if (TrackedPageFrames == 0x0)
+            TrackedPageFrames = NewList();
+
+        // Allocate a new PageFrame structure on the Heap
+        PageFrame *pageFrame = (PageFrame *)malloc(sizeof(PageFrame));
+        pageFrame->PageFrameNumber = PageFrameNumber;
+        pageFrame->MemoryRegionIndex = MemoryRegionIndex;
+
+        // Add the Page Frame to the List
+        AddEntryToList(TrackedPageFrames, pageFrame, PageFrameNumber);
+    }
+}
+
+// This function prints out the currently tracked Page Frames.
+void PrintTrackedPageFrameList()
+{
+    PrintList(TrackedPageFrames);
 }
 
 // Prints out the memory map that we have obtained from the BIOS
@@ -406,4 +473,55 @@ void TestPhysicalMemoryManager()
         printf(str);
         printf("\n");
     }
+}
+
+// Tests the Page Frame Tracking
+void TestPageFrameTracking()
+{
+    char str[32] = "";
+
+    unsigned long pfn1 = AllocatePageFrame();
+    unsigned long pfn2 = AllocatePageFrame();
+    unsigned long pfn3 = AllocatePageFrame();
+    unsigned long pfn4 = AllocatePageFrame();
+    unsigned long pfn5 = AllocatePageFrame();
+    unsigned long pfn6 = AllocatePageFrame();
+
+    // 6 Page Frames are currently allocated
+    ClearScreen();
+    PrintTrackedPageFrameList();
+    scanf(str, 10);
+
+    // 1 Page Frame is released
+    ReleasePageFrame(pfn4);
+    ClearScreen();
+    PrintTrackedPageFrameList();
+    scanf(str, 10);
+
+    // Allocate another Page Frame.
+    // The previous released Page Frame Number is reused.
+    unsigned long pfn7 = AllocatePageFrame();
+    ClearScreen();
+    PrintTrackedPageFrameList();
+    scanf(str, 10);
+
+    // Allocate another Page Frame
+    unsigned long pfn8 = AllocatePageFrame();
+    ClearScreen();
+    PrintTrackedPageFrameList();
+    scanf(str, 10);
+
+    // Release all remaining Page Frames
+    ReleasePageFrame(pfn1);
+    ReleasePageFrame(pfn2);
+    ReleasePageFrame(pfn3);
+    ReleasePageFrame(pfn5);
+    ReleasePageFrame(pfn6);
+    ReleasePageFrame(pfn7);
+    ReleasePageFrame(pfn8);
+    
+    // The Tracked Page Frame List is now empty again
+    ClearScreen();
+    PrintTrackedPageFrameList();
+    scanf(str, 10);
 }

@@ -1,7 +1,7 @@
 #ifndef COMMON_H
 #define COMMON_H
 
-#include "memory.h"
+#include "memory/physical-memory.h"
 
 // Defines the NULL pointer
 #define NULL ((void *) 0)
@@ -108,6 +108,9 @@ int AlignNumber(int Number, int Alignment);
 
 // Sets the given Bit in the provided Bitmap mask.
 void SetBit(unsigned long Bit, unsigned long *BitmapMask);
+
+// Clears the given Bit in the provided Bitmap mask.
+void ClearBit(unsigned long Bit, unsigned long *BitmapMask);
 
 // Tests if a given Bit is set in the provided Bitmap mask.
 int TestBit(unsigned long Bit, unsigned long *BitmapMask);

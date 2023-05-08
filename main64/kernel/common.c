@@ -367,6 +367,12 @@ void SetBit(unsigned long Bit, unsigned long *BitmapMask)
     BitmapMask[Bit / 64] |= ((unsigned long)1 << (Bit % 64));
 }
 
+// Clears the given Bit in the provided Bitmap mask
+void ClearBit(unsigned long Bit, unsigned long *BitmapMask)
+{
+    BitmapMask[Bit / 64] &= ~((unsigned long)1 << (Bit % 64));
+}
+
 // Tests if a given Bit is set in the provided Bitmap mask
 int TestBit(unsigned long Bit, unsigned long *BitmapMask)
 {

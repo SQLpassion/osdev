@@ -1,34 +1,31 @@
 #include "drivers/screen.h"
 #include "drivers/keyboard.h"
 #include "drivers/timer.h"
+#include "memory/physical-memory.h"
+#include "memory/virtual-memory.h"
+#include "memory/heap.h"
+#include "multitasking/multitasking.h"
+#include "multitasking/gdt.h"
 #include "isr/pic.h"
 #include "isr/idt.h"
+#include "io/fat12.h"
 #include "kernel.h"
 #include "common.h"
 #include "date.h"
-#include "memory.h"
 
 // The main entry of our Kernel
 void KernelMain(int KernelSize)
 {
-    BiosInformationBlock *bib = (BiosInformationBlock *)BIB_OFFSET;
-
     // Initialize the Kernel
     InitKernel(KernelSize);
 
-    // Print out a welcome message
+    /* // Print out a welcome message
     SetColor(COLOR_LIGHT_BLUE);
     printf("Executing the x64 KAOS Kernel at the virtual address 0x");
     printf_long((unsigned long)&KernelMain, 16);
     printf("...\n");
     printf("===============================================================================\n\n");
-    SetColor(COLOR_WHITE);
-
-    // Tests the Physical Memory Manager
-    TestPhysicalMemoryManager();
-
-    // Print out the memory map that we have obtained from the BIOS
-    // PrintMemoryMap();
+    SetColor(COLOR_WHITE); */
 
     // Halt the system
     while (1 == 1) {}
@@ -40,11 +37,14 @@ void InitKernel(int KernelSize)
     // Initialize and clear the screen
     InitializeScreen(80, 24);
 
+    // Disable the hardware interrupts
+    DisableInterrupts();
+
     // Initialize the physical Memory Manager
     InitPhysicalMemoryManager(KernelSize);
 
-    // Disable the hardware interrupts
-    DisableInterrupts();
+    // Initialize the virtual Memory Manager
+    InitVirtualMemoryManager(1);
 
     // Initializes the PIC, and remap the IRQ handlers.
     // The 1st PIC handles the hardware interrupts 32 - 39 (input value 0x20).
@@ -57,11 +57,27 @@ void InitKernel(int KernelSize)
     // Initialize the keyboard
     InitKeyboard();
 
-    // Initialize the timer to fire every 1ms
-    InitTimer(1000);
+    // Initialize the timer to fire every 4ms
+    InitTimer(250);
     
     // Enable the hardware interrupts again
     EnableInterrupts();
+
+    // Initialize the Heap.
+    // It generates Page Faults, therefore the interrupts must be already re-enabled.
+    InitHeap();
+
+    // Initializes the GDT and TSS structures
+    InitGdt();
+    
+    // Create the initial OS tasks
+    CreateInitialTasks();
+
+    // Refresh the status line
+    RefreshStatusLine();
+
+    // Register the Context Switching IRQ Handler when the Timer fires
+    InitTimerForContextSwitching();
 }
 
 // Causes a Divide by Zero Exception

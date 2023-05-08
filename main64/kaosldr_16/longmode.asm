@@ -251,8 +251,8 @@ LongMode:
     MOV     GS, AX
     MOV     SS, AX
 
-    ; Setup the stack
-    MOV     RAX, 0x50000
+    ; Setup the stack at the virtual address 0xFFFF800000050000
+    MOV     RAX, QWORD 0xFFFF800000050000
     MOV     RSP, RAX
     MOV     RBP, RSP
     XOR     RBP, RBP

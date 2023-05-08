@@ -168,7 +168,7 @@ void print_char(char character)
             video_memory[offset] = character;
             video_memory[offset + 1] = screenLocation.Attributes;
             screenLocation.Col++;
-
+           
             break;
         }
     }

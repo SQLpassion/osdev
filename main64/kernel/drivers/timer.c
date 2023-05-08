@@ -1,10 +1,9 @@
 #include "../common.h"
 #include "../isr/irq.h"
 #include "../date.h"
+#include "../kernel.h"
 #include "timer.h"
 #include "screen.h"
-
-int counter = 0;
 
 // Initializes the hardware timer
 void InitTimer(int Hertz)
@@ -21,88 +20,4 @@ void InitTimer(int Hertz)
     // Send the frequency divisor
     outb(0x40, l);
     outb(0x40, h);
-
-    // Registers the IRQ callback function for the hardware timer
-    RegisterIrqHandler(32, &TimerCallback);
-
-    // Refresh the status line
-    RefreshStatusLine();
-}
-
-// IRQ callback function
-static void TimerCallback(int Number)
-{
-    // Increment the clock counter
-    counter++;
-
-    if (counter % 1000 == 0)
-    {
-        // Increment the system date by 1 second
-        IncrementSystemDate();
-
-        // Refresh the status line
-        RefreshStatusLine();
-    }
-}
-
-// Refreshs the status line
-void RefreshStatusLine()
-{
-    char buffer[80] = "";
-    char str[32] = "";
-    char tmp[2] = "";
-
-    // Getting a reference to the BIOS Information Block
-    BiosInformationBlock *bib = (BiosInformationBlock *)BIB_OFFSET;
-
-    // Print out the year
-    itoa(bib->Year, 10, str);
-    strcat(buffer, str);
-    strcat(buffer, "-");
-
-    // Print out the month
-    FormatInteger(bib->Month, tmp);
-    strcat(buffer, tmp);
-    strcat(buffer, "-");
-
-    // Print out the day
-    FormatInteger(bib->Day, tmp);
-    strcat(buffer, tmp);
-    strcat(buffer, ", ");
-
-    // Print out the hour
-    FormatInteger(bib->Hour, tmp);
-    strcat(buffer, tmp);
-    strcat(buffer, ":");
-
-    // Print out the minute
-    FormatInteger(bib->Minute, tmp);
-    strcat(buffer, tmp);
-    strcat(buffer, ":");
-
-    // Print out the second
-    FormatInteger(bib->Second, tmp);
-    strcat(buffer, tmp);
-
-    // Print out the available memory
-    strcat(buffer, ", Physical Memory: ");
-    ltoa(bib->MaxMemory / 1024 / 1024 + 1, 10, str);
-    strcat(buffer, str);
-    strcat(buffer, " MB, Free Memory: ");
-    ltoa(bib->AvailablePageFrames * PAGE_SIZE / 1024 / 1024, 10, str);
-    strcat(buffer, str);
-    strcat(buffer, " MB");
-
-    // Pad the remaining columns with a blank, so that the status line goes
-    // over the whole row
-    int len = 80 - strlen(buffer);
-
-    while (len > 0)
-    {
-        strcat(buffer, " ");
-        len--;
-    }
-
-    // Print out the status line
-    PrintStatusLine(buffer);
 }
