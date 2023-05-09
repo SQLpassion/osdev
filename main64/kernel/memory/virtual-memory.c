@@ -229,6 +229,64 @@ void HandlePageFault(unsigned long VirtualAddress)
     }
 }
 
+// Maps a Virtual Memory Address to a Physical Memory Address
+void MapVirtualAddressToPhysicalAddress(unsigned long VirtualAddress, unsigned long PhysicalAddress)
+{
+    // Get references to the various Page Tables through the Recursive Page Table Mapping
+    PageMapLevel4Table *pml4 = (PageMapLevel4Table *)PML4_TABLE;
+    PageDirectoryPointerTable *pdp = (PageDirectoryPointerTable *)PDP_TABLE(VirtualAddress);
+    PageDirectoryTable *pd = (PageDirectoryTable *)PD_TABLE(VirtualAddress);
+    PageTable *pt = (PageTable *)PT_TABLE(VirtualAddress);
+
+    if (pml4->Entries[PML4_INDEX(VirtualAddress)].Present == 0)
+    {
+        // Allocate a physical frame for the missing PML4 entry
+        pml4->Entries[PML4_INDEX(VirtualAddress)].Frame = AllocatePageFrame();
+        pml4->Entries[PML4_INDEX(VirtualAddress)].Present = 1;
+        pml4->Entries[PML4_INDEX(VirtualAddress)].ReadWrite = 1;
+        pml4->Entries[PML4_INDEX(VirtualAddress)].User = 1;
+
+        // Debugging Output
+        PageFaultDebugPrint(PML4_INDEX(VirtualAddress), "PML4", pml4->Entries[PML4_INDEX(VirtualAddress)].Frame);
+    }
+
+    if (pdp->Entries[PDP_INDEX(VirtualAddress)].Present == 0)
+    {
+        // Allocate a physical frame for the missing PDP entry
+        pdp->Entries[PDP_INDEX(VirtualAddress)].Frame = AllocatePageFrame();
+        pdp->Entries[PDP_INDEX(VirtualAddress)].Present = 1;
+        pdp->Entries[PDP_INDEX(VirtualAddress)].ReadWrite = 1;
+        pdp->Entries[PDP_INDEX(VirtualAddress)].User = 1;
+
+        // Debugging Output
+        PageFaultDebugPrint(PDP_INDEX(VirtualAddress), "PDP", pdp->Entries[PDP_INDEX(VirtualAddress)].Frame);
+    }
+
+    if (pd->Entries[PD_INDEX(VirtualAddress)].Present == 0)
+    {
+        // Allocate a physical frame for the missing PD entry
+        pd->Entries[PD_INDEX(VirtualAddress)].Frame = AllocatePageFrame();
+        pd->Entries[PD_INDEX(VirtualAddress)].Present = 1;
+        pd->Entries[PD_INDEX(VirtualAddress)].ReadWrite = 1;
+        pd->Entries[PD_INDEX(VirtualAddress)].User = 1;
+
+        // Debugging Output
+        PageFaultDebugPrint(PD_INDEX(VirtualAddress), "PD", pd->Entries[PD_INDEX(VirtualAddress)].Frame);
+    }
+
+    if (pt->Entries[PT_INDEX(VirtualAddress)].Present == 0)
+    {
+        // Install the provided physical frame address
+        pt->Entries[PT_INDEX(VirtualAddress)].Frame = PhysicalAddress / SMALL_PAGE_SIZE;
+        pt->Entries[PT_INDEX(VirtualAddress)].Present = 1;
+        pt->Entries[PT_INDEX(VirtualAddress)].ReadWrite = 1;
+        pt->Entries[PT_INDEX(VirtualAddress)].User = 1;
+
+        // Debugging Output
+        PageFaultDebugPrint(PT_INDEX(VirtualAddress), "PT", pt->Entries[PT_INDEX(VirtualAddress)].Frame);
+    }
+}
+
 // Tests the Virtual Memory Manager.
 void TestVirtualMemoryManager()
 {

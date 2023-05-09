@@ -174,6 +174,9 @@ void SwitchPageDirectory(PageMapLevel4Table *PML4);
 // Handles a Page Fault
 void HandlePageFault(unsigned long VirtualAddress);
 
+// Maps a Virtual Memory Address to a Physical Memory Address
+void MapVirtualAddressToPhysicalAddress(unsigned long VirtualAddress, unsigned long PhysicalAddress);
+
 // Tests the Virtual Memory Manager.
 void TestVirtualMemoryManager();
 

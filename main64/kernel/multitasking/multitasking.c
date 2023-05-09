@@ -84,7 +84,21 @@ Task* CreateUserModeTask(void *TaskCode, unsigned long PID, unsigned long Kernel
     newTask->PID = PID;
     newTask->Status = TASK_STATUS_CREATED;
     newTask->RIP = (unsigned long)TaskCode;
-    newTask->CR3 = GetPML4Address();
+
+    // Allocate a new Page Frame for the User Mode PML4 table
+    unsigned long userModePML4pfn = AllocatePageFrame();
+  
+    // Copy the original Kernel Mode PML4 table to the new User Mode PML4 table
+    MapVirtualAddressToPhysicalAddress(0xFFFF80000DEAD000, userModePML4pfn * SMALL_PAGE_SIZE);
+    PageMapLevel4Table *pml4KernelMode = (PageMapLevel4Table *)PML4_TABLE;
+    memcpy((unsigned long *)0xFFFF80000DEAD000, pml4KernelMode, SMALL_PAGE_SIZE);
+
+    // Install the new Recursive Page Table Mapping in the new User Mode PML4 table
+    PageMapLevel4Table *pml4UserMode = (PageMapLevel4Table *)(userModePML4pfn * SMALL_PAGE_SIZE);
+    pml4UserMode->Entries[511].Frame = userModePML4pfn;
+   
+    // Store the new User Mode PML4 table in the CR3 register
+    newTask->CR3 = userModePML4pfn * SMALL_PAGE_SIZE;
 
     // The "Interrupt Enable Flag" (Bit 9) must be set
     newTask->RFLAGS = 0x200;
