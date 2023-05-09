@@ -149,7 +149,7 @@ void CreateInitialTasks()
     CreateKernelModeTask(Dummy3, 3, 0xFFFF800001300000);
 
     if (LoadProgram("PROG1   BIN") != 0)
-        CreateUserModeTask((void *)0xFFFF8000FFFF0000, 4, 0xFFFF800001400000, 0x00007FFFF0000000);
+        CreateUserModeTask((void *)0x0000700000000000, 4, 0xFFFF800001400000, 0x00007FFFF0000000);
 
     // CreateKernelModeTask((void *)0xFFFF8000FFFF0000, 4, 0xFFFF800001400000);
 }

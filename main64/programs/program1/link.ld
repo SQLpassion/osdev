@@ -2,20 +2,20 @@ ENTRY(main)
 
 SECTIONS
 {
-    . = 0xFFFF8000FFFF0000;
-    .text : AT(ADDR(.text) - 0xFFFF800000000000)
+    . = 0x0000700000000000;
+    .text : AT(ADDR(.text))
     {
         *(.text .text.*)
         *(.rodata .rodata.*)
         . = ALIGN(4K);
     }
 
-    .data : AT(ADDR(.data) - 0xFFFF800000000000)
+    .data : AT(ADDR(.data))
     {
         *(.data .data.*)
     }
 
-    .bss : AT(ADDR(.bss) - 0xFFFF800000000000)
+    .bss : AT(ADDR(.bss))
     {
         *(.bss .bss.*)
     }

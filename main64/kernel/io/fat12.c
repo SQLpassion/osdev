@@ -10,7 +10,7 @@ unsigned char *ROOT_DIRECTORY_BUFFER;
 unsigned char *FAT_BUFFER;
 
 // The memory address where the user program will be loaded.
-unsigned char *PROGRAM_BUFFER = (char *)0xFFFF8000FFFF0000;
+unsigned char *PROGRAM_BUFFER = (char *)0x0000700000000000;
 
 // This flag stores if the Root Directory was already loaded into memory.
 int RootDirectoryLoaded = 0;
