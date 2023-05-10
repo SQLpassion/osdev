@@ -91,7 +91,12 @@ static unsigned short FATRead(unsigned short Cluster)
 {
     // Calculate the offset into the FAT table
     unsigned int fatOffset = (Cluster / 2) + Cluster;
-    unsigned long *offset = (unsigned long *)(fatBuffer + fatOffset);
+
+    // CAUTION!
+    // The following line generates a warning during the compilation ("incompatible-pointer-types").
+    // But we can't cast the right side to "(unsigned long *)", because then the loader component
+    // will not work anymore on the physical hardware!
+    unsigned long *offset = fatBuffer + fatOffset;
 
     // Read the entry from the FAT
     unsigned short val = *offset;
