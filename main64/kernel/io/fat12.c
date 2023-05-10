@@ -9,8 +9,8 @@
 unsigned char *ROOT_DIRECTORY_BUFFER;
 unsigned char *FAT_BUFFER;
 
-// The memory address where the user program will be loaded.
-unsigned char *PROGRAM_BUFFER = (char *)0x0000700000000000;
+// The virtual memory address where the user program will be loaded.
+unsigned char *EXECUTABLE_BASE_ADDRESS = (char *)0x0000700000000000;
 
 // This flag stores if the Root Directory was already loaded into memory.
 int RootDirectoryLoaded = 0;
@@ -110,7 +110,7 @@ void PrintRootDirectory()
 static void LoadProgramIntoMemory(RootDirectoryEntry *Entry)
 {
     // Read the first cluster of the Kernel into memory
-    unsigned char *program_buffer = (unsigned char *)PROGRAM_BUFFER;
+    unsigned char *program_buffer = (unsigned char *)EXECUTABLE_BASE_ADDRESS;
     ReadSectors((unsigned char *)program_buffer, Entry->FirstCluster + 33 - 2, 1);
     unsigned short nextCluster = FATRead(Entry->FirstCluster);
 

@@ -2,10 +2,14 @@
 #define TASK_H
 
 // The various Task states
-#define TASK_STATUS_CREATED       0x0
-#define TASK_STATUS_RUNNABLE      0x1
-#define TASK_STATUS_RUNNING       0x2
-#define TASK_STATUS_WAITING       0x3
+#define TASK_STATUS_CREATED         0x0
+#define TASK_STATUS_RUNNABLE        0x1
+#define TASK_STATUS_RUNNING         0x2
+#define TASK_STATUS_WAITING         0x3
+
+#define EXECUTABLE_BASE_ADDRESS     0x0000700000000000
+#define EXECUTABLE_USERMODE_STACK   0x00007FFFF0000000
+#define EXECUTABLE_KERNELMODE_STACK 0xFFFF800001400000
 
 // Represents the state of a Task
 typedef struct Task
@@ -73,10 +77,10 @@ extern Task *GetTaskState();
 Task* CreateKernelModeTask(void *TaskCode, unsigned long PID, unsigned long KernelModeStack);
 
 // Creates a new User Mode Task
-Task* CreateUserModeTask(unsigned char *FileName, unsigned long PID, unsigned long KernelModeStack, unsigned long UserModeStack);
+Task* ExecuteUserModeProgram(unsigned char *FileName, unsigned long PID);
 
 // Loads the given program into a new User Mode Virtual Address Space
-static void LoadProgramIntoUserModeVirtualAddressSpace(unsigned char *FileName, unsigned long UserModePML4Table, unsigned long KernelModeStack, unsigned long UserModeStack);
+static void LoadProgramIntoUserModeVirtualAddressSpace(unsigned char *FileName, unsigned long UserModePML4Table);
 
 // Creates all initial OS tasks
 void CreateInitialTasks();

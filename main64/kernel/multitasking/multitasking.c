@@ -75,24 +75,22 @@ Task* CreateKernelModeTask(void *TaskCode, unsigned long PID, unsigned long Kern
     return newTask;
 }
 
-// Creates a new User Mode Task
-Task* CreateUserModeTask(unsigned char *FileName, unsigned long PID, unsigned long KernelModeStack, unsigned long UserModeStack)
+// Loads and executes a User Mode program from the FAT12 file system
+Task* ExecuteUserModeProgram(unsigned char *FileName, unsigned long PID)
 {
-    // Allocate a new Task structure on the Heap
-    Task *newTask = (Task *)malloc(sizeof(Task));
-    newTask->KernelModeStack = KernelModeStack;
-    newTask->UserModeStack = UserModeStack;
-    newTask->PID = PID;
-    newTask->Status = TASK_STATUS_CREATED;
-    newTask->RIP = (unsigned long)0x0000700000000000;
-
     // Clone the Kernel Mode PML4 table for the new User Mode process
     unsigned long pml4Clone = ClonePML4Table();
 
     // Load the given program into the new User Mode Virtual Address Space
-    LoadProgramIntoUserModeVirtualAddressSpace(FileName, pml4Clone, KernelModeStack, UserModeStack);
+    LoadProgramIntoUserModeVirtualAddressSpace(FileName, pml4Clone);
 
-    // Store the new User Mode PML4 table in the CR3 register
+    // Allocate a new Task structure on the Heap
+    Task *newTask = (Task *)malloc(sizeof(Task));
+    newTask->PID = PID;
+    newTask->Status = TASK_STATUS_CREATED;
+    newTask->RIP = EXECUTABLE_BASE_ADDRESS;
+    newTask->KernelModeStack = EXECUTABLE_KERNELMODE_STACK;
+    newTask->UserModeStack = EXECUTABLE_USERMODE_STACK;
     newTask->CR3 = pml4Clone;
 
     // The "Interrupt Enable Flag" (Bit 9) must be set
@@ -103,8 +101,8 @@ Task* CreateUserModeTask(unsigned char *FileName, unsigned long PID, unsigned lo
     newTask->RBX = 0x0;
     newTask->RCX = 0x0;
     newTask->RDX = 0x0;
-    newTask->RBP = UserModeStack;
-    newTask->RSP = UserModeStack;
+    newTask->RBP = EXECUTABLE_USERMODE_STACK;
+    newTask->RSP = EXECUTABLE_USERMODE_STACK;
     newTask->RSI = 0x0;
     newTask->RDI = 0x0;
     newTask->R8 =  0x0;
@@ -134,7 +132,7 @@ Task* CreateUserModeTask(unsigned char *FileName, unsigned long PID, unsigned lo
 }
 
 // Loads the given program into a new User Mode Virtual Address Space
-static void LoadProgramIntoUserModeVirtualAddressSpace(unsigned char *FileName, unsigned long UserModePML4Table, unsigned long KernelModeStack, unsigned long UserModeStack)
+static void LoadProgramIntoUserModeVirtualAddressSpace(unsigned char *FileName, unsigned long UserModePML4Table)
 {
     // Switch to the User Mode Virtual Address Space
     SwitchPageDirectory((PageMapLevel4Table *)UserModePML4Table);
@@ -148,10 +146,10 @@ static void LoadProgramIntoUserModeVirtualAddressSpace(unsigned char *FileName, 
     // NOTE: If we don't do that, and the virtual address is unmapped, the OS will crash during the Context
     // Switching routine, because a Page Fault would occur (when we prepare the return Stack Frame), which
     // can'be be handled, because the interrupts are disabled!
-    unsigned long *kernelModeStackPtr = (unsigned long *)KernelModeStack - 8;
+    unsigned long *kernelModeStackPtr = (unsigned long *)EXECUTABLE_KERNELMODE_STACK - 8;
     kernelModeStackPtr[0] = kernelModeStackPtr[0]; // This read/write operation causes a Page Fault!
 
-    unsigned long *userModeStackPtr = (unsigned long *)UserModeStack - 8;
+    unsigned long *userModeStackPtr = (unsigned long *)EXECUTABLE_USERMODE_STACK - 8;
     userModeStackPtr[0] = userModeStackPtr[0]; // This read/write operation causes a Page Fault!
 
     // Switch back to the Kernel Mode Virtual Address Space
@@ -166,11 +164,13 @@ void CreateInitialTasks()
     TaskList->PrintFunctionPtr = &PrintTaskList;
 
     // Create the initial Kernel Mode Tasks
-    CreateKernelModeTask(Dummy1, 1, 0xFFFF800001100000);
+    /* CreateKernelModeTask(Dummy1, 1, 0xFFFF800001100000);
     CreateKernelModeTask(Dummy2, 2, 0xFFFF800001200000);
-    CreateKernelModeTask(Dummy3, 3, 0xFFFF800001300000);
+    CreateKernelModeTask(Dummy3, 3, 0xFFFF800001300000); */
 
-    CreateUserModeTask("PROG2   BIN", 4, 0xFFFF800001400000, 0x00007FFFF0000000);
+    // Load and execute some programs from the FAT12 file system
+    ExecuteUserModeProgram("PROG1   BIN", 4);
+    ExecuteUserModeProgram("PROG2   BIN", 5);
 }
 
 // Moves the current Task from the head of the TaskList to the tail of the TaskList.

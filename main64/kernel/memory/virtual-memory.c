@@ -305,20 +305,41 @@ void MapVirtualAddressToPhysicalAddress(unsigned long VirtualAddress, unsigned l
     }
 }
 
+// Unmaps the given Virtual Memory Address
+void UnmapVirtualAddress(unsigned long VirtualAddress)
+{
+    // Get references to the various Page Tables through the Recursive Page Table Mapping
+    PageTable *pt = (PageTable *)PT_TABLE(VirtualAddress);
+
+    if (pt->Entries[PT_INDEX(VirtualAddress)].Present == 1)
+    {
+        // Install the provided physical frame address
+        pt->Entries[PT_INDEX(VirtualAddress)].Frame = 0x0;
+        pt->Entries[PT_INDEX(VirtualAddress)].Present = 0;
+        pt->Entries[PT_INDEX(VirtualAddress)].ReadWrite = 0;
+        pt->Entries[PT_INDEX(VirtualAddress)].User = 0;
+    }
+}
+
 // Clones the PML4 table of the Kernel Mode and returns the physical address of the PML4 table clone
 unsigned long ClonePML4Table()
 {
     // Allocate a new Page Frame for the PML4 table clone
     unsigned long pfn = AllocatePageFrame();
   
-    // Copy the original PML4 table to the new PML4 table clone
-    MapVirtualAddressToPhysicalAddress(0xFFFF80000DEAD000, pfn * SMALL_PAGE_SIZE);
-    PageMapLevel4Table *pml4 = (PageMapLevel4Table *)PML4_TABLE;
-    memcpy((unsigned long *)0xFFFF80000DEAD000, pml4, SMALL_PAGE_SIZE);
+    // Map the newly allocated physical page frame to a temporary virtual memory address
+    MapVirtualAddressToPhysicalAddress(TEMPORARY_VIRTUAL_PAGE, pfn * SMALL_PAGE_SIZE);
 
+    // Copy the original PML4 table to the new PML4 table clone
+    PageMapLevel4Table *pml4 = (PageMapLevel4Table *)PML4_TABLE;
+    memcpy((unsigned long *)TEMPORARY_VIRTUAL_PAGE, pml4, SMALL_PAGE_SIZE);
+    
     // Install the new Recursive Page Table Mapping in the new PML4 table clone
     PageMapLevel4Table *pml4Clone = (PageMapLevel4Table *)(pfn * SMALL_PAGE_SIZE);
     pml4Clone->Entries[511].Frame = pfn;
+    
+    // Release the temporary virtual memory address mapping
+    UnmapVirtualAddress(TEMPORARY_VIRTUAL_PAGE);
 
     // Return the physical address of the PML4 table clone
     return pfn * SMALL_PAGE_SIZE;

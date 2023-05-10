@@ -91,7 +91,7 @@ static unsigned short FATRead(unsigned short Cluster)
 {
     // Calculate the offset into the FAT table
     unsigned int fatOffset = (Cluster / 2) + Cluster;
-    unsigned long *offset = fatBuffer + fatOffset;
+    unsigned long *offset = (unsigned long *)(fatBuffer + fatOffset);
 
     // Read the entry from the FAT
     unsigned short val = *offset;
