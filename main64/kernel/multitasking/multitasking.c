@@ -1,5 +1,6 @@
 #include "multitasking.h"
 #include "gdt.h"
+#include "../isr/idt.h"
 #include "../common.h"
 #include "../list.h"
 #include "../date.h"
@@ -75,7 +76,7 @@ Task* CreateKernelModeTask(void *TaskCode, unsigned long PID, unsigned long Kern
 }
 
 // Creates a new User Mode Task
-Task* CreateUserModeTask(void *TaskCode, unsigned long PID, unsigned long KernelModeStack, unsigned long UserModeStack)
+Task* CreateUserModeTask(unsigned char *FileName, unsigned long PID, unsigned long KernelModeStack, unsigned long UserModeStack)
 {
     // Allocate a new Task structure on the Heap
     Task *newTask = (Task *)malloc(sizeof(Task));
@@ -83,22 +84,16 @@ Task* CreateUserModeTask(void *TaskCode, unsigned long PID, unsigned long Kernel
     newTask->UserModeStack = UserModeStack;
     newTask->PID = PID;
     newTask->Status = TASK_STATUS_CREATED;
-    newTask->RIP = (unsigned long)TaskCode;
+    newTask->RIP = (unsigned long)0x0000700000000000;
 
-    // Allocate a new Page Frame for the User Mode PML4 table
-    unsigned long userModePML4pfn = AllocatePageFrame();
-  
-    // Copy the original Kernel Mode PML4 table to the new User Mode PML4 table
-    MapVirtualAddressToPhysicalAddress(0xFFFF80000DEAD000, userModePML4pfn * SMALL_PAGE_SIZE);
-    PageMapLevel4Table *pml4KernelMode = (PageMapLevel4Table *)PML4_TABLE;
-    memcpy((unsigned long *)0xFFFF80000DEAD000, pml4KernelMode, SMALL_PAGE_SIZE);
+    // Clone the Kernel Mode PML4 table for the new User Mode process
+    unsigned long pml4Clone = ClonePML4Table();
 
-    // Install the new Recursive Page Table Mapping in the new User Mode PML4 table
-    PageMapLevel4Table *pml4UserMode = (PageMapLevel4Table *)(userModePML4pfn * SMALL_PAGE_SIZE);
-    pml4UserMode->Entries[511].Frame = userModePML4pfn;
-   
+    // Load the given program into the new User Mode Virtual Address Space
+    LoadProgramIntoUserModeVirtualAddressSpace(FileName, pml4Clone, KernelModeStack, UserModeStack);
+
     // Store the new User Mode PML4 table in the CR3 register
-    newTask->CR3 = userModePML4pfn * SMALL_PAGE_SIZE;
+    newTask->CR3 = pml4Clone;
 
     // The "Interrupt Enable Flag" (Bit 9) must be set
     newTask->RFLAGS = 0x200;
@@ -130,6 +125,22 @@ Task* CreateUserModeTask(void *TaskCode, unsigned long PID, unsigned long Kernel
     newTask->ES = 0x0;
     newTask->FS = 0x0;
     newTask->GS = 0x0;
+    
+    // Add the newly created Kernel Mode Task to the end of the TaskList
+    AddEntryToList(TaskList, newTask, PID);
+
+    // Return a reference to the newly created Kernel Mode Task
+    return newTask;
+}
+
+// Loads the given program into a new User Mode Virtual Address Space
+static void LoadProgramIntoUserModeVirtualAddressSpace(unsigned char *FileName, unsigned long UserModePML4Table, unsigned long KernelModeStack, unsigned long UserModeStack)
+{
+    // Switch to the User Mode Virtual Address Space
+    SwitchPageDirectory((PageMapLevel4Table *)UserModePML4Table);
+
+    // Load the program into the User Mode Virtual Address Space
+    LoadProgram(FileName);
 
     // Touch the virtual address of the Kernel Mode Stack (8 bytes below the starting address), so that we can
     // be sure that the virtual address will get mapped to a physical Page Frame through the Page Fault Handler.
@@ -142,12 +153,9 @@ Task* CreateUserModeTask(void *TaskCode, unsigned long PID, unsigned long Kernel
 
     unsigned long *userModeStackPtr = (unsigned long *)UserModeStack - 8;
     userModeStackPtr[0] = userModeStackPtr[0]; // This read/write operation causes a Page Fault!
-    
-    // Add the newly created Kernel Mode Task to the end of the TaskList
-    AddEntryToList(TaskList, newTask, PID);
 
-    // Return a reference to the newly created Kernel Mode Task
-    return newTask;
+    // Switch back to the Kernel Mode Virtual Address Space
+    SwitchPageDirectory((PageMapLevel4Table *)GetPML4Address());
 }
 
 // Creates all initial OS tasks.
@@ -162,10 +170,7 @@ void CreateInitialTasks()
     CreateKernelModeTask(Dummy2, 2, 0xFFFF800001200000);
     CreateKernelModeTask(Dummy3, 3, 0xFFFF800001300000);
 
-    if (LoadProgram("PROG1   BIN") != 0)
-        CreateUserModeTask((void *)0x0000700000000000, 4, 0xFFFF800001400000, 0x00007FFFF0000000);
-
-    // CreateKernelModeTask((void *)0xFFFF8000FFFF0000, 4, 0xFFFF800001400000);
+    CreateUserModeTask("PROG1   BIN", 4, 0xFFFF800001400000, 0x00007FFFF0000000);
 }
 
 // Moves the current Task from the head of the TaskList to the tail of the TaskList.

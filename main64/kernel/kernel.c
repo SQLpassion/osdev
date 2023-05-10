@@ -44,7 +44,7 @@ void InitKernel(int KernelSize)
     InitPhysicalMemoryManager(KernelSize);
 
     // Initialize the virtual Memory Manager
-    InitVirtualMemoryManager(1);
+    InitVirtualMemoryManager(0);
 
     // Initializes the PIC, and remap the IRQ handlers.
     // The 1st PIC handles the hardware interrupts 32 - 39 (input value 0x20).

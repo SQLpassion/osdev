@@ -237,6 +237,13 @@ void MapVirtualAddressToPhysicalAddress(unsigned long VirtualAddress, unsigned l
     PageDirectoryPointerTable *pdp = (PageDirectoryPointerTable *)PDP_TABLE(VirtualAddress);
     PageDirectoryTable *pd = (PageDirectoryTable *)PD_TABLE(VirtualAddress);
     PageTable *pt = (PageTable *)PT_TABLE(VirtualAddress);
+    int color = COLOR_WHITE;
+
+    if (debugEnabled)
+    {
+        // Set the screen text color to Green
+        color = SetColor(COLOR_GREEN);
+    }
 
     if (pml4->Entries[PML4_INDEX(VirtualAddress)].Present == 0)
     {
@@ -247,7 +254,8 @@ void MapVirtualAddressToPhysicalAddress(unsigned long VirtualAddress, unsigned l
         pml4->Entries[PML4_INDEX(VirtualAddress)].User = 1;
 
         // Debugging Output
-        PageFaultDebugPrint(PML4_INDEX(VirtualAddress), "PML4", pml4->Entries[PML4_INDEX(VirtualAddress)].Frame);
+        if (debugEnabled)
+            PageFaultDebugPrint(PML4_INDEX(VirtualAddress), "PML4", pml4->Entries[PML4_INDEX(VirtualAddress)].Frame);
     }
 
     if (pdp->Entries[PDP_INDEX(VirtualAddress)].Present == 0)
@@ -259,7 +267,8 @@ void MapVirtualAddressToPhysicalAddress(unsigned long VirtualAddress, unsigned l
         pdp->Entries[PDP_INDEX(VirtualAddress)].User = 1;
 
         // Debugging Output
-        PageFaultDebugPrint(PDP_INDEX(VirtualAddress), "PDP", pdp->Entries[PDP_INDEX(VirtualAddress)].Frame);
+        if (debugEnabled)
+            PageFaultDebugPrint(PDP_INDEX(VirtualAddress), "PDP", pdp->Entries[PDP_INDEX(VirtualAddress)].Frame);
     }
 
     if (pd->Entries[PD_INDEX(VirtualAddress)].Present == 0)
@@ -271,7 +280,8 @@ void MapVirtualAddressToPhysicalAddress(unsigned long VirtualAddress, unsigned l
         pd->Entries[PD_INDEX(VirtualAddress)].User = 1;
 
         // Debugging Output
-        PageFaultDebugPrint(PD_INDEX(VirtualAddress), "PD", pd->Entries[PD_INDEX(VirtualAddress)].Frame);
+        if (debugEnabled)
+            PageFaultDebugPrint(PD_INDEX(VirtualAddress), "PD", pd->Entries[PD_INDEX(VirtualAddress)].Frame);
     }
 
     if (pt->Entries[PT_INDEX(VirtualAddress)].Present == 0)
@@ -283,8 +293,35 @@ void MapVirtualAddressToPhysicalAddress(unsigned long VirtualAddress, unsigned l
         pt->Entries[PT_INDEX(VirtualAddress)].User = 1;
 
         // Debugging Output
-        PageFaultDebugPrint(PT_INDEX(VirtualAddress), "PT", pt->Entries[PT_INDEX(VirtualAddress)].Frame);
+        if (debugEnabled)
+            PageFaultDebugPrint(PT_INDEX(VirtualAddress), "PT", pt->Entries[PT_INDEX(VirtualAddress)].Frame);
     }
+
+    // Reset the screen text color
+    if (debugEnabled)
+    {
+        printf("\n");
+        SetColor(color);
+    }
+}
+
+// Clones the PML4 table of the Kernel Mode and returns the physical address of the PML4 table clone
+unsigned long ClonePML4Table()
+{
+    // Allocate a new Page Frame for the PML4 table clone
+    unsigned long pfn = AllocatePageFrame();
+  
+    // Copy the original PML4 table to the new PML4 table clone
+    MapVirtualAddressToPhysicalAddress(0xFFFF80000DEAD000, pfn * SMALL_PAGE_SIZE);
+    PageMapLevel4Table *pml4 = (PageMapLevel4Table *)PML4_TABLE;
+    memcpy((unsigned long *)0xFFFF80000DEAD000, pml4, SMALL_PAGE_SIZE);
+
+    // Install the new Recursive Page Table Mapping in the new PML4 table clone
+    PageMapLevel4Table *pml4Clone = (PageMapLevel4Table *)(pfn * SMALL_PAGE_SIZE);
+    pml4Clone->Entries[511].Frame = pfn;
+
+    // Return the physical address of the PML4 table clone
+    return pfn * SMALL_PAGE_SIZE;
 }
 
 // Tests the Virtual Memory Manager.

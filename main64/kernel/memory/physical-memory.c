@@ -183,8 +183,14 @@ unsigned long AllocatePageFrame()
                         // Calculate the Page Frame Number
                         unsigned long pfn = (frame + (descriptor->PhysicalMemoryStartAddress / PAGE_SIZE));
 
+                        // CAUTION!!!
+                        // The Page Frame Tracking can't be activated by now, because it uses internally a malloc() call,
+                        // which would lead sometimes to a Page Fault, when the Heap must be expanded.
+                        // But the function "AllocatePageFrame()" is already called during a Page Fault.
+                        // Therefore, we would trigger a Page Fault within a Page Fault, which crashes the system!
+
                         // Add the allocated Page Frame to the Tracked list
-                        AddPageFrameToTrackedList(pfn, k);
+                        // AddPageFrameToTrackedList(pfn, k);
 
                         // Return the Page Frame number
                         return pfn;

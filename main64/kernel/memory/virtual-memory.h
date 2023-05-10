@@ -177,6 +177,9 @@ void HandlePageFault(unsigned long VirtualAddress);
 // Maps a Virtual Memory Address to a Physical Memory Address
 void MapVirtualAddressToPhysicalAddress(unsigned long VirtualAddress, unsigned long PhysicalAddress);
 
+// Clones the PML4 table of the Kernel Mode and returns the physical address of the PML4 table clone
+unsigned long ClonePML4Table();
+
 // Tests the Virtual Memory Manager.
 void TestVirtualMemoryManager();
 

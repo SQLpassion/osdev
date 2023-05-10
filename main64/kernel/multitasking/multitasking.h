@@ -73,7 +73,10 @@ extern Task *GetTaskState();
 Task* CreateKernelModeTask(void *TaskCode, unsigned long PID, unsigned long KernelModeStack);
 
 // Creates a new User Mode Task
-Task* CreateUserModeTask(void *TaskCode, unsigned long PID, unsigned long KernelModeStack, unsigned long UserModeStack);
+Task* CreateUserModeTask(unsigned char *FileName, unsigned long PID, unsigned long KernelModeStack, unsigned long UserModeStack);
+
+// Loads the given program into a new User Mode Virtual Address Space
+static void LoadProgramIntoUserModeVirtualAddressSpace(unsigned char *FileName, unsigned long UserModePML4Table, unsigned long KernelModeStack, unsigned long UserModeStack);
 
 // Creates all initial OS tasks
 void CreateInitialTasks();
