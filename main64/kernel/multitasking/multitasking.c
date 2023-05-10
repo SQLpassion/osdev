@@ -170,7 +170,7 @@ void CreateInitialTasks()
     CreateKernelModeTask(Dummy2, 2, 0xFFFF800001200000);
     CreateKernelModeTask(Dummy3, 3, 0xFFFF800001300000);
 
-    CreateUserModeTask("PROG1   BIN", 4, 0xFFFF800001400000, 0x00007FFFF0000000);
+    CreateUserModeTask("PROG2   BIN", 4, 0xFFFF800001400000, 0x00007FFFF0000000);
 }
 
 // Moves the current Task from the head of the TaskList to the tail of the TaskList.
