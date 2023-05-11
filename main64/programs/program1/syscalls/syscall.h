@@ -16,4 +16,7 @@ extern long SYSCALLASM2();
 long SYSCALL3(int SysCallNumber, void *Parameter1, void *Parameter2, void *Parameter3);
 extern long SYSCALLASM3();
 
+// Prints a null-terminated string
+void printf(char *string);
+
 #endif

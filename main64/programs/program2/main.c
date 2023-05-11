@@ -1,7 +1,6 @@
 #include "syscalls/syscall.h"
 
 void outb(unsigned short Port, unsigned char Value);
-int Add(int a, int b);
 
 void main()
 {
@@ -13,8 +12,7 @@ void main()
 
     while (1 == 1)
     {
-        result = Add(result, 1);
-        SYSCALL1(SYSCALL_PRINTF, "Hello World from User Mode Program #2...\n");
+        printf("Hello World from User Mode Program #2...\n");
     }
 }
 
@@ -24,14 +22,4 @@ void main()
 void outb(unsigned short Port, unsigned char Value)
 {
     asm volatile ("outb %1, %0" : : "dN" (Port), "a" (Value));
-}
-
-int Add(int a, int b)
-{
-    SYSCALL1(SYSCALL_PRINTF, "=> Calling Add()...\n");
-    int c = 0;
-
-    c = a + b;
-
-    return c;
 }

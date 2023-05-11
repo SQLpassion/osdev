@@ -1,8 +1,5 @@
 [BITS 64]
 [GLOBAL SysCallHandlerAsm]
-[GLOBAL SYSCALLASM1]
-[GLOBAL SYSCALLASM2]
-[GLOBAL SYSCALLASM3]
 [EXTERN SysCallHandlerC]
 
 ; Virtual address where the SysCallRegisters structure will be stored
@@ -80,18 +77,3 @@ SysCallHandlerAsm:
 
     STI
     IRETQ
-
-; Raises a SysCall
-SYSCALLASM1:
-    INT     0x80
-    RET
-
-; Raises a SysCall
-SYSCALLASM2:
-    INT     0x80
-    RET
-
-; Raises a SysCall
-SYSCALLASM3:
-    INT     0x80
-    RET

@@ -10,7 +10,7 @@ void main()
 
     while (1 == 1)
     {
-        SYSCALL1(SYSCALL_PRINTF, "Hello World from User Mode Program #1...\n");
+        printf("Hello World from User Mode Program #1...\n");
     }
 }
 
