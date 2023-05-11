@@ -1,5 +1,5 @@
-#include "syscalls/syscall.h"
-#include "libc/libc.h"
+#include "../../libc/syscall.h"
+#include "../../libc/libc.h"
 #include "program.h"
 
 // The main entry point for the User Mode program

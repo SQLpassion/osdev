@@ -1,4 +1,4 @@
-#include "../syscalls/syscall.h"
+#include "syscall.h"
 #include "libc.h"
 
 char tbuf[64];

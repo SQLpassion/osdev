@@ -170,7 +170,7 @@ void CreateInitialTasks()
 
     // Load and execute some programs from the FAT12 file system
     ExecuteUserModeProgram("PROG1   BIN", 4);
-    // ExecuteUserModeProgram("PROG2   BIN", 5);
+    ExecuteUserModeProgram("PROG2   BIN", 5);
 }
 
 // Moves the current Task from the head of the TaskList to the tail of the TaskList.

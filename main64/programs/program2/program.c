@@ -1,11 +1,10 @@
-#include "syscalls/syscall.h"
+#include "../../libc/syscall.h"
+#include "../../libc/libc.h"
+#include "program.h"
 
-void outb(unsigned short Port, unsigned char Value);
-
-void main()
+// The main entry point for the User Mode program
+void ProgramMain()
 {
-    int result = 0;
-
     // This function call will trigger a GP fault, because the
     // code runs in Ring 3 (User Mode)
     // outb(0x3D4, 14);
