@@ -14,4 +14,6 @@ long SysCallHandlerC(SysCallRegisters *Registers)
 
         return 0;
     }
+
+    return 0;
 }

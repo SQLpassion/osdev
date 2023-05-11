@@ -1,14 +1,14 @@
 # Automatically generate lists of sources using wildcards.
-C_SOURCES = $(wildcard *.c syscalls/*.c)
-HEADERS = $(wildcard *.h syscalls/*.h)
+C_SOURCES = $(wildcard *.c syscalls/*.c libc/*.c)
+HEADERS = $(wildcard *.h syscalls/*.h libc/*.h)
 
 # Convert the *.c filenames to *.o to give a list of object files to build
 OBJ = ${C_SOURCES:.c=.o}
 
 # Links the C program
-prog1.bin: ${OBJ} syscalls/syscall_asm.o
+prog1.bin: program.o syscalls/syscall_asm.o ${OBJ}
 	x86_64-elf-ld -o $@ -Tlink.ld $^ --oformat binary -z max-page-size=0x1000 -Map prog1.map
-	# x86_64-elf-objdump -S --disassemble main.o > main.asm
+	x86_64-elf-objdump -M intel -S --disassemble program.o > program.generated
 	
 # Compiles the C program
 %.o : %.c ${HEADERS}
@@ -20,4 +20,4 @@ syscalls/syscall_asm.o : syscalls/syscall.asm
 
 # Clean up
 clean:
-	rm -f *.bin *.o *.asm syscalls/*.o
+	rm -f *.bin *.o *.generated syscalls/*.o common/*.o syscalls/*.generated

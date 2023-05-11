@@ -10,7 +10,7 @@ unsigned char *ROOT_DIRECTORY_BUFFER;
 unsigned char *FAT_BUFFER;
 
 // The virtual memory address where the user program will be loaded.
-unsigned char *EXECUTABLE_BASE_ADDRESS = (char *)0x0000700000000000;
+unsigned char *EXECUTABLE_BASE_ADDRESS = (unsigned char *)0x0000700000000000;
 
 // This flag stores if the Root Directory was already loaded into memory.
 int RootDirectoryLoaded = 0;
@@ -118,7 +118,7 @@ static void LoadProgramIntoMemory(RootDirectoryEntry *Entry)
     while (nextCluster < EOF)
     {
         program_buffer = program_buffer + BYTES_PER_SECTOR;
-        ReadSectors((unsigned char *)program_buffer, nextCluster + 33 - 2, 1);
+        ReadSectors(program_buffer, nextCluster + 33 - 2, 1);
 
         // Read the next Cluster from the FAT table
         nextCluster = FATRead(nextCluster);
@@ -178,7 +178,12 @@ static unsigned short FATRead(unsigned short Cluster)
 {
     // Calculate the offset into the FAT table
     unsigned int fatOffset = (Cluster / 2) + Cluster;
-    unsigned long *offset = (unsigned long *)FAT_BUFFER + fatOffset;
+
+    // CAUTION!
+    // The following line generates a warning during the compilation ("incompatible-pointer-types").
+    // But we can't cast the right side to "(unsigned long *)", because then the loader component
+    // will not work anymore!
+    unsigned long *offset = FAT_BUFFER + fatOffset;
     
     // Read the entry from the FAT
     unsigned short val = *offset;

@@ -17,9 +17,3 @@ long SYSCALL3(int SysCallNumber, void *Parameter1, void *Parameter2, void *Param
 {
     return SYSCALLASM3(SysCallNumber, Parameter1, Parameter2, Parameter3);
 }
-
-// Prints a null-terminated string
-void printf(char *string)
-{
-    SYSCALL1(SYSCALL_PRINTF, string);
-}

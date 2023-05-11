@@ -95,7 +95,7 @@ static unsigned short FATRead(unsigned short Cluster)
     // CAUTION!
     // The following line generates a warning during the compilation ("incompatible-pointer-types").
     // But we can't cast the right side to "(unsigned long *)", because then the loader component
-    // will not work anymore on the physical hardware!
+    // will not work anymore!
     unsigned long *offset = fatBuffer + fatOffset;
 
     // Read the entry from the FAT

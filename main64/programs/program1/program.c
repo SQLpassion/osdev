@@ -1,8 +1,9 @@
 #include "syscalls/syscall.h"
+#include "libc/libc.h"
+#include "program.h"
 
-void outb(unsigned short Port, unsigned char Value);
-
-void main()
+// The main entry point for the User Mode program
+void ProgramMain()
 {
     // This function call will trigger a GP fault, because the
     // code runs in Ring 3 (User Mode)
@@ -11,6 +12,7 @@ void main()
     while (1 == 1)
     {
         printf("Hello World from User Mode Program #1...\n");
+        printf("=====>\n");
     }
 }
 
