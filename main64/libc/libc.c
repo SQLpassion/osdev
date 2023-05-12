@@ -11,6 +11,12 @@ void printf(char *string)
     SYSCALL1(SYSCALL_PRINTF, string);
 }
 
+// Returns the PID of the current executing process
+long GetPID()
+{
+    return SYSCALL0(SYSCALL_GETPID);
+}
+
 // Prints out an integer value
 void printf_int(int i, int base)
 {

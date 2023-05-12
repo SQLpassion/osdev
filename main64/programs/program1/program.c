@@ -9,10 +9,13 @@ void ProgramMain()
     // code runs in Ring 3 (User Mode)
     // outb(0x3D4, 14);
 
+    long pid = GetPID();
+
     while (1 == 1)
     {
-        printf("Hello World from User Mode Program #1...\n");
-        printf("=====>\n");
+        printf("Hello World from User Mode Program #1 with PID ");
+        printf_long(pid, 10);
+        printf("\n");
     }
 }
 

@@ -1,5 +1,11 @@
 #include "syscall.h"
 
+// Raises a SysCall with no parameters
+long SYSCALL0(int SysCallNumber)
+{
+    return SYSCALLASM0(SysCallNumber);
+}
+
 // Raises a SysCall with 1 parameter
 long SYSCALL1(int SysCallNumber, void *Parameter1)
 {

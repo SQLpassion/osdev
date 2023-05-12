@@ -1,3 +1,4 @@
+#include "../multitasking/multitasking.h"
 #include "../drivers/screen.h"
 #include "syscall.h"
 
@@ -13,6 +14,12 @@ long SysCallHandlerC(SysCallRegisters *Registers)
         printf((char *)Registers->RSI);
 
         return 0;
+    }
+    // GetPID
+    else if (sysCallNumber == SYSCALL_GETPID)
+    {
+        Task *state = (Task *)GetTaskState();
+        return state->PID;
     }
 
     return 0;

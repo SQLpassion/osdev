@@ -4,6 +4,9 @@
 // Prints out a null-terminated string
 void printf(char *string);
 
+// Returns the PID of the current executing process
+long GetPID();
+
 // Prints out an integer value
 void printf_int(int i, int base);
 

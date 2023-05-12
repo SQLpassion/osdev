@@ -3,6 +3,7 @@
 
 // Defines the various available SysCalls
 #define SYSCALL_PRINTF  1
+#define SYSCALL_GETPID  2
 
 typedef struct SysCallRegisters
 {

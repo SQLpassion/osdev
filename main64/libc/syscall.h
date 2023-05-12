@@ -2,7 +2,12 @@
 #define SYSCALL_H
 
 // Defines the various available SysCalls
-#define SYSCALL_PRINTF 1
+#define SYSCALL_PRINTF  1
+#define SYSCALL_GETPID  2
+
+// Raises a SysCall with no parameters
+long SYSCALL0(int SysCallNumber);
+extern long SYSCALLASM0();
 
 // Raises a SysCall with 1 parameter
 long SYSCALL1(int SysCallNumber, void *Parameter1);
