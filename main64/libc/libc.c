@@ -17,6 +17,13 @@ long GetPID()
     return SYSCALL0(SYSCALL_GETPID);
 }
 
+// Terminates the current executing process
+void TerminateProcess()
+{
+    SYSCALL0(SYSCALL_TERMINATE_PROCESS);
+    while (1 == 1) {}
+}
+
 // Prints out an integer value
 void printf_int(int i, int base)
 {

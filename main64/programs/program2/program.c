@@ -9,10 +9,13 @@ void ProgramMain()
     // code runs in Ring 3 (User Mode)
     // outb(0x3D4, 14);
 
-    while (1 == 1)
+    for (int i = 0; i < 100; i++)
     {
         printf("Hello World from User Mode Program #2...\n");
     }
+
+    // Terminate the current running process
+    TerminateProcess();
 }
 
 // The x64 out assembly instructions are only allowed in Ring 0 code.

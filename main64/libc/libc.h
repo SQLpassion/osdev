@@ -7,6 +7,9 @@ void printf(char *string);
 // Returns the PID of the current executing process
 long GetPID();
 
+// Terminates the current executing process
+void TerminateProcess();
+
 // Prints out an integer value
 void printf_int(int i, int base);
 

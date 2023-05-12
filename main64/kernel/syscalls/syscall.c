@@ -21,6 +21,14 @@ long SysCallHandlerC(SysCallRegisters *Registers)
         Task *state = (Task *)GetTaskState();
         return state->PID;
     }
+    // TerminateProcess
+    else if (sysCallNumber == SYSCALL_TERMINATE_PROCESS)
+    {
+        Task *state = (Task *)GetTaskState();
+        TerminateTask(state->PID);
+
+        return 0;
+    }
 
     return 0;
 }

@@ -2,8 +2,9 @@
 #define SYSCALL_H
 
 // Defines the various available SysCalls
-#define SYSCALL_PRINTF  1
-#define SYSCALL_GETPID  2
+#define SYSCALL_PRINTF              1
+#define SYSCALL_GETPID              2
+#define SYSCALL_TERMINATE_PROCESS   3
 
 // Raises a SysCall with no parameters
 long SYSCALL0(int SysCallNumber);
