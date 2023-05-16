@@ -1,7 +1,14 @@
+#include "../multitasking/multitasking.h"
 #include "../drivers/screen.h"
 #include "syscall.h"
 
 // Implements the SysCall Handler
+// 
+// CAUTION!
+// When the function "SysCallHandlerC" is executed, Interrupts are disabled (performed in the
+// Assembler code).
+// Therefore, it is *safe* to call other functions in the Kernel (like "GetTaskState"), 
+// because a Context Switch can't happen, because of the disabled Timer Interrupt.
 long SysCallHandlerC(SysCallRegisters *Registers)
 {
     // The SysCall Number is stored in the register RDI
@@ -14,45 +21,20 @@ long SysCallHandlerC(SysCallRegisters *Registers)
 
         return 0;
     }
-    else if (sysCallNumber == SYSCALL_ADD)
+    // GetPID
+    else if (sysCallNumber == SYSCALL_GETPID)
     {
-        return Add(
-            (int)Registers->RSI,
-            (int)Registers->RDX);
+        Task *state = (Task *)GetTaskState();
+        return state->PID;
     }
-    else if (sysCallNumber == SYSCALL_MUL)
+    // TerminateProcess
+    else if (sysCallNumber == SYSCALL_TERMINATE_PROCESS)
     {
-        return Mul(
-            (int)Registers->RSI,
-            (int)Registers->RDX,
-            (int)Registers->RCX);
+        Task *state = (Task *)GetTaskState();
+        TerminateTask(state->PID);
+
+        return 0;
     }
-}
 
-// Raises a SysCall with 1 parameter
-long SYSCALL1(int SysCallNumber, void *Parameter1)
-{
-    return SYSCALLASM1(SysCallNumber, Parameter1);
-}
-
-// Raises a Syscall with 2 parameters
-long SYSCALL2(int SysCallNumber, void *Parameter1, void *Parameter2)
-{
-    return SYSCALLASM2(SysCallNumber, Parameter1, Parameter2);
-}
-
-// Raises a Syscall with 3 parameters
-long SYSCALL3(int SysCallNumber, void *Parameter1, void *Parameter2, void *Parameter3)
-{
-    return SYSCALLASM3(SysCallNumber, Parameter1, Parameter2, Parameter3);
-}
-
-long Add(int a, int b)
-{
-    return a + b;
-}
-
-long Mul(int a, int b, int c)
-{
-    return a * b * c;
+    return 0;
 }

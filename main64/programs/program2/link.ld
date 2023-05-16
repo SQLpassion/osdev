@@ -1,4 +1,4 @@
-ENTRY(ProgramMain)
+ENTRY(main)
 
 SECTIONS
 {

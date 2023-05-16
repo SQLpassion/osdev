@@ -229,6 +229,139 @@ void HandlePageFault(unsigned long VirtualAddress)
     }
 }
 
+// Maps a Virtual Memory Address to a Physical Memory Address
+void MapVirtualAddressToPhysicalAddress(unsigned long VirtualAddress, unsigned long PhysicalAddress)
+{
+    // Get references to the various Page Tables through the Recursive Page Table Mapping
+    PageMapLevel4Table *pml4 = (PageMapLevel4Table *)PML4_TABLE;
+    PageDirectoryPointerTable *pdp = (PageDirectoryPointerTable *)PDP_TABLE(VirtualAddress);
+    PageDirectoryTable *pd = (PageDirectoryTable *)PD_TABLE(VirtualAddress);
+    PageTable *pt = (PageTable *)PT_TABLE(VirtualAddress);
+    int color = COLOR_WHITE;
+
+    if (debugEnabled)
+    {
+        // Set the screen text color to Green
+        color = SetColor(COLOR_GREEN);
+    }
+
+    if (pml4->Entries[PML4_INDEX(VirtualAddress)].Present == 0)
+    {
+        // Allocate a physical frame for the missing PML4 entry
+        pml4->Entries[PML4_INDEX(VirtualAddress)].Frame = AllocatePageFrame();
+        pml4->Entries[PML4_INDEX(VirtualAddress)].Present = 1;
+        pml4->Entries[PML4_INDEX(VirtualAddress)].ReadWrite = 1;
+        pml4->Entries[PML4_INDEX(VirtualAddress)].User = 1;
+
+        // Debugging Output
+        if (debugEnabled)
+            PageFaultDebugPrint(PML4_INDEX(VirtualAddress), "PML4", pml4->Entries[PML4_INDEX(VirtualAddress)].Frame);
+    }
+
+    if (pdp->Entries[PDP_INDEX(VirtualAddress)].Present == 0)
+    {
+        // Allocate a physical frame for the missing PDP entry
+        pdp->Entries[PDP_INDEX(VirtualAddress)].Frame = AllocatePageFrame();
+        pdp->Entries[PDP_INDEX(VirtualAddress)].Present = 1;
+        pdp->Entries[PDP_INDEX(VirtualAddress)].ReadWrite = 1;
+        pdp->Entries[PDP_INDEX(VirtualAddress)].User = 1;
+
+        // Debugging Output
+        if (debugEnabled)
+            PageFaultDebugPrint(PDP_INDEX(VirtualAddress), "PDP", pdp->Entries[PDP_INDEX(VirtualAddress)].Frame);
+    }
+
+    if (pd->Entries[PD_INDEX(VirtualAddress)].Present == 0)
+    {
+        // Allocate a physical frame for the missing PD entry
+        pd->Entries[PD_INDEX(VirtualAddress)].Frame = AllocatePageFrame();
+        pd->Entries[PD_INDEX(VirtualAddress)].Present = 1;
+        pd->Entries[PD_INDEX(VirtualAddress)].ReadWrite = 1;
+        pd->Entries[PD_INDEX(VirtualAddress)].User = 1;
+
+        // Debugging Output
+        if (debugEnabled)
+            PageFaultDebugPrint(PD_INDEX(VirtualAddress), "PD", pd->Entries[PD_INDEX(VirtualAddress)].Frame);
+    }
+
+    if (pt->Entries[PT_INDEX(VirtualAddress)].Present == 0)
+    {
+        // Install the provided physical frame address
+        pt->Entries[PT_INDEX(VirtualAddress)].Frame = PhysicalAddress / SMALL_PAGE_SIZE;
+        pt->Entries[PT_INDEX(VirtualAddress)].Present = 1;
+        pt->Entries[PT_INDEX(VirtualAddress)].ReadWrite = 1;
+        pt->Entries[PT_INDEX(VirtualAddress)].User = 1;
+
+        // Debugging Output
+        if (debugEnabled)
+            PageFaultDebugPrint(PT_INDEX(VirtualAddress), "PT", pt->Entries[PT_INDEX(VirtualAddress)].Frame);
+    }
+
+    // Reset the screen text color
+    if (debugEnabled)
+    {
+        printf("\n");
+        SetColor(color);
+    }
+}
+
+// Unmaps the given Virtual Memory Address
+void UnmapVirtualAddress(unsigned long VirtualAddress)
+{
+    // Get references to the various Page Tables through the Recursive Page Table Mapping
+    PageTable *pt = (PageTable *)PT_TABLE(VirtualAddress);
+
+    if (pt->Entries[PT_INDEX(VirtualAddress)].Present == 1)
+    {
+        // Install the provided physical frame address
+        pt->Entries[PT_INDEX(VirtualAddress)].Frame = 0x0;
+        pt->Entries[PT_INDEX(VirtualAddress)].Present = 0;
+        pt->Entries[PT_INDEX(VirtualAddress)].ReadWrite = 0;
+        pt->Entries[PT_INDEX(VirtualAddress)].User = 0;
+    }
+}
+
+// Clones the PML4 table of the Kernel Mode and returns the physical address of the PML4 table clone
+// 
+// CAUTION!
+// To create a new virtual address space for user mode applications, we just clone the PML4 page table
+// of the Kernel. This page table only contains virtual address mappings for the Kernel region of the
+// address space.The user mode region address space is empty, because the Kernel doesn't perform any virtual
+// memory access in this area.
+// 
+// The virtual address space of the user mode programs are using a copy of the PML4 page table of the Kernel.
+// This approach works as long as the PML4 page table of the Kernel is not changed.
+// This should never happen, because the Identity Mapping of the Kernel is not expanded anymore at this 
+// point in time, and the Higher Half Mapping of the Kernel goes currently from 0xFFFF80000000000
+// (256th entry in the PML4 page table) to 0xFFFF808000000000 - 1 (257th entry in the PML4 page table).
+// This gives us a useable virtual address space of 512 GB!
+// 
+// If we would perform in the Kernel a virtual memory access at a memory address higher than 0xFFFF808000000000,
+// it would break our system, because the 257th entry of the PML4 page table of the Kernel is set.
+// And this modification of the PML4 page table of the Kernel would not be reflected in the user mode applications...
+unsigned long ClonePML4Table()
+{
+    // Allocate a new Page Frame for the PML4 table clone
+    unsigned long pfn = AllocatePageFrame();
+  
+    // Map the newly allocated physical page frame to a temporary virtual memory address
+    MapVirtualAddressToPhysicalAddress(TEMPORARY_VIRTUAL_PAGE, pfn * SMALL_PAGE_SIZE);
+
+    // Copy the original PML4 table to the new PML4 table clone
+    PageMapLevel4Table *pml4 = (PageMapLevel4Table *)PML4_TABLE;
+    memcpy((unsigned long *)TEMPORARY_VIRTUAL_PAGE, pml4, SMALL_PAGE_SIZE);
+    
+    // Install the new Recursive Page Table Mapping in the new PML4 table clone
+    PageMapLevel4Table *pml4Clone = (PageMapLevel4Table *)(pfn * SMALL_PAGE_SIZE);
+    pml4Clone->Entries[511].Frame = pfn;
+    
+    // Release the temporary virtual memory address mapping
+    UnmapVirtualAddress(TEMPORARY_VIRTUAL_PAGE);
+
+    // Return the physical address of the PML4 table clone
+    return pfn * SMALL_PAGE_SIZE;
+}
+
 // Tests the Virtual Memory Manager.
 void TestVirtualMemoryManager()
 {

@@ -1,17 +1,21 @@
-#include "syscalls/syscall.h"
+#include "../../libc/syscall.h"
+#include "../../libc/libc.h"
+#include "program.h"
 
-void outb(unsigned short Port, unsigned char Value);
-
-void main()
+// The main entry point for the User Mode program
+void ProgramMain()
 {
     // This function call will trigger a GP fault, because the
     // code runs in Ring 3 (User Mode)
     // outb(0x3D4, 14);
 
-    while (1 == 1)
+    for (int i = 0; i < 100; i++)
     {
-        SYSCALL1(SYSCALL_PRINTF, "Hello World from User Mode Program #1...\n");
+        printf("Hello World from User Mode Program #2...\n");
     }
+
+    // Terminate the current running process
+    TerminateProcess();
 }
 
 // The x64 out assembly instructions are only allowed in Ring 0 code.

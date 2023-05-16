@@ -9,3 +9,11 @@ make clean
 # Remove the built kernel
 cd /src/main64/kernel
 make clean
+
+# Remove the program1
+cd /src/main64/programs/program1
+make clean
+
+# Remove the program2
+cd /src/main64/programs/program2
+make clean

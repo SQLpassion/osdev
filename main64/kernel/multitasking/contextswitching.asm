@@ -97,6 +97,10 @@ Irq0_ContextSwitching:
     MOV     [RDI + TaskState_FS], FS
     MOV     [RDI + TaskState_GS], GS
 
+    ; Save the Control Registers
+    MOV     RAX, CR3
+    MOV     [RDI + TaskState_CR3], RAX
+
     ; IRQ STACK FRAME LAYOUT (based on the current RSP)
     ; ==================================================
     ; Return SS:        +32
@@ -153,6 +157,10 @@ Continue:
     MOV     R13, [RDI + TaskState_R13]
     MOV     R14, [RDI + TaskState_R14]
     MOV     R15, [RDI + TaskState_R15]
+
+    ; Restore the Control Registers
+    MOV     RAX, [RDI + TaskState_CR3]
+    MOV     CR3, RAX
 
     ; IRQ STACK FRAME LAYOUT (based on the current RSP)
     ; ==================================================

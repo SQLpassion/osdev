@@ -1,8 +1,11 @@
 #ifndef VIRTUAL_MEMORY_H
 #define VIRTUAL_MEMORY_H
 
-#define SMALL_PAGE_SIZE 4096
-#define PT_ENTRIES 512
+#define SMALL_PAGE_SIZE         4096
+#define PT_ENTRIES              512
+
+// A temporary virtual address to which physical page frames can be mapped to
+#define TEMPORARY_VIRTUAL_PAGE  0xFFFF80000DEAD000
 
 // ==========================================================================
 // The following macros are used to access the various Page Table structures
@@ -173,6 +176,15 @@ void SwitchPageDirectory(PageMapLevel4Table *PML4);
 
 // Handles a Page Fault
 void HandlePageFault(unsigned long VirtualAddress);
+
+// Maps a Virtual Memory Address to a Physical Memory Address
+void MapVirtualAddressToPhysicalAddress(unsigned long VirtualAddress, unsigned long PhysicalAddress);
+
+// Unmaps the given Virtual Memory Address
+void UnmapVirtualAddress(unsigned long VirtualAddress);
+
+// Clones the PML4 table of the Kernel Mode and returns the physical address of the PML4 table clone
+unsigned long ClonePML4Table();
 
 // Tests the Virtual Memory Manager.
 void TestVirtualMemoryManager();
