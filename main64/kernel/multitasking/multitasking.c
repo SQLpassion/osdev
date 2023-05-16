@@ -127,7 +127,7 @@ Task* ExecuteUserModeProgram(unsigned char *FileName, unsigned long PID)
     // Add the newly created Kernel Mode Task to the end of the TaskList
     AddEntryToList(TaskList, newTask, PID);
 
-    // Return a reference to the newly created Kernel Mode Task
+    // Return a reference to the newly created User Mode Task
     return newTask;
 }
 

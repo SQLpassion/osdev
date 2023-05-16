@@ -322,6 +322,23 @@ void UnmapVirtualAddress(unsigned long VirtualAddress)
 }
 
 // Clones the PML4 table of the Kernel Mode and returns the physical address of the PML4 table clone
+// 
+// CAUTION!
+// To create a new virtual address space for user mode applications, we just clone the PML4 page table
+// of the Kernel. This page table only contains virtual address mappings for the Kernel region of the
+// address space.The user mode region address space is empty, because the Kernel doesn't perform any virtual
+// memory access in this area.
+// 
+// The virtual address space of the user mode programs are using a copy of the PML4 page table of the Kernel.
+// This approach works as long as the PML4 page table of the Kernel is not changed.
+// This should never happen, because the Identity Mapping of the Kernel is not expanded anymore at this 
+// point in time, and the Higher Half Mapping of the Kernel goes currently from 0xFFFF80000000000
+// (256th entry in the PML4 page table) to 0xFFFF808000000000 - 1 (257th entry in the PML4 page table).
+// This gives us a useable virtual address space of 512 GB!
+// 
+// If we would perform in the Kernel a virtual memory access at a memory address higher than 0xFFFF808000000000,
+// it would break our system, because the 257th entry of the PML4 page table of the Kernel is set.
+// And this modification of the PML4 page table of the Kernel would not be reflected in the user mode applications...
 unsigned long ClonePML4Table()
 {
     // Allocate a new Page Frame for the PML4 table clone

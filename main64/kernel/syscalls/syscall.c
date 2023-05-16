@@ -3,6 +3,12 @@
 #include "syscall.h"
 
 // Implements the SysCall Handler
+// 
+// CAUTION!
+// When the function "SysCallHandlerC" is executed, Interrupts are disabled (performed in the
+// Assembler code).
+// Therefore, it is *safe* to call other functions in the Kernel (like "GetTaskState"), 
+// because a Context Switch can't happen, because of the disabled Timer Interrupt.
 long SysCallHandlerC(SysCallRegisters *Registers)
 {
     // The SysCall Number is stored in the register RDI
