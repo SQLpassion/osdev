@@ -30,6 +30,23 @@ void InitKeyboard()
     capsLock = 0;
 }
 
+// This function runs continuosly in the Kernel, processes a key press, 
+// and stores the entered character in the memory
+void KeyboardHandlerTask()
+{
+    while (1 == 1)
+    {
+        // Wait for the next keystroke
+        char originalInput = getchar();
+
+        // Get a pointer to the keyboard buffer
+        char *keyboardBuffer = (char *)KEYBOARD_BUFFER;
+
+        // Store the processed key in to keyboard buffer
+        keyboardBuffer[0] = originalInput;
+    }
+}
+
 // Reads data from the keyboard
 void scanf(char *buffer, int buffer_size)
 {

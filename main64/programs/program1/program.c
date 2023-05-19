@@ -11,12 +11,23 @@ void ProgramMain()
 
     long pid = GetPID();
 
-    while (1 == 1)
+    char input[100] = "";
+
+    printf("Please enter your name: ");
+    scanf(input, 98);
+
+    printf("Your name is ");
+    printf(input);
+    printf("\n");
+
+    TerminateProcess();
+
+    /* while (1 == 1)
     {
         printf("Hello World from User Mode Program #1 with PID ");
         printf_long(pid, 10);
         printf("\n");
-    }
+    } */
 }
 
 // The x64 out assembly instructions are only allowed in Ring 0 code.

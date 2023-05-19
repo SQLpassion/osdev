@@ -1,6 +1,9 @@
 #ifndef KEYBOARD_H
 #define KEYBOARD_H
 
+// Video output memory address
+#define KEYBOARD_BUFFER 0xFFFF8000001FFFFF
+
 // Onboard Keyboard Controller Status Register
 #define KYBRD_CTRL_STATS_REG    0x64
 
@@ -395,6 +398,10 @@ static int ScanCodes_UpperCase_QWERTZ [] =
 
 // Initializes the keyboard
 void InitKeyboard();
+
+// This function runs continuosly in the Kernel, processes a key press, 
+// and stores the entered character in the memory.
+void KeyboardHandlerTask();
 
 // Reads data from the keyboard
 void scanf(char *buffer, int buffer_size);

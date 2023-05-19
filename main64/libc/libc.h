@@ -1,6 +1,9 @@
 #ifndef LIBC_H
 #define LIBC_H
 
+#define KEY_RETURN      '\r'
+#define KEY_BACKSPACE   '\b'
+
 // Prints out a null-terminated string
 void printf(char *string);
 
@@ -9,6 +12,18 @@ long GetPID();
 
 // Terminates the current executing process
 void TerminateProcess();
+
+// Returns the entered character
+char getchar();
+
+// Reads a string with the given size from the keyboard, and returns it
+void scanf(char *buffer, int buffer_size);
+
+// Returns the current cursor position
+void GetCursorPosition(int *Row, int *Col);
+
+// Sets the current cursor position
+void SetCursorPosition(int *Row, int *Col);
 
 // Prints out an integer value
 void printf_int(int i, int base);

@@ -7,6 +7,7 @@
 #include "../memory/heap.h"
 #include "../memory/virtual-memory.h"
 #include "../drivers/screen.h"
+#include "../drivers/keyboard.h"
 #include "../syscalls/syscall.h"
 #include "../io/fat12.h"
 
@@ -164,13 +165,15 @@ void CreateInitialTasks()
     TaskList->PrintFunctionPtr = &PrintTaskList;
 
     // Create the initial Kernel Mode Tasks
+    CreateKernelModeTask(KeyboardHandlerTask, 1, 0xFFFF800001100000);
+
     /* CreateKernelModeTask(Dummy1, 1, 0xFFFF800001100000);
     CreateKernelModeTask(Dummy2, 2, 0xFFFF800001200000);
     CreateKernelModeTask(Dummy3, 3, 0xFFFF800001300000); */
 
     // Load and execute some programs from the FAT12 file system
     ExecuteUserModeProgram("PROG1   BIN", 4);
-    ExecuteUserModeProgram("PROG2   BIN", 5);
+    // ExecuteUserModeProgram("PROG2   BIN", 5);
 }
 
 // Moves the current Task from the head of the TaskList to the tail of the TaskList.

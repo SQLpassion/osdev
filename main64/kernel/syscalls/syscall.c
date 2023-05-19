@@ -1,5 +1,7 @@
 #include "../multitasking/multitasking.h"
 #include "../drivers/screen.h"
+#include "../drivers/keyboard.h"
+#include "../common.h"
 #include "syscall.h"
 
 // Implements the SysCall Handler
@@ -32,6 +34,41 @@ long SysCallHandlerC(SysCallRegisters *Registers)
     {
         Task *state = (Task *)GetTaskState();
         TerminateTask(state->PID);
+
+        return 0;
+    }
+    // getchar
+    else if (sysCallNumber == SYSCALL_GETCHAR)
+    {
+        char returnValue;
+
+        // Get a pointer to the keyboard buffer
+        char *keyboardBuffer = (char *)KEYBOARD_BUFFER;
+        
+        // Copy the entered character into the variable that is returned
+        memcpy(&returnValue, keyboardBuffer, 1);
+
+        // Clear the keyboard buffer
+        keyboardBuffer[0] = 0;
+
+        // Return the entered character
+        return returnValue;
+    }
+    // GetCursor
+    else if (sysCallNumber == SYSCALL_GETCURSOR)
+    {
+        int *Row = (int *)Registers->RSI;
+        int *Col = (int *)Registers->RDX;
+        GetCursorPosition(Row, Col);
+
+        return 0;
+    }
+    // SetCursor
+    else if (sysCallNumber == SYSCALL_SETCURSOR)
+    {
+        int *row = (int *)Registers->RSI;
+        int *col = (int *)Registers->RDX;
+        SetCursorPosition(*row, *col);
 
         return 0;
     }

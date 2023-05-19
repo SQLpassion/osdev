@@ -24,6 +24,98 @@ void TerminateProcess()
     while (1 == 1) {}
 }
 
+// Returns the entered character
+char getchar()
+{
+    long enteredCharacter = SYSCALL0(SYSCALL_GETCHAR);
+
+    return (char)enteredCharacter;
+}
+
+// Returns the current cursor position
+void GetCursorPosition(int *Row, int *Col)
+{
+    SYSCALL2(SYSCALL_GETCURSOR, Row, Col);
+}
+
+// Sets the current cursor position
+void SetCursorPosition(int *Row, int *Col)
+{
+    SYSCALL2(SYSCALL_SETCURSOR, Row, Col);
+}
+
+// Reads a string with the given size from the keyboard, and returns it
+void scanf(char *buffer, int buffer_size)
+{
+    int processKey = 1;
+    int i = 0;
+    
+    while (i < buffer_size)
+    {
+        char key = 0;
+
+        while (key == 0)
+            key = getchar();
+
+        processKey = 1;
+        
+        // When we have hit the ENTER key, we have finished entering our input data
+        if (key == KEY_RETURN)
+        {
+            printf("\n");
+            break;
+        }
+        
+        if (key == KEY_BACKSPACE)
+        {
+            processKey = 0;
+        
+            // We only process the backspace key, if we have data already in the input buffer
+            if (i > 0)
+            {
+                int col;
+                int row;
+            
+                // Move the cursor position one character back
+                GetCursorPosition(&row, &col);
+                col -= 1;
+                SetCursorPosition(&row, &col);
+            
+                // Clear out the last printed key
+                // This also moves the cursor one character forward, so we have to go back
+                // again with the cursor in the next step
+                printf(" ");
+                
+                // Move the cursor position one character back again
+                GetCursorPosition(&row, &col);
+                col -= 1;
+                SetCursorPosition(&row, &col);
+            
+                // Delete the last entered character from the input buffer
+                i--;
+            }
+        }
+        
+        if (processKey == 1)
+        {
+            // Print out the current entered key stroke
+            // If we have pressed a non-printable key, the character is not printed out
+            if (key != 0)
+            {
+                char str[2] = {key};
+                printf(str);
+            }
+        
+            // Write the entered character into the provided buffer
+            buffer[i] = key;
+            i++;
+        }
+    }
+    
+    // Null-terminate the input string
+    buffer[i] = '\0';
+}
+
 // Prints out an integer value
 void printf_int(int i, int base)
 {

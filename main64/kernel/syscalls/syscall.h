@@ -5,6 +5,9 @@
 #define SYSCALL_PRINTF              1
 #define SYSCALL_GETPID              2
 #define SYSCALL_TERMINATE_PROCESS   3
+#define SYSCALL_GETCHAR             4
+#define SYSCALL_GETCURSOR           5
+#define SYSCALL_SETCURSOR           6
 
 typedef struct SysCallRegisters
 {
