@@ -25,7 +25,7 @@ void GetCursorPosition(int *Row, int *Col);
 // Sets the current cursor position
 void SetCursorPosition(int *Row, int *Col);
 
-void ExecuteUserModeProgram(unsigned char *FileName);
+int ExecuteUserModeProgram(unsigned char *FileName);
 
 // Prints out an integer value
 void printf_int(int i, int base);

@@ -72,7 +72,7 @@ void InitIdt()
     IdtSetGate(47, (unsigned long)Irq15, IDT_INTERRUPT_GATE);   // Reserved
 
     // The INT 0x80 can be raised from Ring 3
-    IdtSetGate(128, (unsigned long)SysCallHandlerAsm, 0xE);
+    IdtSetGate(128, (unsigned long)SysCallHandlerAsm, IDT_INTERRUPT_GATE);
     idtEntries[128].DPL = 3;
 
     // Loads the IDT table into the processor register (Assembler function)

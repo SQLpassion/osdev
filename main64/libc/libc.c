@@ -234,7 +234,7 @@ int StartsWith(char *string, char *prefix)
     return 1;
 }
 
-void ExecuteUserModeProgram(unsigned char *FileName)
+int ExecuteUserModeProgram(unsigned char *FileName)
 {
-    SYSCALL1(SYSCALL_EXECUTE, FileName);
+    return SYSCALL1(SYSCALL_EXECUTE, FileName);
 }

@@ -6,13 +6,15 @@
 char *commands[] =
 {
     "cls",
-    "ver"
+    "ver",
+    "dir"
 };
 
 int (*command_functions[]) (char *param) =
 {
     &shell_cls,
-    &shell_ver
+    &shell_ver,
+    &shell_dir
 };
 
 // The main entry point for the User Mode program
@@ -39,21 +41,14 @@ void ShellMain()
 
         if (commandFound == 0)
         {
-            ExecuteUserModeProgram("PROG1   BIN");
-            /* // Try to load the requested program into memory
-            if (LoadProgram(input) != 0)
-            {
-                // The program was loaded successfully into memory.
-                // Let's execute it as a User Task!
-                CreateUserTask(0xFFFF8000FFFF0000, 9, 0xFFFF800001900000, 0xFFFF800000090000);
-            }
-            else
+            // Execute the requested User Mode program...
+            if (ExecuteUserModeProgram(input) == 0)
             {
                 printf("'");
                 printf(input);
                 printf("' is not recognized as an internal or external command,\n");
                 printf("operable program or batch file.\n\n");
-            } */
+            }
         }
     }
 }
@@ -66,4 +61,9 @@ void shell_cls(char *param)
 void shell_ver(char *param)
 {
     printf("ver\n");
+}
+
+void shell_dir(char *param)
+{
+    printf("dir\n");
 }

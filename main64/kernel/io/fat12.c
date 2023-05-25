@@ -145,7 +145,7 @@ static void LoadRootDirectory()
 }
 
 // Finds a given Root Directory Entry by its Filename
-static RootDirectoryEntry* FindRootDirectoryEntry(unsigned char *FileName)
+RootDirectoryEntry* FindRootDirectoryEntry(unsigned char *FileName)
 {
     // Check, if the Root Directory is already loaded into memory
     if (RootDirectoryLoaded == 0)

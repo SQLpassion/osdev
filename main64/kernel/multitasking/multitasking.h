@@ -2,14 +2,16 @@
 #define TASK_H
 
 // The various Task states
-#define TASK_STATUS_CREATED         0x0
-#define TASK_STATUS_RUNNABLE        0x1
-#define TASK_STATUS_RUNNING         0x2
-#define TASK_STATUS_WAITING         0x3
+#define TASK_STATUS_CREATED             0x0
+#define TASK_STATUS_RUNNABLE            0x1
+#define TASK_STATUS_RUNNING             0x2
+#define TASK_STATUS_WAITING             0x3
 
-#define EXECUTABLE_BASE_ADDRESS     0x0000700000000000
-#define EXECUTABLE_USERMODE_STACK   0x00007FFFF0000000
-#define EXECUTABLE_KERNELMODE_STACK 0xFFFF800001400000
+#define EXECUTABLE_BASE_ADDRESS         0x0000700000000000
+#define EXECUTABLE_USERMODE_STACK       0x00007FFFF0000000
+#define EXECUTABLE_KERNELMODE_STACK     0xFFFF800001400000
+
+#define USERMODE_PROGRAMM_TO_EXECUTE    0xFFFF800000300000
 
 // Represents the state of a Task
 typedef struct Task
@@ -80,7 +82,7 @@ Task* CreateKernelModeTask(void *TaskCode, unsigned long PID, unsigned long Kern
 Task* ExecuteUserModeProgram(unsigned char *FileName, unsigned long PID);
 
 // Loads the given program into a new User Mode Virtual Address Space
-static void LoadProgramIntoUserModeVirtualAddressSpace(unsigned char *FileName, unsigned long UserModePML4Table);
+static int LoadProgramIntoUserModeVirtualAddressSpace(unsigned char *FileName, unsigned long UserModePML4Table);
 
 // Creates all initial OS tasks
 void CreateInitialTasks();
@@ -96,6 +98,9 @@ void RefreshStatusLine();
 
 // Prints out the TaskList entries
 void PrintTaskList();
+
+// This function continuously checks if there is a new User Mode program to be started
+void StartUserModeTask();
 
 // Prints out the status as text
 static void PrintStatus(int Status);

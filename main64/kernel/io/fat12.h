@@ -39,7 +39,7 @@ static void LoadProgramIntoMemory(RootDirectoryEntry *Entry);
 static void LoadRootDirectory();
 
 // Finds a given Root Directory Entry by its Filename
-static RootDirectoryEntry* FindRootDirectoryEntry(unsigned char *Filename);
+RootDirectoryEntry* FindRootDirectoryEntry(unsigned char *Filename);
 
 // Reads the next FAT Entry from the FAT Tables
 static unsigned short FATRead(unsigned short Cluster);
