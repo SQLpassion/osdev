@@ -8,6 +8,7 @@
 #define SYSCALL_GETCHAR             4
 #define SYSCALL_GETCURSOR           5
 #define SYSCALL_SETCURSOR           6
+#define SYSCALL_EXECUTE             7
 
 typedef struct SysCallRegisters
 {

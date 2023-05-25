@@ -25,6 +25,8 @@ void GetCursorPosition(int *Row, int *Col);
 // Sets the current cursor position
 void SetCursorPosition(int *Row, int *Col);
 
+void ExecuteUserModeProgram(unsigned char *FileName);
+
 // Prints out an integer value
 void printf_int(int i, int base);
 
@@ -42,5 +44,8 @@ static void itoa_helper(unsigned int i, unsigned base, char *buf);
 
 // Helper function for the ltoa function.
 static void ltoa_helper(unsigned long i, unsigned base, char *buf);
+
+// Checks if a string starts with a given prefix
+int StartsWith(char *string, char *prefix);
 
 #endif

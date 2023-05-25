@@ -14,6 +14,9 @@ make clean && make
 cd /src/main64/programs/program2
 make clean && make
 
+# Builds the command shell
+cd /src/main64/programs/shell
+make clean && make
 
 # Builds the kernel
 cd /src/main64/kernel

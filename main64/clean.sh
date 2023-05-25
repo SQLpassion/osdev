@@ -17,3 +17,7 @@ make clean
 # Remove the program2
 cd /src/main64/programs/program2
 make clean
+
+# Removes the command shell
+cd /src/main64/programs/shell
+make clean

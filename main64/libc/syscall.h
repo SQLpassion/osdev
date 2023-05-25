@@ -8,6 +8,7 @@
 #define SYSCALL_GETCHAR             4
 #define SYSCALL_GETCURSOR           5
 #define SYSCALL_SETCURSOR           6
+#define SYSCALL_EXECUTE             7
 
 // Raises a SysCall with no parameters
 long SYSCALL0(int SysCallNumber);

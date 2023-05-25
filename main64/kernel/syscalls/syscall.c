@@ -72,6 +72,13 @@ long SysCallHandlerC(SysCallRegisters *Registers)
 
         return 0;
     }
+    // ExecuteUserProcess
+    else if (sysCallNumber == SYSCALL_EXECUTE)
+    {
+        ExecuteUserModeProgram("PROG1   BIN", 10);
+        
+        return 0;
+    }
 
     return 0;
 }

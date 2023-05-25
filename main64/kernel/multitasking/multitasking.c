@@ -172,7 +172,8 @@ void CreateInitialTasks()
     CreateKernelModeTask(Dummy3, 3, 0xFFFF800001300000); */
 
     // Load and execute some programs from the FAT12 file system
-    ExecuteUserModeProgram("PROG1   BIN", 4);
+    ExecuteUserModeProgram("SHELL   BIN", 4);
+    // ExecuteUserModeProgram("PROG1   BIN", 4);
     // ExecuteUserModeProgram("PROG2   BIN", 5);
 }
 

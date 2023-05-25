@@ -221,3 +221,20 @@ static void ltoa_helper(unsigned long i, unsigned base, char *buf)
     
     buf[opos] = 0;
 }
+
+// Checks if a string starts with a given prefix
+int StartsWith(char *string, char *prefix)
+{
+    while (*prefix)
+    {
+        if (*prefix++ != *string++)
+            return 0;
+    }
+
+    return 1;
+}
+
+void ExecuteUserModeProgram(unsigned char *FileName)
+{
+    SYSCALL1(SYSCALL_EXECUTE, FileName);
+}
