@@ -81,8 +81,14 @@ Task* CreateKernelModeTask(void *TaskCode, unsigned long PID, unsigned long Kern
 // Creates a new User Mode Task
 Task* ExecuteUserModeProgram(unsigned char *FileName, unsigned long PID);
 
+// Creates a new User Mode Task
+Task* ExecuteUserModeProgramNew(unsigned char *FileName, unsigned long PID, unsigned long OriginalCR3);
+
 // Loads the given program into a new User Mode Virtual Address Space
 static int LoadProgramIntoUserModeVirtualAddressSpace(unsigned char *FileName, unsigned long UserModePML4Table);
+
+// Loads the given program into a new User Mode Virtual Address Space
+static int LoadProgramIntoUserModeVirtualAddressSpaceNew(unsigned char *FileName, unsigned long UserModePML4Table, unsigned long OriginalCR3);
 
 // Creates all initial OS tasks
 void CreateInitialTasks();

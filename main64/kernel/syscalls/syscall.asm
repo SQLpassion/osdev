@@ -50,6 +50,11 @@ SysCallHandlerAsm:
     ADD     RAX, 0x8
     MOV     [RAX], R9
 
+    ; Store the CR3 register
+    ADD     RAX, 0x8
+    MOV     RBX, CR3
+    MOV     [RAX], RBX
+
     ; Call the ISR handler that is implemented in C
     MOV     RDI, SYSCALLREGISTERS_OFFSET 
     CALL    SysCallHandlerC

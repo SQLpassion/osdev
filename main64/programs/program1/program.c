@@ -20,6 +20,13 @@ void ProgramMain()
     printf(input);
     printf("\n");
 
+    printf("Please enter your city: ");
+    scanf(input, 98);
+
+    printf("Your city is ");
+    printf(input);
+    printf("\n");
+
     TerminateProcess();
 
     /* while (1 == 1)

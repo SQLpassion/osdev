@@ -136,6 +136,99 @@ Task* ExecuteUserModeProgram(unsigned char *FileName, unsigned long PID)
     return 0x0;
 }
 
+// Loads and executes a User Mode program from the FAT12 file system
+Task* ExecuteUserModeProgramNew(unsigned char *FileName, unsigned long PID, unsigned long OriginalCR3)
+{
+    // Clone the Kernel Mode PML4 table for the new User Mode process
+    unsigned long pml4Clone = ClonePML4Table();
+
+    // Load the given program into the new User Mode Virtual Address Space
+    if (LoadProgramIntoUserModeVirtualAddressSpaceNew(FileName, pml4Clone, OriginalCR3) == 1)
+    {
+        // Allocate a new Task structure on the Heap
+        Task *newTask = (Task *)malloc(sizeof(Task));
+        newTask->PID = PID;
+        newTask->Status = TASK_STATUS_CREATED;
+        newTask->RIP = EXECUTABLE_BASE_ADDRESS;
+        newTask->KernelModeStack = 0xFFFF810000000000;
+        newTask->UserModeStack = EXECUTABLE_USERMODE_STACK;
+        newTask->CR3 = pml4Clone;
+
+        // The "Interrupt Enable Flag" (Bit 9) must be set
+        newTask->RFLAGS = 0x200;
+
+        // Set the General Purpose Registers
+        newTask->RAX = 0x0;
+        newTask->RBX = 0x0;
+        newTask->RCX = 0x0;
+        newTask->RDX = 0x0;
+        newTask->RBP = EXECUTABLE_USERMODE_STACK;
+        newTask->RSP = EXECUTABLE_USERMODE_STACK;
+        newTask->RSI = 0x0;
+        newTask->RDI = 0x0;
+        newTask->R8 =  0x0;
+        newTask->R9 =  0x0;
+        newTask->R10 = 0x0;
+        newTask->R11 = 0x0;
+        newTask->R12 = 0x0;
+        newTask->R13 = 0x0;
+        newTask->R14 = 0x0;
+        newTask->R15 = (unsigned long)newTask; // The address of the Task structure is stored in the R15 register
+
+        // Set the Seectors for Ring 3
+        newTask->CS = GDT_USER_CODE_SEGMENT | RPL_RING3;
+        newTask->DS = GDT_USER_DATA_SEGMENT | RPL_RING3;
+        newTask->SS = GDT_USER_DATA_SEGMENT | RPL_RING3;
+
+        // Set the remaining Segment Registers to zero
+        newTask->ES = 0x0;
+        newTask->FS = 0x0;
+        newTask->GS = 0x0;
+        
+        // Add the newly created Kernel Mode Task to the end of the TaskList
+        AddEntryToList(TaskList, newTask, PID);
+
+        // Return a reference to the newly created User Mode Task
+        return newTask;
+    }
+
+    // The given program name was not found...
+    return 0x0;
+}
+
+// Loads the given program into a new User Mode Virtual Address Space
+static int LoadProgramIntoUserModeVirtualAddressSpaceNew(unsigned char *FileName, unsigned long UserModePML4Table, unsigned long OriginalCR3)
+{
+    int returnCode = 0;
+
+    // Switch to the User Mode Virtual Address Space
+    SwitchPageDirectory((PageMapLevel4Table *)UserModePML4Table);
+
+    // Load the program into the User Mode Virtual Address Space
+    if (LoadProgram(FileName) == 1)
+    {
+        // Touch the virtual address of the Kernel Mode Stack (8 bytes below the starting address), so that we can
+        // be sure that the virtual address will get mapped to a physical Page Frame through the Page Fault Handler.
+        // 
+        // NOTE: If we don't do that, and the virtual address is unmapped, the OS will crash during the Context
+        // Switching routine, because a Page Fault would occur (when we prepare the return Stack Frame), which
+        // can'be be handled, because the interrupts are disabled!
+        unsigned long *kernelModeStackPtr = (unsigned long *)0xFFFF810000000000 - 8;
+        kernelModeStackPtr[0] = kernelModeStackPtr[0]; // This read/write operation causes a Page Fault!
+
+        unsigned long *userModeStackPtr = (unsigned long *)EXECUTABLE_USERMODE_STACK - 8;
+        userModeStackPtr[0] = userModeStackPtr[0]; // This read/write operation causes a Page Fault!
+
+        returnCode = 1;
+    }
+
+    // Switch back to the Kernel Mode Virtual Address Space
+    SwitchPageDirectory((PageMapLevel4Table *)OriginalCR3);
+
+    // Return the ReturnCode
+    return returnCode;
+}
+
 // Loads the given program into a new User Mode Virtual Address Space
 static int LoadProgramIntoUserModeVirtualAddressSpace(unsigned char *FileName, unsigned long UserModePML4Table)
 {
@@ -202,10 +295,10 @@ void CreateInitialTasks()
 
     // Create the initial Kernel Mode Tasks
     CreateKernelModeTask(KeyboardHandlerTask, 1, 0xFFFF800001100000);
-    CreateKernelModeTask(StartUserModeTask, 2, 0xFFFF800001200000);
+    // CreateKernelModeTask(StartUserModeTask, 2, 0xFFFF800001200000);
 
-    /* CreateKernelModeTask(Dummy1, 1, 0xFFFF800001100000);
-    CreateKernelModeTask(Dummy2, 2, 0xFFFF800001200000);
+    // CreateKernelModeTask(Dummy1, 2, 0xFFFF800001200000);
+    /* CreateKernelModeTask(Dummy2, 2, 0xFFFF800001200000);
     CreateKernelModeTask(Dummy3, 3, 0xFFFF800001300000); */
 
     // Load and execute some programs from the FAT12 file system

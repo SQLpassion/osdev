@@ -3,17 +3,10 @@
 #include "../drivers/keyboard.h"
 #include "../io/fat12.h"
 #include "../common.h"
+#include "../isr/idt.h"
 #include "syscall.h"
 
 // Implements the SysCall Handler
-// 
-// CAUTION!
-// When the function "SysCallHandlerC" is executed, Interrupts are disabled (performed in the
-// Assembler code).
-// Therefore, it is *safe* to call other functions in the Kernel (like "GetTaskState"), 
-// because a Context Switch can't happen, because of the disabled Timer Interrupt.
-// But we can't call functions that are causing Page Fault, because of the disabled interrupts
-// we can't handle Page Faults.
 long SysCallHandlerC(SysCallRegisters *Registers)
 {
     // The SysCall Number is stored in the register RDI
@@ -78,27 +71,32 @@ long SysCallHandlerC(SysCallRegisters *Registers)
     // ExecuteUserProcess
     else if (sysCallNumber == SYSCALL_EXECUTE)
     {
-        // We can't start directly here in the SysCall handler the requested User Mode program, because interrupts are
-        // currently disabled, and therefore we can't load the new program into memory.
-        // Loading the program into memory would generate Page Faults that we can't handle, because of the disabled interrupts.
-        // 
+        // We can't start directly here in the SysCall Handler the requested User Mode program, because the SysCall is executed
+        // in the context of a User mode application - like the Shell.
+        // Therefore, when we create a copy of the virtual address space for the new User Mode program, we would create a copy
+        // of the virtual address space of the program that issued the SysCall - like the Shell. 
+        // But we want to create a copy of the Kernel Mode virtual address space.
         // Therefore, we store the User Mode program that we want to start, at the memory location "USERMODE_PROGRAMM_TO_EXECUTE".
         // The Kernel Mode Task "StartUserModeTask()" continuously checks this memory location if there is a new User Mode program
         // to be started.
-        // If yes, the program is started, and the memory location is finally cleared.
-
+        // If yes, the Task "StartUserModeTask()" creates a copy of the Kernel Mode virtual address space, then the program is started,
+        // and the memory location is finally cleared.
+        
         // Find the Root Directory Entry for the given program name
-        RootDirectoryEntry *entry = FindRootDirectoryEntry((char *)Registers->RSI);
-
+        /* RootDirectoryEntry *entry = FindRootDirectoryEntry((char *)Registers->RSI);
+s
         if (entry != 0)
         {
-            // The given program name was found, so we copy the program name to the memory locattion "USERMODE_PROGRAMM_TO_EXECUTE"
+            // The given program name was found, so we copy the program name to the memory location "USERMODE_PROGRAMM_TO_EXECUTE"
             char *fileName = (char *)USERMODE_PROGRAMM_TO_EXECUTE;
             strcpy(fileName, (char *)Registers->RSI);
             return 1;
         }
         else
-            return 0;
+            return 0; */
+
+        ExecuteUserModeProgramNew((char *)Registers->RSI, 10, Registers->CR3);
+        return 1;
     }
 
     return 0;

@@ -19,6 +19,7 @@ typedef struct SysCallRegisters
     unsigned long RCX;
     unsigned long R8;
     unsigned long R9;
+    unsigned long CR3;
 } SysCallRegisters;
 
 // Implements the SysCall Handler

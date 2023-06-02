@@ -34,7 +34,8 @@ void InitGdt()
     GdtSetGate(4, 0, 0, GDT_FLAG_RING3 | GDT_FLAG_SEGMENT | GDT_FLAG_DATASEG | GDT_FLAG_PRESENT, 0);
 
     // The TSS Entry
-    GdtSetGate(5, (unsigned long)tssEntry, sizeof(TssEntry), 0x89, 0x40);
+    // GdtSetGate(5, (unsigned long)tssEntry, sizeof(TssEntry), 0x89, 0x40);
+    GdtSetGate(5, (unsigned long)tssEntry, sizeof(TssEntry), 0x89, 0x0);
 
     // Install the new GDT
     GdtFlush((unsigned long)&gdtPointer);

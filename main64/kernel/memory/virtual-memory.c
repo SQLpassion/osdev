@@ -352,8 +352,24 @@ unsigned long ClonePML4Table()
     memcpy((unsigned long *)TEMPORARY_VIRTUAL_PAGE, pml4, SMALL_PAGE_SIZE);
     
     // Install the new Recursive Page Table Mapping in the new PML4 table clone
-    PageMapLevel4Table *pml4Clone = (PageMapLevel4Table *)(pfn * SMALL_PAGE_SIZE);
+    // PageMapLevel4Table *pml4Clone = (PageMapLevel4Table *)(pfn * SMALL_PAGE_SIZE);
+    PageMapLevel4Table *pml4Clone = (PageMapLevel4Table *)TEMPORARY_VIRTUAL_PAGE;
     pml4Clone->Entries[511].Frame = pfn;
+
+    pml4Clone->Entries[224].Frame = 0x0;
+    pml4Clone->Entries[224].Present = 0;
+    pml4Clone->Entries[224].ReadWrite = 0;
+    pml4Clone->Entries[224].User = 0;
+
+    pml4Clone->Entries[257].Frame = 0x0;
+    pml4Clone->Entries[257].Present = 0;
+    pml4Clone->Entries[257].ReadWrite = 0;
+    pml4Clone->Entries[257].User = 0;
+
+    pml4Clone->Entries[258].Frame = 0x0;
+    pml4Clone->Entries[258].Present = 0;
+    pml4Clone->Entries[258].ReadWrite = 0;
+    pml4Clone->Entries[258].User = 0;
     
     // Release the temporary virtual memory address mapping
     UnmapVirtualAddress(TEMPORARY_VIRTUAL_PAGE);

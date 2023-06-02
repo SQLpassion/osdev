@@ -6,17 +6,18 @@ SECTIONS
     .text : AT(ADDR(.text))
     {
         *(.text .text.*)
+        *(.data .data.*)
         *(.rodata .rodata.*)
         . = ALIGN(4K);
-    }
-
-    .data : AT(ADDR(.data))
-    {
-        *(.data .data.*)
     }
 
     .bss : AT(ADDR(.bss))
     {
         *(.bss .bss.*)
+    }
+
+    .eh_frame : AT(ADDR(.eh_frame))
+    {
+        *(.eh_frame .eh_frame.*)
     }
 }
