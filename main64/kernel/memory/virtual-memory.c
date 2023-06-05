@@ -67,31 +67,31 @@ void InitVirtualMemoryManager(int DebugOutput)
     pml4->Entries[0].Frame = (unsigned long)pdpIdentityMapped / SMALL_PAGE_SIZE;
     pml4->Entries[0].Present = 1;
     pml4->Entries[0].ReadWrite = 1;
-    pml4->Entries[0].User = 1;
+    pml4->Entries[0].User = 0;
 
     // Point in the 256th PML4 entry to the PDP of the Higher Half Kernel mapping
     pml4->Entries[256].Frame = (unsigned long)pdpHigherHalfKernel / SMALL_PAGE_SIZE;
     pml4->Entries[256].Present = 1;
     pml4->Entries[256].ReadWrite = 1;
-    pml4->Entries[256].User = 1;
+    pml4->Entries[256].User = 0;
 
     // Install the Recursive Page Table Mapping in the 511th PML4 entry
     pml4->Entries[511].Frame = (unsigned long)pml4 / SMALL_PAGE_SIZE;
     pml4->Entries[511].Present = 1;
     pml4->Entries[511].ReadWrite = 1;
-    pml4->Entries[511].User = 1;
+    pml4->Entries[511].User = 0;
 
     // Point in the 1st PDP entry to the PD of the Identity Mapping
     pdpIdentityMapped->Entries[0].Frame = (unsigned long)pdIdentityMapped / SMALL_PAGE_SIZE;
     pdpIdentityMapped->Entries[0].Present = 1;
     pdpIdentityMapped->Entries[0].ReadWrite = 1;
-    pdpIdentityMapped->Entries[0].User = 1;
+    pdpIdentityMapped->Entries[0].User = 0;
 
     // Point in the 1st PD entry to the PT of the Identity Mapping
     pdIdentityMapped->Entries[0].Frame = (unsigned long)ptIdentityMapped / SMALL_PAGE_SIZE;
     pdIdentityMapped->Entries[0].Present = 1;
     pdIdentityMapped->Entries[0].ReadWrite = 1;
-    pdIdentityMapped->Entries[0].User = 1;
+    pdIdentityMapped->Entries[0].User = 0;
 
     // Identity Mapping of the first 512 small pages of 4K (0 - 2 MB Virtual Address Space)
     // In that area we have all the various I/O ports and the above allocated Page Table Structure
@@ -100,20 +100,20 @@ void InitVirtualMemoryManager(int DebugOutput)
         ptIdentityMapped->Entries[i].Frame = i;
         ptIdentityMapped->Entries[i].Present = 1;
         ptIdentityMapped->Entries[i].ReadWrite = 1;
-        ptIdentityMapped->Entries[i].User = 1;
+        ptIdentityMapped->Entries[i].User = 0;
     }
 
     // Point in the 1st PDP entry to the PD of the Higher Half Kernel mapping
     pdpHigherHalfKernel->Entries[0].Frame = (unsigned long)pdHigherHalfKernel / SMALL_PAGE_SIZE;
     pdpHigherHalfKernel->Entries[0].Present = 1;
     pdpHigherHalfKernel->Entries[0].ReadWrite = 1;
-    pdpHigherHalfKernel->Entries[0].User = 1;
+    pdpHigherHalfKernel->Entries[0].User = 0;
 
     // Point in the 1st PD entry to the PT of the Higher Half Kernel mapping
     pdHigherHalfKernel->Entries[0].Frame = (unsigned long)pt1HigherHalfKernel / SMALL_PAGE_SIZE;
     pdHigherHalfKernel->Entries[0].Present = 1;
     pdHigherHalfKernel->Entries[0].ReadWrite = 1;
-    pdHigherHalfKernel->Entries[0].User = 1;
+    pdHigherHalfKernel->Entries[0].User = 0;
 
     // Mapping of the first 512 small pages of 4K (0 - 2 MB Virtual Address Space)
     // with a base offset of 0xFFFF800000000000
@@ -122,7 +122,7 @@ void InitVirtualMemoryManager(int DebugOutput)
         pt1HigherHalfKernel->Entries[i].Frame = i;
         pt1HigherHalfKernel->Entries[i].Present = 1;
         pt1HigherHalfKernel->Entries[i].ReadWrite = 1;
-        pt1HigherHalfKernel->Entries[i].User = 1;
+        pt1HigherHalfKernel->Entries[i].User = 0;
     }
 
     // Store the memory address of the newly created PML4 data structure in the CR3 register.
