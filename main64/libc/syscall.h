@@ -9,6 +9,8 @@
 #define SYSCALL_GETCURSOR           5
 #define SYSCALL_SETCURSOR           6
 #define SYSCALL_EXECUTE             7
+#define SYSCALL_PRINTROOTDIRECTORY  8
+#define SYSCALL_CLEARSCREEN         9
 
 // Raises a SysCall with no parameters
 long SYSCALL0(int SysCallNumber);

@@ -6,14 +6,12 @@
 char *commands[] =
 {
     "cls",
-    "ver",
     "dir"
 };
 
 int (*command_functions[]) (char *param) =
 {
     &shell_cls,
-    &shell_ver,
     &shell_dir
 };
 
@@ -53,23 +51,17 @@ void ShellMain()
     }
 }
 
-int shell_cls(char *param)
-{
-    printf("cls\n");
-
-    return 0;
-}
-
-int shell_ver(char *param)
-{
-    printf("ver\n");
-
-    return 0;
-}
-
+// Prints out the Root Directory of the FAT12 partition
 int shell_dir(char *param)
 {
-    printf("dir\n");
+    PrintRootDirectory();
 
-    return 0;
+    return 1;
+}
+
+int shell_cls(char *param)
+{
+    ClearScreen();
+
+    return 1;
 }

@@ -100,6 +100,20 @@ long SysCallHandlerC(SysCallRegisters *Registers)
         else
             return 0;
     }
+    // PrintRootDirectory
+    else if (sysCallNumber == SYSCALL_PRINTROOTDIRECTORY)
+    {
+        PrintRootDirectory();
+        
+        return 1;
+    }
+    // ClearScreen
+    else if (sysCallNumber == SYSCALL_CLEARSCREEN)
+    {
+        ClearScreen();
+
+        return 1;
+    }
 
     return 0;
 }

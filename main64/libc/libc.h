@@ -25,7 +25,14 @@ void GetCursorPosition(int *Row, int *Col);
 // Sets the current cursor position
 void SetCursorPosition(int *Row, int *Col);
 
+// Executes the given User Mode program
 int ExecuteUserModeProgram(unsigned char *FileName);
+
+// Prints out the root directory of the FAT12 partition
+int PrintRootDirectory();
+
+// Clears the screen
+int ClearScreen();
 
 // Prints out an integer value
 void printf_int(int i, int base);

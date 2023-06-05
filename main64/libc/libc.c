@@ -234,7 +234,20 @@ int StartsWith(char *string, char *prefix)
     return 1;
 }
 
+// Executes the given User Mode program
 int ExecuteUserModeProgram(unsigned char *FileName)
 {
     return SYSCALL1(SYSCALL_EXECUTE, FileName);
+}
+
+// Prints out the root directory of the FAT12 partition
+int PrintRootDirectory()
+{
+    return SYSCALL0(SYSCALL_PRINTROOTDIRECTORY);
+}
+
+// Clears the screen
+int ClearScreen()
+{
+    return SYSCALL0(SYSCALL_CLEARSCREEN);
 }

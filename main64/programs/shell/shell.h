@@ -8,7 +8,6 @@
 void ShellMain();
 
 int shell_cls(char *param);
-int shell_ver(char *param);
 int shell_dir(char *param);
 
 #endif
