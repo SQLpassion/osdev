@@ -24,7 +24,7 @@ long SysCallHandlerC(SysCallRegisters *Registers)
     {
         printf((char *)Registers->RSI);
 
-        return 0;
+        return 1;
     }
     // GetPID
     else if (sysCallNumber == SYSCALL_GETPID)
@@ -38,7 +38,7 @@ long SysCallHandlerC(SysCallRegisters *Registers)
         Task *state = (Task *)GetTaskState();
         TerminateTask(state->PID);
 
-        return 0;
+        return 1;
     }
     // getchar
     else if (sysCallNumber == SYSCALL_GETCHAR)
@@ -64,7 +64,7 @@ long SysCallHandlerC(SysCallRegisters *Registers)
         int *Col = (int *)Registers->RDX;
         GetCursorPosition(Row, Col);
 
-        return 0;
+        return 1;
     }
     // SetCursor
     else if (sysCallNumber == SYSCALL_SETCURSOR)
@@ -73,7 +73,7 @@ long SysCallHandlerC(SysCallRegisters *Registers)
         int *col = (int *)Registers->RDX;
         SetCursorPosition(*row, *col);
 
-        return 0;
+        return 1;
     }
     // ExecuteUserProcess
     else if (sysCallNumber == SYSCALL_EXECUTE)
