@@ -7,8 +7,8 @@
 // The main entry point for the User Mode program.
 void ShellMain();
 
-void shell_cls(char *param);
-void shell_ver(char *param);
-void shell_dir(char *param);
+int shell_cls(char *param);
+int shell_ver(char *param);
+int shell_dir(char *param);
 
 #endif

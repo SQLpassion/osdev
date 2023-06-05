@@ -26,7 +26,7 @@ void ShellMain()
     {
         char input[100] = "";
         int commandFound = 0;
-        printf("C:\>");
+        printf("C:\\>");
         scanf(input, 98);
 
         for (i = 0; i < COMMAND_COUNT; i++)
@@ -34,7 +34,7 @@ void ShellMain()
             // Execute the specified command
             if (StartsWith(input, commands[i]) == 1)
             {
-                (*command_functions[i])(&input);
+                (*command_functions[i])((char *)&input);
                 commandFound = 1;
             }
         }
@@ -53,17 +53,23 @@ void ShellMain()
     }
 }
 
-void shell_cls(char *param)
+int shell_cls(char *param)
 {
     printf("cls\n");
+
+    return 0;
 }
 
-void shell_ver(char *param)
+int shell_ver(char *param)
 {
     printf("ver\n");
+
+    return 0;
 }
 
-void shell_dir(char *param)
+int shell_dir(char *param)
 {
     printf("dir\n");
+
+    return 0;
 }
