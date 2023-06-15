@@ -54,6 +54,8 @@ void WriteSectors(unsigned int *SourceAddress, unsigned int LBA, unsigned char S
         {
             outl(0x1F0, SourceAddress[i]);
         }
+
+        SourceAddress += 256;
     }
 }
 

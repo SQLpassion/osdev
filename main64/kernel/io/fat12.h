@@ -32,14 +32,23 @@ int LoadProgram(unsigned char *Filename);
 // Prints the Root Directory
 void PrintRootDirectory();
 
+// Finds a given Root Directory Entry by its Filename
+RootDirectoryEntry* FindRootDirectoryEntry(unsigned char *Filename);
+
+// Adds a new file to the FAT12 partition
+void AddFile();
+
+// Finds the next free Root Directory Entry
+static RootDirectoryEntry *FindNextFreeRootDirectoryEntry();
+
 // Load all Clusters for the given Root Directory Entry into memory
 static void LoadProgramIntoMemory(RootDirectoryEntry *Entry);
 
 // Loads the Root Directory into memory
 static void LoadRootDirectory();
 
-// Finds a given Root Directory Entry by its Filename
-RootDirectoryEntry* FindRootDirectoryEntry(unsigned char *Filename);
+// Writes the Root Directory from the memory back to the disk
+static void WriteRootDirectory();
 
 // Reads the next FAT Entry from the FAT Tables
 static unsigned short FATRead(unsigned short Cluster);

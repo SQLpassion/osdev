@@ -56,7 +56,7 @@ void PrintRootDirectory()
 
     RootDirectoryEntry *entry = (RootDirectoryEntry *)ROOT_DIRECTORY_BUFFER;
 
-    for (i = 0; i < 16; i++)
+    for (i = 0; i < ROOT_DIRECTORY_ENTRIES; i++)
     {
         if (entry->FileName[0] != 0x00)
         {
@@ -144,6 +144,18 @@ static void LoadRootDirectory()
     ReadSectors((unsigned char *)FAT_BUFFER, 1, FAT_COUNT * SECTORS_PER_FAT);
 }
 
+// Writes the Root Directory from the memory back to the disk
+static void WriteRootDirectory()
+{
+    // Calculate the Root Directory Size: 14 sectors: => 32 * 224 / 512
+    short rootDirectorySectors = 32 * ROOT_DIRECTORY_ENTRIES / BYTES_PER_SECTOR;
+
+    // Calculate the LBA address of the Root Directory: 19: => 2 * 9 + 1
+    short lbaAddressRootDirectory = FAT_COUNT * SECTORS_PER_FAT + RESERVED_SECTORS;
+
+    WriteSectors((unsigned int *)ROOT_DIRECTORY_BUFFER, lbaAddressRootDirectory, rootDirectorySectors);
+}
+
 // Finds a given Root Directory Entry by its Filename
 RootDirectoryEntry* FindRootDirectoryEntry(unsigned char *FileName)
 {
@@ -157,7 +169,7 @@ RootDirectoryEntry* FindRootDirectoryEntry(unsigned char *FileName)
     RootDirectoryEntry *entry = (RootDirectoryEntry *)ROOT_DIRECTORY_BUFFER;
     int i;
 
-    for (i = 0; i < 16; i++)
+    for (i = 0; i < ROOT_DIRECTORY_ENTRIES; i++)
     {
         if (entry->FileName[0] != 0x00)
         {
@@ -171,6 +183,57 @@ RootDirectoryEntry* FindRootDirectoryEntry(unsigned char *FileName)
 
     // The requested Root Directory Entry was not found
     return 0;
+}
+
+// Adds a new file to the FAT12 partition
+void AddFile()
+{
+    char input[10] = "";
+
+    PrintRootDirectory();
+    printf("\n");
+
+    printf("Please enter a new file name: ");
+    scanf(input, 8);
+
+    RootDirectoryEntry *freeEntry = FindNextFreeRootDirectoryEntry();
+
+    if (freeEntry != 0x0)
+    {
+        strcpy(freeEntry->FileName, input);
+        strcpy(freeEntry->Extension, "TXT");
+        freeEntry->FileSize = 124;
+    }
+
+    PrintRootDirectory();
+    printf("\n");
+
+    WriteRootDirectory();
+}
+
+// Finds the next free Root Directory Entry
+static RootDirectoryEntry *FindNextFreeRootDirectoryEntry()
+{
+    // Check, if the Root Directory is already loaded into memory
+    if (RootDirectoryLoaded == 0)
+    {
+        LoadRootDirectory();
+        RootDirectoryLoaded = 1;
+    }
+
+    RootDirectoryEntry *entry = (RootDirectoryEntry *)ROOT_DIRECTORY_BUFFER;
+
+    for (int i = 0; i < ROOT_DIRECTORY_ENTRIES; i++)
+    {
+        if (entry->FileName[0] == 0x00)
+            return entry;
+
+        // Move to the next Root Directory Entry
+        entry = entry + 1;
+    }
+
+    // A free Root Directory Entry was not found
+    return 0x0;
 }
 
 // Reads the next FAT Entry from the FAT Tables
