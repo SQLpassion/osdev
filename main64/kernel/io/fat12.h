@@ -53,4 +53,8 @@ static void WriteRootDirectory();
 // Reads the next FAT Entry from the FAT Tables
 static unsigned short FATRead(unsigned short Cluster);
 
+unsigned short FindNextFreeFATEntry();
+
+void FATWrite(unsigned short Cluster, unsigned short Value);
+
 #endif
