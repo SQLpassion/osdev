@@ -162,8 +162,9 @@ static void WriteRootDirectory()
     // Write the Root Directory
     WriteSectors((unsigned int *)ROOT_DIRECTORY_BUFFER, lbaAddressRootDirectory, rootDirectorySectors);
     
-    // Write the FAT table
-    WriteSectors((unsigned int *)FAT_BUFFER, 1, FAT_COUNT * SECTORS_PER_FAT);
+    // Write both FAT tables
+    WriteSectors((unsigned int *)FAT_BUFFER, 1, SECTORS_PER_FAT);
+    WriteSectors((unsigned int *)FAT_BUFFER, 10, SECTORS_PER_FAT);
 }
 
 // Finds a given Root Directory Entry by its Filename
@@ -226,22 +227,46 @@ void AddFile()
 
     if (freeEntry != 0x0)
     {
-        unsigned short nextFreeCluster = FindNextFreeFATEntry();
-        FATWrite(nextFreeCluster, 0xFF0);
+        // Allocate the first cluster
+        unsigned short startCluster = FindNextFreeFATEntry();
+        FATWrite(startCluster, 0xFF0);
+
+        // Allocate a additional cluster
+        unsigned short cluster2 = FindNextFreeFATEntry();
+        FATWrite(startCluster, cluster2);
+        FATWrite(cluster2, 0xFF0);
+
+        // Allocate a additional cluster
+        unsigned short cluster3 = FindNextFreeFATEntry();
+        FATWrite(cluster2, cluster3);
+        FATWrite(cluster3, 0xFFF);
 
         strcpy(freeEntry->FileName, input);
         strcpy(freeEntry->Extension, "TXT");
         freeEntry->FileSize = 124;
-        freeEntry->FirstCluster = nextFreeCluster;
+        freeEntry->FirstCluster = startCluster;
+
+        freeEntry->CreationDate[0] = 0xD6; 
+        freeEntry->CreationDate[1] = 0x56;
+        freeEntry->CreationTime[0] = 0x44; 
+        freeEntry->CreationTime[1] = 0x8B;
+        freeEntry->LastAccessDate[0] = 0xD6; 
+        freeEntry->LastAccessDate[1] = 0x56;
+        freeEntry->LastWriteTime[0] = 0x44; 
+        freeEntry->LastWriteTime[1] = 0x8B;
+        freeEntry->LastWriteDate[0] = 0xD6; 
+        freeEntry->LastWriteDate[1] = 0x56;
+
+        WriteRootDirectory();
+
+        unsigned char *content = (unsigned char *)malloc(BYTES_PER_SECTOR);
+        strcpy(content, "This is the first test content for a file in the FAT12 file system partition.");
+        printf(content);
+
+        WriteSectors((unsigned int *)content, startCluster + 33 - 2,  1);
     }
 
-    PrintRootDirectory();
-    printf("\n");
-
-    printf("Before WriteRootDirectory()...\n");
-    WriteRootDirectory();
-
-    printf("After WriteRootDirectory()...\n");
+    printf("Done!\n");
 }
 
 // Finds the next free Root Directory Entry
@@ -318,10 +343,13 @@ unsigned short FindNextFreeFATEntry()
             // Odd Cluster
             result = val >> 4; // Highest 12 Bits
 
-            /* printf_int(result, 10);
+            /* printf("Cluster ");
+            printf_int(Cluster, 10);
+            printf(" => ");
+            printf_int(result, 10);
             printf("\n");
 
-            if (result == 4095)
+            if (result >= EOF)
                 printf("\n"); */
         }
         else
@@ -329,10 +357,13 @@ unsigned short FindNextFreeFATEntry()
             // Even Cluster
             result = val & 0x0FFF; // Lowest 12 Bits
 
-            /* printf_int(result, 10);
+            /* printf("Cluster ");
+            printf_int(Cluster, 10);
+            printf(" => ");
+            printf_int(result, 10);
             printf("\n");
 
-            if (result == 4095)
+            if (result >= EOF)
                 printf("\n"); */
         }
 
@@ -363,27 +394,26 @@ void FATWrite(unsigned short Cluster, unsigned short Value)
    
     if (Cluster % 2 == 0)
     {
-        printf("Even\n");
+        /* printf("Even\n");
 
         printf_long(FAT_BUFFER[fatOffset + 0], 16);
         printf("\n");
         printf_long(FAT_BUFFER[fatOffset + 1], 16);
         printf("\n");
-        printf("\n");
-
+        printf("\n"); */
 
         FAT_BUFFER[fatOffset + 0] = (0xff & Value);
         FAT_BUFFER[fatOffset + 1] = ((0xf0 & (FAT_BUFFER[fatOffset + 1])) |  (0x0f & (Value >> 8)));
 
-        printf_long(FAT_BUFFER[fatOffset + 0], 16);
+        /* printf_long(FAT_BUFFER[fatOffset + 0], 16);
         printf("\n");
         printf_long(FAT_BUFFER[fatOffset + 1], 16);
         printf("\n");
-        printf("\n");
+        printf("\n"); */
     }
     else
     {
-        printf("Odd\n");
+        /* printf("Odd\n");
 
         printf_long(FAT_BUFFER[fatOffset - 1], 16);
         printf("\n");
@@ -391,16 +421,16 @@ void FATWrite(unsigned short Cluster, unsigned short Value)
         printf("\n");
         printf_long(FAT_BUFFER[fatOffset + 1], 16);
         printf("\n");
-        printf("\n");
+        printf("\n"); */
 
         FAT_BUFFER[fatOffset + 0] = ((0x0f & (FAT_BUFFER[fatOffset + 0])) | ((0x0f & Value) << 4));
         FAT_BUFFER[fatOffset + 1] = ((0xff) & (Value >> 4));
 
-        printf_long(FAT_BUFFER[fatOffset - 1], 16);
+        /* printf_long(FAT_BUFFER[fatOffset - 1], 16);
         printf("\n");
         printf_long(FAT_BUFFER[fatOffset + 0], 16);
         printf("\n");
         printf_long(FAT_BUFFER[fatOffset + 1], 16);
-        printf("\n");
+        printf("\n");*/
     }
 }

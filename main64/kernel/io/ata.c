@@ -38,8 +38,6 @@ void WriteSectors(unsigned int *SourceAddress, unsigned int LBA, unsigned char S
 {
     WaitForBSYFlag();
 
-    printf("After WaitForBSYFlag()\n");
-
     outb(0x1F2, SectorCount);
     outb(0x1F3, (unsigned char) LBA);
     outb(0x1F4, (unsigned char)(LBA >> 8));

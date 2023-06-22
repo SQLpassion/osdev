@@ -41,8 +41,14 @@
 ###########################
 # Run on physical Notebook
 ###########################
-- Write the final FAT12 image to a physical disk (where /dev/disk2 is the attached physical hard disk!):
-    sudo dd if=kaos64.img of=/dev/disk2
+- Write the final FAT12 image to a physical disk:
+    Mac:
+        ls /dev/d*
+        sudo dd if=kaos64.img of=/dev/disk2 (where /dev/disk2 is the attached physical hard disk!)
+    Windows:
+        wmic diskdrive list brief
+        ./dd.exe if=d:\github\sqlpassion\osdev\main64\kaos64.img of=\\.\PhysicalDrive2 (where \\.\PhysicalDrive2 is the attached physical hard disk!)
+        ./dd.exe if=\\.\PhysicalDrive2 of=d:\kaos64.img
 
 ###############
 # Git Commands
