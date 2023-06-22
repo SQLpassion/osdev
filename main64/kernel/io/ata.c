@@ -38,6 +38,8 @@ void WriteSectors(unsigned int *SourceAddress, unsigned int LBA, unsigned char S
 {
     WaitForBSYFlag();
 
+    printf("After WaitForBSYFlag()\n");
+
     outb(0x1F2, SectorCount);
     outb(0x1F3, (unsigned char) LBA);
     outb(0x1F4, (unsigned char)(LBA >> 8));
@@ -68,5 +70,6 @@ static void WaitForBSYFlag()
 // Waits until the DRQ flag is set.
 static void WaitForDRQFlag()
 {
-    while (!(inb(0x1F7) & STATUS_DRQ));
+    // while (!(inb(0x1F7) & STATUS_DRQ));
+    while (!(inb(0x1F7) & STATUS_RDY));
 }

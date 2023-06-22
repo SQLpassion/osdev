@@ -203,7 +203,7 @@ void AddFile()
     PrintRootDirectory();
     printf("\n");
 
-    unsigned short nextFreeCluster = FindNextFreeFATEntry();
+    /* unsigned short nextFreeCluster = FindNextFreeFATEntry();
     printf("\n");
     printf("Next useable Cluster: ");
     printf_int(nextFreeCluster, 10);
@@ -217,9 +217,9 @@ void AddFile()
     printf_int(nextFreeCluster, 10);
     printf("\n");
 
-    FATWrite(nextFreeCluster, 0xDEF);
+    FATWrite(nextFreeCluster, 0xDEF); */
 
-    /* printf("Please enter a new file name: ");
+    printf("Please enter a new file name: ");
     scanf(input, 8);
 
     RootDirectoryEntry *freeEntry = FindNextFreeRootDirectoryEntry();
@@ -227,7 +227,7 @@ void AddFile()
     if (freeEntry != 0x0)
     {
         unsigned short nextFreeCluster = FindNextFreeFATEntry();
-        FATWrite(nextFreeCluster, 0xFFF);
+        FATWrite(nextFreeCluster, 0xFF0);
 
         strcpy(freeEntry->FileName, input);
         strcpy(freeEntry->Extension, "TXT");
@@ -238,7 +238,10 @@ void AddFile()
     PrintRootDirectory();
     printf("\n");
 
-    WriteRootDirectory(); */
+    printf("Before WriteRootDirectory()...\n");
+    WriteRootDirectory();
+
+    printf("After WriteRootDirectory()...\n");
 }
 
 // Finds the next free Root Directory Entry
@@ -368,10 +371,6 @@ void FATWrite(unsigned short Cluster, unsigned short Value)
         printf("\n");
         printf("\n");
 
-        // p1 = image_buf + offset;
-	    // p2 = image_buf + offset + 1;
-        // *p1 = (uint8_t)(0xff & value);
-	    // *p2 = (uint8_t) ((0xf0 & (*p2)) | (0x0f & (value >> 8)));
 
         FAT_BUFFER[fatOffset + 0] = (0xff & Value);
         FAT_BUFFER[fatOffset + 1] = ((0xf0 & (FAT_BUFFER[fatOffset + 1])) |  (0x0f & (Value >> 8)));
@@ -394,11 +393,6 @@ void FATWrite(unsigned short Cluster, unsigned short Value)
         printf("\n");
         printf("\n");
 
-        // p1 = image_buf + offset + 1;
-	    // p2 = image_buf + offset + 2;
-        // *p1 = (uint8_t)((0x0f & (*p1)) | ((0x0f & value) << 4));
-	    // *p2 = (uint8_t)(0xff & (value >> 4));
-
         FAT_BUFFER[fatOffset + 0] = ((0x0f & (FAT_BUFFER[fatOffset + 0])) | ((0x0f & Value) << 4));
         FAT_BUFFER[fatOffset + 1] = ((0xff) & (Value >> 4));
 
@@ -408,7 +402,5 @@ void FATWrite(unsigned short Cluster, unsigned short Value)
         printf("\n");
         printf_long(FAT_BUFFER[fatOffset + 1], 16);
         printf("\n");
-
-        // while (1 == 1) {}
     }
 }
