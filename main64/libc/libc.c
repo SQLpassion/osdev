@@ -251,3 +251,15 @@ int ClearScreen()
 {
     return SYSCALL0(SYSCALL_CLEARSCREEN);
 }
+
+// Creates a new file in the FAT12 file system
+int CreateFile(unsigned char *FileName, unsigned char *Extension, unsigned char *InitialContent)
+{
+    return SYSCALL3(SYSCALL_CREATEFILE, FileName, Extension, InitialContent);
+}
+
+// Prints out the given file name
+int PrintFile(unsigned char *FileName, unsigned char *Extension)
+{
+    return SYSCALL2(SYSCALL_PRINTFILE, FileName, Extension);
+}

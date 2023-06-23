@@ -34,6 +34,12 @@ int PrintRootDirectory();
 // Clears the screen
 int ClearScreen();
 
+// Creates a new file in the FAT12 file system
+int CreateFile(unsigned char *FileName, unsigned char *Extension, unsigned char *InitialContent);
+
+// Prints out the given file name
+int PrintFile(unsigned char *FileName, unsigned char *Extension);
+
 // Prints out an integer value
 void printf_int(int i, int base);
 

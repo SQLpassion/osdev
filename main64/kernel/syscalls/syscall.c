@@ -114,6 +114,27 @@ long SysCallHandlerC(SysCallRegisters *Registers)
 
         return 1;
     }
+    // CreateFile
+    else if(sysCallNumber == SYSCALL_CREATEFILE)
+    {
+        unsigned char *fileName = (unsigned char *)Registers->RSI;
+        unsigned char *extension = (unsigned char *)Registers->RDX;
+        unsigned char *initialContent = (unsigned char *)Registers->RCX;
+
+        CreateFile(fileName, extension, initialContent);
+
+        return 0;
+    }
+    // PrintFile
+    else if (sysCallNumber == SYSCALL_PRINTFILE)
+    {
+        unsigned char *fileName = (unsigned char *)Registers->RSI;
+        unsigned char *extension = (unsigned char *)Registers->RDX;
+
+        PrintFile(fileName, extension);
+
+        return 0;
+    }
 
     return 0;
 }

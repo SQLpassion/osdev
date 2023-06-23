@@ -42,7 +42,7 @@ RootDirectoryEntry* FindRootDirectoryEntry(unsigned char *Filename);
 void CreateFile(unsigned char *FileName, unsigned char *Extension, unsigned char *InitialContent);
 
 // Prints out the given file
-void PrintFile(unsigned char *FileName);
+void PrintFile(unsigned char *FileName, unsigned char *Extension);
 
 // Adds a new file to the FAT12 partition
 void AddFile();

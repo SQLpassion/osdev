@@ -6,13 +6,17 @@
 char *commands[] =
 {
     "cls",
-    "dir"
+    "dir",
+    "mkfile",
+    "type"
 };
 
 int (*command_functions[]) (char *param) =
 {
     &shell_cls,
-    &shell_dir
+    &shell_dir,
+    &shell_mkfile,
+    &shell_type
 };
 
 // The main entry point for the User Mode program
@@ -59,9 +63,45 @@ int shell_dir(char *param)
     return 1;
 }
 
+// Clears the screen
 int shell_cls(char *param)
 {
     ClearScreen();
 
     return 1;
+}
+
+// Creates a new file
+int shell_mkfile(char *param)
+{
+    char fileName[10] = "";
+    char extension[5] = "";
+    char content[512] = "";
+    
+    printf("Please enter the name of the new file: ");
+    scanf(fileName, 8);
+    printf("Please enter the extension of the new file: ");
+    scanf(extension, 3);
+    printf("Please enter the inital content of the new file: ");
+    scanf(content, 510);
+
+    CreateFile(fileName, extension, content);
+    ClearScreen();
+    printf("The file was created successfully.\n");
+}
+
+// Prints out an existing file
+int shell_type(char *param)
+{
+    char fileName[10] = "";
+    char extension[5] = "";
+
+    printf("Please enter the name of the file to be printed out: ");
+    scanf(fileName, 8);
+    printf("Please enter the extension of the file to be printed out: ");
+    scanf(extension, 3);
+
+    ClearScreen();
+    PrintFile(fileName, extension);
+    printf("\n");
 }

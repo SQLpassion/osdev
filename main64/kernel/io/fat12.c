@@ -167,12 +167,15 @@ void CreateFile(unsigned char *FileName, unsigned char *Extension, unsigned char
 }
 
 // Prints out the given file
-void PrintFile(unsigned char *FileName)
+void PrintFile(unsigned char *FileName, unsigned char *Extension)
 {
+    // Allocate a file buffer
     unsigned char *file_buffer = (unsigned char *)malloc(BYTES_PER_SECTOR);
 
     // Find the Root Directory Entry for the given program name
-    RootDirectoryEntry *entry = FindRootDirectoryEntry("TEST1   TXT");
+    strcat(FileName, Extension);
+    // RootDirectoryEntry *entry = FindRootDirectoryEntry("TEST1   TXT");
+    RootDirectoryEntry *entry = FindRootDirectoryEntry(FileName);
     
     ReadSectors((unsigned char *)file_buffer, entry->FirstCluster + DATA_AREA_BEGINNING, 1);
     unsigned short nextCluster = FATRead(entry->FirstCluster);
@@ -186,6 +189,9 @@ void PrintFile(unsigned char *FileName)
         // Read the next Cluster from the FAT table
         nextCluster = FATRead(nextCluster);
     }
+
+    // Release the file buffer
+    free(file_buffer);
 }
 
 // Adds a new file to the FAT12 partition

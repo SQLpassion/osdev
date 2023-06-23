@@ -77,9 +77,9 @@ void InitKernel(int KernelSize)
     RefreshStatusLine();
 
     // Register the Context Switching IRQ Handler when the Timer fires
-    // InitTimerForContextSwitching();
+    InitTimerForContextSwitching();
 
-    AddFile();
+    // AddFile();
 }
 
 // Causes a Divide by Zero Exception
