@@ -1,12 +1,15 @@
 #ifndef FAT12_H
 #define FAT12_H
 
-#define FAT_COUNT 2
-#define EOF 0x0FF0
-#define SECTORS_PER_FAT 9
-#define RESERVED_SECTORS 1
-#define ROOT_DIRECTORY_ENTRIES 224
-#define BYTES_PER_SECTOR 512
+#define EOF                     0x0FF0
+#define BYTES_PER_SECTOR        512
+#define FAT_COUNT               2
+#define SECTORS_PER_FAT         9
+#define RESERVED_SECTORS        1
+#define ROOT_DIRECTORY_ENTRIES  224
+#define DATA_AREA_BEGINNING     31
+#define FAT1_CLUSTER            1
+#define FAT2_CLUSTER            10
 
 // Represents a Root Directory Entry - 32 bytes long
 struct RootDirectoryEntry
@@ -35,11 +38,29 @@ void PrintRootDirectory();
 // Finds a given Root Directory Entry by its Filename
 RootDirectoryEntry* FindRootDirectoryEntry(unsigned char *Filename);
 
+// Creates a new file in the FAT12 file system
+void CreateFile(unsigned char *FileName, unsigned char *Extension, unsigned char *InitialContent);
+
+// Prints out the given file
+void PrintFile(unsigned char *FileName);
+
 // Adds a new file to the FAT12 partition
 void AddFile();
 
+// Prints out the FAT12 chain
+void PrintFATChain();
+
 // Finds the next free Root Directory Entry
 static RootDirectoryEntry *FindNextFreeRootDirectoryEntry();
+
+// Reads the next FAT Entry from the FAT Tables
+static unsigned short FATRead(unsigned short Cluster);
+
+// Writes the provided value to the specific FAT12 cluster
+static void FATWrite(unsigned short Cluster, unsigned short Value);
+
+// Finds the next free FAT12 cluster entry
+static unsigned short FindNextFreeFATEntry();
 
 // Load all Clusters for the given Root Directory Entry into memory
 static void LoadProgramIntoMemory(RootDirectoryEntry *Entry);
@@ -47,14 +68,7 @@ static void LoadProgramIntoMemory(RootDirectoryEntry *Entry);
 // Loads the Root Directory into memory
 static void LoadRootDirectory();
 
-// Writes the Root Directory from the memory back to the disk
-static void WriteRootDirectory();
-
-// Reads the next FAT Entry from the FAT Tables
-static unsigned short FATRead(unsigned short Cluster);
-
-unsigned short FindNextFreeFATEntry();
-
-void FATWrite(unsigned short Cluster, unsigned short Value);
+// Writes the Root Directory and the FAT12 tables from the memory back to the disk
+static void WriteRootDirectoryAndFAT();
 
 #endif

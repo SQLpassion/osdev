@@ -112,61 +112,6 @@ void PrintRootDirectory()
     printf("\n");
 }
 
-// Load all Clusters for the given Root Directory Entry into memory
-static void LoadProgramIntoMemory(RootDirectoryEntry *Entry)
-{
-    // Read the first cluster of the Kernel into memory
-    unsigned char *program_buffer = (unsigned char *)EXECUTABLE_BASE_ADDRESS;
-    ReadSectors((unsigned char *)program_buffer, Entry->FirstCluster + 33 - 2, 1);
-    unsigned short nextCluster = FATRead(Entry->FirstCluster);
-
-    // Read the whole file into memory until we reach the EOF mark
-    while (nextCluster < EOF)
-    {
-        program_buffer = program_buffer + BYTES_PER_SECTOR;
-        ReadSectors(program_buffer, nextCluster + 33 - 2, 1);
-
-        // Read the next Cluster from the FAT table
-        nextCluster = FATRead(nextCluster);
-    }
-}
-
-// Loads the Root Directory and the FAT into memory
-static void LoadRootDirectory()
-{
-    // Calculate the Root Directory Size: 14 sectors: => 32 * 224 / 512
-    short rootDirectorySectors = 32 * ROOT_DIRECTORY_ENTRIES / BYTES_PER_SECTOR;
-
-    // Calculate the LBA address of the Root Directory: 19: => 2 * 9 + 1
-    short lbaAddressRootDirectory = FAT_COUNT * SECTORS_PER_FAT + RESERVED_SECTORS;
-
-    // Load the whole Root Directory (14 sectors) into memory
-    ROOT_DIRECTORY_BUFFER = malloc(rootDirectorySectors * BYTES_PER_SECTOR);
-
-    ReadSectors((unsigned char *)ROOT_DIRECTORY_BUFFER, lbaAddressRootDirectory, rootDirectorySectors);
-
-    // Load the whole FAT (18 sectors) into memory
-    FAT_BUFFER = malloc(FAT_COUNT * SECTORS_PER_FAT * BYTES_PER_SECTOR);
-    ReadSectors((unsigned char *)FAT_BUFFER, 1, FAT_COUNT * SECTORS_PER_FAT);
-}
-
-// Writes the Root Directory from the memory back to the disk
-static void WriteRootDirectory()
-{
-    // Calculate the Root Directory Size: 14 sectors: => 32 * 224 / 512
-    short rootDirectorySectors = 32 * ROOT_DIRECTORY_ENTRIES / BYTES_PER_SECTOR;
-
-    // Calculate the LBA address of the Root Directory: 19: => 2 * 9 + 1
-    short lbaAddressRootDirectory = FAT_COUNT * SECTORS_PER_FAT + RESERVED_SECTORS;
-
-    // Write the Root Directory
-    WriteSectors((unsigned int *)ROOT_DIRECTORY_BUFFER, lbaAddressRootDirectory, rootDirectorySectors);
-    
-    // Write both FAT tables
-    WriteSectors((unsigned int *)FAT_BUFFER, 1, SECTORS_PER_FAT);
-    WriteSectors((unsigned int *)FAT_BUFFER, 10, SECTORS_PER_FAT);
-}
-
 // Finds a given Root Directory Entry by its Filename
 RootDirectoryEntry* FindRootDirectoryEntry(unsigned char *FileName)
 {
@@ -196,34 +141,67 @@ RootDirectoryEntry* FindRootDirectoryEntry(unsigned char *FileName)
     return 0;
 }
 
+// Creates a new file in the FAT12 file system
+void CreateFile(unsigned char *FileName, unsigned char *Extension, unsigned char *InitialContent)
+{
+    // Find the next free RootDirectoryEntry
+    RootDirectoryEntry *freeEntry = FindNextFreeRootDirectoryEntry();
+
+    if (freeEntry != 0x0)
+    {
+        // Allocate the first cluster for the new file
+        unsigned short startCluster = FindNextFreeFATEntry();
+        FATWrite(startCluster, 0xFFF);
+
+        strcpy(freeEntry->FileName, FileName);
+        strcpy(freeEntry->Extension, Extension);
+        freeEntry->FileSize = strlen(InitialContent);
+        freeEntry->FirstCluster = startCluster;
+
+        // Write the changed Root Directory and the FAT tables back to disk
+        WriteRootDirectoryAndFAT();
+
+        // Write the intial file content to disk
+        WriteSectors((unsigned int *)InitialContent, startCluster + DATA_AREA_BEGINNING,  1);
+    }
+}
+
+// Prints out the given file
+void PrintFile(unsigned char *FileName)
+{
+    unsigned char *file_buffer = (unsigned char *)malloc(BYTES_PER_SECTOR);
+
+    // Find the Root Directory Entry for the given program name
+    RootDirectoryEntry *entry = FindRootDirectoryEntry("TEST1   TXT");
+    
+    ReadSectors((unsigned char *)file_buffer, entry->FirstCluster + DATA_AREA_BEGINNING, 1);
+    unsigned short nextCluster = FATRead(entry->FirstCluster);
+    printf(file_buffer);
+
+    while (nextCluster < EOF)
+    {
+        ReadSectors(file_buffer, nextCluster + DATA_AREA_BEGINNING, 1);
+        printf(file_buffer);
+
+        // Read the next Cluster from the FAT table
+        nextCluster = FATRead(nextCluster);
+    }
+}
+
 // Adds a new file to the FAT12 partition
 void AddFile()
 {
-    char input[10] = "";
+    char fileName[10] = "";
 
     PrintRootDirectory();
     printf("\n");
 
-    /* unsigned short nextFreeCluster = FindNextFreeFATEntry();
-    printf("\n");
-    printf("Next useable Cluster: ");
-    printf_int(nextFreeCluster, 10);
-    printf("\n");
-
-    FATWrite(nextFreeCluster, 0xABC);
-
-    nextFreeCluster = FindNextFreeFATEntry();
-    printf("\n");
-    printf("Next useable Cluster: ");
-    printf_int(nextFreeCluster, 10);
-    printf("\n");
-
-    FATWrite(nextFreeCluster, 0xDEF); */
-
     printf("Please enter a new file name: ");
-    scanf(input, 8);
+    scanf(fileName, 8);
 
-    RootDirectoryEntry *freeEntry = FindNextFreeRootDirectoryEntry();
+    CreateFile(fileName, "TXT", "This is the test content for the first cluster for a file in the FAT12 file system partition.\n");
+
+    /* RootDirectoryEntry *freeEntry = FindNextFreeRootDirectoryEntry();
 
     if (freeEntry != 0x0)
     {
@@ -243,9 +221,10 @@ void AddFile()
 
         strcpy(freeEntry->FileName, input);
         strcpy(freeEntry->Extension, "TXT");
-        freeEntry->FileSize = 124;
+        freeEntry->FileSize = 512 * 3;
         freeEntry->FirstCluster = startCluster;
 
+        // TODO...
         freeEntry->CreationDate[0] = 0xD6; 
         freeEntry->CreationDate[1] = 0x56;
         freeEntry->CreationTime[0] = 0x44; 
@@ -257,16 +236,71 @@ void AddFile()
         freeEntry->LastWriteDate[0] = 0xD6; 
         freeEntry->LastWriteDate[1] = 0x56;
 
-        WriteRootDirectory();
+        WriteRootDirectoryAndFAT();
 
-        unsigned char *content = (unsigned char *)malloc(BYTES_PER_SECTOR);
-        strcpy(content, "This is the first test content for a file in the FAT12 file system partition.");
-        printf(content);
+        printf("\n\n");
+        unsigned char *content1 = (unsigned char *)malloc(BYTES_PER_SECTOR);
+        strcpy(content1, "This is the test content for the first cluster for a file in the FAT12 file system partition.\n");
+        WriteSectors((unsigned int *)content1, startCluster + DATA_AREA_BEGINNING,  1);
 
-        WriteSectors((unsigned int *)content, startCluster + 33 - 2,  1);
+        unsigned char *content2 = (unsigned char *)malloc(BYTES_PER_SECTOR);
+        strcpy(content2, "This is the test content for the second cluster for a file in the FAT12 file system partition.\n");
+        WriteSectors((unsigned int *)content2, cluster2 + DATA_AREA_BEGINNING,  1);
+
+        unsigned char *content3 = (unsigned char *)malloc(BYTES_PER_SECTOR);
+        strcpy(content3, "This is the test content for the third cluster for a file in the FAT12 file system partition.\n");
+        WriteSectors((unsigned int *)content3, cluster3 + DATA_AREA_BEGINNING,  1);
+
+        PrintOutFile();
+    } */
+}
+
+// Prints out the FAT12 chain
+void PrintFATChain()
+{
+    unsigned short Cluster = 1;
+    unsigned short result = 1;
+
+    while (result > 0)
+    {
+        Cluster++;
+
+        // Calculate the offset into the FAT table
+        unsigned int fatOffset = (Cluster / 2) + Cluster;
+        unsigned long *offset = FAT_BUFFER + fatOffset;
+
+        // Read the entry from the FAT
+        unsigned short val = *offset;
+
+        if (Cluster & 0x0001)
+        {
+            // Odd Cluster
+            result = val >> 4; // Highest 12 Bits
+
+            printf("Cluster ");
+            printf_int(Cluster, 10);
+            printf(" => ");
+            printf_int(result, 10);
+            printf("\n");
+
+            if (result >= EOF)
+                printf("\n");
+        }
+        else
+        {
+            // Even Cluster
+            result = val & 0x0FFF; // Lowest 12 Bits
+
+            printf("Cluster ");
+            printf_int(Cluster, 10);
+            printf(" => ");
+            printf_int(result, 10);
+            printf("\n");
+
+            if (result >= EOF)
+                printf("\n");
+        }
     }
-
-    printf("Done!\n");
 }
 
 // Finds the next free Root Directory Entry
@@ -321,9 +355,29 @@ static unsigned short FATRead(unsigned short Cluster)
     }
 }
 
-unsigned short FindNextFreeFATEntry()
+// Writes the provided value to the specific FAT12 cluster
+static void FATWrite(unsigned short Cluster, unsigned short Value)
 {
-    // unsigned short Cluster = 2;
+    // Calculate the offset into the FAT table
+    unsigned int fatOffset = (Cluster / 2) + Cluster;
+   
+    if (Cluster % 2 == 0)
+    {
+        // Even Cluster
+        FAT_BUFFER[fatOffset + 0] = (0xff & Value);
+        FAT_BUFFER[fatOffset + 1] = ((0xf0 & (FAT_BUFFER[fatOffset + 1])) |  (0x0f & (Value >> 8)));
+    }
+    else
+    {
+        // Odd Cluster
+        FAT_BUFFER[fatOffset + 0] = ((0x0f & (FAT_BUFFER[fatOffset + 0])) | ((0x0f & Value) << 4));
+        FAT_BUFFER[fatOffset + 1] = ((0xff) & (Value >> 4));
+    }
+}
+
+// Finds the next free FAT12 cluster entry
+static unsigned short FindNextFreeFATEntry()
+{
     unsigned short Cluster = 1;
     unsigned short result = 1;
 
@@ -342,95 +396,68 @@ unsigned short FindNextFreeFATEntry()
         {
             // Odd Cluster
             result = val >> 4; // Highest 12 Bits
-
-            /* printf("Cluster ");
-            printf_int(Cluster, 10);
-            printf(" => ");
-            printf_int(result, 10);
-            printf("\n");
-
-            if (result >= EOF)
-                printf("\n"); */
         }
         else
         {
             // Even Cluster
             result = val & 0x0FFF; // Lowest 12 Bits
-
-            /* printf("Cluster ");
-            printf_int(Cluster, 10);
-            printf(" => ");
-            printf_int(result, 10);
-            printf("\n");
-
-            if (result >= EOF)
-                printf("\n"); */
         }
-
-        // Cluster++;
     }
 
     return Cluster;
 }
 
-/*
-03 F0 FF
-|| || ||
-11 21 22
-
-003 FFF
-
-Pos: 
-Even: 4, 1, 2
-Odd:  5, 6, 3
-
-ABC DEF:
-BC FA DE
-*/
-void FATWrite(unsigned short Cluster, unsigned short Value)
+// Load all Clusters for the given Root Directory Entry into memory
+static void LoadProgramIntoMemory(RootDirectoryEntry *Entry)
 {
-    // Calculate the offset into the FAT table
-    unsigned int fatOffset = (Cluster / 2) + Cluster;
-   
-    if (Cluster % 2 == 0)
+    // Read the first cluster of the Kernel into memory
+    unsigned char *program_buffer = (unsigned char *)EXECUTABLE_BASE_ADDRESS;
+    ReadSectors((unsigned char *)program_buffer, Entry->FirstCluster + DATA_AREA_BEGINNING, 1);
+    unsigned short nextCluster = FATRead(Entry->FirstCluster);
+
+    // Read the whole file into memory until we reach the EOF mark
+    while (nextCluster < EOF)
     {
-        /* printf("Even\n");
+        program_buffer = program_buffer + BYTES_PER_SECTOR;
+        ReadSectors(program_buffer, nextCluster + DATA_AREA_BEGINNING, 1);
 
-        printf_long(FAT_BUFFER[fatOffset + 0], 16);
-        printf("\n");
-        printf_long(FAT_BUFFER[fatOffset + 1], 16);
-        printf("\n");
-        printf("\n"); */
-
-        FAT_BUFFER[fatOffset + 0] = (0xff & Value);
-        FAT_BUFFER[fatOffset + 1] = ((0xf0 & (FAT_BUFFER[fatOffset + 1])) |  (0x0f & (Value >> 8)));
-
-        /* printf_long(FAT_BUFFER[fatOffset + 0], 16);
-        printf("\n");
-        printf_long(FAT_BUFFER[fatOffset + 1], 16);
-        printf("\n");
-        printf("\n"); */
+        // Read the next Cluster from the FAT table
+        nextCluster = FATRead(nextCluster);
     }
-    else
-    {
-        /* printf("Odd\n");
+}
 
-        printf_long(FAT_BUFFER[fatOffset - 1], 16);
-        printf("\n");
-        printf_long(FAT_BUFFER[fatOffset + 0], 16);
-        printf("\n");
-        printf_long(FAT_BUFFER[fatOffset + 1], 16);
-        printf("\n");
-        printf("\n"); */
+// Loads the Root Directory and the FAT into memory
+static void LoadRootDirectory()
+{
+    // Calculate the Root Directory Size: 14 sectors: => 32 * 224 / 512
+    short rootDirectorySectors = 32 * ROOT_DIRECTORY_ENTRIES / BYTES_PER_SECTOR;
 
-        FAT_BUFFER[fatOffset + 0] = ((0x0f & (FAT_BUFFER[fatOffset + 0])) | ((0x0f & Value) << 4));
-        FAT_BUFFER[fatOffset + 1] = ((0xff) & (Value >> 4));
+    // Calculate the LBA address of the Root Directory: 19: => 2 * 9 + 1
+    short lbaAddressRootDirectory = FAT_COUNT * SECTORS_PER_FAT + RESERVED_SECTORS;
 
-        /* printf_long(FAT_BUFFER[fatOffset - 1], 16);
-        printf("\n");
-        printf_long(FAT_BUFFER[fatOffset + 0], 16);
-        printf("\n");
-        printf_long(FAT_BUFFER[fatOffset + 1], 16);
-        printf("\n");*/
-    }
+    // Load the whole Root Directory (14 sectors) into memory
+    ROOT_DIRECTORY_BUFFER = malloc(rootDirectorySectors * BYTES_PER_SECTOR);
+
+    ReadSectors((unsigned char *)ROOT_DIRECTORY_BUFFER, lbaAddressRootDirectory, rootDirectorySectors);
+
+    // Load the whole FAT (18 sectors) into memory
+    FAT_BUFFER = malloc(FAT_COUNT * SECTORS_PER_FAT * BYTES_PER_SECTOR);
+    ReadSectors((unsigned char *)FAT_BUFFER, FAT1_CLUSTER, FAT_COUNT * SECTORS_PER_FAT);
+}
+
+// Writes the Root Directory and the FAT12 tables from the memory back to the disk
+static void WriteRootDirectoryAndFAT()
+{
+    // Calculate the Root Directory Size: 14 sectors: => 32 * 224 / 512
+    short rootDirectorySectors = 32 * ROOT_DIRECTORY_ENTRIES / BYTES_PER_SECTOR;
+
+    // Calculate the LBA address of the Root Directory: 19: => 2 * 9 + 1
+    short lbaAddressRootDirectory = FAT_COUNT * SECTORS_PER_FAT + RESERVED_SECTORS;
+
+    // Write the Root Directory back to disk
+    WriteSectors((unsigned int *)ROOT_DIRECTORY_BUFFER, lbaAddressRootDirectory, rootDirectorySectors);
+    
+    // Write both FAT12 tables back to disk
+    WriteSectors((unsigned int *)FAT_BUFFER, FAT1_CLUSTER, SECTORS_PER_FAT);
+    WriteSectors((unsigned int *)FAT_BUFFER, FAT2_CLUSTER, SECTORS_PER_FAT);
 }
