@@ -11,6 +11,8 @@
 #define FAT1_CLUSTER            1
 #define FAT2_CLUSTER            10
 
+#define FAT12_YEAROFFSET        1980
+
 // Represents a Root Directory Entry - 32 bytes long
 struct RootDirectoryEntry
 {
@@ -18,12 +20,22 @@ struct RootDirectoryEntry
     unsigned char Extension[3];
     unsigned char Attributes[1];
     unsigned char Reserved[2];
-    unsigned char CreationTime[2];
-    unsigned char CreationDate[2];
-    unsigned char LastAccessDate[2];
+    unsigned CreationSecond: 5;
+    unsigned CreationMinute: 6;
+    unsigned CreationHour: 5;
+    unsigned CreationDay: 5;
+    unsigned CreationMonth: 4;
+    unsigned CreationYear: 7;
+    unsigned LastAccessDay: 5;
+    unsigned LastAccessMonth: 4;
+    unsigned LastAccessYear: 7;
     unsigned char Ignore[2];
-    unsigned char LastWriteTime[2];
-    unsigned char LastWriteDate[2];
+    unsigned LastWriteSecond: 5;
+    unsigned LastWriteMinute: 6;
+    unsigned LastWriteHour: 5;
+    unsigned LastWriteDay: 5;
+    unsigned LastWriteMonth: 4;
+    unsigned LastWriteYear: 7;
     unsigned short FirstCluster;
     unsigned int FileSize;
 } __attribute__ ((packed));

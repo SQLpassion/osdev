@@ -149,6 +149,9 @@ void CreateFile(unsigned char *FileName, unsigned char *Extension, unsigned char
 
     if (freeEntry != 0x0)
     {
+        // Getting a reference to the BIOS Information Block
+        BiosInformationBlock *bib = (BiosInformationBlock *)BIB_OFFSET;
+
         // Allocate the first cluster for the new file
         unsigned short startCluster = FindNextFreeFATEntry();
         FATWrite(startCluster, 0xFFF);
@@ -157,6 +160,14 @@ void CreateFile(unsigned char *FileName, unsigned char *Extension, unsigned char
         strcpy(freeEntry->Extension, Extension);
         freeEntry->FileSize = strlen(InitialContent);
         freeEntry->FirstCluster = startCluster;
+
+        // Set the Date/Time information of the new file
+        freeEntry->LastWriteYear = freeEntry->LastAccessYear = freeEntry->CreationYear = bib->Year - FAT12_YEAROFFSET;
+        freeEntry->LastWriteMonth = freeEntry->LastAccessMonth = freeEntry->CreationMonth = bib->Month;
+        freeEntry->LastWriteDay =  freeEntry->LastAccessDay = freeEntry->CreationDay = bib->Day;
+        freeEntry->LastWriteHour = freeEntry->CreationHour = bib->Hour;
+        freeEntry->LastWriteMinute = freeEntry->CreationMinute = bib->Minute;
+        freeEntry->LastWriteSecond = freeEntry->CreationSecond = bib->Second / 2;
 
         // Write the changed Root Directory and the FAT tables back to disk
         WriteRootDirectoryAndFAT();
