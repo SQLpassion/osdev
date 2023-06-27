@@ -172,21 +172,91 @@ void CreateFile(unsigned char *FileName, unsigned char *Extension, unsigned char
         // Write the changed Root Directory and the FAT tables back to disk
         WriteRootDirectoryAndFAT();
 
+        // Allocate a new cluster of 512 bytes in memory, and copy the initial content into it.
+        // Therefore, we can make sure that the remaining bytes are all zeroed out.
+        unsigned char *content = (unsigned char *)malloc(BYTES_PER_SECTOR);
+        memset(content, 0x0, BYTES_PER_SECTOR);
+        strcpy(content, InitialContent);
+
         // Write the intial file content to disk
-        WriteSectors((unsigned int *)InitialContent, startCluster + DATA_AREA_BEGINNING,  1);
+        WriteSectors((unsigned int *)content, startCluster + DATA_AREA_BEGINNING, 1);
+
+        // Release the block of memory
+        free(content);
     }
+}
+
+// Deletes an existing file in the FAT12 file system
+void DeleteFile(unsigned char *FileName, unsigned char *Extension)
+{
+    // Construct the full file name
+    char fullFileName[11];
+    strcpy(fullFileName, FileName);
+    strcat(fullFileName, Extension);
+   
+    // Find the Root Directory Entry for the given program name
+    RootDirectoryEntry *entry = FindRootDirectoryEntry(fullFileName);
+
+    if (entry != 0x0)
+    {
+        // Deallocate the FAT entries for the file
+        DeallocateFATClusters(entry->FirstCluster);
+
+        // Deallocate the RootDirectoryEntry of the file
+        memset(entry, 0x0, sizeof(RootDirectoryEntry));
+
+        // Write everything back to disk
+        WriteRootDirectoryAndFAT();
+    }
+}
+
+// Deallocates the FAT clusters for a file - beginning with the given first cluster
+static void DeallocateFATClusters(unsigned short FirstCluster)
+{
+    // Prepare an empty cluster
+    unsigned char *emptyCluster = (unsigned char *)malloc(BYTES_PER_SECTOR);
+    memset(emptyCluster, 0x0, BYTES_PER_SECTOR);
+
+    // Read the next cluster of the file
+    unsigned short nextCluster = FATRead(FirstCluster);
+
+    // Deallocate the first cluster of the file
+    FATWrite(FirstCluster, 0x0);
+
+    // Zero-initialize the old cluster
+    WriteSectors((unsigned int *)emptyCluster, FirstCluster + DATA_AREA_BEGINNING, 1);
+    
+    while (nextCluster < EOF)
+    {
+        unsigned short currentCluster = nextCluster;
+
+        // Read the next Cluster of the file
+        nextCluster = FATRead(nextCluster);
+
+        // Deallocate the current cluster of the file
+        FATWrite(currentCluster, 0x0);
+
+        // Zero-initialize the old cluster
+        WriteSectors((unsigned int *)emptyCluster, currentCluster + DATA_AREA_BEGINNING, 1);
+    }
+
+    // Release the empty cluster
+    free(emptyCluster);
 }
 
 // Prints out the given file
 void PrintFile(unsigned char *FileName, unsigned char *Extension)
 {
+    // Construct the full file name
+    char fullFileName[11];
+    strcpy(fullFileName, FileName);
+    strcat(fullFileName, Extension);
+
     // Allocate a file buffer
     unsigned char *file_buffer = (unsigned char *)malloc(BYTES_PER_SECTOR);
 
     // Find the Root Directory Entry for the given program name
-    strcat(FileName, Extension);
-    // RootDirectoryEntry *entry = FindRootDirectoryEntry("TEST1   TXT");
-    RootDirectoryEntry *entry = FindRootDirectoryEntry(FileName);
+    RootDirectoryEntry *entry = FindRootDirectoryEntry(fullFileName);
     
     ReadSectors((unsigned char *)file_buffer, entry->FirstCluster + DATA_AREA_BEGINNING, 1);
     unsigned short nextCluster = FATRead(entry->FirstCluster);
@@ -205,80 +275,14 @@ void PrintFile(unsigned char *FileName, unsigned char *Extension)
     free(file_buffer);
 }
 
-// Adds a new file to the FAT12 partition
-void AddFile()
-{
-    char fileName[10] = "";
-
-    PrintRootDirectory();
-    printf("\n");
-
-    printf("Please enter a new file name: ");
-    scanf(fileName, 8);
-
-    CreateFile(fileName, "TXT", "This is the test content for the first cluster for a file in the FAT12 file system partition.\n");
-
-    /* RootDirectoryEntry *freeEntry = FindNextFreeRootDirectoryEntry();
-
-    if (freeEntry != 0x0)
-    {
-        // Allocate the first cluster
-        unsigned short startCluster = FindNextFreeFATEntry();
-        FATWrite(startCluster, 0xFF0);
-
-        // Allocate a additional cluster
-        unsigned short cluster2 = FindNextFreeFATEntry();
-        FATWrite(startCluster, cluster2);
-        FATWrite(cluster2, 0xFF0);
-
-        // Allocate a additional cluster
-        unsigned short cluster3 = FindNextFreeFATEntry();
-        FATWrite(cluster2, cluster3);
-        FATWrite(cluster3, 0xFFF);
-
-        strcpy(freeEntry->FileName, input);
-        strcpy(freeEntry->Extension, "TXT");
-        freeEntry->FileSize = 512 * 3;
-        freeEntry->FirstCluster = startCluster;
-
-        // TODO...
-        freeEntry->CreationDate[0] = 0xD6; 
-        freeEntry->CreationDate[1] = 0x56;
-        freeEntry->CreationTime[0] = 0x44; 
-        freeEntry->CreationTime[1] = 0x8B;
-        freeEntry->LastAccessDate[0] = 0xD6; 
-        freeEntry->LastAccessDate[1] = 0x56;
-        freeEntry->LastWriteTime[0] = 0x44; 
-        freeEntry->LastWriteTime[1] = 0x8B;
-        freeEntry->LastWriteDate[0] = 0xD6; 
-        freeEntry->LastWriteDate[1] = 0x56;
-
-        WriteRootDirectoryAndFAT();
-
-        printf("\n\n");
-        unsigned char *content1 = (unsigned char *)malloc(BYTES_PER_SECTOR);
-        strcpy(content1, "This is the test content for the first cluster for a file in the FAT12 file system partition.\n");
-        WriteSectors((unsigned int *)content1, startCluster + DATA_AREA_BEGINNING,  1);
-
-        unsigned char *content2 = (unsigned char *)malloc(BYTES_PER_SECTOR);
-        strcpy(content2, "This is the test content for the second cluster for a file in the FAT12 file system partition.\n");
-        WriteSectors((unsigned int *)content2, cluster2 + DATA_AREA_BEGINNING,  1);
-
-        unsigned char *content3 = (unsigned char *)malloc(BYTES_PER_SECTOR);
-        strcpy(content3, "This is the test content for the third cluster for a file in the FAT12 file system partition.\n");
-        WriteSectors((unsigned int *)content3, cluster3 + DATA_AREA_BEGINNING,  1);
-
-        PrintOutFile();
-    } */
-}
-
 // Prints out the FAT12 chain
 void PrintFATChain()
 {
     unsigned short Cluster = 1;
     unsigned short result = 1;
 
-    while (result > 0)
+    // Iterate over each cluster
+    for (int i = 0; i < 2880; i++)
     {
         Cluster++;
 
@@ -294,28 +298,34 @@ void PrintFATChain()
             // Odd Cluster
             result = val >> 4; // Highest 12 Bits
 
-            printf("Cluster ");
-            printf_int(Cluster, 10);
-            printf(" => ");
-            printf_int(result, 10);
-            printf("\n");
-
-            if (result >= EOF)
+            if (result > 0)
+            {
+                printf("Cluster ");
+                printf_int(Cluster, 10);
+                printf(" => ");
+                printf_int(result, 10);
                 printf("\n");
+
+                if (result >= EOF)
+                    printf("\n");
+            }
         }
         else
         {
             // Even Cluster
             result = val & 0x0FFF; // Lowest 12 Bits
 
-            printf("Cluster ");
-            printf_int(Cluster, 10);
-            printf(" => ");
-            printf_int(result, 10);
-            printf("\n");
-
-            if (result >= EOF)
+            if (result > 0)
+            {
+                printf("Cluster ");
+                printf_int(Cluster, 10);
+                printf(" => ");
+                printf_int(result, 10);
                 printf("\n");
+
+                if (result >= EOF)
+                    printf("\n");
+            }
         }
     }
 }

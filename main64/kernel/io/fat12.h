@@ -53,14 +53,18 @@ RootDirectoryEntry* FindRootDirectoryEntry(unsigned char *Filename);
 // Creates a new file in the FAT12 file system
 void CreateFile(unsigned char *FileName, unsigned char *Extension, unsigned char *InitialContent);
 
+// Deletes an existing file in the FAT12 file system
+void DeleteFile(unsigned char *FileName, unsigned char *Extension);
+
 // Prints out the given file
 void PrintFile(unsigned char *FileName, unsigned char *Extension);
 
-// Adds a new file to the FAT12 partition
-void AddFile();
 
 // Prints out the FAT12 chain
 void PrintFATChain();
+
+// Deallocates the FAT clusters for a file - beginning with the given first cluster
+static void DeallocateFATClusters(unsigned short FirstCluster);
 
 // Finds the next free Root Directory Entry
 static RootDirectoryEntry *FindNextFreeRootDirectoryEntry();
