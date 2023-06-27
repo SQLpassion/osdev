@@ -43,6 +43,12 @@ int PrintFile(unsigned char *FileName, unsigned char *Extension);
 // Deletes the file in the FAT12 file system
 int DeleteFile(unsigned char *FileName, unsigned char *Extension);
 
+// Opens the requested file in the FAT12 file system
+long OpenFile(unsigned char *FileName, unsigned char *Extension);
+
+// Closes thef ile in the FAT12 file system
+int CloseFile(unsigned long FileHandle);
+
 // Prints out an integer value
 void printf_int(int i, int base);
 

@@ -76,8 +76,21 @@ void InitKernel(int KernelSize)
     // Refresh the status line
     RefreshStatusLine();
 
+    // Initializes the FAT12 system
+    InitFAT12();
+
     // Register the Context Switching IRQ Handler when the Timer fires
     InitTimerForContextSwitching();
+
+    /* unsigned long fileHandle1 = OpenFile("SHELL   ", "BIN");
+    unsigned long fileHandle2 = OpenFile("PROG1   ", "BIN");
+    unsigned long fileHandle3 = OpenFile("PROG2   ", "BIN");
+
+    CloseFile(fileHandle2);
+    CloseFile(fileHandle1);
+    CloseFile(fileHandle3);
+
+    while (1 == 1) {} */
 }
 
 // Causes a Divide by Zero Exception

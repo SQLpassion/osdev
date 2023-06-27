@@ -269,3 +269,15 @@ int DeleteFile(unsigned char *FileName, unsigned char *Extension)
 {
     return SYSCALL2(SYSCALL_DELETEFILE, FileName, Extension);
 }
+
+// Opens the requested file in the FAT12 file system
+long OpenFile(unsigned char *FileName, unsigned char *Extension)
+{
+    return SYSCALL2(SYSCALL_OPENFILE, FileName, Extension);
+}
+
+// Closes thef ile in the FAT12 file system
+int CloseFile(unsigned long FileHandle)
+{
+    return SYSCALL1(SYSCALL_CLOSEFILE, FileHandle);
+}

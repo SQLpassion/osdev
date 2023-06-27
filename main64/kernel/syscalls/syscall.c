@@ -145,6 +145,23 @@ long SysCallHandlerC(SysCallRegisters *Registers)
 
         return 0;
     }
+    // OpenFile
+    else if(sysCallNumber == SYSCALL_OPENFILE)
+    {
+        unsigned char *fileName = (unsigned char *)Registers->RSI;
+        unsigned char *extension = (unsigned char *)Registers->RDX;
+
+        return OpenFile(fileName, extension);
+    }
+    // CloseFile
+    else if(sysCallNumber == SYSCALL_CLOSEFILE)
+    {
+        unsigned long fileHandle = (unsigned long)Registers->RSI;
+
+        CloseFile(fileHandle);
+
+        return 0;
+    }
 
     return 0;
 }

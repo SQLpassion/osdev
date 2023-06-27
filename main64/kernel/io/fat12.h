@@ -41,6 +41,21 @@ struct RootDirectoryEntry
 } __attribute__ ((packed));
 typedef struct RootDirectoryEntry RootDirectoryEntry;
 
+// Represents a File Descriptor
+struct FileDescriptor
+{
+    unsigned char FileName[11];
+    unsigned char Extension[3];
+    unsigned int CurrentPosition;
+};
+typedef struct FileDescriptor FileDescriptor;
+
+// Initializes the FAT12 system
+void InitFAT12();
+
+// Calculates a Hash Value for the given file name
+unsigned long HashFileName(unsigned char *FileName);
+
 // Load the given program into memory
 int LoadProgram(unsigned char *Filename);
 
@@ -59,6 +74,14 @@ void DeleteFile(unsigned char *FileName, unsigned char *Extension);
 // Prints out the given file
 void PrintFile(unsigned char *FileName, unsigned char *Extension);
 
+// Opens an existing file in the FAT12 file system
+unsigned long OpenFile(unsigned char *FileName, unsigned char *Extension);
+
+// Closes a file in the FAT12 file system
+void CloseFile(unsigned long FileHandle);
+
+// Prints out the FileDescriptorList entries
+void PrintFileDescriptorList();
 
 // Prints out the FAT12 chain
 void PrintFATChain();

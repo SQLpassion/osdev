@@ -9,7 +9,8 @@ char *commands[] =
     "dir",
     "mkfile",
     "type",
-    "del"
+    "del",
+    "open"
 };
 
 int (*command_functions[]) (char *param) =
@@ -18,7 +19,8 @@ int (*command_functions[]) (char *param) =
     &shell_dir,
     &shell_mkfile,
     &shell_type,
-    &shell_del
+    &shell_del,
+    &shell_open
 };
 
 // The main entry point for the User Mode program
@@ -121,4 +123,15 @@ int shell_del(char *param)
 
     DeleteFile(fileName, extension);
     printf("The file was deleted successfully.\n");
+}
+
+int shell_open(char *param)
+{
+    unsigned long fileHandle1 = OpenFile("PROG1   ", "BIN");
+    unsigned long fileHandle2 = OpenFile("PROG2   ", "BIN");
+    unsigned long fileHandle3 = OpenFile("SHELL   ", "BIN");
+    
+    CloseFile(fileHandle2);
+    CloseFile(fileHandle1);
+    CloseFile(fileHandle3);
 }

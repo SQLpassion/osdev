@@ -1,8 +1,10 @@
 #include "fat12.h"
 #include "ata.h"
 #include "../common.h"
+#include "../list.h"
 #include "../memory/heap.h"
 #include "../drivers/screen.h"
+#include "../multitasking/multitasking.h"
 
 // The addresses where the Root Directory and the FAT tables are stored.
 // The memory regions will be allocated on the Heap.
@@ -10,10 +12,42 @@ unsigned char *ROOT_DIRECTORY_BUFFER;
 unsigned char *FAT_BUFFER;
 
 // The virtual memory address where the user program will be loaded.
-unsigned char *EXECUTABLE_BASE_ADDRESS = (unsigned char *)0x0000700000000000;
+unsigned char *EXECUTABLE_BASE_ADDRESS_PTR = (unsigned char *)0x0000700000000000;
 
 // This flag stores if the Root Directory was already loaded into memory.
 int RootDirectoryLoaded = 0;
+
+// Stores the File Descriptors for all opened files
+List *FileDescriptorList = 0x0;
+
+// Initializes the FAT12 system
+void InitFAT12()
+{
+    FileDescriptorList = NewList();
+    FileDescriptorList->PrintFunctionPtr = &PrintFileDescriptorList;
+}
+
+// Calculates a Hash Value for the given file name
+// The hash function is based on this article: https://www.codingninjas.com/studio/library/string-hashing-2425
+unsigned long HashFileName(unsigned char *FileName)
+{
+    int ans = 0;
+    int length = strlen(FileName);
+
+    // To store 'P'.
+    int p = 1;
+
+    // For taking modulo.
+    int m = 1000000007;
+    for (int i = 0; i < length; i++)
+    {
+        ans += (FileName[i] - 'a') * p;
+        ans = ans % m;
+        p *= 41;
+    }
+
+    return ans;
+}
 
 // Load the given program into memory
 int LoadProgram(unsigned char *Filename)
@@ -208,6 +242,88 @@ void DeleteFile(unsigned char *FileName, unsigned char *Extension)
         // Write everything back to disk
         WriteRootDirectoryAndFAT();
     }
+}
+
+// Opens an existing file in the FAT12 file system
+unsigned long OpenFile(unsigned char *FileName, unsigned char *Extension)
+{
+    char pid[10] = "";
+
+    // Construct the full file name
+    char fullFileName[15];
+    strcpy(fullFileName, FileName);
+    strcat(fullFileName, Extension);
+   
+    // Find the Root Directory Entry for the given program name
+    RootDirectoryEntry *entry = FindRootDirectoryEntry(fullFileName);
+
+    if (entry != 0x0)
+    {
+        // The PID of the current running task is concatenated to the file name
+        // to make it unique across multiple running tasks.
+        // Otherwise we would have a hash collision if the same file is opened across
+        // multiple running tasks.
+        tolower(fullFileName);
+        ltoa(GetTaskState()->PID, 10, pid);
+        strcat(fullFileName, pid);
+
+        // Calculate a hash value for the given file name
+        unsigned long hashValue = HashFileName(fullFileName);
+        
+        // Create a new FileDescriptor and store it in the system-wide Kernel list "FileDescriptorList"
+        FileDescriptor *descriptor = (FileDescriptor *)malloc(sizeof(FileDescriptor));
+        strcpy(descriptor->FileName, FileName);
+        strcpy(descriptor->Extension, Extension);
+        descriptor->CurrentPosition = 0;
+        AddEntryToList(FileDescriptorList, descriptor, hashValue);
+
+        FileDescriptorList->PrintFunctionPtr();
+      
+        // Return the key of the newly added FileDescriptor
+        return hashValue;
+    }
+
+    return 0;
+}
+
+// Closes a file in the FAT12 file system
+void CloseFile(unsigned long FileHandle)
+{
+    // Find the file which needs to be closed
+    ListEntry *descriptor = GetEntryFromList(FileDescriptorList, FileHandle);
+
+    // Close the file by removing it from the list
+    RemoveEntryFromList(FileDescriptorList, descriptor);
+
+    FileDescriptorList->PrintFunctionPtr();
+}
+
+// Prints out the FileDescriptorList entries
+void PrintFileDescriptorList()
+{
+    ListEntry *currentEntry = FileDescriptorList->RootEntry;
+    FileDescriptor *descriptor = (FileDescriptor *)currentEntry->Payload;
+    
+    // Iterate over the whole list
+    while (currentEntry != 0x0)
+    {
+        printf("FileName: ");
+        printf(descriptor->FileName);
+        printf(", Extension: ");
+        printf(descriptor->Extension);
+        printf("\nCurrentPosition: 0x");
+        printf_long(descriptor->CurrentPosition, 16);
+        printf(", HashValue: ");
+        printf_long(currentEntry->Key, 10);
+        printf("\n");
+    
+        // Move to the next entry in the Double Linked List
+        currentEntry = currentEntry->Next;
+        descriptor = (FileDescriptor *)currentEntry->Payload;
+
+    } 
+
+    printf("\n");
 }
 
 // Deallocates the FAT clusters for a file - beginning with the given first cluster
@@ -438,7 +554,7 @@ static unsigned short FindNextFreeFATEntry()
 static void LoadProgramIntoMemory(RootDirectoryEntry *Entry)
 {
     // Read the first cluster of the Kernel into memory
-    unsigned char *program_buffer = (unsigned char *)EXECUTABLE_BASE_ADDRESS;
+    unsigned char *program_buffer = (unsigned char *)EXECUTABLE_BASE_ADDRESS_PTR;
     ReadSectors((unsigned char *)program_buffer, Entry->FirstCluster + DATA_AREA_BEGINNING, 1);
     unsigned short nextCluster = FATRead(Entry->FirstCluster);
 
