@@ -135,6 +135,16 @@ long SysCallHandlerC(SysCallRegisters *Registers)
 
         return 0;
     }
+    // DeleteFile
+    else if (sysCallNumber == SYSCALL_DELETEFILE)
+    {
+        unsigned char *fileName = (unsigned char *)Registers->RSI;
+        unsigned char *extension = (unsigned char *)Registers->RDX;
+
+        DeleteFile(fileName, extension);
+
+        return 0;
+    }
 
     return 0;
 }

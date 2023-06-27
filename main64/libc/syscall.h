@@ -13,6 +13,7 @@
 #define SYSCALL_CLEARSCREEN         9
 #define SYSCALL_CREATEFILE          10
 #define SYSCALL_PRINTFILE           11
+#define SYSCALL_DELETEFILE          12
 
 // Raises a SysCall with no parameters
 long SYSCALL0(int SysCallNumber);

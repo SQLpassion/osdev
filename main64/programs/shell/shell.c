@@ -8,7 +8,8 @@ char *commands[] =
     "cls",
     "dir",
     "mkfile",
-    "type"
+    "type",
+    "del"
 };
 
 int (*command_functions[]) (char *param) =
@@ -16,7 +17,8 @@ int (*command_functions[]) (char *param) =
     &shell_cls,
     &shell_dir,
     &shell_mkfile,
-    &shell_type
+    &shell_type,
+    &shell_del
 };
 
 // The main entry point for the User Mode program
@@ -104,4 +106,19 @@ int shell_type(char *param)
     ClearScreen();
     PrintFile(fileName, extension);
     printf("\n");
+}
+
+// Deletes an existing file
+int shell_del(char *param)
+{
+    char fileName[10] = "";
+    char extension[5] = "";
+
+    printf("Please enter the name of the file to be deleted: ");
+    scanf(fileName, 8);
+    printf("Please enter the extension of the file to be deleted: ");
+    scanf(extension, 3);
+
+    DeleteFile(fileName, extension);
+    printf("The file was deleted successfully.\n");
 }

@@ -263,3 +263,9 @@ int PrintFile(unsigned char *FileName, unsigned char *Extension)
 {
     return SYSCALL2(SYSCALL_PRINTFILE, FileName, Extension);
 }
+
+// Deletes the file in the FAT12 file system
+int DeleteFile(unsigned char *FileName, unsigned char *Extension)
+{
+    return SYSCALL2(SYSCALL_DELETEFILE, FileName, Extension);
+}

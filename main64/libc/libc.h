@@ -40,6 +40,9 @@ int CreateFile(unsigned char *FileName, unsigned char *Extension, unsigned char 
 // Prints out the given file name
 int PrintFile(unsigned char *FileName, unsigned char *Extension);
 
+// Deletes the file in the FAT12 file system
+int DeleteFile(unsigned char *FileName, unsigned char *Extension);
+
 // Prints out an integer value
 void printf_int(int i, int base);
 
