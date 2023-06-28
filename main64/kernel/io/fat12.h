@@ -46,7 +46,8 @@ struct FileDescriptor
 {
     unsigned char FileName[11];
     unsigned char Extension[3];
-    unsigned int CurrentPosition;
+    unsigned long FileSize;
+    unsigned long CurrentFileOffset;
 };
 typedef struct FileDescriptor FileDescriptor;
 
@@ -79,6 +80,12 @@ unsigned long OpenFile(unsigned char *FileName, unsigned char *Extension);
 
 // Closes a file in the FAT12 file system
 void CloseFile(unsigned long FileHandle);
+
+// Reads the requested data from a file into the provided buffer
+void ReadFile(unsigned long FileHandle, unsigned char *Buffer, unsigned long Length);
+
+// Returns a flag if the file offset within the FileDescriptor has reached the end of file
+int EndOfFile(unsigned long FileHandle);
 
 // Prints out the FileDescriptorList entries
 void PrintFileDescriptorList();

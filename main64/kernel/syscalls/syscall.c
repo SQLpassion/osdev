@@ -125,16 +125,6 @@ long SysCallHandlerC(SysCallRegisters *Registers)
 
         return 0;
     }
-    // PrintFile
-    else if (sysCallNumber == SYSCALL_PRINTFILE)
-    {
-        unsigned char *fileName = (unsigned char *)Registers->RSI;
-        unsigned char *extension = (unsigned char *)Registers->RDX;
-
-        PrintFile(fileName, extension);
-
-        return 0;
-    }
     // DeleteFile
     else if (sysCallNumber == SYSCALL_DELETEFILE)
     {
@@ -161,6 +151,24 @@ long SysCallHandlerC(SysCallRegisters *Registers)
         CloseFile(fileHandle);
 
         return 0;
+    }
+    // ReadFile
+    else if(sysCallNumber == SYSCALL_READFILE)
+    {
+        unsigned long fileHandle = (unsigned long)Registers->RSI;
+        unsigned char *buffer = (unsigned char *)Registers->RDX;
+        int length = (int)Registers->RCX;
+
+        ReadFile(fileHandle, buffer, length);
+
+        return 0;
+    }
+    // EndOfFile
+    else if(sysCallNumber == SYSCALL_ENDOFFILE)
+    {
+        unsigned long fileHandle = (unsigned long)Registers->RSI;
+
+        return EndOfFile(fileHandle);
     }
 
     return 0;

@@ -5,7 +5,7 @@
 #define KEY_BACKSPACE   '\b'
 
 // Prints out a null-terminated string
-void printf(char *string);
+void printf(unsigned char *string);
 
 // Returns the PID of the current executing process
 long GetPID();
@@ -37,9 +37,6 @@ int ClearScreen();
 // Creates a new file in the FAT12 file system
 int CreateFile(unsigned char *FileName, unsigned char *Extension, unsigned char *InitialContent);
 
-// Prints out the given file name
-int PrintFile(unsigned char *FileName, unsigned char *Extension);
-
 // Deletes the file in the FAT12 file system
 int DeleteFile(unsigned char *FileName, unsigned char *Extension);
 
@@ -48,6 +45,12 @@ long OpenFile(unsigned char *FileName, unsigned char *Extension);
 
 // Closes thef ile in the FAT12 file system
 int CloseFile(unsigned long FileHandle);
+
+// Reads the requested data from a file into the provided buffer
+int ReadFile(unsigned long FileHandle, unsigned char *Buffer, unsigned long Length);
+
+// Returns a flag if the file offset within the FileDescriptor has reached the end of file
+int EndOfFile(unsigned long FileHandle);
 
 // Prints out an integer value
 void printf_int(int i, int base);

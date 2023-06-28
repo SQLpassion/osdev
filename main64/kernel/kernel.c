@@ -82,15 +82,16 @@ void InitKernel(int KernelSize)
     // Register the Context Switching IRQ Handler when the Timer fires
     InitTimerForContextSwitching();
 
-    /* unsigned long fileHandle1 = OpenFile("SHELL   ", "BIN");
-    unsigned long fileHandle2 = OpenFile("PROG1   ", "BIN");
-    unsigned long fileHandle3 = OpenFile("PROG2   ", "BIN");
+    /* char *buffer = (char *)malloc(510);
+    unsigned long fileHandle = OpenFile("BIGFILE ", "TXT");
 
-    CloseFile(fileHandle2);
-    CloseFile(fileHandle1);
-    CloseFile(fileHandle3);
+    while (!EndOfFile(fileHandle))
+    {
+        ReadFile(fileHandle, buffer, 500);
+        printf(buffer);
+    }
 
-    while (1 == 1) {} */
+    CloseFile(fileHandle); */
 }
 
 // Causes a Divide by Zero Exception

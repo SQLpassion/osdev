@@ -12,10 +12,11 @@
 #define SYSCALL_PRINTROOTDIRECTORY  8
 #define SYSCALL_CLEARSCREEN         9
 #define SYSCALL_CREATEFILE          10
-#define SYSCALL_PRINTFILE           11
-#define SYSCALL_DELETEFILE          12
-#define SYSCALL_OPENFILE            13
-#define SYSCALL_CLOSEFILE           14
+#define SYSCALL_DELETEFILE          11
+#define SYSCALL_OPENFILE            12
+#define SYSCALL_CLOSEFILE           13
+#define SYSCALL_READFILE            14
+#define SYSCALL_ENDOFFILE           15
 
 // Raises a SysCall with no parameters
 long SYSCALL0(int SysCallNumber);

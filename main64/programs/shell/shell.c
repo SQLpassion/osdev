@@ -104,10 +104,19 @@ int shell_type(char *param)
     scanf(fileName, 8);
     printf("Please enter the extension of the file to be printed out: ");
     scanf(extension, 3);
+   
+    unsigned char buffer[510] = "";
+    unsigned long fileHandle = OpenFile(fileName, extension);
 
-    ClearScreen();
-    PrintFile(fileName, extension);
+    while (!EndOfFile(fileHandle))
+    {
+        ReadFile(fileHandle, (unsigned char *)&buffer, 500);
+        printf((unsigned char *)&buffer);
+    }
+
     printf("\n");
+
+    CloseFile(fileHandle);
 }
 
 // Deletes an existing file

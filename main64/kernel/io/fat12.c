@@ -274,10 +274,9 @@ unsigned long OpenFile(unsigned char *FileName, unsigned char *Extension)
         FileDescriptor *descriptor = (FileDescriptor *)malloc(sizeof(FileDescriptor));
         strcpy(descriptor->FileName, FileName);
         strcpy(descriptor->Extension, Extension);
-        descriptor->CurrentPosition = 0;
+        descriptor->FileSize = entry->FileSize;
+        descriptor->CurrentFileOffset = 0;
         AddEntryToList(FileDescriptorList, descriptor, hashValue);
-
-        FileDescriptorList->PrintFunctionPtr();
       
         // Return the key of the newly added FileDescriptor
         return hashValue;
@@ -294,8 +293,81 @@ void CloseFile(unsigned long FileHandle)
 
     // Close the file by removing it from the list
     RemoveEntryFromList(FileDescriptorList, descriptor);
+}
 
-    FileDescriptorList->PrintFunctionPtr();
+// Reads the requested data from a file into the provided buffer
+void ReadFile(unsigned long FileHandle, unsigned char *Buffer, unsigned long Length)
+{
+    // Find the file from which we want to read
+    ListEntry *entry = GetEntryFromList(FileDescriptorList, FileHandle);
+    FileDescriptor *descriptor = (FileDescriptor *)entry->Payload;
+
+    // The requested data can't be longer than a physical disk sector
+    if (Length > BYTES_PER_SECTOR)
+        return;
+
+    if (descriptor != 0x0)
+    {
+        // Construct the full file name
+        char fullFileName[11];
+        strcpy(fullFileName, descriptor->FileName);
+        strcat(fullFileName, descriptor->Extension);
+
+        // Find the Root Directory Entry for the given program name
+        RootDirectoryEntry *entry = FindRootDirectoryEntry(fullFileName);
+
+        if (entry != 0x0)
+        {
+            // Allocate a file buffer
+            unsigned char *file_buffer = (unsigned char *)malloc(BYTES_PER_SECTOR);
+            
+            // Calculate from the current file position the cluster and the offset within that cluster
+            unsigned long cluster = descriptor->CurrentFileOffset / BYTES_PER_SECTOR;
+            unsigned long offsetWithinCluster = descriptor->CurrentFileOffset - (cluster * BYTES_PER_SECTOR);
+
+            unsigned short fatSector = entry->FirstCluster;
+    
+            for (int i = 0; i < cluster; i++)
+            {
+                // Read the next Cluster from the FAT table
+                fatSector = FATRead(fatSector);
+            }
+
+            // Calculate the following disk sector
+            unsigned short fatSectorFollowing = FATRead(fatSector);
+
+            // Check for the EndOfFile condition
+            if (descriptor->CurrentFileOffset + Length > descriptor->FileSize)
+                Length = descriptor->FileSize - descriptor->CurrentFileOffset;
+
+            // Read the specific sector from disk.
+            // We also read the following sector, because the requested data can be stretched across 2 disk sectors.
+            ReadSectors((unsigned char *)file_buffer, fatSector + DATA_AREA_BEGINNING, 1);
+            ReadSectors((unsigned char *)file_buffer + BYTES_PER_SECTOR, fatSectorFollowing + DATA_AREA_BEGINNING, 1);
+
+            // Copy the requested data into the destination buffer
+            substring(file_buffer, offsetWithinCluster, Length, Buffer);
+           
+            // Set the current file position within the FileDescriptor
+            descriptor->CurrentFileOffset += Length;
+
+            // Release the file buffer
+            free(file_buffer);
+        }
+    }
+}
+
+// Returns a flag if the file offset within the FileDescriptor has reached the end of file
+int EndOfFile(unsigned long FileHandle)
+{
+    // Find the file from which we want to check the EndOfFile condition
+    ListEntry *entry = GetEntryFromList(FileDescriptorList, FileHandle);
+    FileDescriptor *descriptor = (FileDescriptor *)entry->Payload;
+
+    if (descriptor->CurrentFileOffset == descriptor->FileSize)
+        return 1;
+    else
+        return 0;
 }
 
 // Prints out the FileDescriptorList entries
@@ -312,7 +384,7 @@ void PrintFileDescriptorList()
         printf(", Extension: ");
         printf(descriptor->Extension);
         printf("\nCurrentPosition: 0x");
-        printf_long(descriptor->CurrentPosition, 16);
+        printf_long(descriptor->CurrentFileOffset, 16);
         printf(", HashValue: ");
         printf_long(currentEntry->Key, 10);
         printf("\n");

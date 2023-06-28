@@ -6,7 +6,7 @@ char tbuf_long[64];
 char bchars[] = {'0','1','2','3','4','5','6','7','8','9','A','B','C','D','E','F'};
 
 // Prints out a null-terminated string
-void printf(char *string)
+void printf(unsigned char *string)
 {
     SYSCALL1(SYSCALL_PRINTF, string);
 }
@@ -258,12 +258,6 @@ int CreateFile(unsigned char *FileName, unsigned char *Extension, unsigned char 
     return SYSCALL3(SYSCALL_CREATEFILE, FileName, Extension, InitialContent);
 }
 
-// Prints out the given file name
-int PrintFile(unsigned char *FileName, unsigned char *Extension)
-{
-    return SYSCALL2(SYSCALL_PRINTFILE, FileName, Extension);
-}
-
 // Deletes the file in the FAT12 file system
 int DeleteFile(unsigned char *FileName, unsigned char *Extension)
 {
@@ -279,5 +273,17 @@ long OpenFile(unsigned char *FileName, unsigned char *Extension)
 // Closes thef ile in the FAT12 file system
 int CloseFile(unsigned long FileHandle)
 {
-    return SYSCALL1(SYSCALL_CLOSEFILE, FileHandle);
+    return SYSCALL1(SYSCALL_CLOSEFILE, (void *)FileHandle);
+}
+
+// Reads the requested data from a file into the provided buffer
+int ReadFile(unsigned long FileHandle, unsigned char *Buffer, unsigned long Length)
+{
+    return SYSCALL3(SYSCALL_READFILE, (void *)FileHandle, Buffer, (void *)Length);
+}
+
+// Returns a flag if the file offset within the FileDescriptor has reached the end of file
+int EndOfFile(unsigned long FileHandle)
+{
+    return SYSCALL1(SYSCALL_ENDOFFILE, (void *)FileHandle);
 }
