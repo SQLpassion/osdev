@@ -220,6 +220,21 @@ void CreateFile(unsigned char *FileName, unsigned char *Extension, unsigned char
     }
 }
 
+// Sets the last Access Date and the last Write Date for the RootDirectoryEntry
+static void SetLastAccessDate(RootDirectoryEntry *Entry)
+{
+    // Getting a reference to the BIOS Information Block
+    BiosInformationBlock *bib = (BiosInformationBlock *)BIB_OFFSET;
+
+    // Set the Date/Time information of the new file
+    Entry->LastWriteYear = Entry->LastAccessYear = bib->Year - FAT12_YEAROFFSET;
+    Entry->LastWriteMonth = Entry->LastAccessMonth = bib->Month;
+    Entry->LastWriteDay = Entry->LastAccessDay = bib->Day;
+    Entry->LastWriteHour = bib->Hour;
+    Entry->LastWriteMinute = bib->Minute;
+    Entry->LastWriteSecond = bib->Second / 2;
+}
+
 // Deletes an existing file in the FAT12 file system
 void DeleteFile(unsigned char *FileName, unsigned char *Extension)
 {
@@ -302,6 +317,8 @@ void ReadFile(unsigned long FileHandle, unsigned char *Buffer, unsigned long Len
     ListEntry *entry = GetEntryFromList(FileDescriptorList, FileHandle);
     FileDescriptor *descriptor = (FileDescriptor *)entry->Payload;
 
+    memset(Buffer, 0x0, Length);
+
     // The requested data can't be longer than a physical disk sector
     if (Length > BYTES_PER_SECTOR)
         return;
@@ -324,9 +341,9 @@ void ReadFile(unsigned long FileHandle, unsigned char *Buffer, unsigned long Len
             // Calculate from the current file position the cluster and the offset within that cluster
             unsigned long cluster = descriptor->CurrentFileOffset / BYTES_PER_SECTOR;
             unsigned long offsetWithinCluster = descriptor->CurrentFileOffset - (cluster * BYTES_PER_SECTOR);
-
             unsigned short fatSector = entry->FirstCluster;
     
+            // Loop until we reach the cluster that we want to read
             for (int i = 0; i < cluster; i++)
             {
                 // Read the next Cluster from the FAT table
@@ -340,13 +357,15 @@ void ReadFile(unsigned long FileHandle, unsigned char *Buffer, unsigned long Len
             if (descriptor->CurrentFileOffset + Length > descriptor->FileSize)
                 Length = descriptor->FileSize - descriptor->CurrentFileOffset;
 
-            // Read the specific sector from disk.
-            // We also read the following sector, because the requested data can be stretched across 2 disk sectors.
+            // Read the specific sector from disk
             ReadSectors((unsigned char *)file_buffer, fatSector + DATA_AREA_BEGINNING, 1);
-            ReadSectors((unsigned char *)file_buffer + BYTES_PER_SECTOR, fatSectorFollowing + DATA_AREA_BEGINNING, 1);
+
+            // We also read the following sector, when the requested data is stored across 2 disk sectors
+            if (offsetWithinCluster + Length > BYTES_PER_SECTOR)
+                ReadSectors((unsigned char *)file_buffer + BYTES_PER_SECTOR, fatSectorFollowing + DATA_AREA_BEGINNING, 1);
 
             // Copy the requested data into the destination buffer
-            substring(file_buffer, offsetWithinCluster, Length, Buffer);
+            memcpy(Buffer, file_buffer + offsetWithinCluster, Length);
            
             // Set the current file position within the FileDescriptor
             descriptor->CurrentFileOffset += Length;
@@ -354,6 +373,126 @@ void ReadFile(unsigned long FileHandle, unsigned char *Buffer, unsigned long Len
             // Release the file buffer
             free(file_buffer);
         }
+    }
+}
+
+// Writes the requested data from the provided buffer into a file
+int WriteFile(unsigned long FileHandle, unsigned char *Buffer, unsigned long Length)
+{
+    // Find the file from which we want to read
+    ListEntry *entry = GetEntryFromList(FileDescriptorList, FileHandle);
+    FileDescriptor *descriptor = (FileDescriptor *)entry->Payload;
+
+    // The data can't be longer than a physical disk sector
+    if (Length > BYTES_PER_SECTOR)
+        return 0;
+
+    if (descriptor != 0x0)
+    {
+        // Construct the full file name
+        char fullFileName[11];
+        strcpy(fullFileName, descriptor->FileName);
+        strcat(fullFileName, descriptor->Extension);
+
+        // Find the Root Directory Entry for the given program name
+        RootDirectoryEntry *entry = FindRootDirectoryEntry(fullFileName);
+
+        if (entry != 0x0)
+        {
+            // Allocate a file buffer
+            unsigned char *file_buffer = (unsigned char *)malloc(BYTES_PER_SECTOR);
+
+            // Calculate from the current file position the cluster and the offset within that cluster
+            unsigned long cluster = descriptor->CurrentFileOffset / BYTES_PER_SECTOR;
+            unsigned long offsetWithinCluster = descriptor->CurrentFileOffset - (cluster * BYTES_PER_SECTOR);
+            unsigned short currentFatSector = entry->FirstCluster;
+    
+            // Loop until we reach the cluster that we want to write to.
+            // If necessary, new clusters will be created and added for the file.
+            for (int i = 0; i < cluster; i++)
+            {
+                // Read the next Cluster from the FAT table
+                unsigned short nextFatSector = FATRead(currentFatSector);
+
+                // The next cluster is the last one in the chain
+                if (nextFatSector >= EOF)
+                {
+                    // Allocate a new cluster for the file
+                    unsigned short newFatSector = FindNextFreeFATEntry();
+                    FATWrite(currentFatSector, newFatSector);
+                    FATWrite(newFatSector, 0xFFF);
+
+                    // Zero-initialize the new cluster and write it to disk
+                    unsigned char *emptyContent = (unsigned char *)malloc(BYTES_PER_SECTOR);
+                    memset(emptyContent, 0x00, BYTES_PER_SECTOR);
+                    WriteSectors((unsigned int *)emptyContent, newFatSector + DATA_AREA_BEGINNING, 1);
+
+                    // Release the block of memory
+                    free(emptyContent);
+
+                    // Set the current sector
+                    currentFatSector = newFatSector;
+                }
+                else
+                {
+                    // Set the current sector
+                    currentFatSector = nextFatSector;
+                }
+            }
+
+            // Calculate the following disk sector
+            unsigned short fatSectorFollowing = FATRead(currentFatSector);
+
+            // Read the specific sector from disk
+            ReadSectors((unsigned char *)file_buffer, currentFatSector + DATA_AREA_BEGINNING, 1);
+            
+            // Read the following logical sector, when the data is stored across 2 disk sectors
+            if (offsetWithinCluster + Length > BYTES_PER_SECTOR)
+                ReadSectors((unsigned char *)(file_buffer + BYTES_PER_SECTOR), fatSectorFollowing + DATA_AREA_BEGINNING, 1);
+
+            // Copy the requested data into the destination disk sector
+            memcpy(file_buffer + offsetWithinCluster, Buffer, Length);
+            
+            // Write the specific sector to disk
+            WriteSectors((unsigned int *)file_buffer, currentFatSector + DATA_AREA_BEGINNING, 1);
+            
+            // Write the following logical sector, when the data is stored across 2 disk sectors
+            if (offsetWithinCluster + Length > BYTES_PER_SECTOR)
+                WriteSectors((unsigned int *)(file_buffer + BYTES_PER_SECTOR), fatSectorFollowing + DATA_AREA_BEGINNING, 1);
+
+            // Release the file buffer
+            free(file_buffer);
+
+            // Set the last Access and Write Date
+            SetLastAccessDate(entry);
+
+            // Set the current file position within the FileDescriptor
+            descriptor->CurrentFileOffset += Length;
+
+            // Check if the file size has changed
+            if (descriptor->CurrentFileOffset > entry->FileSize)
+            {
+                // Change the data in the RootDirectory
+                entry->FileSize = descriptor->CurrentFileOffset;
+                descriptor->FileSize = descriptor->CurrentFileOffset;
+            }
+
+            // Write the RootDirectory and the FAT tables back to disk
+            WriteRootDirectoryAndFAT();
+        }
+    }
+}
+
+// Seeks to the specific position in the file
+int SeekFile(unsigned long FileHandle, unsigned long NewFileOffset)
+{
+    // Find the file from which we want to read
+    ListEntry *entry = GetEntryFromList(FileDescriptorList, FileHandle);
+    FileDescriptor *descriptor = (FileDescriptor *)entry->Payload;
+
+    if (descriptor != 0x0)
+    {
+        descriptor->CurrentFileOffset = NewFileOffset;
     }
 }
 
@@ -430,37 +569,6 @@ static void DeallocateFATClusters(unsigned short FirstCluster)
 
     // Release the empty cluster
     free(emptyCluster);
-}
-
-// Prints out the given file
-void PrintFile(unsigned char *FileName, unsigned char *Extension)
-{
-    // Construct the full file name
-    char fullFileName[11];
-    strcpy(fullFileName, FileName);
-    strcat(fullFileName, Extension);
-
-    // Allocate a file buffer
-    unsigned char *file_buffer = (unsigned char *)malloc(BYTES_PER_SECTOR);
-
-    // Find the Root Directory Entry for the given program name
-    RootDirectoryEntry *entry = FindRootDirectoryEntry(fullFileName);
-    
-    ReadSectors((unsigned char *)file_buffer, entry->FirstCluster + DATA_AREA_BEGINNING, 1);
-    unsigned short nextCluster = FATRead(entry->FirstCluster);
-    printf(file_buffer);
-
-    while (nextCluster < EOF)
-    {
-        ReadSectors(file_buffer, nextCluster + DATA_AREA_BEGINNING, 1);
-        printf(file_buffer);
-
-        // Read the next Cluster from the FAT table
-        nextCluster = FATRead(nextCluster);
-    }
-
-    // Release the file buffer
-    free(file_buffer);
 }
 
 // Prints out the FAT12 chain

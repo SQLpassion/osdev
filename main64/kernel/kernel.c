@@ -80,14 +80,54 @@ void InitKernel(int KernelSize)
     InitFAT12();
 
     // Register the Context Switching IRQ Handler when the Timer fires
-    InitTimerForContextSwitching();
+    // InitTimerForContextSwitching();
 
-    /* char *buffer = (char *)malloc(510);
+    char *buffer = (char *)malloc(510);
+    CreateFile("TEST    ", "TXT", "Das ist ein Test von Klaus");
+    
+    unsigned long fileHandle = OpenFile("TEST    ", "TXT");
+    SeekFile(fileHandle, 2000);
+    WriteFile(fileHandle, "Aschenbrenner", 13);
+
+    SeekFile(fileHandle, 700);
+    WriteFile(fileHandle, "Pichlgasse 16/6, 1220 Wien", 26);
+
+    SeekFile(fileHandle, 3000);
+    WriteFile(fileHandle, "Karin Hochstöger-Aschenbrenner", 30);
+    CloseFile(fileHandle);
+
+    fileHandle = OpenFile("TEST    ", "TXT");
+    SeekFile(fileHandle, 1009);
+    WriteFile(fileHandle, "Sektoruebergreifendes Schreiben...", 34);
+    CloseFile(fileHandle);
+
+
+
+
+
+    /* PrintRootDirectory();
+
+    fileHandle = OpenFile("TEST    ", "TXT");
+
+    while (!EndOfFile(fileHandle))
+    {
+        // Read the next chunk from the file
+        ReadFile(fileHandle, buffer, 500);
+
+        // Print out each byte from the read chunk
+        for (int i = 0; i < 500; i++)
+            print_char(buffer[i]);
+    }
+
+    CloseFile(fileHandle); */
+
+
+    /* char *buffer = (char *)malloc(450);
     unsigned long fileHandle = OpenFile("BIGFILE ", "TXT");
 
     while (!EndOfFile(fileHandle))
     {
-        ReadFile(fileHandle, buffer, 500);
+        ReadFile(fileHandle, buffer, 450);
         printf(buffer);
     }
 

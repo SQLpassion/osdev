@@ -72,9 +72,6 @@ void CreateFile(unsigned char *FileName, unsigned char *Extension, unsigned char
 // Deletes an existing file in the FAT12 file system
 void DeleteFile(unsigned char *FileName, unsigned char *Extension);
 
-// Prints out the given file
-void PrintFile(unsigned char *FileName, unsigned char *Extension);
-
 // Opens an existing file in the FAT12 file system
 unsigned long OpenFile(unsigned char *FileName, unsigned char *Extension);
 
@@ -83,6 +80,12 @@ void CloseFile(unsigned long FileHandle);
 
 // Reads the requested data from a file into the provided buffer
 void ReadFile(unsigned long FileHandle, unsigned char *Buffer, unsigned long Length);
+
+// Writes the requested data from the provided buffer into a file
+int WriteFile(unsigned long FileHandle, unsigned char *Buffer, unsigned long Length);
+
+// Seeks to the specific position in the file
+int SeekFile(unsigned long FileHandle, unsigned long NewFileOffset);
 
 // Returns a flag if the file offset within the FileDescriptor has reached the end of file
 int EndOfFile(unsigned long FileHandle);
@@ -116,5 +119,8 @@ static void LoadRootDirectory();
 
 // Writes the Root Directory and the FAT12 tables from the memory back to the disk
 static void WriteRootDirectoryAndFAT();
+
+// Sets the last Access Date and the last Write Date for the RootDirectoryEntry
+static void SetLastAccessDate(RootDirectoryEntry *Entry);
 
 #endif
