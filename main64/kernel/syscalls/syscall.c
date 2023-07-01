@@ -14,7 +14,7 @@
 // because a Context Switch can't happen, because of the disabled Timer Interrupt.
 // But we can't call functions that are causing Page Fault, because of the disabled interrupts
 // we can't handle Page Faults.
-long SysCallHandlerC(SysCallRegisters *Registers)
+unsigned long SysCallHandlerC(SysCallRegisters *Registers)
 {
     // The SysCall Number is stored in the register RDI
     int sysCallNumber = Registers->RDI;
@@ -114,43 +114,29 @@ long SysCallHandlerC(SysCallRegisters *Registers)
 
         return 1;
     }
-    // CreateFile
-    else if(sysCallNumber == SYSCALL_CREATEFILE)
-    {
-        unsigned char *fileName = (unsigned char *)Registers->RSI;
-        unsigned char *extension = (unsigned char *)Registers->RDX;
-        unsigned char *initialContent = (unsigned char *)Registers->RCX;
-
-        CreateFile(fileName, extension, initialContent);
-
-        return 0;
-    }
     // DeleteFile
     else if (sysCallNumber == SYSCALL_DELETEFILE)
     {
         unsigned char *fileName = (unsigned char *)Registers->RSI;
         unsigned char *extension = (unsigned char *)Registers->RDX;
 
-        DeleteFile(fileName, extension);
-
-        return 0;
+        return DeleteFile(fileName, extension);
     }
     // OpenFile
     else if(sysCallNumber == SYSCALL_OPENFILE)
     {
         unsigned char *fileName = (unsigned char *)Registers->RSI;
         unsigned char *extension = (unsigned char *)Registers->RDX;
+        char *fileMode = (unsigned char *)Registers->RCX;
 
-        return OpenFile(fileName, extension);
+        return OpenFile(fileName, extension, fileMode);
     }
     // CloseFile
     else if(sysCallNumber == SYSCALL_CLOSEFILE)
     {
         unsigned long fileHandle = (unsigned long)Registers->RSI;
 
-        CloseFile(fileHandle);
-
-        return 0;
+        return CloseFile(fileHandle);
     }
     // ReadFile
     else if(sysCallNumber == SYSCALL_READFILE)
@@ -159,20 +145,16 @@ long SysCallHandlerC(SysCallRegisters *Registers)
         unsigned char *buffer = (unsigned char *)Registers->RDX;
         int length = (int)Registers->RCX;
 
-        ReadFile(fileHandle, buffer, length);
-
-        return 0;
+        return ReadFile(fileHandle, buffer, length);
     }
     // WriteFile
     else if (sysCallNumber == SYSCALL_WRITEFILE)
     {
         unsigned long fileHandle = (unsigned long)Registers->RSI;
         unsigned char *buffer = (unsigned char *)Registers->RDX;
-        int length = (int)Registers->RCX;
+        unsigned long length = (int)Registers->RCX;
 
-        WriteFile(fileHandle, buffer, length);
-
-        return 0;
+        return WriteFile(fileHandle, buffer, length);;
     }
     // EndOfFile
     else if(sysCallNumber == SYSCALL_ENDOFFILE)

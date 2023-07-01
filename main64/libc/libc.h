@@ -34,23 +34,20 @@ int PrintRootDirectory();
 // Clears the screen
 int ClearScreen();
 
-// Creates a new file in the FAT12 file system
-int CreateFile(unsigned char *FileName, unsigned char *Extension, unsigned char *InitialContent);
-
 // Deletes the file in the FAT12 file system
 int DeleteFile(unsigned char *FileName, unsigned char *Extension);
 
 // Opens the requested file in the FAT12 file system
-long OpenFile(unsigned char *FileName, unsigned char *Extension);
+unsigned long OpenFile(unsigned char *FileName, unsigned char *Extension, const char *FileMode);
 
 // Closes thef ile in the FAT12 file system
 int CloseFile(unsigned long FileHandle);
 
 // Reads the requested data from a file into the provided buffer
-int ReadFile(unsigned long FileHandle, unsigned char *Buffer, unsigned long Length);
+unsigned long ReadFile(unsigned long FileHandle, unsigned char *Buffer, unsigned long Length);
 
 // Writes the requested data from the provided buffer into a file
-int WriteFile(unsigned long FileHandle, unsigned char *Buffer, unsigned long Length);
+unsigned long WriteFile(unsigned long FileHandle, unsigned char *Buffer, unsigned long Length);
 
 // Seeks to the specific position in the file
 int SeekFile(unsigned long FileHandle, unsigned long NewFileOffset);

@@ -252,12 +252,6 @@ int ClearScreen()
     return SYSCALL0(SYSCALL_CLEARSCREEN);
 }
 
-// Creates a new file in the FAT12 file system
-int CreateFile(unsigned char *FileName, unsigned char *Extension, unsigned char *InitialContent)
-{
-    return SYSCALL3(SYSCALL_CREATEFILE, FileName, Extension, InitialContent);
-}
-
 // Deletes the file in the FAT12 file system
 int DeleteFile(unsigned char *FileName, unsigned char *Extension)
 {
@@ -265,9 +259,9 @@ int DeleteFile(unsigned char *FileName, unsigned char *Extension)
 }
 
 // Opens the requested file in the FAT12 file system
-long OpenFile(unsigned char *FileName, unsigned char *Extension)
+unsigned long OpenFile(unsigned char *FileName, unsigned char *Extension, const char *FileMode)
 {
-    return SYSCALL2(SYSCALL_OPENFILE, FileName, Extension);
+    return SYSCALL3(SYSCALL_OPENFILE, FileName, Extension, (void *)FileMode);
 }
 
 // Closes thef ile in the FAT12 file system
@@ -277,13 +271,13 @@ int CloseFile(unsigned long FileHandle)
 }
 
 // Reads the requested data from a file into the provided buffer
-int ReadFile(unsigned long FileHandle, unsigned char *Buffer, unsigned long Length)
+unsigned long ReadFile(unsigned long FileHandle, unsigned char *Buffer, unsigned long Length)
 {
     return SYSCALL3(SYSCALL_READFILE, (void *)FileHandle, Buffer, (void *)Length);
 }
 
 // Writes the requested data from the provided buffer into a file
-int WriteFile(unsigned long FileHandle, unsigned char *Buffer, unsigned long Length)
+unsigned long WriteFile(unsigned long FileHandle, unsigned char *Buffer, unsigned long Length)
 {
     return SYSCALL3(SYSCALL_WRITEFILE, (void *)FileHandle, Buffer, (void *)Length);
 }

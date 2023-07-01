@@ -91,7 +91,10 @@ int shell_mkfile(char *param)
     printf("Please enter the inital content of the new file: ");
     scanf(content, 510);
 
-    CreateFile(fileName, extension, content);
+    unsigned long fileHandle = OpenFile(fileName, extension, "w");
+    WriteFile(fileHandle, content, sizeof(content));
+    CloseFile(fileHandle);
+
     ClearScreen();
     printf("The file was created successfully.\n");
 }
@@ -108,7 +111,7 @@ int shell_type(char *param)
     scanf(extension, 3);
    
     unsigned char buffer[510] = "";
-    unsigned long fileHandle = OpenFile(fileName, extension);
+    unsigned long fileHandle = OpenFile(fileName, extension, "r");
 
     while (!EndOfFile(fileHandle))
     {
@@ -138,32 +141,53 @@ int shell_del(char *param)
 
 int shell_open(char *param)
 {
-    unsigned long fileHandle1 = OpenFile("PROG1   ", "BIN");
-    unsigned long fileHandle2 = OpenFile("PROG2   ", "BIN");
-    unsigned long fileHandle3 = OpenFile("SHELL   ", "BIN");
-    
-    CloseFile(fileHandle2);
+    unsigned long fileHandle1 = OpenFile("PROG1   ", "BIN", "r");
+    unsigned long fileHandle2 = OpenFile("TEST    ", "BIN", "r");
+
+    printf_long(fileHandle1, 10);
+    printf("\n");
+    printf_long(fileHandle2, 10);
+    printf("\n");
+
+    if (fileHandle1 == 0)
+        printf("PROG1.BIN was not found.\n");
+
+    if (fileHandle2 == 0)
+        printf("TEST.BIN was not found.\n");
+
     CloseFile(fileHandle1);
-    CloseFile(fileHandle3);
+    CloseFile(fileHandle2);
 }
 
 int shell_copy(char *param)
 {
     unsigned char buffer[512] = "";
 
-    CreateFile("TARGET  ", "TXT", "Test...");
+    // Open both files
+    unsigned long fileHandleSource = OpenFile("BIGFILE ", "TXT", "r");
+    unsigned long fileHandleTarget = OpenFile("TARGET  ", "TXT", "w");
 
-    unsigned long fileHandleSource = OpenFile("BIGFILE ", "TXT");
-    unsigned long fileHandleTarget = OpenFile("TARGET  ", "TXT");
+    // Check if the source file was opened
+    if (fileHandleSource == 0)
+        printf("The source file could not be opened.\n");
 
-    while (!EndOfFile(fileHandleSource))
+    // Check if the target file was opened
+    if (fileHandleSource == 0)
+        printf("The target file could not be opened or created.\n");
+
+    if ((fileHandleSource != 0) && (fileHandleTarget != 0))
     {
-        ReadFile(fileHandleSource, (unsigned char *)&buffer, 512);
-        WriteFile(fileHandleTarget, (unsigned char *)&buffer, 512);
+        // Copy the source file to the target file
+        while (!EndOfFile(fileHandleSource))
+        {
+            ReadFile(fileHandleSource, (unsigned char *)&buffer, 512);
+            WriteFile(fileHandleTarget, (unsigned char *)&buffer, 512);
+        }
+
+        // Close both file handles
+        CloseFile(fileHandleSource);
+        CloseFile(fileHandleTarget);
+
+        printf("File copied.\n");
     }
-
-    CloseFile(fileHandleSource);
-    CloseFile(fileHandleTarget);
-
-    printf("File copied.\n");
 }
