@@ -282,6 +282,18 @@ int ReadFile(unsigned long FileHandle, unsigned char *Buffer, unsigned long Leng
     return SYSCALL3(SYSCALL_READFILE, (void *)FileHandle, Buffer, (void *)Length);
 }
 
+// Writes the requested data from the provided buffer into a file
+int WriteFile(unsigned long FileHandle, unsigned char *Buffer, unsigned long Length)
+{
+    return SYSCALL3(SYSCALL_WRITEFILE, (void *)FileHandle, Buffer, (void *)Length);
+}
+
+// Seeks to the specific position in the file
+int SeekFile(unsigned long FileHandle, unsigned long NewFileOffset)
+{
+    return SYSCALL2(SYSCALL_SEEKFILE, (void *)FileHandle, (void *)NewFileOffset);
+}
+
 // Returns a flag if the file offset within the FileDescriptor has reached the end of file
 int EndOfFile(unsigned long FileHandle)
 {

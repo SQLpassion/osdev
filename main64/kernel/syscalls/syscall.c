@@ -163,12 +163,31 @@ long SysCallHandlerC(SysCallRegisters *Registers)
 
         return 0;
     }
+    // WriteFile
+    else if (sysCallNumber == SYSCALL_WRITEFILE)
+    {
+        unsigned long fileHandle = (unsigned long)Registers->RSI;
+        unsigned char *buffer = (unsigned char *)Registers->RDX;
+        int length = (int)Registers->RCX;
+
+        WriteFile(fileHandle, buffer, length);
+
+        return 0;
+    }
     // EndOfFile
     else if(sysCallNumber == SYSCALL_ENDOFFILE)
     {
         unsigned long fileHandle = (unsigned long)Registers->RSI;
 
         return EndOfFile(fileHandle);
+    }
+    // SeekFile
+    else if (sysCallNumber == SYSCALL_SEEKFILE)
+    {
+        unsigned long fileHandle = (unsigned long)Registers->RSI;
+        unsigned long fileOffset = (unsigned long)Registers->RDX;
+
+        return SeekFile(fileHandle, fileOffset);
     }
 
     return 0;

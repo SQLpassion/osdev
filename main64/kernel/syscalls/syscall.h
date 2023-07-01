@@ -16,7 +16,9 @@
 #define SYSCALL_OPENFILE            12
 #define SYSCALL_CLOSEFILE           13
 #define SYSCALL_READFILE            14
-#define SYSCALL_ENDOFFILE           15
+#define SYSCALL_WRITEFILE           15
+#define SYSCALL_ENDOFFILE           16
+#define SYSCALL_SEEKFILE            17
 
 typedef struct SysCallRegisters
 {

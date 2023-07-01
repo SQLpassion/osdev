@@ -49,6 +49,12 @@ int CloseFile(unsigned long FileHandle);
 // Reads the requested data from a file into the provided buffer
 int ReadFile(unsigned long FileHandle, unsigned char *Buffer, unsigned long Length);
 
+// Writes the requested data from the provided buffer into a file
+int WriteFile(unsigned long FileHandle, unsigned char *Buffer, unsigned long Length);
+
+// Seeks to the specific position in the file
+int SeekFile(unsigned long FileHandle, unsigned long NewFileOffset);
+
 // Returns a flag if the file offset within the FileDescriptor has reached the end of file
 int EndOfFile(unsigned long FileHandle);
 

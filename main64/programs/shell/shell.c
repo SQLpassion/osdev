@@ -10,7 +10,8 @@ char *commands[] =
     "mkfile",
     "type",
     "del",
-    "open"
+    "open",
+    "copy"
 };
 
 int (*command_functions[]) (char *param) =
@@ -20,7 +21,8 @@ int (*command_functions[]) (char *param) =
     &shell_mkfile,
     &shell_type,
     &shell_del,
-    &shell_open
+    &shell_open,
+    &shell_copy
 };
 
 // The main entry point for the User Mode program
@@ -143,4 +145,25 @@ int shell_open(char *param)
     CloseFile(fileHandle2);
     CloseFile(fileHandle1);
     CloseFile(fileHandle3);
+}
+
+int shell_copy(char *param)
+{
+    unsigned char buffer[512] = "";
+
+    CreateFile("TARGET  ", "TXT", "Test...");
+
+    unsigned long fileHandleSource = OpenFile("BIGFILE ", "TXT");
+    unsigned long fileHandleTarget = OpenFile("TARGET  ", "TXT");
+
+    while (!EndOfFile(fileHandleSource))
+    {
+        ReadFile(fileHandleSource, (unsigned char *)&buffer, 512);
+        WriteFile(fileHandleTarget, (unsigned char *)&buffer, 512);
+    }
+
+    CloseFile(fileHandleSource);
+    CloseFile(fileHandleTarget);
+
+    printf("File copied.\n");
 }

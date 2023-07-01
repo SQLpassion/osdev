@@ -54,9 +54,6 @@ typedef struct FileDescriptor FileDescriptor;
 // Initializes the FAT12 system
 void InitFAT12();
 
-// Calculates a Hash Value for the given file name
-unsigned long HashFileName(unsigned char *FileName);
-
 // Load the given program into memory
 int LoadProgram(unsigned char *Filename);
 
@@ -96,6 +93,9 @@ void PrintFileDescriptorList();
 // Prints out the FAT12 chain
 void PrintFATChain();
 
+// Tests some functionality of the FAT12 file system
+void FAT12Test();
+
 // Deallocates the FAT clusters for a file - beginning with the given first cluster
 static void DeallocateFATClusters(unsigned short FirstCluster);
 
@@ -122,5 +122,11 @@ static void WriteRootDirectoryAndFAT();
 
 // Sets the last Access Date and the last Write Date for the RootDirectoryEntry
 static void SetLastAccessDate(RootDirectoryEntry *Entry);
+
+// Allocates a new cluster to the given FAT sector
+static unsigned short AllocateNewClusterToFile(unsigned short CurrentFATSect);
+
+// Calculates a Hash Value for the given file name
+static unsigned long HashFileName(unsigned char *FileName);
 
 #endif

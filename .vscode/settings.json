@@ -18,7 +18,8 @@
         "gdt.h": "c",
         "syscall.h": "c",
         "kernel.h": "c",
-        "libc.h": "c"
+        "libc.h": "c",
+        "ata.h": "c"
     },
     "C_Cpp.errorSquiggles": "disabled",
     "cmake.configureOnOpen": false
