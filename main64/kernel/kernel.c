@@ -37,6 +37,9 @@ void InitKernel(int KernelSize)
     // Initialize and clear the screen
     InitializeScreen(80, 24);
 
+    // Initializes the Serial Port
+    InitSerialPort();
+
     // Disable the hardware interrupts
     DisableInterrupts();
 
