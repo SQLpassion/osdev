@@ -54,6 +54,8 @@ void WriteSectors(unsigned int *SourceAddress, unsigned int LBA, unsigned char S
         {
             outl(0x1F0, SourceAddress[i]);
         }
+
+        SourceAddress += 256;
     }
 }
 
@@ -66,5 +68,6 @@ static void WaitForBSYFlag()
 // Waits until the DRQ flag is set.
 static void WaitForDRQFlag()
 {
-    while (!(inb(0x1F7) & STATUS_DRQ));
+    // while (!(inb(0x1F7) & STATUS_DRQ));
+    while (!(inb(0x1F7) & STATUS_RDY));
 }

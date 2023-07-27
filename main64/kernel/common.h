@@ -12,6 +12,8 @@
 // The physical memory offset where the KERNEL.BIN file was loaded
 #define KERNEL_OFFSET 0x100000
 
+#define SERIAL_PORT_COM1 0x3F8
+
 // This structure stores all the information that we retrieve from the BIOS while we are in x16 Real Mode
 typedef struct BiosInformationBlock
 {
@@ -114,5 +116,17 @@ void ClearBit(unsigned long Bit, unsigned long *BitmapMask);
 
 // Tests if a given Bit is set in the provided Bitmap mask.
 int TestBit(unsigned long Bit, unsigned long *BitmapMask);
+
+// Initializes the Serial Port COM1
+void InitSerialPort();
+
+// Checks if the Transmission Buffer is empty
+int IsTansmissionBufferEmpty();
+
+// Writes a single character to the Serial Port
+void WriteCharToSerialPort(char a);
+
+// Writes a null-terminated string to the Serial Port
+void WriteStringToSerialPort(char *string);
 
 #endif

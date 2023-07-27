@@ -14,6 +14,8 @@ kaos64.img : bootsector.bin kernel.bin
 	fat_imgen -m -f ../kaos64.img -i ../programs/program1/prog1.bin
 	fat_imgen -m -f ../kaos64.img -i ../programs/program2/prog2.bin
 	fat_imgen -m -f ../kaos64.img -i ../programs/shell/shell.bin
+	fat_imgen -m -f ../kaos64.img -i ../BigFile.txt
+	fat_imgen -m -f ../kaos64.img -i ../SFile.txt
 	x86_64-elf-objdump -M intel -S --disassemble kernel.o > kernel.generated
 	x86_64-elf-objdump -M intel -S --disassemble drivers/screen.o > drivers/screen.generated
 	x86_64-elf-objdump -M intel -S --disassemble multitasking/contextswitching.o > multitasking/contextswitching.generated

@@ -11,6 +11,8 @@
     ./dd.exe if=d:\github\sqlpassion\osdev\main64\kaos64.img of=d:\HDD-flat.vmdk
 - Everything in one command:
     clear; docker run --rm -it -v d:\GitHub\SQLpassion/osdev:/src sqlpassion/kaos-buildenv /bin/sh /src/main64/clean.sh; docker run --rm -it -v d:\GitHub\SQLpassion/osdev:/src sqlpassion/kaos-buildenv /bin/sh /src/main64/build.sh; ./dd.exe if=d:\github\sqlpassion\osdev\main64\kaos64.img of=d:\HDD-flat.vmdk
+- Write the Virtual Disk back to a FAT12 image
+    ./dd.exe if=d:\HDD-flat.vmdk of=d:\kaos64.ima bs=512 count=2880
 
 ##########################
 # Building on Windows ARM
@@ -41,8 +43,14 @@
 ###########################
 # Run on physical Notebook
 ###########################
-- Write the final FAT12 image to a physical disk (where /dev/disk2 is the attached physical hard disk!):
-    sudo dd if=kaos64.img of=/dev/disk2
+- Write the final FAT12 image to a physical disk:
+    Mac:
+        ls /dev/d*
+        sudo dd if=kaos64.img of=/dev/disk2 (where /dev/disk2 is the attached physical hard disk!)
+    Windows:
+        wmic diskdrive list brief
+        ./dd.exe if=d:\github\sqlpassion\osdev\main64\kaos64.img of=\\.\PhysicalDrive2 (where \\.\PhysicalDrive2 is the attached physical hard disk!)
+        ./dd.exe if=\\.\PhysicalDrive2 of=d:\kaos64.ima bs=512 count=2880
 
 ###############
 # Git Commands

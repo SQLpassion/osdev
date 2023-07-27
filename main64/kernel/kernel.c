@@ -37,6 +37,9 @@ void InitKernel(int KernelSize)
     // Initialize and clear the screen
     InitializeScreen(80, 24);
 
+    // Initializes the Serial Port
+    InitSerialPort();
+
     // Disable the hardware interrupts
     DisableInterrupts();
 
@@ -69,6 +72,9 @@ void InitKernel(int KernelSize)
 
     // Initializes the GDT and TSS structures
     InitGdt();
+
+    // Initializes the FAT12 file system
+    InitFAT12();
     
     // Create the initial OS tasks
     CreateInitialTasks();

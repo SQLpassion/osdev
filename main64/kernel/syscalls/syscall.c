@@ -14,7 +14,7 @@
 // because a Context Switch can't happen, because of the disabled Timer Interrupt.
 // But we can't call functions that are causing Page Fault, because of the disabled interrupts
 // we can't handle Page Faults.
-long SysCallHandlerC(SysCallRegisters *Registers)
+unsigned long SysCallHandlerC(SysCallRegisters *Registers)
 {
     // The SysCall Number is stored in the register RDI
     int sysCallNumber = Registers->RDI;
@@ -113,6 +113,63 @@ long SysCallHandlerC(SysCallRegisters *Registers)
         ClearScreen();
 
         return 1;
+    }
+    // DeleteFile
+    else if (sysCallNumber == SYSCALL_DELETEFILE)
+    {
+        unsigned char *fileName = (unsigned char *)Registers->RSI;
+        unsigned char *extension = (unsigned char *)Registers->RDX;
+
+        return DeleteFile(fileName, extension);
+    }
+    // OpenFile
+    else if(sysCallNumber == SYSCALL_OPENFILE)
+    {
+        unsigned char *fileName = (unsigned char *)Registers->RSI;
+        unsigned char *extension = (unsigned char *)Registers->RDX;
+        char *fileMode = (unsigned char *)Registers->RCX;
+
+        return OpenFile(fileName, extension, fileMode);
+    }
+    // CloseFile
+    else if(sysCallNumber == SYSCALL_CLOSEFILE)
+    {
+        unsigned long fileHandle = (unsigned long)Registers->RSI;
+
+        return CloseFile(fileHandle);
+    }
+    // ReadFile
+    else if(sysCallNumber == SYSCALL_READFILE)
+    {
+        unsigned long fileHandle = (unsigned long)Registers->RSI;
+        unsigned char *buffer = (unsigned char *)Registers->RDX;
+        int length = (int)Registers->RCX;
+
+        return ReadFile(fileHandle, buffer, length);
+    }
+    // WriteFile
+    else if (sysCallNumber == SYSCALL_WRITEFILE)
+    {
+        unsigned long fileHandle = (unsigned long)Registers->RSI;
+        unsigned char *buffer = (unsigned char *)Registers->RDX;
+        unsigned long length = (int)Registers->RCX;
+
+        return WriteFile(fileHandle, buffer, length);;
+    }
+    // EndOfFile
+    else if(sysCallNumber == SYSCALL_ENDOFFILE)
+    {
+        unsigned long fileHandle = (unsigned long)Registers->RSI;
+
+        return EndOfFile(fileHandle);
+    }
+    // SeekFile
+    else if (sysCallNumber == SYSCALL_SEEKFILE)
+    {
+        unsigned long fileHandle = (unsigned long)Registers->RSI;
+        unsigned long fileOffset = (unsigned long)Registers->RDX;
+
+        return SeekFile(fileHandle, fileOffset);
     }
 
     return 0;

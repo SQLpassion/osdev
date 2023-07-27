@@ -1,0 +1,149 @@
+Source: https://www.codingninjas.com/studio/library/string-hashing-2425
+
+String Hashing
+
+Introduction
+In this blog, we will discuss the topic of string hashing. String hashing is a very interesting as well as an important topic. String hashing based-coding problems are widely asked in coding contests and various coding interviews. 
+
+String Hashing
+String hashing is the technique or process of mapping string and integer. In other words, String hashing is the way to convert the string into an integer, and that integer is known as the hash of a string.
+
+String hashing is used to compare two strings whether they are equal or not. They both are equal if the hash value of both the string is equal. The hash value of the string is calculated by using a hash function. Let’s discuss the hash function to convert a string into an integer.
+
+What is Hash Function?
+String hash function is the function that converts a string into an integer. The hash of a string can be calculated as:
+
+Hash(S) =(S[0] * P^0 + S[1] * P^1 +S[2] * P^2 + …….+ S[N-1] * P^(N-1)) % M
+
+Where,
+
+ ‘S’ is the given string.
+
+ ‘P’ is the prime number that must be greater than or equal to the number of distinct characters in the string ‘S’.
+
+ ‘M’ should be large to avoid the collision. 
+
+The above function is known as the polynomial rolling hash function.
+
+Collision
+It may be possible that two different strings have the same hash values. This may occur because we take modulo ‘M’ in the final hash value. In that case, two different strings may have the same hash values, called a collision. We need to design our hash function so that the collision probability is very low. One way to reduce the chances of collision is that not take the mod of the final hash value with ‘M’. But this is not efficient as the hash value may be very large, and our storage memory is limited.
+
+Another way to reduce the collision probability is to take the value of ‘M’ as large as possible. 
+
+The probability of collision is 1 / M.
+
+Example
+The hash of string S = “cat” can be calculated as:
+
+hash(S) = (‘c’ - ‘a’) + (‘a’ - ‘a’) * 31 + (‘c’ - ‘a’) * 31^2.
+
+Here, P = 31 as all the characters are in lowercase, so the count of all distinct lowercase characters is 26, and 31 is the prime number and greater than 26. 
+
+Problem Statement
+You are given ‘N’ string. Write a program to check whether all the strings are distinct or not using string hashing.
+
+Algorithm
+Define a function hashing():
+Function details:
+Takes string ‘S’ as a parameter.
+This function returns the hash value of ‘S’.
+Working: 
+Create variable ANS = 0.
+Create variable P = 1.
+Create variable M = 10e9 +7.
+Iterate loop for each character of string:
+ANS += (S[i] - 'a') * P;
+P *= 31;
+Return ‘ANS’.
+Call the hashing function for all strings and store their hash values in the array.
+Sort the array.
+Check whether the adjacent hash values are equal or not.
+Program
+// Program to check whether all the strings are distinct or not using string hashing.
+#include <iostream>
+#include <string>
+#include <vector>
+#include <algorithm>
+using namespace std;
+
+// Function to find the hash of string.
+int hashing(string s)
+{
+    // To store the hash value.
+    int ans = 0;
+
+    // To store 'P'.
+    int p = 1;
+
+    // For taking modulo.
+    int m = 1000000007;
+    for (int i = 0; i < s.size(); i++)
+    {
+        ans += (s[i] - 'a') * p;
+        ans = ans % m;
+        p *= 31;
+    }
+    return ans;
+}
+
+int main()
+{
+
+    // Taking number of strings as input.
+    int n;
+    cin >> n;
+
+    // Taking strings as an input.
+    vector<pair<int, string>> vec(n);
+    for (int i = 0; i < n; i++)
+    {
+        string temp;
+        cin >> temp;
+
+        // Function call.
+        vec[i].first = hashing(temp);
+        vec[i].second = temp;
+    }
+
+    // Sort the vector.
+    sort(vec.begin(), vec.end());
+    int i;
+    for (i = 0; i < n - 1; i++)
+    {
+        if (vec[i] == vec[i + 1])
+        {
+            break;
+        }
+    }
+    if (i == n - 1)
+        cout << "All strings are distinct";
+    else
+        cout << "All strings are not distinct";
+}
+
+Input 1
+
+4
+cat
+bat
+cat
+gat
+Output 1
+All strings are not distinct
+Input 2
+4
+cat
+bat
+gat
+Output 2
+All strings are distinct
+Time Complexity
+O(N * K), where ‘N’ is the number of strings and ‘K’ is the maximum length of string among them.
+Hashing function traverses each character of the string, which takes O(K) time. And total number of strings is N. Hence total time complexity for this program is O(N * K).
+
+Space Complexity
+O(1).
+As we didn’t use extra space except for a few variables.
+Check out this problem - Longest String Chain
+
+Also Read - hash function in data structure
