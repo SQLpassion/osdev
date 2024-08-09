@@ -252,7 +252,14 @@ LongMode:
     MOV     SS, AX
 
     ; Setup the stack at the virtual address 0xFFFF800000050000
-    MOV     RAX, QWORD 0xFFFF800000050000
+    ; This doesn't work on Apple Silicon with UTM...
+    ; MOV     RAX, QWORD 0xFFFF800000050000
+
+    ; To be able to run KAOS on Apple Silicon with UTM, we have to set the stack
+    ; pointer to 0x50000 instead of 0xFFFF800000050000
+    MOV     RAX, QWORD 0x50000
+
+    ; The remaining part works as expected
     MOV     RSP, RAX
     MOV     RBP, RSP
     XOR     RBP, RBP
