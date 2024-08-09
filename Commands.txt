@@ -33,12 +33,14 @@
 # Building on Mac OS
 #####################
 - Open Terminal:
-    docker run --rm -it -v $HOME/Documents/GitHub/SQLpassion/osdev:/src sqlpassion/kaos-buildenv /bin/sh /src/main64/clean.sh
-    docker run --rm -it -v $HOME/Documents/GitHub/SQLpassion/osdev:/src sqlpassion/kaos-buildenv /bin/sh /src/main64/build.sh
+    docker run --rm -it -v $HOME/dev/GitHub/SQLpassion/osdev:/src sqlpassion/kaos-buildenv /bin/sh /src/main64/clean.sh
+    docker run --rm -it -v $HOME/dev/GitHub/SQLpassion/osdev:/src sqlpassion/kaos-buildenv /bin/sh /src/main64/build.sh
 - Write the final FAT12 image to a virtual disk:
-    dd if="$HOME/Documents/GitHub/SQLpassion/osdev/main64/kaos64.img" of="$HOME/Documents/Virtual Machines/KAOS.vmwarevm/Virtual Disk-flat.vmdk" conv=notrunc
+    dd if="$HOME/dev/GitHub/SQLpassion/osdev/main64/kaos64.img" of="$HOME/dev/Virtual Machines/KAOS.vmwarevm/Virtual Disk-flat.vmdk" conv=notrunc
+- Write the final FAT12 image to a .qcow2 file for UTM (on Apple Silicon):
+    qemu-img convert -O qcow2 kaos64.img kaos64.qcow2
 - Everything in one command:
-    clear && docker run --rm -it -v $HOME/Documents/GitHub/SQLpassion/osdev:/src sqlpassion/kaos-buildenv /bin/sh /src/main64/clean.sh && docker run --rm -it -v $HOME/Documents/GitHub/SQLpassion/osdev:/src sqlpassion/kaos-buildenv /bin/sh /src/main64/build.sh && dd if="$HOME/Documents/GitHub/SQLpassion/osdev/main64/kaos64.img" of="$HOME/Documents/Virtual Machines/KAOS.vmwarevm/Virtual Disk-flat.vmdk" conv=notrunc
+    clear && docker run --rm -it -v $HOME/dev/GitHub/SQLpassion/osdev:/src sqlpassion/kaos-buildenv /bin/sh /src/main64/clean.sh && docker run --rm -it -v $HOME/Documents/GitHub/SQLpassion/osdev:/src sqlpassion/kaos-buildenv /bin/sh /src/main64/build.sh && dd if="$HOME/Documents/GitHub/SQLpassion/osdev/main64/kaos64.img" of="$HOME/Documents/Virtual Machines/KAOS.vmwarevm/Virtual Disk-flat.vmdk" conv=notrunc
 
 ###########################
 # Run on physical Notebook
