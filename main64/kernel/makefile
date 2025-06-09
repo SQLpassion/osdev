@@ -58,6 +58,7 @@ kernel.bin: kernel.o isr/idt_asm.o isr/irq_asm.o multitasking/contextswitching.o
 clean:
 	rm -f ../boot/bootsector.bin
 	rm -f ../kaos64.img
+	rm -f ../kaos64.qcow2
 	rm -f *.o *.map *.bin
 	rm -f drivers/*.o
 	rm -f isr/*.o
