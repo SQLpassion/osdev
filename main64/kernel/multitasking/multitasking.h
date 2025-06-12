@@ -105,6 +105,8 @@ void StartUserModeTask();
 // Prints out the status as text
 static void PrintStatus(int Status);
 
+void PciTest();
+
 void Dummy1();
 void Dummy2();
 void Dummy3();

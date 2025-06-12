@@ -42,6 +42,9 @@ unsigned char inb(unsigned short Port);
 // Reads a single short (16 bytes) from the specific port
 unsigned short inw(unsigned short Port);
 
+// Reads a single int (32 bytes) from the specific port
+unsigned int inl(unsigned short Port);
+
 // Writes a single char (8 bytes) to the specified port
 void outb(unsigned short Port, unsigned char Value);
 

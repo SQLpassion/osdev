@@ -204,7 +204,9 @@ void CreateInitialTasks()
     CreateKernelModeTask(KeyboardHandlerTask, 1, 0xFFFF800001100000);
     CreateKernelModeTask(StartUserModeTask, 2, 0xFFFF800001200000);
 
-    /* CreateKernelModeTask(Dummy1, 1, 0xFFFF800001100000);
+    // CreateKernelModeTask(PciTest, 3, 0xFFFF800001300000);
+
+    /* CreateKernelModeTask(Dummy1, 3, 0xFFFF800001100000);
     CreateKernelModeTask(Dummy2, 2, 0xFFFF800001200000);
     CreateKernelModeTask(Dummy3, 3, 0xFFFF800001300000); */
 
@@ -361,6 +363,79 @@ static void PrintStatus(int Status)
         case 2: printf("RUNNING"); break;
         case 3: printf("WAITING"); break;
     }
+}
+
+unsigned int pci_config_read(unsigned char bus, unsigned char device, unsigned char function, unsigned char offset)
+{
+    unsigned int address = (1U << 31) |                 // Enable bit (0x80000000)
+                       ((unsigned int)bus << 16) |      // Bus number (bits 16-23)
+                       ((unsigned int)device << 11) |   // Device number (bits 11-15)
+                       ((unsigned int)function << 8) |  // Function number (bits 8-10)
+                       ((unsigned int)offset & 0xFC);   // Register offset (bits 2-7, must be 4-byte aligned)
+                       ((unsigned int)device << 11) |
+                       ((unsigned int)function << 8) |
+                       ((unsigned int)offset & 0xFC);   // 4-Byte aligned
+
+    outl(0xCF8, address);
+    return inl(0xCFC);
+}
+
+void pci_check_device(unsigned char bus, unsigned char device, unsigned char function)
+{
+    unsigned int id = pci_config_read(bus, device, function, 0x00);
+    unsigned short vendor_id = id & 0xFFFF;
+    unsigned short device_id = (id >> 16) & 0xFFFF;
+
+    if (vendor_id == 0xFFFF) return; // No device found
+
+    unsigned int class_info  = pci_config_read(bus, device, function, 0x08);
+    unsigned char class_code = (class_info >> 24) & 0xFF;
+    unsigned char subclass   = (class_info >> 16) & 0xFF;
+    unsigned char prog_if    = (class_info >> 8) & 0xFF;
+
+    printf("Device: ");
+    printf_int(device, 16);
+    printf(", Function: ");
+    printf_int(function, 16);
+    printf(", Vendor ID: 0x");
+    printf_int(vendor_id, 16);
+    printf(", Device ID: 0x");
+    printf_int(device_id, 16);
+    printf(", C: 0x");
+    printf_int(class_code, 16);
+    printf(", SC: 0x");
+    printf_int(subclass, 16);
+    printf("\n");
+
+    if (class_code == 0x02 && subclass == 0x00)
+    {
+        printf("\t=> Ethernet controller\n");
+    }
+}
+
+void pci_scan_bus(int bus)
+{
+    for (unsigned char device = 0; device < 32; device++)
+    {
+        for (unsigned char function = 0; function < 8; function++)
+        {
+            pci_check_device(bus, device, function);
+        }
+    }
+}
+
+void PciTest()
+{
+    ClearScreen();
+    printf("Detecting PCI devices...\n");
+    printf("\n");
+
+    pci_scan_bus(0);
+
+    printf("Done!\n");
+    printf("\n");
+
+    while (1 == 1) {}
 }
 
 // This function is executed in Kernel Mode - Ring 0

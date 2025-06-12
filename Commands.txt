@@ -40,6 +40,8 @@
     cp kaos64.qcow2 "$HOME/Library/Containers/com.utmapp.UTM/Data/Documents/KAOS x64.utm/Data/kaos64.qcow2"
 - Everything in one command (Apple Silicon):
     clear && docker run --rm -it -v $HOME/dev/GitHub/SQLpassion/osdev:/src sqlpassion/kaos-buildenv /bin/sh /src/main64/clean.sh && docker run --rm -it -v $HOME/dev/GitHub/SQLpassion/osdev:/src sqlpassion/kaos-buildenv /bin/sh /src/main64/build.sh && qemu-img convert -O qcow2 kaos64.img kaos64.qcow2 && cp kaos64.qcow2 "$HOME/Library/Containers/com.utmapp.UTM/Data/Documents/KAOS x64.utm/Data/kaos64.qcow2"
+- Run with qemu
+    qemu-system-x86_64 -drive format=raw,file=kaos64.img
     
 - Write the final FAT12 image to a virtual disk (Intel):
     dd if="$HOME/dev/GitHub/SQLpassion/osdev/main64/kaos64.img" of="$HOME/dev/Virtual Machines/KAOS.vmwarevm/Virtual Disk-flat.vmdk" conv=notrunc
@@ -52,11 +54,20 @@
 - Write the final FAT12 image to a physical disk:
     Mac:
         ls /dev/d*
-        sudo dd if=kaos64.img of=/dev/disk2 (where /dev/disk2 is the attached physical hard disk!)
+        sudo dd if=kaos64.img of=/dev/disk4 (where /dev/disk4 is the attached physical hard disk!)
     Windows:
         wmic diskdrive list brief
         ./dd.exe if=d:\github\sqlpassion\osdev\main64\kaos64.img of=\\.\PhysicalDrive2 (where \\.\PhysicalDrive2 is the attached physical hard disk!)
         ./dd.exe if=\\.\PhysicalDrive2 of=d:\kaos64.ima bs=512 count=2880
+
+#####################
+# Debugging with GDB
+#####################
+- Run the following commands in osdev/main:
+    qemu-system-x86_64 -drive format=raw,file=kaos64.img -s -S
+    x86_64-elf-gdb -tui
+- break PrintRootDirectory
+- break shell_cls
 
 ###############
 # Git Commands

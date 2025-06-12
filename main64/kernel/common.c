@@ -23,6 +23,15 @@ unsigned short inw(unsigned short Port)
    return ret;
 }
 
+// Reads a single int (32 bytes) from the specific port
+unsigned int inl(unsigned short Port)
+{
+   unsigned int ret;
+   asm volatile ("inl %1, %0" : "=a" (ret) : "dN" (Port));
+   
+   return ret;
+}
+
 // Writes a single char (8 bytes) to the specified port
 void outb(unsigned short Port, unsigned char Value)
 {
@@ -40,7 +49,6 @@ void outl(unsigned short Port, unsigned int Value)
 {
     asm volatile ("outl %1, %0" : : "dN" (Port), "a" (Value));
 }
-
 // A simple memset implementation
 void *memset(void *s, int c, long n)
 {
