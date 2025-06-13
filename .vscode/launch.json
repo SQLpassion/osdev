@@ -1,0 +1,36 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug KAOS x64 via QEMU GDB Stub",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/main64/kernel/kernel.elf",
+      "cwd": "${workspaceFolder}",
+      "MIMode": "gdb",
+      "miDebuggerPath": "x86_64-elf-gdb",
+      "miDebuggerServerAddress": "localhost:1234",
+      "preLaunchTask": "Build KAOS",
+      "stopAtEntry": true,
+      "externalConsole": false,
+      "setupCommands": [
+        {
+          "description": "Substitute source code path",
+          "text": "-interpreter-exec console \"set substitute-path /src/main64 ${workspaceFolder}/main64\""
+        },
+        {
+          "description": "Set disassembly flavor to Intel",
+          "text": "-interpreter-exec console \"set disassembly-flavor intel\""
+        },
+        {
+          "description": "Load kernel symbols at virtual address",
+          "text": "-interpreter-exec console \"add-symbol-file ${workspaceFolder}/main64/kernel/kernel.elf 0xFFFF800000100000\""
+        },
+        {
+          "description": "Load user program symbols at virtual address",
+          "text": "-interpreter-exec console \"add-symbol-file ${workspaceFolder}/main64/programs/shell/shell.elf 0x0000700000000000\""
+        }
+      ]
+    }
+  ]
+}

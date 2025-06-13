@@ -1,40 +1,22 @@
 {
     "version": "2.0.0",
-    "tasks":
-    [
+    "tasks": [
         {
             "label": "Build KAOS",
-            "type": "docker-run",
-            "dockerRun": {
-                "image": "sqlpassion/kaos-buildenv",
-                "command": "/bin/sh /src/main64/build.sh",
-                "remove": true,
-                "volumes": [
-                    {
-                        "localPath": "${workspaceFolder}",
-                        "containerPath": "/src"
-                    }
-                ]
-            },
+            "type": "shell",
+            "command": "docker run --rm -v \"${workspaceFolder}:/src\" sqlpassion/kaos-buildenv /bin/sh /src/main64/build.sh && qemu-img convert -O qcow2 ${workspaceFolder}/main64/kaos64.img ${workspaceFolder}/main64/kaos64.qcow2 && cp ${workspaceFolder}/main64/kaos64.qcow2 \"$HOME/Library/Containers/com.utmapp.UTM/Data/Documents/KAOS x64.utm/Data/kaos64.qcow2\" && qemu-system-x86_64 -drive format=raw,file=${workspaceFolder}/main64/kaos64.img -s -S",
+            // "command": "sh",
+            // "args": [
+            //     "-c",
+            //     "docker run --rm -v \"${workspaceFolder}:/src\" sqlpassion/kaos-buildenv /bin/sh /src/main64/clean.sh && \\\n\
+            //     docker run --rm -v \"${workspaceFolder}:/src\" sqlpassion/kaos-buildenv /bin/sh /src/main64/build.sh && \\\n\
+            //     qemu-img convert -O qcow2 ${workspaceFolder}/main64/kaos64.img ${workspaceFolder}/main64/kaos64.qcow2 && \\\n\
+            //     cp ${workspaceFolder}/main64/kaos64.qcow2 \"$HOME/Library/Containers/com.utmapp.UTM/Data/Documents/KAOS x64.utm/Data/kaos64.qcow2\""
+            // ],
             "problemMatcher": [],
             "group": {
                 "kind": "build",
                 "isDefault": true
-            }
-        },
-        {
-            "label": "Clean up KAOS",
-            "type": "docker-run",
-            "dockerRun": {
-                "image": "sqlpassion/kaos-buildenv",
-                "command": "/bin/sh /src/main64/clean.sh",
-                "remove": true,
-                "volumes": [
-                    {
-                        "localPath": "${workspaceFolder}",
-                        "containerPath": "/src"
-                    }
-                ]
             }
         }
     ]

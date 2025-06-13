@@ -22,7 +22,7 @@ shell.elf: shell.o ../../libc/syscall_asm.o ${OBJ}
 
 # Builds the SYSCALL functionality written in Assembler
 ../../libc/syscall_asm.o : ../../libc/syscall.asm
-	nasm -felf64 ../../libc/syscall.asm -o ../../libc/syscall_asm.o
+	nasm -felf64 -g -F dwarf ../../libc/syscall.asm -o ../../libc/syscall_asm.o
 
 # Clean up
 clean:
