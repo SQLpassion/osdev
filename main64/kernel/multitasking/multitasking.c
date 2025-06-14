@@ -1,5 +1,6 @@
 #include "multitasking.h"
 #include "gdt.h"
+#include "../kbasic.h"
 #include "../isr/idt.h"
 #include "../common.h"
 #include "../list.h"
@@ -204,6 +205,7 @@ void CreateInitialTasks()
     CreateKernelModeTask(KeyboardHandlerTask, 1, 0xFFFF800001100000);
     CreateKernelModeTask(StartUserModeTask, 2, 0xFFFF800001200000);
 
+    // KBasic_Interpreter();
     // CreateKernelModeTask(PciTest, 3, 0xFFFF800001300000);
 
     /* CreateKernelModeTask(Dummy1, 3, 0xFFFF800001100000);
@@ -214,6 +216,21 @@ void CreateInitialTasks()
     ExecuteUserModeProgram("SHELL   BIN", 4);
     // ExecuteUserModeProgram("PROG1   BIN", 4);
     // ExecuteUserModeProgram("PROG2   BIN", 5);
+}
+
+void KBasic_Interpreter()
+{
+    // A simple REPL loop
+    while (1 == 1)
+    {
+        printf("> ");
+        char str[128] = "";
+        scanf(str, 128);
+
+        Token tokens[MAX_TOKENS];
+        tokenize_line(str, tokens, MAX_TOKENS);
+        execute_tokens(tokens);
+    }
 }
 
 // Moves the current Task from the head of the TaskList to the tail of the TaskList.

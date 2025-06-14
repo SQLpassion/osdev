@@ -1,5 +1,6 @@
 #include "common.h"
 #include "drivers/screen.h"
+#include "memory/heap.h"
 
 char tbuf[64];
 char tbuf_long[64];
@@ -317,6 +318,122 @@ int atoi(char *str)
     }
 
     return res;
+}
+
+int isalpha(char c)
+{
+    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+}
+
+int isdigit(char c)
+{
+    return (c >= '0' && c <= '9');
+}
+
+int isalnum(char c)
+{
+    return isalpha(c) || isdigit(c);
+}
+
+int is_identifier(char c)
+{
+    return isalpha(c);
+}
+
+int is_number(char c)
+{
+    return isdigit(c);
+}
+
+int strncmp(const char *s1, const char *s2, int n)
+{
+    for (int i = 0; i < n; i++) {
+        unsigned char c1 = (unsigned char)s1[i];
+        unsigned char c2 = (unsigned char)s2[i];
+
+        if (c1 != c2) {
+            return c1 - c2;
+        }
+
+        if (c1 == '\0') {
+            return 0;
+        }
+    }
+    return 0;
+}
+
+char *strtok(char *str, const char *delim)
+{
+    static char *next = NULL;
+
+    if (str != NULL) {
+        next = str;
+    }
+
+    if (next == NULL) {
+        return NULL;
+    }
+
+    // Skip leading delimiters
+    while (*next && strchr(delim, *next)) {
+        next++;
+    }
+
+    if (*next == '\0') {
+        return NULL;
+    }
+
+    char *start = next;
+
+    // Find the end of the token
+    while (*next && !strchr(delim, *next)) {
+        next++;
+    }
+
+    if (*next) {
+        *next = '\0';
+        next++;  // move to the start of the next token
+    } else {
+        next = NULL;
+    }
+
+    return start;
+}
+
+char *strchr(const char *s, int c)
+{
+    while (*s) {
+        if (*s == (char)c) {
+            return (char *)s;
+        }
+        s++;
+    }
+
+    // Check for null terminator match
+    if (c == '\0') {
+        return (char *)s;
+    }
+
+    return NULL;
+}
+
+char *strdup(const char *s)
+{
+    // Compute the length of the source string
+    int len = 0;
+    while (s[len]) len++;
+
+    // Allocate space for the copy (+1 for the null terminator)
+    char *copy = malloc(len + 1);
+    if (!copy) return NULL;  // handle allocation failure
+
+    // Copy the characters
+    for (int i = 0; i <= len; i++)
+    {
+        copy[i] = s[i];
+    }
+
+    return copy;
 }
 
 // Formats an Integer value with a leading zero.

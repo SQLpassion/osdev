@@ -106,6 +106,7 @@ void StartUserModeTask();
 static void PrintStatus(int Status);
 
 void PciTest();
+void KBasic_Interpreter();
 
 void Dummy1();
 void Dummy2();

@@ -102,6 +102,24 @@ static void ltoa_helper(unsigned long i, unsigned base, char *buf);
 // Converts an ASCII string to its integer value
 int atoi(char *str);
 
+int isalpha(char c);
+
+int isdigit(char c);
+
+int isalnum(char c);
+
+int is_identifier(char c);
+
+int is_number(char c);
+
+int strncmp(const char *s1, const char *s2, int n);
+
+char *strtok(char *str, const char *delim);
+
+char *strchr(const char *s, int c);
+
+char *strdup(const char *s);
+
 // Formats an Integer value with a leading zero.
 void FormatInteger(int Value, char *Buffer);
 
