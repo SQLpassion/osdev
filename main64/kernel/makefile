@@ -14,6 +14,8 @@ kaos64.img : bootsector.bin kernel.bin kernel.elf
 	fat_imgen -m -f ../kaos64.img -i ../programs/program1/prog1.bin
 	fat_imgen -m -f ../kaos64.img -i ../programs/program2/prog2.bin
 	fat_imgen -m -f ../kaos64.img -i ../programs/shell/shell.bin
+	# fat_imgen -m -f ../kaos64.img -i ../kernel_rust/target/x86_64-kaos/debug/kernel_r.bin
+	fat_imgen -m -f ../kaos64.img -i ../programs/r_test/target/x86_64-kaos/debug/r_test.bin
 	fat_imgen -m -f ../kaos64.img -i ../BigFile.txt
 	fat_imgen -m -f ../kaos64.img -i ../SFile.txt
 	x86_64-elf-objdump -M intel -S --disassemble kernel.o > kernel.generated

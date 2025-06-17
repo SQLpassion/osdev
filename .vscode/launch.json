@@ -28,7 +28,7 @@
         },
         {
           "description": "Load user program symbols at virtual address",
-          "text": "-interpreter-exec console \"add-symbol-file ${workspaceFolder}/main64/programs/shell/shell.elf 0x0000700000000000\""
+          "text": "-interpreter-exec console \"add-symbol-file ${workspaceFolder}/main64/programs/r_test/target/x86_64-kaos/debug/r_test 0x0000700000000000\""
         }
       ]
     }

@@ -1,0 +1,8 @@
+# Install the nightly build of Rust
+rustup install nightly
+
+# Set the nightly build as the default one for this project
+rustup override set nightly
+
+# Build everything and produce a flat binary file for execution
+cargo build && cargo objcopy -- -O binary target/x86_64-kaos/debug/kernel_rust.bin 

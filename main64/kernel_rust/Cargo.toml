@@ -1,0 +1,18 @@
+[package]
+name = "kernel_rust"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+
+[build-dependencies]
+
+[features]
+default = []
+
+[profile.dev]
+panic = "abort"
+opt-level = 1
+
+[profile.release]
+panic = "abort"

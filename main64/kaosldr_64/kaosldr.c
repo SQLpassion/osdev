@@ -14,6 +14,7 @@ void kaosldr_main()
 {
     // Load the x64 OS Kernel into memory for its execution...
     int kernelSize = LoadKernelIntoMemory("KERNEL  BIN");
+    // int kernelSize = LoadKernelIntoMemory("KERNEL_RBIN");
     kernelSize *= 512;
 
     // Execute the Kernel.
