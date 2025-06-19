@@ -8,9 +8,10 @@
     "os": "none",
     "executables": true,
     "linker-flavor": "ld.lld",
-    "linker": "rust-lld",
+    "linker": "ld.lld",
     "panic-strategy": "abort",
     "disable-redzone": true,
     "features": "-mmx,-sse,+soft-float",
-    "rustc-abi": "x86-softfloat"
+    "rustc-abi": "x86-softfloat",
+    "code-model": "large"
 }
