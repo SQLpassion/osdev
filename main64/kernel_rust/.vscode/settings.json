@@ -1,0 +1,10 @@
+{
+    "python-envs.defaultEnvManager": "ms-python.python:conda",
+    "python-envs.defaultPackageManager": "ms-python.python:conda",
+    "python-envs.pythonProjects": [],
+    "rust-analyzer.cargo.target": "x86_64-unknown-none",
+    "rust-analyzer.cargo.allTargets": false,
+    "rust-analyzer.cargo.extraArgs": ["--target", "x86_64-unknown-none"],
+    "rust-analyzer.checkOnSave.command": "check",
+    "rust-analyzer.checkOnSave.extraArgs": ["--target", "x86_64-unknown-none"]
+}

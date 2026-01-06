@@ -1,0 +1,21 @@
+[package]
+name = "kaos_kernel"
+version = "0.1.0"
+edition = "2021"
+authors = ["Klaus Aschenbrenner"]
+autotests = false
+
+[dependencies]
+
+[profile.dev]
+panic = "abort"
+opt-level = 1
+
+[profile.release]
+panic = "abort"
+lto = true
+opt-level = "z"
+
+[[bin]]
+name = "kaos_kernel"
+test = false

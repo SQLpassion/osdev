@@ -1,0 +1,21 @@
+[build]
+target = "x86_64-unknown-none"
+
+[target.x86_64-unknown-none]
+rustflags = [
+    "-C", "link-arg=-Tlink.ld",
+    "-C", "link-arg=-z",
+    "-C", "link-arg=max-page-size=0x1000",
+    "-C", "code-model=large",
+    "-C", "relocation-model=static",
+]
+linker = "rust-lld"
+
+[unstable]
+build-std = ["core", "alloc"]
+build-std-features = ["compiler-builtins-mem"]
+
+[alias]
+check = "check --target x86_64-unknown-none"
+build = "build --target x86_64-unknown-none"
+run = "run --target x86_64-unknown-none"
