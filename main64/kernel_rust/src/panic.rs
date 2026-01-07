@@ -3,6 +3,7 @@
 //! Required for `no_std` environments.
 
 use core::panic::PanicInfo;
+use core::fmt::Write;
 use crate::drivers::screen::{Screen, Color};
 
 /// Panic handler - called when the kernel panics
@@ -17,22 +18,17 @@ fn panic(info: &PanicInfo) -> !
     screen.clear();
     
     screen.set_colors(Color::White, Color::Blue);
-    screen.print_str("\n!!! KERNEL PANIC !!!\n");
+    write!(screen, "\n!!! KERNEL PANIC !!!\n").unwrap();
 
     if let Some(location) = info.location()
     {
-        screen.print_str("Location: ");
-        screen.print_str(location.file());
-        screen.print_str(":");
-        screen.print_int(location.line() as u32, 10);
-        screen.print_str("\n");
+        write!(screen, "Location: {}:{}", location.file(), location.line()).unwrap();
+        write!(screen, "\n").unwrap();
     }
 
     if let Some(message) = info.message().as_str()
     {
-        screen.print_str("Message: ");
-        screen.print_str(message);
-        screen.print_str("\n");
+        write!(screen, "Message: {}\n", message).unwrap();
     }
 
     // Halt the CPU

@@ -10,7 +10,7 @@ use core::arch::asm;
 /// # Safety
 /// Port I/O is inherently unsafe as it can affect hardware state.
 #[inline]
-pub unsafe fn inb(port: u16) -> u8 {
+unsafe fn inb(port: u16) -> u8 {
     let value: u8;
     asm!(
         "in al, dx",
@@ -26,7 +26,7 @@ pub unsafe fn inb(port: u16) -> u8 {
 /// # Safety
 /// Port I/O is inherently unsafe as it can affect hardware state.
 #[inline]
-pub unsafe fn outb(port: u16, value: u8) {
+unsafe fn outb(port: u16, value: u8) {
     asm!(
         "out dx, al",
         in("dx") port,
@@ -40,7 +40,7 @@ pub unsafe fn outb(port: u16, value: u8) {
 /// # Safety
 /// Port I/O is inherently unsafe as it can affect hardware state.
 #[inline]
-pub unsafe fn inw(port: u16) -> u16 {
+unsafe fn inw(port: u16) -> u16 {
     let value: u16;
     asm!(
         "in ax, dx",
@@ -56,7 +56,7 @@ pub unsafe fn inw(port: u16) -> u16 {
 /// # Safety
 /// Port I/O is inherently unsafe as it can affect hardware state.
 #[inline]
-pub unsafe fn outw(port: u16, value: u16) {
+unsafe fn outw(port: u16, value: u16) {
     asm!(
         "out dx, ax",
         in("dx") port,
@@ -70,7 +70,7 @@ pub unsafe fn outw(port: u16, value: u16) {
 /// # Safety
 /// Port I/O is inherently unsafe as it can affect hardware state.
 #[inline]
-pub unsafe fn inl(port: u16) -> u32 {
+unsafe fn inl(port: u16) -> u32 {
     let value: u32;
     asm!(
         "in eax, dx",
@@ -86,7 +86,7 @@ pub unsafe fn inl(port: u16) -> u32 {
 /// # Safety
 /// Port I/O is inherently unsafe as it can affect hardware state.
 #[inline]
-pub unsafe fn outl(port: u16, value: u32) {
+unsafe fn outl(port: u16, value: u32) {
     asm!(
         "out dx, eax",
         in("dx") port,

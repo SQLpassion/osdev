@@ -5,7 +5,8 @@
 //! virtual address 0xFFFF8000000B8000 in the higher-half kernel.
 
 use core::ptr;
-use crate::arch::port::outb;
+use crate::arch::port::PortByte;
+use core::fmt;
 
 /// VGA text buffer base address (higher-half kernel mapping)
 const VGA_BUFFER: usize = 0xFFFF8000000B8000;
@@ -16,7 +17,7 @@ const VGA_DATA_REGISTER: u16 = 0x3D5;
 
 /// Default screen dimensions
 const DEFAULT_COLS: usize = 80;
-const DEFAULT_ROWS: usize = 24;
+const DEFAULT_ROWS: usize = 25;
 
 /// VGA Colors (matching C defines in screen.h)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,6 +148,14 @@ impl Screen {
                 // Backspace
                 if self.col > 0 {
                     self.col -= 1;
+                } else if self.row > 0 {
+                    self.row -= 1;
+                    self.col = self.num_cols - 1;
+                } else {
+                    return;
+                }
+
+                {
                     let blank = VgaChar {
                         character: b' ',
                         attribute: self.attribute(),
@@ -181,75 +190,15 @@ impl Screen {
         }
     }
 
-    /// Print an unsigned integer in the given base (2-16)
-    pub fn print_int(&mut self, mut n: u32, base: u32) {
-        if n == 0 {
-            self.print_char(b'0');
-            return;
-        }
-
-        let mut buf = [0u8; 32];
-        let mut i = 0;
-
-        while n > 0 {
-            let digit = (n % base) as u8;
-            buf[i] = if digit < 10 {
-                b'0' + digit
-            } else {
-                b'A' + digit - 10
-            };
-            n /= base;
-            i += 1;
-        }
-
-        while i > 0 {
-            i -= 1;
-            self.print_char(buf[i]);
-        }
-    }
-
-    /// Print a 64-bit unsigned integer in the given base
-    pub fn print_u64(&mut self, mut n: u64, base: u64) {
-        if n == 0 {
-            self.print_char(b'0');
-            return;
-        }
-
-        let mut buf = [0u8; 64];
-        let mut i = 0;
-
-        while n > 0 {
-            let digit = (n % base) as u8;
-            buf[i] = if digit < 10 {
-                b'0' + digit
-            } else {
-                b'A' + digit - 10
-            };
-            n /= base;
-            i += 1;
-        }
-
-        while i > 0 {
-            i -= 1;
-            self.print_char(buf[i]);
-        }
-    }
-
-    /// Print a hexadecimal number with 0x prefix
-    pub fn print_hex(&mut self, n: u64) {
-        self.print_str("0x");
-        self.print_u64(n, 16);
-    }
-
     /// Scroll the screen if necessary (matching C Scroll function)
     fn scroll(&mut self) {
         if self.row >= self.num_rows {
             // Move all lines up by one
-            for row in 1..self.num_rows {
-                for col in 0..self.num_cols {
-                    let ch = self.read_vga(row, col);
-                    self.write_vga(row - 1, col, ch);
-                }
+            let count = (self.num_rows - 1) * self.num_cols;
+            unsafe {
+                let dst = self.vga_ptr(0, 0);
+                let src = self.vga_ptr(1, 0);
+                ptr::copy(src, dst, count);
             }
 
             // Clear the last line
@@ -271,13 +220,16 @@ impl Screen {
         let pos = (self.row * self.num_cols + self.col) as u16;
 
         unsafe {
+            let ctrl = PortByte::new(VGA_CTRL_REGISTER);
+            let data = PortByte::new(VGA_DATA_REGISTER);
+
             // High byte
-            outb(VGA_CTRL_REGISTER, 14);
-            outb(VGA_DATA_REGISTER, (pos >> 8) as u8);
+            ctrl.write(14);
+            data.write((pos >> 8) as u8);
 
             // Low byte
-            outb(VGA_CTRL_REGISTER, 15);
-            outb(VGA_DATA_REGISTER, pos as u8);
+            ctrl.write(15);
+            data.write(pos as u8);
         }
     }
 
@@ -292,9 +244,29 @@ impl Screen {
     pub fn get_cursor(&self) -> (usize, usize) {
         (self.row, self.col)
     }
+}
 
-    /// Get screen dimensions
-    pub fn dimensions(&self) -> (usize, usize) {
-        (self.num_cols, self.num_rows)
+// Implement the core::fmt::Write trait so write!() works on Screen
+impl fmt::Write for Screen {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.print_str(s);
+        Ok(())
+    }
+
+    fn write_char(&mut self, c: char) -> fmt::Result {
+        match c {
+            '\n' => self.print_char(b'\n'),
+            '\r' => self.print_char(b'\r'),
+            '\t' => self.print_char(b'\t'),
+            ch => {
+                if ch.is_ascii() {
+                    self.print_char(ch as u8);
+                } else {
+                    // Fallback for non-ASCII
+                    self.print_char(b'?');
+                }
+            }
+        }
+        Ok(())
     }
 }
