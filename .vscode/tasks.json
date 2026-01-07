@@ -24,7 +24,7 @@
         {
             "label": "Build & Debug KAOS Rust",
             "type": "shell",
-            "command": "${workspaceFolder}/main64/build_rust.sh && qemu-system-x86_64 -drive format=raw,file=${workspaceFolder}/main64/kaos64_rust.img -s -S",
+            "command": "${workspaceFolder}/main64/build_rust.sh && sudo qemu-system-x86_64 -drive format=raw,file=${workspaceFolder}/main64/kaos64_rust.img -s -S",
             "options": {
                 "cwd": "${workspaceFolder}/main64"
             },

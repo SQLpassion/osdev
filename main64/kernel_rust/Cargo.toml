@@ -21,4 +21,4 @@ debug = true
 
 [[bin]]
 name = "kaos_kernel"
-test = false
+harness = false

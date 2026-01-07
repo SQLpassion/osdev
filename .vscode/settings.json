@@ -8,5 +8,5 @@
     "rust-analyzer.linkedProjects": [
         "main64/kernel_rust/Cargo.toml"
     ],
-    "rust-analyzer.checkOnSave.command": "clippy"
+    "rust-analyzer.check.command": "clippy"
 }

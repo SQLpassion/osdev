@@ -5,6 +5,6 @@
     "rust-analyzer.cargo.target": "x86_64-unknown-none",
     "rust-analyzer.cargo.allTargets": false,
     "rust-analyzer.cargo.extraArgs": ["--target", "x86_64-unknown-none"],
-    "rust-analyzer.checkOnSave.command": "check",
-    "rust-analyzer.checkOnSave.extraArgs": ["--target", "x86_64-unknown-none"]
+    "rust-analyzer.check.command": "check",
+    "rust-analyzer.check.extraArgs": ["--target", "x86_64-unknown-none"]
 }

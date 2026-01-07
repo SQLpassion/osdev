@@ -4,9 +4,9 @@
 //! Video memory is at physical address 0xB8000, which is mapped to
 //! virtual address 0xFFFF8000000B8000 in the higher-half kernel.
 
-use core::ptr;
 use crate::arch::port::PortByte;
 use core::fmt;
+use core::ptr;
 
 /// VGA text buffer base address (higher-half kernel mapping)
 const VGA_BUFFER: usize = 0xFFFF8000000B8000;
@@ -21,6 +21,7 @@ const DEFAULT_ROWS: usize = 25;
 
 /// VGA Colors (matching C defines in screen.h)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 #[repr(u8)]
 pub enum Color {
     Black = 0,
@@ -87,13 +88,6 @@ impl Screen {
     fn write_vga(&self, row: usize, col: usize, ch: VgaChar) {
         unsafe {
             ptr::write_volatile(self.vga_ptr(row, col), ch);
-        }
-    }
-
-    /// Read a character from the VGA buffer (volatile read)
-    fn read_vga(&self, row: usize, col: usize) -> VgaChar {
-        unsafe {
-            ptr::read_volatile(self.vga_ptr(row, col))
         }
     }
 
@@ -234,6 +228,7 @@ impl Screen {
     }
 
     /// Set cursor position (0-based)
+    #[allow(dead_code)]
     pub fn set_cursor(&mut self, row: usize, col: usize) {
         self.row = row.min(self.num_rows - 1);
         self.col = col.min(self.num_cols - 1);
@@ -241,6 +236,7 @@ impl Screen {
     }
 
     /// Get cursor position (0-based)
+    #[allow(dead_code)]
     pub fn get_cursor(&self) -> (usize, usize) {
         (self.row, self.col)
     }

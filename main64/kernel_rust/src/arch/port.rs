@@ -40,6 +40,7 @@ unsafe fn outb(port: u16, value: u8) {
 /// # Safety
 /// Port I/O is inherently unsafe as it can affect hardware state.
 #[inline]
+#[allow(dead_code)]
 unsafe fn inw(port: u16) -> u16 {
     let value: u16;
     asm!(
@@ -70,6 +71,7 @@ unsafe fn outw(port: u16, value: u16) {
 /// # Safety
 /// Port I/O is inherently unsafe as it can affect hardware state.
 #[inline]
+#[allow(dead_code)]
 unsafe fn inl(port: u16) -> u32 {
     let value: u32;
     asm!(
@@ -86,6 +88,7 @@ unsafe fn inl(port: u16) -> u32 {
 /// # Safety
 /// Port I/O is inherently unsafe as it can affect hardware state.
 #[inline]
+#[allow(dead_code)]
 unsafe fn outl(port: u16, value: u32) {
     asm!(
         "out dx, eax",
@@ -143,6 +146,7 @@ impl PortWord {
     /// # Safety
     /// Port I/O is inherently unsafe.
     #[inline]
+    #[allow(dead_code)]
     pub unsafe fn read(&self) -> u16 {
         inw(self.port)
     }

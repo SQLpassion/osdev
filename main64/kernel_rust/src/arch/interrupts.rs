@@ -2,6 +2,7 @@
 
 use core::arch::{asm, global_asm};
 use core::mem::size_of;
+use core::ptr::{addr_of, addr_of_mut};
 
 use crate::arch::port::PortByte;
 
@@ -24,7 +25,6 @@ const PIC_ICW4_8086: u8 = 0x01;
 
 global_asm!(
     r#"
-    .intel_syntax noprefix
     .section .text
     .global irq1_stub
     .type irq1_stub, @function
@@ -68,7 +68,6 @@ irq1_stub:
     pop rax
     sti
     iretq
-    .att_syntax
 "#
 );
 
@@ -125,7 +124,7 @@ static mut IRQ_HANDLERS: [Option<IrqHandler>; IDT_ENTRIES] = [None; IDT_ENTRIES]
 
 /// Initialize IDT and PIC for IRQ handling.
 pub fn init() {
-    unsafe { disable(); }
+    disable();
     init_idt();
     remap_pic(IRQ_BASE, IRQ_BASE + 8);
     mask_pic();
@@ -134,21 +133,26 @@ pub fn init() {
 
 /// Enable interrupts globally.
 pub fn enable() {
-    unsafe { asm!("sti", options(nomem, nostack, preserves_flags)); }
+    unsafe {
+        asm!("sti", options(nomem, nostack, preserves_flags));
+    }
 }
 
 /// Disable interrupts globally.
 pub fn disable() {
-    unsafe { asm!("cli", options(nomem, nostack, preserves_flags)); }
+    unsafe {
+        asm!("cli", options(nomem, nostack, preserves_flags));
+    }
 }
 
 fn init_idt() {
     unsafe {
-        IDT[IRQ1_VECTOR as usize].set_handler(irq1_stub as usize);
+        let idt = &mut *addr_of_mut!(IDT);
+        idt[IRQ1_VECTOR as usize].set_handler(irq1_stub as *const () as usize);
 
         let idt_ptr = IdtPointer {
             limit: (size_of::<IdtEntry>() * IDT_ENTRIES - 1) as u16,
-            base: IDT.as_ptr() as u64,
+            base: addr_of!(IDT) as u64,
         };
 
         asm!(
@@ -162,25 +166,30 @@ fn init_idt() {
 /// Register a callback for a given interrupt vector.
 pub fn register_irq_handler(vector: u8, handler: IrqHandler) {
     unsafe {
-        IRQ_HANDLERS[vector as usize] = Some(handler);
+        let handlers = &mut *addr_of_mut!(IRQ_HANDLERS);
+        handlers[vector as usize] = Some(handler);
     }
 }
 
 fn clear_irq_handlers() {
     unsafe {
-        for slot in IRQ_HANDLERS.iter_mut() {
+        let handlers = &mut *addr_of_mut!(IRQ_HANDLERS);
+        for slot in handlers.iter_mut() {
             *slot = None;
         }
     }
 }
 
 fn dispatch_irq(vector: u8) {
-    let handler = unsafe { IRQ_HANDLERS[vector as usize] };
+    let handler = unsafe {
+        let handlers = &*addr_of!(IRQ_HANDLERS);
+        handlers[vector as usize]
+    };
     if let Some(handler) = handler {
         handler(vector);
     }
 
-    if vector >= IRQ_BASE && vector < IRQ_BASE + 16 {
+    if (IRQ_BASE..IRQ_BASE + 16).contains(&vector) {
         end_of_interrupt(vector - IRQ_BASE);
     }
 }

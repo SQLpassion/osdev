@@ -24,22 +24,20 @@ const RAW_BUFFER_CAPACITY: usize = 64;
 
 /// Lower-case QWERTZ scan code map (printable ASCII only; 0 == ignored)
 const SCANCODES_LOWER: [u8; SCANCODE_TABLE_LEN] = [
-    0, 0, b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8', b'9', b'0', b's', b'=', 0x08, 0,
-    b'q', b'w', b'e', b'r', b't', b'z', b'u', b'i', b'o', b'p', b'[', b'+', b'\n', 0, b'a', b's',
-    b'd', b'f', b'g', b'h', b'j', b'k', b'l', b'{', b'~', b'<', 0, b'#', b'y', b'x', b'c', b'v',
-    b'b', b'n', b'm', b',', b'.', b'-', 0, b'*', 0, b' ', 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8', b'9', b'0', b's', b'=', 0x08, 0, b'q',
+    b'w', b'e', b'r', b't', b'z', b'u', b'i', b'o', b'p', b'[', b'+', b'\n', 0, b'a', b's', b'd',
+    b'f', b'g', b'h', b'j', b'k', b'l', b'{', b'~', b'<', 0, b'#', b'y', b'x', b'c', b'v', b'b',
+    b'n', b'm', b',', b'.', b'-', 0, b'*', 0, b' ', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 ];
 
 /// Upper-case QWERTZ scan code map (printable ASCII only; 0 == ignored)
 const SCANCODES_UPPER: [u8; SCANCODE_TABLE_LEN] = [
-    0, 0, b'!', b'"', b'$', b'$', b'%', b'&', b'/', b'(', b')', b'=', b'?', b'`', 0x08, 0,
-    b'Q', b'W', b'E', b'R', b'T', b'Z', b'U', b'I', b'O', b'P', b']', b'*', b'\n', 0, b'A', b'S',
-    b'D', b'F', b'G', b'H', b'J', b'K', b'L', b'}', b'@', b'>', 0, b'\\', b'Y', b'X', b'C', b'V',
-    b'B', b'N', b'M', b';', b':', b'_', 0, b'*', 0, b' ', 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, b'!', b'"', b'$', b'$', b'%', b'&', b'/', b'(', b')', b'=', b'?', b'`', 0x08, 0, b'Q',
+    b'W', b'E', b'R', b'T', b'Z', b'U', b'I', b'O', b'P', b']', b'*', b'\n', 0, b'A', b'S', b'D',
+    b'F', b'G', b'H', b'J', b'K', b'L', b'}', b'@', b'>', 0, b'\\', b'Y', b'X', b'C', b'V', b'B',
+    b'N', b'M', b';', b':', b'_', 0, b'*', 0, b' ', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -123,8 +121,12 @@ impl Keyboard {
         }
     }
 
-    fn state_mut(&self) -> &mut KeyboardState {
-        unsafe { &mut *self.state.get() }
+    /// # Safety
+    /// Caller must ensure no concurrent access to keyboard state.
+    /// Safe in single-threaded kernel context with proper IRQ handling.
+    #[allow(clippy::mut_from_ref)]
+    unsafe fn state_mut(&self) -> &mut KeyboardState {
+        &mut *self.state.get()
     }
 }
 
@@ -136,7 +138,7 @@ static KEYBOARD: Keyboard = Keyboard::new();
 pub fn init() {
     KEYBOARD.raw.clear();
     KEYBOARD.buffer.clear();
-    let state = KEYBOARD.state_mut();
+    let state = unsafe { KEYBOARD.state_mut() };
     state.shift = false;
     state.caps_lock = false;
     state.left_ctrl = false;
@@ -176,7 +178,7 @@ fn handle_scancode(code: u8) {
 }
 
 fn handle_break(code: u8) {
-    let state = KEYBOARD.state_mut();
+    let state = unsafe { KEYBOARD.state_mut() };
     match code {
         0x1d => state.left_ctrl = false,
         0x2a | 0x36 => state.shift = false,
@@ -185,7 +187,7 @@ fn handle_break(code: u8) {
 }
 
 fn handle_make(code: u8) {
-    let state = KEYBOARD.state_mut();
+    let state = unsafe { KEYBOARD.state_mut() };
     match code {
         0x1d => {
             state.left_ctrl = true;
@@ -208,7 +210,11 @@ fn handle_make(code: u8) {
         state.shift
     };
 
-    let table = if use_upper { &SCANCODES_UPPER } else { &SCANCODES_LOWER };
+    let table = if use_upper {
+        &SCANCODES_UPPER
+    } else {
+        &SCANCODES_LOWER
+    };
 
     let Some(&key) = table.get(code as usize) else {
         return;
@@ -265,7 +271,9 @@ pub fn read_line(screen: &mut Screen, buf: &mut [u8]) -> usize {
             }
         } else {
             // Sleep until the next interrupt to avoid busy-waiting
-            unsafe { core::arch::asm!("hlt"); }
+            unsafe {
+                core::arch::asm!("hlt");
+            }
         }
     }
 
