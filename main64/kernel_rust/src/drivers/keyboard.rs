@@ -6,7 +6,7 @@ use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::arch::port::PortByte;
-// use crate::drivers::screen::Screen; // Removed unused import
+use crate::drivers::screen::Screen;
 
 /// Keyboard controller ports
 const KYBRD_CTRL_STATS_REG: u16 = 0x64;
@@ -226,4 +226,48 @@ fn is_alpha(code: u8) -> bool {
             | 0x1e..=0x26 // A..L
             | 0x2c..=0x32 // Z..M
     )
+}
+
+/// Read a line into `buf`, echoing to `screen`. Returns the number of bytes written.
+/// The newline is echoed but not stored in `buf`.
+pub fn read_line(screen: &mut Screen, buf: &mut [u8]) -> usize {
+    let mut len = 0;
+
+    loop {
+        poll();
+
+        if let Some(ch) = read_char() {
+            match ch {
+                b'\r' | b'\n' => {
+                    // Echo LF; terminate input
+                    screen.print_char(b'\n');
+                    break;
+                }
+                0x08 => {
+                    // Backspace: erase last character if any
+                    if len > 0 {
+                        len -= 1;
+                        screen.print_char(0x08);
+                        screen.print_char(b' ');
+                        screen.print_char(0x08);
+                    }
+                }
+                _ => {
+                    if len < buf.len() {
+                        buf[len] = ch;
+                        len += 1;
+                        screen.print_char(ch);
+                    } else {
+                        // Optional: bell on overflow
+                        // screen.print_char(0x07);
+                    }
+                }
+            }
+        } else {
+            // Sleep until the next interrupt to avoid busy-waiting
+            unsafe { core::arch::asm!("hlt"); }
+        }
+    }
+
+    len
 }

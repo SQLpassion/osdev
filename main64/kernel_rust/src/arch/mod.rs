@@ -2,3 +2,4 @@
 
 pub mod port;
 pub mod interrupts;
+pub mod power;

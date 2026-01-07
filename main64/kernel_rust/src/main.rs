@@ -14,6 +14,63 @@ use drivers::screen::{Color, Screen};
 use drivers::keyboard;
 use core::fmt::Write;
 use crate::arch::interrupts;
+use crate::arch::power;
+
+/// Execute a simple command from a line of input.
+fn execute_command(screen: &mut Screen, line: &str) {
+    let line = line.trim();
+    if line.is_empty() {
+        screen.print_char(b'\n');
+        return;
+    }
+
+    let mut parts = line.split_whitespace();
+    let cmd = parts.next().unwrap();
+
+    match cmd {
+        "help" => {
+            write!(screen, "Commands:\n").unwrap();
+            write!(screen, "  help            - show this help\n").unwrap();
+            write!(screen, "  echo <text>     - print text\n").unwrap();
+            write!(screen, "  cls             - clear screen\n").unwrap();
+            write!(screen, "  color <name>    - set color (white, cyan, green)\n").unwrap();
+            write!(screen, "  shutdown        - shutdown the system\n").unwrap();
+        }
+        "echo" => {
+            let rest = line[cmd.len()..].trim_start();
+            if !rest.is_empty() {
+                write!(screen, "{}\n", rest).unwrap();
+            } else {
+                screen.print_char(b'\n');
+            }
+        }
+        "cls" | "clear" => {
+            screen.clear();
+        }
+        "color" => {
+            if let Some(name) = parts.next() {
+                if name.eq_ignore_ascii_case("white") {
+                    screen.set_color(Color::White);
+                } else if name.eq_ignore_ascii_case("cyan") {
+                    screen.set_color(Color::LightCyan);
+                } else if name.eq_ignore_ascii_case("green") {
+                    screen.set_color(Color::LightGreen);
+                } else {
+                    write!(screen, "Unknown color: {}\n", name).unwrap();
+                }
+            } else {
+                write!(screen, "Usage: color <white|cyan|green>\n").unwrap();
+            }
+        }
+        "shutdown" => {
+            write!(screen, "Shutting down...\n").unwrap();
+            power::shutdown();
+        }
+        _ => {
+            write!(screen, "Unknown command: {}\n", cmd).unwrap();
+        }
+    }
+}
 
 /// Kernel entry point - called from bootloader (kaosldr_64)
 ///
@@ -49,6 +106,7 @@ pub extern "C" fn KernelMain(kernel_size: i32) -> !
     screen.set_color(Color::White);
     write!(screen, "Kernel loaded successfully!\n").unwrap();
     write!(screen, "Kernel size: {} bytes\n\n", kernel_size).unwrap();
+    write!(screen, "System initialized.\n").unwrap();
 
     // write!() Macro testing
     write!(screen, "Hello\n").unwrap();
@@ -56,20 +114,22 @@ pub extern "C" fn KernelMain(kernel_size: i32) -> !
     write!(screen, "X={}, Y={}\n", 10, 20).unwrap();
     write!(screen, "Hex: 0x{:x}\n\n", 255).unwrap();  // 0xff
 
-    // Echo input from the keyboard ring buffer (IRQ1 should feed it).
-    screen.set_color(Color::LightCyan);
-    write!(screen, "System initialized. Echoing keyboard input.\n").unwrap();
+    // A simple REPL loop
+    prompt_loop(&mut screen);
+}
 
+/// Infinite prompt loop using read_line; echoes entered lines.
+fn prompt_loop(screen: &mut Screen) -> ! {
     loop {
-        keyboard::poll();
+        write!(screen, "> ").unwrap();
 
-        if let Some(ch) = keyboard::read_char() {
-            screen.print_char(ch);
-        }
+        let mut buf = [0u8; 128];
+        let len = keyboard::read_line(screen, &mut buf);
 
-        unsafe {
-            // Halt the CPU until the next interrupt arrives - to save power
-            core::arch::asm!("hlt");
+        if let Ok(line) = core::str::from_utf8(&buf[..len]) {
+            execute_command(screen, line);
+        } else {
+            write!(screen, "(invalid UTF-8)\n").unwrap();
         }
     }
 }
