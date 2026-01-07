@@ -1,0 +1,234 @@
+//! Interrupt and PIC wiring for Rust-side IRQ handling.
+
+use core::arch::{asm, global_asm};
+use core::mem::size_of;
+
+use crate::arch::port::PortByte;
+
+const IDT_ENTRIES: usize = 256;
+const IRQ_BASE: u8 = 32;
+pub const IRQ1_VECTOR: u8 = IRQ_BASE + 1;
+
+const IDT_PRESENT: u8 = 0x80;
+const IDT_INTERRUPT_GATE: u8 = 0x0E;
+
+const PIC1_COMMAND: u16 = 0x20;
+const PIC1_DATA: u16 = 0x21;
+const PIC2_COMMAND: u16 = 0xA0;
+const PIC2_DATA: u16 = 0xA1;
+const PIC_EOI: u8 = 0x20;
+
+const PIC_ICW1_INIT: u8 = 0x10;
+const PIC_ICW1_ICW4: u8 = 0x01;
+const PIC_ICW4_8086: u8 = 0x01;
+
+global_asm!(
+    r#"
+    .intel_syntax noprefix
+    .section .text
+    .global irq1_stub
+    .type irq1_stub, @function
+irq1_stub:
+    cli
+    push rax
+    push rcx
+    push rdx
+    push rbx
+    push rbp
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+
+    sub rsp, 8
+    mov edi, 33
+    call irq1_rust_dispatch
+    add rsp, 8
+
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rbp
+    pop rbx
+    pop rdx
+    pop rcx
+    pop rax
+    sti
+    iretq
+    .att_syntax
+"#
+);
+
+extern "C" {
+    fn irq1_stub();
+}
+
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+struct IdtEntry {
+    offset_low: u16,
+    selector: u16,
+    ist: u8,
+    type_attr: u8,
+    offset_mid: u16,
+    offset_high: u32,
+    zero: u32,
+}
+
+impl IdtEntry {
+    const fn missing() -> Self {
+        Self {
+            offset_low: 0,
+            selector: 0,
+            ist: 0,
+            type_attr: 0,
+            offset_mid: 0,
+            offset_high: 0,
+            zero: 0,
+        }
+    }
+
+    fn set_handler(&mut self, handler: usize) {
+        self.offset_low = handler as u16;
+        self.selector = 0x08;
+        self.ist = 0;
+        self.type_attr = IDT_PRESENT | IDT_INTERRUPT_GATE;
+        self.offset_mid = (handler >> 16) as u16;
+        self.offset_high = (handler >> 32) as u32;
+        self.zero = 0;
+    }
+}
+
+#[repr(C, packed)]
+struct IdtPointer {
+    limit: u16,
+    base: u64,
+}
+
+type IrqHandler = fn(u8);
+
+static mut IDT: [IdtEntry; IDT_ENTRIES] = [IdtEntry::missing(); IDT_ENTRIES];
+static mut IRQ_HANDLERS: [Option<IrqHandler>; IDT_ENTRIES] = [None; IDT_ENTRIES];
+
+/// Initialize IDT and PIC for IRQ handling.
+pub fn init() {
+    unsafe { disable(); }
+    init_idt();
+    remap_pic(IRQ_BASE, IRQ_BASE + 8);
+    mask_pic();
+    clear_irq_handlers();
+}
+
+/// Enable interrupts globally.
+pub fn enable() {
+    unsafe { asm!("sti", options(nomem, nostack, preserves_flags)); }
+}
+
+/// Disable interrupts globally.
+pub fn disable() {
+    unsafe { asm!("cli", options(nomem, nostack, preserves_flags)); }
+}
+
+fn init_idt() {
+    unsafe {
+        IDT[IRQ1_VECTOR as usize].set_handler(irq1_stub as usize);
+
+        let idt_ptr = IdtPointer {
+            limit: (size_of::<IdtEntry>() * IDT_ENTRIES - 1) as u16,
+            base: IDT.as_ptr() as u64,
+        };
+
+        asm!(
+            "lidt [{}]",
+            in(reg) &idt_ptr,
+            options(readonly, nostack, preserves_flags)
+        );
+    }
+}
+
+/// Register a callback for a given interrupt vector.
+pub fn register_irq_handler(vector: u8, handler: IrqHandler) {
+    unsafe {
+        IRQ_HANDLERS[vector as usize] = Some(handler);
+    }
+}
+
+fn clear_irq_handlers() {
+    unsafe {
+        for slot in IRQ_HANDLERS.iter_mut() {
+            *slot = None;
+        }
+    }
+}
+
+fn dispatch_irq(vector: u8) {
+    let handler = unsafe { IRQ_HANDLERS[vector as usize] };
+    if let Some(handler) = handler {
+        handler(vector);
+    }
+
+    if vector >= IRQ_BASE && vector < IRQ_BASE + 16 {
+        end_of_interrupt(vector - IRQ_BASE);
+    }
+}
+
+fn remap_pic(offset1: u8, offset2: u8) {
+    unsafe {
+        let cmd1 = PortByte::new(PIC1_COMMAND);
+        let cmd2 = PortByte::new(PIC2_COMMAND);
+        let data1 = PortByte::new(PIC1_DATA);
+        let data2 = PortByte::new(PIC2_DATA);
+
+        let icw1 = PIC_ICW1_INIT | PIC_ICW1_ICW4;
+        cmd1.write(icw1);
+        cmd2.write(icw1);
+
+        data1.write(offset1);
+        data2.write(offset2);
+
+        data1.write(0x04);
+        data2.write(0x02);
+
+        data1.write(PIC_ICW4_8086);
+        data2.write(PIC_ICW4_8086);
+    }
+}
+
+fn mask_pic() {
+    unsafe {
+        let data1 = PortByte::new(PIC1_DATA);
+        let data2 = PortByte::new(PIC2_DATA);
+
+        data1.write(0xFD); // Unmask IRQ1 only.
+        data2.write(0xFF); // Mask all slave IRQs.
+    }
+}
+
+fn end_of_interrupt(irq: u8) {
+    unsafe {
+        if irq >= 8 {
+            PortByte::new(PIC2_COMMAND).write(PIC_EOI);
+        }
+        PortByte::new(PIC1_COMMAND).write(PIC_EOI);
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn irq1_rust_dispatch(vector: u8) {
+    if vector == IRQ1_VECTOR {
+        dispatch_irq(vector);
+    }
+}
