@@ -31,6 +31,29 @@
           "text": "-interpreter-exec console \"add-symbol-file ${workspaceFolder}/main64/programs/shell/shell.elf 0x0000700000000000\""
         }
       ]
+    },
+    {
+      "name": "Debug KAOS Rust x64 via QEMU GDB Stub",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/main64/kernel_rust/target/x86_64-unknown-none/debug/kaos_kernel",
+      "cwd": "${workspaceFolder}",
+      "MIMode": "gdb",
+      "miDebuggerPath": "rust-gdb",
+      "miDebuggerServerAddress": "localhost:1234",
+      "preLaunchTask": "Build & Debug KAOS Rust",
+      "stopAtEntry": true,
+      "externalConsole": false,
+      "setupCommands": [
+        {
+          "description": "Set disassembly flavor to Intel",
+          "text": "-interpreter-exec console \"set disassembly-flavor intel\""
+        },
+        {
+          "description": "Load Rust kernel symbols at virtual address",
+          "text": "-interpreter-exec console \"add-symbol-file ${workspaceFolder}/main64/kernel_rust/target/x86_64-unknown-none/debug/kaos_kernel 0xFFFF800000100000\""
+        }
+      ]
     }
   ]
 }

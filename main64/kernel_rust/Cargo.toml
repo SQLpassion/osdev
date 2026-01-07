@@ -10,11 +10,14 @@ autotests = false
 [profile.dev]
 panic = "abort"
 opt-level = 1
+debug = true
+lto = false
 
 [profile.release]
 panic = "abort"
 lto = true
 opt-level = "z"
+debug = true
 
 [[bin]]
 name = "kaos_kernel"

@@ -21,6 +21,7 @@ use core::fmt::Write;
 /// # Safety
 /// This function is called from assembly with the kernel size in RDI.
 #[no_mangle]
+#[link_section = ".text.boot"]
 #[allow(unconditional_panic)]
 pub extern "C" fn KernelMain(kernel_size: i32) -> !
 {

@@ -17,14 +17,14 @@ echo "[1/2] Building Rust kernel locally..."
 echo "--------------------------------------"
 cd kernel_rust
 
-echo "  -> Running cargo build --release..."
-cargo build --release
+echo "  -> Running cargo build (debug)..."
+cargo build
 
 echo "  -> Extracting flat binary with cargo objcopy..."
-cargo objcopy --release -- -O binary target/x86_64-unknown-none/release/kernel.bin
+cargo objcopy -- -O binary target/x86_64-unknown-none/debug/kernel.bin
 
-echo "  -> Rust kernel built: kernel_rust/target/x86_64-unknown-none/release/kernel.bin"
-ls -la target/x86_64-unknown-none/release/kernel.bin
+echo "  -> Rust kernel built: kernel_rust/target/x86_64-unknown-none/debug/kernel.bin"
+ls -la target/x86_64-unknown-none/debug/kernel.bin
 
 cd "$SCRIPT_DIR"
 echo ""
@@ -60,7 +60,7 @@ echo "  -> Creating FAT12 disk image..."
 fat_imgen -c -s boot/bootsector.bin -f kaos64_rust.img
 fat_imgen -m -f kaos64_rust.img -i kaosldr_16/kldr16.bin
 fat_imgen -m -f kaos64_rust.img -i kaosldr_64/kldr64.bin
-fat_imgen -m -f kaos64_rust.img -i kernel_rust/target/x86_64-unknown-none/release/kernel.bin
+fat_imgen -m -f kaos64_rust.img -i kernel_rust/target/x86_64-unknown-none/debug/kernel.bin
 
 echo ""
 echo "  -> Disk image created successfully!"
@@ -74,7 +74,7 @@ echo "========================================"
 echo ""
 echo "Output files:"
 echo "  - main64/kaos64_rust.img (bootable disk image)"
-echo "  - main64/kernel_rust/target/x86_64-unknown-none/release/kernel.bin"
+echo "  - main64/kernel_rust/target/x86_64-unknown-none/debug/kernel.bin"
 echo ""
 echo "To run in QEMU:"
 echo "  qemu-system-x86_64 -drive format=raw,file=kaos64_rust.img"
