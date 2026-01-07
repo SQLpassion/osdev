@@ -6,6 +6,7 @@
 #![no_std]
 #![no_main]
 
+mod apps;
 mod arch;
 mod drivers;
 mod panic;
@@ -95,6 +96,8 @@ fn execute_command(screen: &mut Screen, line: &str) {
             writeln!(screen, "  echo <text>     - print text").unwrap();
             writeln!(screen, "  cls             - clear screen").unwrap();
             writeln!(screen, "  color <name>    - set color (white, cyan, green)").unwrap();
+            writeln!(screen, "  apps            - list available applications").unwrap();
+            writeln!(screen, "  run <app>       - run an application").unwrap();
             writeln!(screen, "  shutdown        - shutdown the system").unwrap();
         }
         "echo" => {
@@ -126,6 +129,20 @@ fn execute_command(screen: &mut Screen, line: &str) {
         "shutdown" => {
             writeln!(screen, "Shutting down...").unwrap();
             power::shutdown();
+        }
+        "apps" => {
+            apps::list_apps(screen);
+        }
+        "run" => {
+            if let Some(app_name) = parts.next() {
+                if !apps::run_app(app_name, screen) {
+                    writeln!(screen, "Unknown app: {}", app_name).unwrap();
+                    writeln!(screen, "Use 'apps' to list available applications.").unwrap();
+                }
+            } else {
+                writeln!(screen, "Usage: run <appname>").unwrap();
+                writeln!(screen, "Use 'apps' to list available applications.").unwrap();
+            }
         }
         _ => {
             writeln!(screen, "Unknown command: {}", cmd).unwrap();

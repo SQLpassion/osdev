@@ -19,6 +19,9 @@ const VGA_DATA_REGISTER: u16 = 0x3D5;
 const DEFAULT_COLS: usize = 80;
 const DEFAULT_ROWS: usize = 25;
 
+/// VGA buffer size in bytes (80 cols * 25 rows * 2 bytes per cell)
+pub const VGA_BUFFER_SIZE: usize = DEFAULT_COLS * DEFAULT_ROWS * 2;
+
 /// VGA Colors (matching C defines in screen.h)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -48,6 +51,35 @@ pub enum Color {
 struct VgaChar {
     character: u8,
     attribute: u8,
+}
+
+/// Snapshot of complete screen state for save/restore operations.
+/// Used by the application framework to preserve the REPL screen
+/// while an application runs with full-screen access.
+pub struct ScreenSnapshot {
+    /// Copy of the entire VGA text buffer
+    buffer: [u8; VGA_BUFFER_SIZE],
+    /// Saved cursor row position
+    row: usize,
+    /// Saved cursor column position
+    col: usize,
+    /// Saved foreground color
+    foreground: Color,
+    /// Saved background color
+    background: Color,
+}
+
+impl ScreenSnapshot {
+    /// Create an empty/uninitialized snapshot (for use before save())
+    pub const fn empty() -> Self {
+        Self {
+            buffer: [0u8; VGA_BUFFER_SIZE],
+            row: 0,
+            col: 0,
+            foreground: Color::White,
+            background: Color::Black,
+        }
+    }
 }
 
 /// Screen driver state (mirrors C ScreenLocation struct)
@@ -239,6 +271,45 @@ impl Screen {
     #[allow(dead_code)]
     pub fn get_cursor(&self) -> (usize, usize) {
         (self.row, self.col)
+    }
+
+    /// Save the entire screen state (VGA buffer + cursor/colors) to a snapshot.
+    /// This is used by the application framework to preserve the REPL screen.
+    pub fn save(&self) -> ScreenSnapshot {
+        let mut snapshot = ScreenSnapshot::empty();
+
+        // Copy the entire VGA buffer
+        unsafe {
+            let src = VGA_BUFFER as *const u8;
+            ptr::copy_nonoverlapping(src, snapshot.buffer.as_mut_ptr(), VGA_BUFFER_SIZE);
+        }
+
+        // Save cursor position and colors
+        snapshot.row = self.row;
+        snapshot.col = self.col;
+        snapshot.foreground = self.foreground;
+        snapshot.background = self.background;
+
+        snapshot
+    }
+
+    /// Restore screen state from a previously saved snapshot.
+    /// This restores the VGA buffer, cursor position, and colors.
+    pub fn restore(&mut self, snapshot: &ScreenSnapshot) {
+        // Restore the VGA buffer
+        unsafe {
+            let dst = VGA_BUFFER as *mut u8;
+            ptr::copy_nonoverlapping(snapshot.buffer.as_ptr(), dst, VGA_BUFFER_SIZE);
+        }
+
+        // Restore cursor position and colors
+        self.row = snapshot.row;
+        self.col = snapshot.col;
+        self.foreground = snapshot.foreground;
+        self.background = snapshot.background;
+
+        // Update the hardware cursor to match restored position
+        self.update_cursor();
     }
 }
 
