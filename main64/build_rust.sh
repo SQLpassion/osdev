@@ -67,6 +67,14 @@ echo "  -> Disk image created successfully!"
 ls -la kaos64_rust.img
 '
 
+echo "  -> Creating qcow2 image for UTM..."
+cd "$SCRIPT_DIR"
+qemu-img convert -O qcow2 kaos64_rust.img kaos64_rust.qcow2 
+cp kaos64_rust.qcow2 "$HOME/Library/Containers/com.utmapp.UTM/Data/Documents/KAOS x64.utm/Data/kaos64.qcow2"
+echo ""
+echo "  -> qcow2 image created successfully!"
+ls -la kaos64_rust.qcow2
+
 echo ""
 echo "========================================"
 echo "  Build Complete!"
