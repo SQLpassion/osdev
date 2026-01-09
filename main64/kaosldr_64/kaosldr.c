@@ -1,4 +1,5 @@
 #include "fat12.h"
+#include "misc.h"
 
 // Implemented in assembly, continues at memory location 0x100000 where the Kernel was loaded
 extern void ExecuteKernel(int KernelSize);

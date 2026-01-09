@@ -6,6 +6,7 @@ rustflags = [
     "-C", "link-arg=-Tlink.ld",
     "-C", "link-arg=-z",
     "-C", "link-arg=max-page-size=0x1000",
+    "-C", "link-arg=-Map=kernel.map",
     "-C", "code-model=large",
     "-C", "relocation-model=static",
 ]

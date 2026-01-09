@@ -105,7 +105,7 @@ void itoa(int i, unsigned base, char *buf);
 
 // Helper function for the itoa function.
 // The static keyword means that this function is only available within the scope of this object file.
-static void itoa_helper(unsigned short i, unsigned base, char *buf);
+static void itoa_helper(unsigned int i, unsigned base, char *buf);
 
 // A simple strcmp implementation
 int strcmp(char *s1, char *s2, int len);

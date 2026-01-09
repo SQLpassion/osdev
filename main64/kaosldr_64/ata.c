@@ -13,23 +13,20 @@ void ReadSectors(unsigned char *TargetAddress, unsigned int LBA, unsigned char S
     outb(0x1F6, 0xE0 | ((LBA >> 24) & 0xF));
     outb(0x1F7, 0x20);
 
-    for (int j =0; j < SectorCount; j++)
+    for (int j = 0; j < SectorCount; j++)
     {
         WaitForBSYFlag();
         WaitForDRQFlag();
 
         for (int i = 0; i < 256; i++)
         {
-            // Retrieve a single 16-byte value from the input port
+            // Retrieve a single 16-bit value from the input port
             unsigned short readBuffer = inw(0x1F0);
 
-            // Write the 2 retrieved 8-byte values to their target address
-            TargetAddress[i] = readBuffer & 0xFF;
-            TargetAddress++;
-            TargetAddress[i] = (readBuffer >> 8) & 0xFF;
+            // Write the 2 bytes to consecutive addresses
+            *TargetAddress++ = readBuffer & 0xFF;
+            *TargetAddress++ = (readBuffer >> 8) & 0xFF;
         }
-        
-        TargetAddress += 512;
     }
 }
 

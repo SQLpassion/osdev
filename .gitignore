@@ -37,6 +37,7 @@
 *.hex
 *.bin
 *.img
+*.qcow2
 *.vfd
 
 # Debug files

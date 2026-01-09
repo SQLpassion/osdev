@@ -9,7 +9,7 @@ autotests = false
 
 [profile.dev]
 panic = "abort"
-opt-level = 1
+opt-level = 0
 debug = true
 lto = false
 

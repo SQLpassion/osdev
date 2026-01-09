@@ -77,7 +77,7 @@ static int LoadFileIntoMemory(RootDirectoryEntry *Entry)
         kernelBuffer += 512;
         ReadSectors(kernelBuffer, nextCluster + 33 - 2, 1);
         sectorCount++;
-        
+
         // Read the next Cluster from the FAT table
         nextCluster = FATRead(nextCluster);
     }
@@ -92,14 +92,8 @@ static unsigned short FATRead(unsigned short Cluster)
     // Calculate the offset into the FAT table
     unsigned int fatOffset = (Cluster / 2) + Cluster;
 
-    // CAUTION!
-    // The following line generates a warning during the compilation ("incompatible-pointer-types").
-    // But we can't cast the right side to "(unsigned long *)", because then the loader component
-    // will not work anymore!
-    unsigned long *offset = fatBuffer + fatOffset;
-
     // Read the entry from the FAT
-    unsigned short val = *offset;
+    unsigned short val = fatBuffer[fatOffset] | (fatBuffer[fatOffset + 1] << 8);
    
     if (Cluster & 0x0001)
     {
