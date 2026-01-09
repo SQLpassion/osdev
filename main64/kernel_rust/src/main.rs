@@ -13,6 +13,7 @@ mod panic;
 
 use crate::arch::interrupts;
 use crate::arch::power;
+use core::ptr;
 use core::fmt::Write;
 use drivers::keyboard;
 use drivers::screen::{Color, Screen};
@@ -21,6 +22,7 @@ const PAGE_SIZE: u64 = 4096;
 
 const BIB_OFFSET: usize = 0x1000;
 const MEMORYMAP_OFFSET: usize = 0x1200;
+const KERNEL_OFFSET: u64 = 0x100000;
 
 #[repr(C)]
 struct BiosInformationBlock {
@@ -33,7 +35,7 @@ struct BiosInformationBlock {
     memory_map_entries: i16,
     max_memory: i64,
     available_page_frames: i64,
-    physical_memory_layout: *mut PhysicalMemoryLayout,
+    physical_memory_layout: *mut PhysicalMemoryLayout
 }
 
 #[repr(C)]
@@ -41,11 +43,6 @@ struct BiosMemoryRegion {
     start: u64,
     size: u64,
     region_type: u32,
-}
-
-#[repr(C)]
-struct PhysicalMemoryLayout {
-    memory_region_count: u32,
 }
 
 /// Kernel entry point - called from bootloader (kaosldr_64)
@@ -58,7 +55,11 @@ struct PhysicalMemoryLayout {
 #[no_mangle]
 #[link_section = ".text.boot"]
 #[allow(unconditional_panic)]
-pub extern "C" fn KernelMain(kernel_size: i32) -> ! {
+pub extern "C" fn KernelMain(kernel_size: u64) -> ! {
+    unsafe {
+        init_physical_memory_manager(kernel_size);
+    }
+
     // Initialize interrupt handling and the keyboard ring buffer.
     interrupts::init();
     interrupts::register_irq_handler(interrupts::IRQ1_VECTOR, |_| {
@@ -250,4 +251,157 @@ fn print_memory_map(screen: &mut Screen) {
     
     // Max memory
     writeln!(screen, "Max Memory: {} MB", bib.max_memory / 1024 / 1024 + 1).unwrap();
+}
+
+
+
+
+#[repr(C, packed)]
+pub struct PhysicalMemoryLayout {
+    pub memory_region_count: u64,
+    pub memory_regions: [PhysicalMemoryRegionDescriptor; 16], // adjust as needed
+}
+
+#[repr(C, packed)]
+pub struct PhysicalMemoryRegionDescriptor {
+    pub physical_memory_start_address: u64,
+    pub available_page_frames: u64,
+    pub bitmap_mask_size: u64,
+    pub free_page_frames: u64,
+    pub bitmap_mask_start_address: u64,
+}
+
+#[inline]
+fn align_up(x: u64, align: u64) -> u64 {
+    (x + align - 1) & !(align - 1)
+}
+
+#[inline]
+fn set_bit(idx: u64, base: *mut u64) {
+    unsafe {
+        let word = base.add((idx / 64) as usize);
+        let mask = 1u64 << (idx % 64);
+        *word |= mask;
+    }
+}
+
+#[inline]
+fn clear_bit(idx: u64, base: *mut u64) {
+    unsafe {
+        let word = base.add((idx / 64) as usize);
+        let mask = 1u64 << (idx % 64);
+        *word &= !mask;
+    }
+}
+
+#[inline]
+fn test_bit(idx: u64, base: *const u64) -> bool {
+    unsafe {
+        let word = base.add((idx / 64) as usize);
+        let mask = 1u64 << (idx % 64);
+        (*word & mask) != 0
+    }
+}
+
+pub unsafe fn init_physical_memory_manager(kernel_size: u64) {
+    let bib = (BIB_OFFSET as *mut BiosInformationBlock).as_mut().unwrap();
+    let region = MEMORYMAP_OFFSET as *const BiosMemoryRegion;
+
+    // Place layout right after kernel, 4K aligned
+    let kernel_base = (&KERNEL_OFFSET as *const u64).read();
+    let ks_aligned = align_up(kernel_size, PAGE_SIZE);
+    let start_address = kernel_base.wrapping_add(ks_aligned);
+    let mem_layout = start_address as *mut PhysicalMemoryLayout;
+    (*mem_layout).memory_region_count = 0;
+    bib.physical_memory_layout = mem_layout;
+
+    // Build descriptors for available regions >= 1MB
+    let mut desc_idx = 0usize;
+    for i in 0..bib.memory_map_entries {
+        let r = region.add(i as usize).as_ref().unwrap();
+
+        if r.region_type == 1 && r.start >= 0x100000 {
+            let d = &mut (*mem_layout).memory_regions[desc_idx];
+            d.physical_memory_start_address = r.start;
+            d.available_page_frames = r.size / PAGE_SIZE;
+            d.bitmap_mask_size = d.available_page_frames / 8;
+            d.free_page_frames = d.available_page_frames;
+            d.bitmap_mask_start_address = 0; // fill later
+            desc_idx += 1;
+        }
+    }
+    (*mem_layout).memory_region_count = desc_idx as u64;
+
+    // Lay out bitmaps immediately after descriptors (+8 bytes count padding)
+    let mut bitmap_base = start_address
+        + 8
+        + desc_idx as u64 * (core::mem::size_of::<PhysicalMemoryRegionDescriptor>() as u64);
+    for k in 0..desc_idx {
+        let d = &mut (*mem_layout).memory_regions[k];
+        d.bitmap_mask_start_address = bitmap_base as u64;
+        // Zero bitmap
+        ptr::write_bytes(bitmap_base as *mut u8, 0, d.bitmap_mask_size as usize);
+        bitmap_base += d.bitmap_mask_size;
+    }
+
+    // Mark kernel + PMM area as used in the first region
+    let used_frames = get_used_page_frames(mem_layout);
+    for _ in 0..used_frames {
+        allocate_page_frame();
+    }
+}
+
+// Allocate first free PFN; returns PFN or u64::MAX on failure
+pub unsafe fn allocate_page_frame() -> u64 {
+    let bib = (&BIB_OFFSET as *const usize as *mut BiosInformationBlock)
+        .as_mut()
+        .unwrap();
+    let mem_layout = bib.physical_memory_layout.as_mut().unwrap();
+
+    for k in 0..mem_layout.memory_region_count as usize {
+        let d = &mut mem_layout.memory_regions[k];
+        let bitmap = d.bitmap_mask_start_address as *mut u64;
+        let words = (d.bitmap_mask_size / 8) as usize;
+
+        for w in 0..words {
+            let val = *bitmap.add(w);
+            if val != u64::MAX {
+                let free_bit = (!val).trailing_zeros() as u64;
+                let bit_idx = (w as u64) * 64 + free_bit;
+                set_bit(bit_idx, bitmap);
+                d.free_page_frames -= 1;
+                return d.physical_memory_start_address / PAGE_SIZE as u64 + bit_idx;
+            }
+        }
+    }
+    u64::MAX
+}
+
+// Release PFN (no tracking list here; caller must supply region index)
+pub unsafe fn release_page_frame(pfn: u64, region_index: usize) {
+    let bib = (&BIB_OFFSET as *const usize as *mut BiosInformationBlock)
+        .as_mut()
+        .unwrap();
+    let mem_layout = bib.physical_memory_layout.as_mut().unwrap();
+    let d = &mut mem_layout.memory_regions[region_index];
+    let bitmap = d.bitmap_mask_start_address as *mut u64;
+    let bit_idx = pfn - (d.physical_memory_start_address / PAGE_SIZE as u64);
+    clear_bit(bit_idx, bitmap);
+    d.free_page_frames += 1;
+}
+
+// Calculate pages used by kernel + PMM metadata
+pub unsafe fn get_used_page_frames(layout: *mut PhysicalMemoryLayout) -> u64 {
+    let layout = layout.as_ref().unwrap();
+    let last = &layout.memory_regions[layout.memory_region_count as usize - 1];
+    let last_used = last.bitmap_mask_start_address + last.bitmap_mask_size;
+    
+    if last_used <= KERNEL_OFFSET {
+        return 0;
+    }
+    
+    last_used
+        .wrapping_sub(KERNEL_OFFSET)
+        .wrapping_div(PAGE_SIZE)
+        .wrapping_add(1)
 }
