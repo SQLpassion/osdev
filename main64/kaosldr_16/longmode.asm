@@ -144,69 +144,6 @@
 ;
 ;   Result: Physical Address = 0x000000 + 0x100000 = 0x100000
 ;
-; ================================================================================
-; MEMORY MAP OVERVIEW
-; ================================================================================
-;
-; Physical Memory (First 16MB):
-;
-;     0x000000  +------------------------+
-;               |   Real Mode IVT/BDA    |
-;     0x001000  +------------------------+
-;               | BIOS Information Block |
-;     0x001200  +------------------------+
-;               |    BIOS Memory Map     |
-;     0x001300  +------------------------+
-;               |          Free          |
-;     0x003000  +------------------------+
-;               |     KLDR64.BIN         |  64-bit Loader
-;               +------------------------+
-;               |        ...             |
-;     0x009000  +------------------------+
-;               |        PML4            |  Page Map Level 4 (4KB)
-;               |  Entry[0]   -> 0xA000  |    Identity Mapping
-;               |  Entry[256] -> 0xC000  |    Higher Half Mapping
-;     0x00A000  +------------------------+
-;               |        PDPT            |  Page Dir Pointer Table (4KB) - IDENTITY
-;               |  Entry[0]   -> 0xB000  |
-;     0x00B000  +------------------------+
-;               |         PD             |  Page Directory (4KB) - IDENTITY
-;               |  Entry[0-7] -> 2MB pg  |    Maps phys 0x0 - 0xFFFFFF
-;     0x00C000  +------------------------+
-;               |        PDPT            |  Page Dir Pointer Table (4KB) - HIGHER HALF
-;               |  Entry[0]   -> 0xD000  |
-;     0x00D000  +------------------------+
-;               |         PD             |  Page Directory (4KB) - HIGHER HALF
-;               |  Entry[0-7] -> 2MB pg  |    Maps phys 0x0 - 0xFFFFFF
-;               |                        |    to virt 0xFFFF800000000000+
-;     0x00E000  +------------------------+
-;               |        ...             |
-;     0x100000  +------------------------+  <-- 1MB Mark
-;               |     KERNEL.BIN         |  Rust Kernel loaded here
-;               |        |               |
-;               |        v               |  Kernel code...
-;               |        v               |  Kernel code...
-;               |        v               |  Kernel code...
-;               |       ...              |
-;               |       ...              |
-;               |       ...              |
-;               |        ^               |  Stack...
-;               |        ^               |  Stack...
-;               |        ^               |  Stack...
-;               |        |               |
-;               |      Stack             |  Grows downward (toward lower addresses)
-;     0x400000  +------------------------+  <-- 4MB Mark / Stack Top (RSP)
-;               |        ...             |
-;               |        Free            |
-;               |        ...             |
-;     0x1000000 +------------------------+  <-- 16MB (End of mapped region)
-;
-; Page Table Summary:
-;   - Identity Mapping:    PML4[0]   -> PDPT @ 0xA000 -> PD @ 0xB000 -> 8x 2MB pages
-;   - Higher Half Mapping: PML4[256] -> PDPT @ 0xC000 -> PD @ 0xD000 -> 8x 2MB pages
-;   - Total page table memory: 20KB (5 pages: 0x9000 - 0xDFFF)
-;
-; ================================================================================
 
 %define PAGE_PRESENT    (1 << 0)
 %define PAGE_WRITE      (1 << 1)

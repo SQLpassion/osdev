@@ -24,6 +24,7 @@ const BIB_OFFSET: usize = 0x1000;
 const MEMORYMAP_OFFSET: usize = 0x1200;
 const KERNEL_OFFSET: u64 = 0x100000;
 const MARK_1MB: u64 = 0x100000;
+const STACK_TOP: u64 = 0x400000;
 const KERNEL_VIRT_BASE: u64 = 0xFFFF800000000000;
 
 extern "C" {
@@ -463,24 +464,11 @@ pub unsafe fn release_page_frame(frame: PageFrame) {
     r.frames_free += 1;
 }
 
-// Calculate pages used by kernel + PMM metadata
-pub unsafe fn get_used_page_frames(header: *mut PmmLayoutHeader) -> u64 {
-    let regions = pmm_regions(header);
-    if regions.is_empty() {
-        return 0;
-    }
-
-    let last = &regions[regions.len() - 1];
-    let last_used = last.bitmap_start + last.bitmap_bytes;
-
-    if last_used <= KERNEL_OFFSET {
-        return 0;
-    }
-
-    (last_used - KERNEL_OFFSET) / PAGE_SIZE + 1
+// Calculate pages used by kernel + PMM metadata + stack area.
+// Reserve everything from KERNEL_OFFSET (0x100000) to STACK_TOP (0x400000).
+pub unsafe fn get_used_page_frames(_header: *mut PmmLayoutHeader) -> u64 {
+    (STACK_TOP - KERNEL_OFFSET) / PAGE_SIZE
 }
-
-
 
 /*
                     PHYSICAL MEMORY LAYOUT (RUST PMM)
