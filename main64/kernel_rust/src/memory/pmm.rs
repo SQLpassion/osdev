@@ -1,349 +1,5 @@
-extern "C" {
-    static __bss_end: u8;
-}
-
-use crate::drivers::screen::{Color, Screen};
-use core::fmt::Write;
-
-const PAGE_SIZE: u64 = 4096;
-
-const BIB_OFFSET: usize = 0x1000;
-const MEMORYMAP_OFFSET: usize = 0x1200;
-const KERNEL_OFFSET: u64 = 0x100000;
-const MARK_1MB: u64 = 0x100000;
-const STACK_TOP: u64 = 0x400000;
-const KERNEL_VIRT_BASE: u64 = 0xFFFF800000000000;
-
-#[repr(C)]
-pub struct BiosInformationBlock {
-    year: i32,
-    month: i16,
-    day: i16,
-    hour: i16,
-    minute: i16,
-    second: i16,
-    memory_map_entries: i16,
-    max_memory: i64,
-    available_page_frames: i64,
-    physical_memory_layout: *mut PmmLayoutHeader,
-}
-
-#[repr(C)]
-pub struct BiosMemoryRegion {
-    start: u64,
-    size: u64,
-    region_type: u32,
-}
-
-/// Represents an allocated page frame with its PFN and region info.
-/// This handle is returned by `alloc_frame` and passed to `release_frame`.
-#[derive(Clone, Copy, Debug)]
-pub struct PageFrame {
-    /// Page Frame Number (physical address / PAGE_SIZE)
-    pub pfn: u64,
-
-    /// Internal: index of the memory region this frame belongs to
-    region_index: u32,
-}
-
-impl PageFrame {
-    /// Returns the physical address of this page frame.
-    #[inline]
-    pub fn physical_address(&self) -> u64 {
-        self.pfn * PAGE_SIZE
-    }
-}
-
-#[repr(C)]
-pub struct PmmLayoutHeader {
-    /// Number of usable memory regions described by the PMM.
-    region_count: u32,
-
-    /// Keeps the following region array 8-byte aligned.
-    padding: u32,
-
-    /// Pointer to the first PmmRegion entry.
-    regions_ptr: *mut PmmRegion,
-}
-
-#[repr(C)]
-pub struct PmmRegion {
-    /// Physical start address of the region.
-    start: u64,
-
-    /// Total number of page frames in this region.
-    frames_total: u64,
-
-    /// Current number of free page frames in this region.
-    frames_free: u64,
-
-    /// Physical address of the bitmap for this region.
-    bitmap_start: u64,
-    
-    /// Size of the bitmap in bytes (aligned to 8).
-    bitmap_bytes: u64,
-}
-
-#[inline]
-fn align_up(x: u64, align: u64) -> u64 {
-    (x + align - 1) & !(align - 1)
-}
-
-#[inline]
-fn virt_to_phys(addr: u64) -> u64 {
-    if addr >= KERNEL_VIRT_BASE {
-        addr - KERNEL_VIRT_BASE
-    } else {
-        addr
-    }
-}
-
-#[inline]
-unsafe fn set_bit(idx: u64, base: *mut u64) {
-    let word = base.add((idx / 64) as usize);
-    let mask = 1u64 << (idx % 64);
-    *word |= mask;
-}
-
-#[inline]
-unsafe fn clear_bit(idx: u64, base: *mut u64) {
-    let word = base.add((idx / 64) as usize);
-    let mask = 1u64 << (idx % 64);
-    *word &= !mask;
-}
-
-static mut PMM: PhysicalMemoryManager = PhysicalMemoryManager {
-    header: core::ptr::null_mut(),
-};
-
-pub unsafe fn init() {
-    PMM = PhysicalMemoryManager::new();
-}
-
-pub unsafe fn with_pmm<R>(f: impl FnOnce(&mut PhysicalMemoryManager) -> R) -> R {
-    f(&mut PMM)
-}
-
-/// Prints the memory map that we have obtained from the BIOS in x16 Real Mode.
-pub fn print_memory_map(screen: &mut Screen) {
-    // Mutable view so we can mirror the C code: compute MaxMemory and AvailablePageFrames here.
-    let bib = unsafe { &mut *(BIB_OFFSET as *mut BiosInformationBlock) };
-
-    let region = MEMORYMAP_OFFSET as *const BiosMemoryRegion;
-
-    let entry_count = bib.memory_map_entries as usize;
-
-    // Reset and recompute MaxMemory / AvailablePageFrames like the C physical memory manager.
-    bib.max_memory = 0;
-    bib.available_page_frames = 0;
-
-    // Print header
-    writeln!(screen, "{} Memory Map entries found.", entry_count).unwrap();
-
-    // Loop over each entry
-    for i in 0..entry_count {
-        let current_region = unsafe { &*region.add(i) };
-
-        // Set color based on region type
-        if current_region.region_type == 1 {
-            // Available
-            screen.set_color(Color::LightGreen);
-
-            // Track totals for available regions (matches C code behavior)
-            bib.max_memory = bib.max_memory.wrapping_add(current_region.size as i64);
-            bib.available_page_frames = bib
-                .available_page_frames
-                .wrapping_add((current_region.size / PAGE_SIZE) as i64);
-        } else {
-            // Everything else
-            screen.set_color(Color::LightRed);
-        }
-
-        // Start address
-        write!(screen, "0x{:010x}", current_region.start).unwrap();
-
-        // End address (use wrapping arithmetic to avoid overflow)
-        let end_addr = current_region.start.wrapping_add(current_region.size).wrapping_sub(1);
-        write!(screen, " - 0x{:010x}", end_addr).unwrap();
-
-        // Size in hex
-        write!(screen, " Size: 0x{:09x}", current_region.size).unwrap();
-
-        // Size in KB
-        write!(screen, " {} KB", current_region.size / 1024).unwrap();
-
-        // Size in MB if applicable
-        if current_region.size > 1024 * 1024 {
-            write!(screen, " = {} MB", current_region.size / 1024 / 1024).unwrap();
-        }
-
-        // Memory region type
-        let region_type_str = match current_region.region_type {
-            1 => "Available",
-            2 => "Reserved",
-            3 => "ACPI Reclaim",
-            4 => "ACPI NVS Memory",
-            _ => "Unknown",
-        };
-        writeln!(screen, " ({})", region_type_str).unwrap();
-    }
-
-    // Reset color to white
-    screen.set_color(Color::White);
-
-    // Max memory
-    writeln!(screen, "Max Memory: {} MB", bib.max_memory / 1024 / 1024 + 1).unwrap();
-
-    unsafe {
-        with_pmm(|pmm| {
-            let frames = [pmm.alloc_frame(), pmm.alloc_frame(), pmm.alloc_frame()];
-
-            for (i, pf) in frames.iter().enumerate() {
-                match pf {
-                    Some(f) => writeln!(
-                        screen,
-                        "[{}] pfn={} phys=0x{:x} region={}",
-                        i,
-                        f.pfn,
-                        f.physical_address(),
-                        f.region_index
-                    )
-                    .unwrap(),
-                    None => writeln!(screen, "[{}] allocation failed", i).unwrap(),
-                }
-            }
-        });
-    }
-}
-
-unsafe fn pmm_regions<'a>(header: *mut PmmLayoutHeader) -> &'a mut [PmmRegion] {
-    let count = (*header).region_count as usize;
-    let regions_ptr = (*header).regions_ptr;
-    core::slice::from_raw_parts_mut(regions_ptr, count)
-}
-
-pub struct PhysicalMemoryManager {
-    header: *mut PmmLayoutHeader,
-}
-
-impl PhysicalMemoryManager {
-    pub unsafe fn new() -> Self {
-        let bib = (BIB_OFFSET as *mut BiosInformationBlock).as_mut().unwrap();
-        let region = MEMORYMAP_OFFSET as *const BiosMemoryRegion;
-
-        // Place PMM layout right after the kernel image (including BSS), aligned to 4K.
-        let kernel_end_virt = &__bss_end as *const u8 as u64;
-        let kernel_end_phys = virt_to_phys(kernel_end_virt);
-        let start_addr = align_up(kernel_end_phys, PAGE_SIZE);
-        let header = start_addr as *mut PmmLayoutHeader;
-        (*header).region_count = 0;
-        (*header).padding = 0;
-        (*header).regions_ptr = (header as *mut u8)
-            .add(core::mem::size_of::<PmmLayoutHeader>()) as *mut PmmRegion;
-        bib.physical_memory_layout = header;
-
-        let mut pmm = Self { header };
-
-        // Count usable regions first.
-        let mut count = 0u32;
-        for i in 0..bib.memory_map_entries as usize {
-            let r = &*region.add(i);
-            if r.region_type == 1 && r.start >= MARK_1MB {
-                count += 1;
-            }
-        }
-        (*header).region_count = count;
-
-        let regions = pmm_regions(header);
-
-        // Fill regions.
-        let mut idx = 0usize;
-        for i in 0..bib.memory_map_entries as usize {
-            let r = &*region.add(i);
-            if r.region_type == 1 && r.start >= MARK_1MB {
-                let frames = r.size / PAGE_SIZE;
-                let bitmap_bytes = align_up((frames + 7) / 8, 8);
-                regions[idx] = PmmRegion {
-                    start: r.start,
-                    frames_total: frames,
-                    frames_free: frames,
-                    bitmap_start: 0,
-                    bitmap_bytes,
-                };
-                idx += 1;
-            }
-        }
-
-        // Bitmaps right after the region array.
-        let mut bitmap_base = (regions.as_ptr() as u64)
-            + (count as u64) * (core::mem::size_of::<PmmRegion>() as u64);
-
-        for r in regions.iter_mut() {
-            r.bitmap_start = bitmap_base;
-            core::ptr::write_bytes(r.bitmap_start as *mut u8, 0, r.bitmap_bytes as usize);
-            bitmap_base += r.bitmap_bytes;
-        }
-
-        // Mark kernel + PMM metadata used.
-        let used_frames = pmm.used_frames();
-        for _ in 0..used_frames {
-            let _ = pmm.alloc_frame();
-        }
-
-        pmm
-    }
-
-    /// Allocates a single page frame from the first available region.
-    /// Returns `Some(PageFrame)` on success, or `None` if no free frames exist.
-    pub unsafe fn alloc_frame(&mut self) -> Option<PageFrame> {
-        let regions = pmm_regions(self.header);
-
-        for (idx, r) in regions.iter_mut().enumerate() {
-            if r.frames_free == 0 {
-                continue;
-            }
-            let words = (r.bitmap_bytes / 8) as usize;
-            let bitmap = r.bitmap_start as *mut u64;
-            for w in 0..words {
-                let val = *bitmap.add(w);
-                if val != u64::MAX {
-                    let free_bit = (!val).trailing_zeros() as u64;
-                    let bit_idx = (w as u64) * 64 + free_bit;
-                    if bit_idx < r.frames_total {
-                        set_bit(bit_idx, bitmap);
-                        r.frames_free -= 1;
-                        return Some(PageFrame {
-                            pfn: r.start / PAGE_SIZE + bit_idx,
-                            region_index: idx as u32,
-                        });
-                    }
-                }
-            }
-        }
-
-        None
-    }
-
-    /// Releases a previously allocated page frame back to the pool.
-    /// The `PageFrame` handle contains all information needed to free the frame.
-    pub unsafe fn release_frame(&mut self, frame: PageFrame) {
-        let regions = pmm_regions(self.header);
-        let r = &mut regions[frame.region_index as usize];
-        let bitmap = r.bitmap_start as *mut u64;
-        let bit_idx = frame.pfn - (r.start / PAGE_SIZE);
-        clear_bit(bit_idx, bitmap);
-        r.frames_free += 1;
-    }
-
-    // Calculate pages used by kernel + PMM metadata + stack area.
-    // Reserve everything from KERNEL_OFFSET (0x100000) to STACK_TOP (0x400000).
-    pub unsafe fn used_frames(&self) -> u64 {
-        (STACK_TOP - KERNEL_OFFSET) / PAGE_SIZE
-    }
-}
-
 /*
-                    PHYSICAL MEMORY LAYOUT (RUST PMM)
+                    PHYSICAL MEMORY LAYOUT
     ═══════════════════════════════════════════════════════════════════
 
     0x00000000 ┌─────────────────────────────────────────────────────┐
@@ -407,30 +63,30 @@ impl PhysicalMemoryManager {
                │  │   │ frames_total: u64                     │ │    │
                │  │   │ frames_free: u64                      │ │    │
                │  │   │ bitmap_start: u64 ─────────────────────────────┐
-               │  │   │ bitmap_bytes: u64                     │ │
-               │  │   └───────────────────────────────────────┘ │    │
-               │  ├─────────────────────────────────────────────┤    │
-               │  │ regions[1]: PmmRegion                       │    │
+               │  │   │ bitmap_bytes: u64                     │ │      │
+               │  │   └───────────────────────────────────────┘ │    │ │
+               │  ├─────────────────────────────────────────────┤    │ │
+               │  │ regions[1]: PmmRegion                       │    │ │
                │  │   (same fields as above) ─────────────────────────────┐
-               │  ├─────────────────────────────────────────────┤    │
-               │  │                ...                          │    │
-               │  └─────────────────────────────────────────────┘    │
-               ├═══════════════════════════════════════════════════┤◄──┘
-               │                                                     │
-               │         BITMAP FOR REGION 0                         │
-               │  ┌─────────────────────────────────────────────┐    │
-               │  │ Each bit = 1 page frame (4KB)               │    │
-               │  │                                             │    │
-               │  │ Word 0: [bits 0-63]                         │    │
-               │  │   bit 0: 1=used, 0=free (PFN 0 of region)   │    │
-               │  │   bit 1: 1=used, 0=free (PFN 1 of region)   │    │
-               │  │   ...                                       │    │
-               │  │ Word 1: [bits 64-127]                       │    │
-               │  │   ...                                       │    │
-               │  │ Word N: [bits N*64 - (N+1)*64-1]            │    │
-               │  │                                             │    │
-               │  │ Size = bitmap_bytes                         │    │
-               │  └─────────────────────────────────────────────┘    │
+               │  ├─────────────────────────────────────────────┤    │ │  │
+               │  │                ...                          │    │ │  │
+               │  └─────────────────────────────────────────────┘    │ │  │
+               ├═══════════════════════════════════════════════════┤◄──┘  │
+               │                                                     │    │
+               │         BITMAP FOR REGION 0                         │    │
+               │  ┌─────────────────────────────────────────────┐    │    │
+               │  │ Each bit = 1 page frame (4KB)               │    │    │
+               │  │                                             │    │    │
+               │  │ Word 0: [bits 0-63]                         │    │    │
+               │  │   bit 0: 1=used, 0=free (PFN 0 of region)   │    │    │
+               │  │   bit 1: 1=used, 0=free (PFN 1 of region)   │    │    │
+               │  │   ...                                       │    │    │
+               │  │ Word 1: [bits 64-127]                       │    │    │
+               │  │   ...                                       │    │    │
+               │  │ Word N: [bits N*64 - (N+1)*64-1]            │    │    │
+               │  │                                             │    │    │
+               │  │ Size = bitmap_bytes                         │    │    │
+               │  └─────────────────────────────────────────────┘    │    │
                ├─────────────────────────────────────────────────────┤◄───┘
                │                                                     │
                │         BITMAP FOR REGION 1                         │
@@ -528,3 +184,279 @@ impl PhysicalMemoryManager {
     0x08000000  └──────────────────────────────────┘ ◄─ End of 128MB
     (128 MB)
 */
+
+use crate::memory::bios::{self, BiosInformationBlock, BiosMemoryRegion};
+extern "C" {
+    /// Linker-defined symbol marking the end of the kernel BSS section
+    static __bss_end: u8;
+}
+
+/// Size of a single page frame in bytes
+pub const PAGE_SIZE: u64 = 4096;
+
+/// Physical address where the kernel is loaded
+const KERNEL_OFFSET: u64 = 0x100000;
+
+/// Physical marker for the first usable memory above low memory
+const MARK_1MB: u64 = 0x100000;
+
+/// Physical address of the stack top (end of reserved stack area)
+const STACK_TOP: u64 = 0x400000;
+
+/// Virtual base address of the kernel in the higher half
+const KERNEL_VIRT_BASE: u64 = 0xFFFF800000000000;
+
+#[inline]
+/// Aligns `x` up to the next `align` boundary.
+fn align_up(x: u64, align: u64) -> u64 {
+    (x + align - 1) & !(align - 1)
+}
+
+#[inline]
+/// Converts a kernel virtual address into a physical address.
+fn virt_to_phys(addr: u64) -> u64 {
+    if addr >= KERNEL_VIRT_BASE {
+        addr - KERNEL_VIRT_BASE
+    } else {
+        addr
+    }
+}
+
+#[inline]
+/// Sets a single bit in the PMM bitmap.
+unsafe fn set_bit(idx: u64, base: *mut u64) {
+    let word = base.add((idx / 64) as usize);
+    let mask = 1u64 << (idx % 64);
+    *word |= mask;
+}
+
+#[inline]
+/// Clears a single bit in the PMM bitmap.
+unsafe fn clear_bit(idx: u64, base: *mut u64) {
+    let word = base.add((idx / 64) as usize);
+    let mask = 1u64 << (idx % 64);
+    *word &= !mask;
+}
+
+/// Represents an allocated page frame with its PFN and region info.
+/// This handle is returned by `alloc_frame` and passed to `release_frame`.
+pub struct PageFrame {
+    /// Page Frame Number (physical address / PAGE_SIZE)
+    pub pfn: u64,
+
+    /// Internal: index of the memory region this frame belongs to
+    region_index: u32,
+}
+
+impl PageFrame {
+    /// Returns the physical address of this page frame.
+    #[inline]
+    pub fn physical_address(&self) -> u64 {
+        self.pfn * PAGE_SIZE
+    }
+
+    /// Returns the index of the region this frame belongs to.
+    #[inline]
+    pub fn region_index(&self) -> u32 {
+        self.region_index
+    }
+}
+
+#[repr(C)]
+/// Header for the PMM layout stored in physical memory
+pub struct PmmLayoutHeader {
+    /// Number of usable memory regions described by the PMM
+    region_count: u32,
+
+    /// Keeps the following region array 8-byte aligned
+    padding: u32,
+
+    /// Pointer to the first PmmRegion entry
+    regions_ptr: *mut PmmRegion,
+}
+
+#[repr(C)]
+/// Per-region metadata for the physical memory manager
+pub struct PmmRegion {
+    /// Physical start address of the region
+    start: u64,
+
+    /// Total number of page frames in this region
+    frames_total: u64,
+
+    /// Current number of free page frames in this region
+    frames_free: u64,
+
+    /// Physical address of the bitmap for this region
+    bitmap_start: u64,
+    
+    /// Size of the bitmap in bytes (aligned to 8)
+    bitmap_bytes: u64,
+}
+
+/// Global PMM instance initialized by `init`.
+static mut PMM: PhysicalMemoryManager = PhysicalMemoryManager {
+    header: core::ptr::null_mut(),
+};
+
+/// Initializes the global physical memory manager.
+pub fn init() {
+    unsafe {
+        PMM = PhysicalMemoryManager::new();
+    }
+}
+
+/// Executes a closure with a mutable reference to the PMM instance.
+pub fn with_pmm<R>(f: impl FnOnce(&mut PhysicalMemoryManager) -> R) -> R {
+    unsafe {
+        debug_assert!(!PMM.header.is_null(), "PMM not initialized");
+        f(&mut PMM)
+    }
+}
+
+/// Physical memory manager for allocating and freeing page frames.
+pub struct PhysicalMemoryManager {
+    /// Pointer to the PMM layout header in physical memory
+    header: *mut PmmLayoutHeader,
+}
+
+impl PhysicalMemoryManager {
+    /// Constructs the PMM layout and initializes region metadata.
+    pub fn new() -> Self {
+        let (bib, region) = unsafe {
+            (
+                (bios::BIB_OFFSET as *mut BiosInformationBlock).as_mut().unwrap(),
+                bios::MEMORYMAP_OFFSET as *const BiosMemoryRegion,
+            )
+        };
+
+        // Place PMM layout right after the kernel image (including BSS), aligned to 4K.
+        let kernel_end_virt = unsafe { &__bss_end as *const u8 as u64 };
+        let kernel_end_phys = virt_to_phys(kernel_end_virt);
+        let start_addr = align_up(kernel_end_phys, PAGE_SIZE);
+        let header = start_addr as *mut PmmLayoutHeader;
+        unsafe {
+            (*header).region_count = 0;
+            (*header).padding = 0;
+            (*header).regions_ptr = (header as *mut u8)
+                .add(core::mem::size_of::<PmmLayoutHeader>()) as *mut PmmRegion;
+        }
+        
+        bib.physical_memory_layout = header;
+        let mut pmm = Self { header };
+
+        // Count usable regions first
+        let mut count = 0u32;
+
+        for i in 0..bib.memory_map_entries as usize {
+            let r = unsafe { &*region.add(i) };
+            if r.region_type == 1 && r.start >= MARK_1MB {
+                count += 1;
+            }
+        }
+        unsafe {
+            (*header).region_count = count;
+        }
+
+        let regions = unsafe {
+            let count = (*header).region_count as usize;
+            let regions_ptr = (*header).regions_ptr;
+            core::slice::from_raw_parts_mut(regions_ptr, count)
+        };
+
+        // Fill regions
+        let mut idx = 0usize;
+
+        for i in 0..bib.memory_map_entries as usize {
+            let r = unsafe { &*region.add(i) };
+
+            if r.region_type == 1 && r.start >= MARK_1MB {
+                let frames = r.size / PAGE_SIZE;
+                let bitmap_bytes = align_up((frames + 7) / 8, 8);
+
+                regions[idx] = PmmRegion {
+                    start: r.start,
+                    frames_total: frames,
+                    frames_free: frames,
+                    bitmap_start: 0,
+                    bitmap_bytes,
+                };
+                idx += 1;
+            }
+        }
+
+        // Bitmaps right after the region array.
+        let mut bitmap_base = (regions.as_ptr() as u64)
+            + (count as u64) * (core::mem::size_of::<PmmRegion>() as u64);
+
+        for r in regions.iter_mut() {
+            r.bitmap_start = bitmap_base;
+            unsafe { core::ptr::write_bytes(r.bitmap_start as *mut u8, 0, r.bitmap_bytes as usize) };
+            bitmap_base += r.bitmap_bytes;
+        }
+
+        // Mark kernel + PMM metadata used.
+        let used_frames = (STACK_TOP - KERNEL_OFFSET) / PAGE_SIZE;
+        for _ in 0..used_frames {
+            let _ = pmm.alloc_frame();
+        }
+
+        pmm
+    }
+
+    /// Allocates a single page frame from the first available region.
+    /// Returns `Some(PageFrame)` on success, or `None` if no free frames exist.
+    pub fn alloc_frame(&mut self) -> Option<PageFrame> {
+        let regions = unsafe {
+            let count = (*self.header).region_count as usize;
+            let regions_ptr = (*self.header).regions_ptr;
+            core::slice::from_raw_parts_mut(regions_ptr, count)
+        };
+
+        for (idx, r) in regions.iter_mut().enumerate() {
+            if r.frames_free == 0 {
+                continue;
+            }
+
+            let words = (r.bitmap_bytes / 8) as usize;
+            let bitmap = r.bitmap_start as *mut u64;
+
+            for w in 0..words {
+                let val = unsafe { *bitmap.add(w) };
+
+                if val != u64::MAX {
+                    let free_bit = (!val).trailing_zeros() as u64;
+                    let bit_idx = (w as u64) * 64 + free_bit;
+
+                    if bit_idx < r.frames_total {
+                        unsafe { set_bit(bit_idx, bitmap) };
+                        r.frames_free -= 1;
+
+                        return Some(PageFrame {
+                            pfn: r.start / PAGE_SIZE + bit_idx,
+                            region_index: idx as u32,
+                        });
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Releases a previously allocated page frame back to the pool.
+    /// The `PageFrame` handle contains all information needed to free the frame.
+    pub fn release_frame(&mut self, frame: PageFrame) {
+        let regions = unsafe {
+            let count = (*self.header).region_count as usize;
+            let regions_ptr = (*self.header).regions_ptr;
+            core::slice::from_raw_parts_mut(regions_ptr, count)
+        };
+
+        let r = &mut regions[frame.region_index as usize];
+        let bitmap = r.bitmap_start as *mut u64;
+        let bit_idx = frame.pfn - (r.start / PAGE_SIZE);
+        unsafe { clear_bit(bit_idx, bitmap) };
+        r.frames_free += 1;
+    }
+}

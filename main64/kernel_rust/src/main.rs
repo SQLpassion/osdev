@@ -14,6 +14,7 @@ mod panic;
 
 use crate::arch::interrupts;
 use crate::arch::power;
+use crate::memory::bios;
 use crate::memory::pmm;
 use core::fmt::Write;
 use drivers::keyboard;
@@ -30,9 +31,7 @@ use drivers::screen::{Color, Screen};
 #[link_section = ".text.boot"]
 #[allow(unconditional_panic)]
 pub extern "C" fn KernelMain(kernel_size: u64) -> ! {
-    unsafe {
-        pmm::init();
-    }
+    pmm::init();
 
     // Initialize interrupt handling and the keyboard ring buffer.
     interrupts::init();
@@ -144,7 +143,7 @@ fn execute_command(screen: &mut Screen, line: &str) {
             }
         }
         "meminfo" => {
-            pmm::print_memory_map(screen);
+            bios::BiosInformationBlock::print_memory_map(screen);
         }
         _ => {
             writeln!(screen, "Unknown command: {}", cmd).unwrap();
