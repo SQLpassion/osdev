@@ -3,14 +3,14 @@
 ; 16MB of physical memory (physical address == virtual address),
 ; and to switch the CPU into x64 Long Mode.
 ;
-; Uses 2MB huge pages for efficient mapping (8 entries x 2MB = 16MB).
+; Uses 4KB pages (8 Page Tables x 512 entries = 4096 entries = 16MB).
 ;
 ; It finally jumps to 0x3000 and executes the KLDR64.BIN file.
 ; =================================================================
 
 ; ================================================================================
 ;                     x64 LONG MODE PAGE TABLE LAYOUT
-;                       (2MB Huge Pages - 16MB Mapped)
+;                       (4KB Pages - 16MB Mapped)
 ; ================================================================================
 ;
 ; CR3 Register --> 0x9000 (Physical Address of PML4)
@@ -30,8 +30,10 @@
 ;     0xD000  +------------------+
 ;             |    PD (Higher)   |  Page Directory - Higher Half (4KB)
 ;     0xE000  +------------------+
+;             |   PT[0..7]       |  Page Tables for 16MB (8 x 4KB)
+;     0x16000 +------------------+
 ;
-;    Total: 5 pages = 20KB (0x9000 - 0xDFFF)
+;    Total: 13 pages = 52KB (0x9000 - 0x15FFF)
 ;
 ; ================================================================================
 ; PAGE MAP LEVEL 4 (PML4) @ 0x9000
@@ -68,25 +70,23 @@
 ;  |       | 0xFF8  |                  |                                          |
 ;  +-------+--------+------------------+------------------------------------------+
 ;
-; PD @ 0xB000 (covers first 1GB with 2MB huge pages)
-; Each entry maps 2MB directly (PS bit set = no Page Table level)
+; PD @ 0xB000 (covers first 1GB)
+; Each entry points to a 4KB Page Table (512 entries = 2MB per PT)
 ;
-;   Index   Offset    Value              Physical Range         Virtual Range
-;  +-------+--------+------------------+----------------------+----------------------+
-;  |   0   | 0x000  | 0x000083         | 0x000000 - 0x1FFFFF  | 0x000000 - 0x1FFFFF  |
-;  |   1   | 0x008  | 0x200083         | 0x200000 - 0x3FFFFF  | 0x200000 - 0x3FFFFF  |
-;  |   2   | 0x010  | 0x400083         | 0x400000 - 0x5FFFFF  | 0x400000 - 0x5FFFFF  |
-;  |   3   | 0x018  | 0x600083         | 0x600000 - 0x7FFFFF  | 0x600000 - 0x7FFFFF  |
-;  |   4   | 0x020  | 0x800083         | 0x800000 - 0x9FFFFF  | 0x800000 - 0x9FFFFF  |
-;  |   5   | 0x028  | 0xA00083         | 0xA00000 - 0xBFFFFF  | 0xA00000 - 0xBFFFFF  |
-;  |   6   | 0x030  | 0xC00083         | 0xC00000 - 0xDFFFFF  | 0xC00000 - 0xDFFFFF  |
-;  |   7   | 0x038  | 0xE00083         | 0xE00000 - 0xFFFFFF  | 0xE00000 - 0xFFFFFF  |
-;  +-------+--------+------------------+----------------------+----------------------+
-;  | 8-511 | 0x040- | 0x0000           | Not Present                               |
-;  |       | 0xFF8  |                  |                                           |
-;  +-------+--------+------------------+----------------------+----------------------+
-;
-;  Entry Flags: 0x83 = PAGE_PRESENT (0x01) | PAGE_WRITE (0x02) | PAGE_SIZE (0x80)
+;   Index   Offset    Value              Description
+;  +-------+--------+------------------+------------------------------------------+
+;  |   0   | 0x000  | 0xE003           | -> PT0 @ 0xE000 (P=1, W=1)               |
+;  |   1   | 0x008  | 0xF003           | -> PT1 @ 0xF000 (P=1, W=1)               |
+;  |   2   | 0x010  | 0x10003          | -> PT2 @ 0x10000 (P=1, W=1)              |
+;  |   3   | 0x018  | 0x11003          | -> PT3 @ 0x11000 (P=1, W=1)              |
+;  |   4   | 0x020  | 0x12003          | -> PT4 @ 0x12000 (P=1, W=1)              |
+;  |   5   | 0x028  | 0x13003          | -> PT5 @ 0x13000 (P=1, W=1)              |
+;  |   6   | 0x030  | 0x14003          | -> PT6 @ 0x14000 (P=1, W=1)              |
+;  |   7   | 0x038  | 0x15003          | -> PT7 @ 0x15000 (P=1, W=1)              |
+;  +-------+--------+------------------+------------------------------------------+
+;  | 8-511 | 0x040- | 0x0000           | Not Present                              |
+;  |       | 0xFF8  |                  |                                          |
+;  +-------+--------+------------------+------------------------------------------+
 ;
 ; ================================================================================
 ; HIGHER HALF MAPPING (Virtual 0xFFFF800000000000+ -> Physical 0x0+)
@@ -103,23 +103,23 @@
 ;  |       | 0xFF8  |                  |                                          |
 ;  +-------+--------+------------------+------------------------------------------+
 ;
-; PD @ 0xD000 (covers first 1GB of higher half with 2MB huge pages)
-; Each entry maps 2MB directly (PS bit set)
+; PD @ 0xD000 (covers first 1GB of higher half)
+; Each entry points to the same PTs used for identity mapping
 ;
-;   Index   Offset    Value              Physical Range         Virtual Range
-;  +-------+--------+------------------+----------------------+-------------------------------+
-;  |   0   | 0x000  | 0x000083         | 0x000000 - 0x1FFFFF  | 0xFFFF800000000000 - ...1FFFFF|
-;  |   1   | 0x008  | 0x200083         | 0x200000 - 0x3FFFFF  | 0xFFFF800000200000 - ...3FFFFF|
-;  |   2   | 0x010  | 0x400083         | 0x400000 - 0x5FFFFF  | 0xFFFF800000400000 - ...5FFFFF|
-;  |   3   | 0x018  | 0x600083         | 0x600000 - 0x7FFFFF  | 0xFFFF800000600000 - ...7FFFFF|
-;  |   4   | 0x020  | 0x800083         | 0x800000 - 0x9FFFFF  | 0xFFFF800000800000 - ...9FFFFF|
-;  |   5   | 0x028  | 0xA00083         | 0xA00000 - 0xBFFFFF  | 0xFFFF800000A00000 - ...BFFFFF|
-;  |   6   | 0x030  | 0xC00083         | 0xC00000 - 0xDFFFFF  | 0xFFFF800000C00000 - ...DFFFFF|
-;  |   7   | 0x038  | 0xE00083         | 0xE00000 - 0xFFFFFF  | 0xFFFF800000E00000 - ...FFFFFF|
-;  +-------+--------+------------------+----------------------+-------------------------------+
-;  | 8-511 | 0x040- | 0x0000           | Not Present                                          |
-;  |       | 0xFF8  |                  |                                                      |
-;  +-------+--------+------------------+----------------------+-------------------------------+
+;   Index   Offset    Value              Description
+;  +-------+--------+------------------+------------------------------------------+
+;  |   0   | 0x000  | 0xE003           | -> PT0 @ 0xE000 (P=1, W=1)               |
+;  |   1   | 0x008  | 0xF003           | -> PT1 @ 0xF000 (P=1, W=1)               |
+;  |   2   | 0x010  | 0x10003          | -> PT2 @ 0x10000 (P=1, W=1)              |
+;  |   3   | 0x018  | 0x11003          | -> PT3 @ 0x11000 (P=1, W=1)              |
+;  |   4   | 0x020  | 0x12003          | -> PT4 @ 0x12000 (P=1, W=1)              |
+;  |   5   | 0x028  | 0x13003          | -> PT5 @ 0x13000 (P=1, W=1)              |
+;  |   6   | 0x030  | 0x14003          | -> PT6 @ 0x14000 (P=1, W=1)              |
+;  |   7   | 0x038  | 0x15003          | -> PT7 @ 0x15000 (P=1, W=1)              |
+;  +-------+--------+------------------+------------------------------------------+
+;  | 8-511 | 0x040- | 0x0000           | Not Present                              |
+;  |       | 0xFF8  |                  |                                          |
+;  +-------+--------+------------------+------------------------------------------+
 ;
 ; ================================================================================
 ; VIRTUAL ADDRESS TRANSLATION EXAMPLE
@@ -134,20 +134,68 @@
 ;   |_______________|    |         |         |         |         |
 ;    Sign Extension   PML4[256] PDPT[0]    PD[0]    (unused)   Offset
 ;                                           |
-;                                     2MB Huge Page
-;                                     (no PT level)
+;                                        PT level
+;                                     4KB pages
 ;
 ;   Step 1: PML4[256] @ 0x9800 -> 0xC003 -> PDPT @ 0xC000
 ;   Step 2: PDPT[0]   @ 0xC000 -> 0xD003 -> PD @ 0xD000
-;   Step 3: PD[0]     @ 0xD000 -> 0x000083 -> 2MB page @ Physical 0x0
-;   Step 4: Offset within 2MB page: 0x100000
+;   Step 3: PD[0]     @ 0xD000 -> 0xE003 -> PT0 @ 0xE000
+;   Step 4: PT[256]   @ 0xE800 -> 0x00100003 -> 4KB page @ Physical 0x100000
+;   Step 5: Offset within 4KB page: 0x000
 ;
 ;   Result: Physical Address = 0x000000 + 0x100000 = 0x100000
 ;
+; ================================================================================
+; SHARED PAGE TABLES - WHY IT WORKS
+; ================================================================================
+;
+; Both the identity mapping (PD @ 0xB000) and higher-half mapping (PD @ 0xD000)
+; point to the SAME 8 Page Tables (PT0-PT7 @ 0xE000-0x15FFF).
+;
+; This works because Page Table entries contain PHYSICAL addresses:
+;   - PT[256] contains 0x00100003 (physical addr 0x100000 + flags)
+;
+; When accessed via identity mapping:
+;   VA 0x100000 -> PD[0] -> PT0[256] -> PA 0x100000
+;
+; When accessed via higher-half mapping:
+;   VA 0xFFFF800000100000 -> PD[0] -> PT0[256] -> PA 0x100000
+;
+; Benefits:
+;   - Saves 32KB (8 fewer page tables)
+;   - Both mappings always stay in sync
+;   - Changes to page permissions apply to both mappings
+;
+; ================================================================================
+; PHYSICAL MEMORY MAP (Runtime Layout)
+; ================================================================================
+;
+;     0x016000  +------------------------+
+;               |        ...             |  (Page tables end at 0x15FFF)
+;     0x100000  +------------------------+  <-- 1MB Mark
+;               |     KERNEL.BIN         |  Rust Kernel loaded here
+;               |        |               |
+;               |        v               |  Kernel code + data + BSS
+;               |       ...              |
+;               +- - - - - - - - - - - - +  <-- __bss_end (page-aligned)
+;               |   PMM Layout Header    |  PmmLayoutHeader struct (8 bytes)
+;               |   PMM Region Array     |  PmmRegion[] (40 bytes each)
+;               |   PMM Bitmaps          |  Allocation bitmaps (variable size)
+;               +- - - - - - - - - - - - +
+;               |                        |
+;               |  Reserved for Stack    |  All pages marked USED in PMM
+;               |        ^               |  Stack grows downward
+;               |      Stack             |
+;     0x400000  +------------------------+  <-- 4MB Mark / Stack Top (RSP)
+;               |        ...             |
+;               |   Free Memory          |  First allocatable pages
+;               |        ...             |
+;     0x1000000 +------------------------+  <-- 16MB (End of mapped region)
+;
+; ================================================================================
 
 %define PAGE_PRESENT    (1 << 0)
 %define PAGE_WRITE      (1 << 1)
-%define PAGE_SIZE       (1 << 7)    ; PS bit - enables 2MB huge pages when set in PDE
  
 %define CODE_SEG     0x0008
 %define DATA_SEG     0x0010
@@ -162,14 +210,14 @@ IDT:
 SwitchToLongMode:
     MOV     EDI, 0x9000
     
-    ; Zero out the 16KiB buffer.
-    ; Since we are doing a rep stosd, count should be bytes/4.   
-    PUSH    DI                                  ; REP STOSD alters DI.
-    MOV     ECX, 0x1000
+    ; Zero out the 52KiB buffer (page tables).
+    ; Since we are doing a rep stosd, count should be bytes/4.
+    MOV     EDI, 0x9000
+    MOV     ECX, 0x3400
     XOR     EAX, EAX
     CLD
-    REP     STOSD
-    POP     DI                                  ; Get DI back.
+    A32     REP STOSD
+    MOV     EDI, 0x9000
  
     ; Build the Page Map Level 4 (PML4)
     ; es:di points to the Page Map Level 4 table.
@@ -200,38 +248,55 @@ SwitchToLongMode:
     MOV     [ES:DI + 0x3000], EAX               ; Store the value of EAX as the first PDPTE.
     ; END =================================================
  
-    ; Build the Page Directory using 2MB huge pages (PS bit set).
-    ; This maps 0 - 16MB directly without needing separate Page Tables.
-    ; Each PDE entry with PS bit maps 2MB of physical memory.
+    ; Build the Page Directory using 4KB page tables.
+    ; Each PDE points to one PT (512 entries = 2MB per PT).
     PUSH    DI
     LEA     DI, [DI + 0x2000]                   ; Point to Page Directory for identity mapping
-    MOV     EAX, PAGE_PRESENT | PAGE_WRITE | PAGE_SIZE  ; 2MB huge page flags
-    MOV     ECX, 8                              ; Map 8 x 2MB = 16MB
-.LoopPD:
+    MOV     EAX, 0xE000
+    OR      EAX, PAGE_PRESENT | PAGE_WRITE
+    MOV     ECX, 8                              ; 8 PTs = 16MB
+.LoopPDE:
     MOV     [ES:DI], EAX
-    ADD     EAX, 0x200000                       ; Next 2MB physical region
-    ADD     DI, 8                               ; Next PDE entry
+    ADD     EAX, 0x1000                         ; Next PT page
+    ADD     DI, 8                               ; Next PDE entry (8 bytes)
     DEC     ECX
-    JNZ     .LoopPD
+    JNZ     .LoopPDE
     POP     DI
 
     ; =================================================
     ; Needed for the Higher Half Mapping of the Kernel
     ; =================================================
-    ; Build the Page Directory for higher half using 2MB huge pages.
+    ; Build the Page Directory for higher half using the same PTs.
     ; Maps virtual 0xFFFF800000000000+ to physical 0 - 16MB.
     PUSH    DI
     LEA     DI, [DI + 0x4000]                   ; Point to Higher Half Page Directory
-    MOV     EAX, PAGE_PRESENT | PAGE_WRITE | PAGE_SIZE  ; 2MB huge page flags
-    MOV     ECX, 8                              ; Map 8 x 2MB = 16MB
-.LoopPDHigherHalf:
+    MOV     EAX, 0xE000
+    OR      EAX, PAGE_PRESENT | PAGE_WRITE
+    MOV     ECX, 8                              ; 8 PTs = 16MB
+.LoopPDEHigherHalf:
     MOV     [ES:DI], EAX
-    ADD     EAX, 0x200000                       ; Next 2MB physical region
+    ADD     EAX, 0x1000                         ; Next PT page
     ADD     DI, 8                               ; Next PDE entry
     DEC     ECX
-    JNZ     .LoopPDHigherHalf
+    JNZ     .LoopPDEHigherHalf
     POP     DI
     ; END =================================================
+
+    ; Build the Page Tables (4KB pages).
+    ; Maps physical 0 - 16MB into the 8 PTs.
+    PUSH    EDI
+    LEA     EDI, [EDI + 0x5000]                 ; Point to PT0 @ 0xE000
+    XOR     EBX, EBX                            ; Physical address counter
+    MOV     ECX, 4096                           ; 16MB / 4KB
+.LoopPTE:
+    MOV     EAX, EBX
+    OR      EAX, PAGE_PRESENT | PAGE_WRITE
+    MOV     [ES:EDI], EAX
+    ADD     EBX, 0x1000
+    ADD     EDI, 8
+    DEC     ECX
+    JNZ     .LoopPTE
+    POP     EDI
 
     ; Disable IRQs
     MOV     AL, 0xFF                            ; Out 0xFF to 0xA1 and 0x21 to disable all IRQs.
