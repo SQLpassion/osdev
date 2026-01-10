@@ -1,5 +1,4 @@
 use crate::drivers::screen::{Color, Screen};
-use crate::memory::pmm;
 use core::fmt::Write;
 
 /// Physical address of the BIOS information block
@@ -7,6 +6,9 @@ pub const BIB_OFFSET: usize = 0x1000;
 
 /// Physical address of the BIOS memory map array
 pub const MEMORYMAP_OFFSET: usize = 0x1200;
+
+/// Size of a single page frame in bytes
+pub const PAGE_SIZE: u64 = 4096;
 
 #[repr(C)]
 /// BIOS-provided system information block shared with the kernel
@@ -36,10 +38,7 @@ pub struct BiosInformationBlock {
     pub max_memory: i64,
 
     /// Total number of available page frames
-    pub available_page_frames: i64,
-
-    /// Pointer to the PMM layout header in physical memory
-    pub physical_memory_layout: *mut pmm::PmmLayoutHeader,
+    pub available_page_frames: i64
 }
 
 #[repr(C)]
@@ -85,7 +84,7 @@ impl BiosInformationBlock {
                 bib.max_memory = bib.max_memory.wrapping_add(current_region.size as i64);
                 bib.available_page_frames = bib
                     .available_page_frames
-                    .wrapping_add((current_region.size / pmm::PAGE_SIZE) as i64);
+                    .wrapping_add((current_region.size / PAGE_SIZE) as i64);
             } else {
                 // Everything else
                 screen.set_color(Color::LightRed);
@@ -125,24 +124,5 @@ impl BiosInformationBlock {
 
         // Max memory
         writeln!(screen, "Max Memory: {} MB", bib.max_memory / 1024 / 1024 + 1).unwrap();
-
-        pmm::with_pmm(|pmm| {
-            let frames = [pmm.alloc_frame(), pmm.alloc_frame(), pmm.alloc_frame()];
-
-            for (i, pf) in frames.iter().enumerate() {
-                match pf {
-                    Some(f) => writeln!(
-                        screen,
-                        "[{}] pfn={}, phys=0x{:x}, region={}",
-                        i,
-                        f.pfn,
-                        f.physical_address(),
-                        f.region_index()
-                    )
-                    .unwrap(),
-                    None => writeln!(screen, "[{}] allocation failed", i).unwrap(),
-                }
-            }
-        });
     }
 }

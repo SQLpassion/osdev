@@ -145,6 +145,11 @@ fn execute_command(screen: &mut Screen, line: &str) {
         "meminfo" => {
             bios::BiosInformationBlock::print_memory_map(screen);
         }
+        "pmm" => {
+            pmm::with_pmm(|pmm| {
+                pmm.test(screen);
+            });
+        }
         _ => {
             writeln!(screen, "Unknown command: {}", cmd).unwrap();
         }
