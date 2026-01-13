@@ -19,6 +19,7 @@ use crate::memory::pmm;
 use core::fmt::Write;
 use drivers::keyboard;
 use drivers::screen::{Color, Screen};
+use drivers::serial;
 
 /// Kernel entry point - called from bootloader (kaosldr_64)
 ///
@@ -31,7 +32,13 @@ use drivers::screen::{Color, Screen};
 #[link_section = ".text.boot"]
 #[allow(unconditional_panic)]
 pub extern "C" fn KernelMain(kernel_size: u64) -> ! {
+    // Initialize debug serial output first for early debugging
+    serial::init();
+    debugln!("KAOS Rust Kernel starting...");
+    debugln!("Kernel size: {} bytes", kernel_size);
+
     pmm::init();
+    debugln!("Physical Memory Manager initialized");
 
     // Initialize interrupt handling and the keyboard ring buffer.
     interrupts::init();
@@ -40,6 +47,7 @@ pub extern "C" fn KernelMain(kernel_size: u64) -> ! {
     });
     keyboard::init();
     interrupts::enable();
+    debugln!("Interrupts enabled");
 
     // Initialize the screen
     let mut screen = Screen::new();
