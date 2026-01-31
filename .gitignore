@@ -56,3 +56,4 @@ Mkfile.old
 dkms.conf
 
 *.generated
+main64/kernel_rust/target/*

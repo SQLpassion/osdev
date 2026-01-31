@@ -85,7 +85,7 @@ echo ""
 # Disable set -e temporarily to capture QEMU exit code
 set +e
 
-qemu-system-x86_64 \
+sudo qemu-system-x86_64 \
     -drive format=raw,file="$TEST_IMG" \
     -serial stdio \
     -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
