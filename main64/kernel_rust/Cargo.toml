@@ -3,7 +3,12 @@ name = "kaos_kernel"
 version = "0.1.0"
 edition = "2021"
 authors = ["Klaus Aschenbrenner"]
-autotests = false
+
+[lib]
+# Disable default test target for lib - we use integration tests only
+test = false
+doctest = false
+harness = false
 
 [dependencies]
 
@@ -21,4 +26,14 @@ debug = true
 
 [[bin]]
 name = "kaos_kernel"
+test = false
+
+# Integration tests - each runs as a separate kernel in QEMU
+# Use `cargo test --test basic_boot` to run
+[[test]]
+name = "basic_boot"
+harness = false
+
+[[test]]
+name = "pmm_test"
 harness = false

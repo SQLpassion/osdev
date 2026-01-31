@@ -12,9 +12,8 @@ rustflags = [
 ]
 linker = "rust-lld"
 
-[unstable]
-build-std = ["core", "alloc"]
-build-std-features = ["compiler-builtins-mem"]
+# Custom test runner that boots the test binary in QEMU
+runner = "scripts/test_runner.sh"
 
 [alias]
 check = "check --target x86_64-unknown-none"
