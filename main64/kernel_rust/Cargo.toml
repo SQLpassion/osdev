@@ -32,8 +32,6 @@ test = false
 # Use `cargo test --test basic_boot` to run
 [[test]]
 name = "basic_boot"
-harness = false
 
 [[test]]
 name = "pmm_test"
-harness = false

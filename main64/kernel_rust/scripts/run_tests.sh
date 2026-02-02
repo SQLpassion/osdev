@@ -75,8 +75,11 @@ for TEST_NAME in "${TESTS[@]}"; do
     # Build the test binary
     echo "  -> Building..."
 
-    # Build just this specific test target
-    if ! cargo build --target x86_64-unknown-none --test "$TEST_NAME" 2>&1; then
+    # Build just this specific test target (--no-run to build without executing)
+    # Using `cargo test` instead of `cargo build --test` ensures that rustc receives
+    # the --test flag, which is required for the custom_test_frameworks feature to
+    # collect #[test_case] functions and generate the test_main entry point.
+    if ! cargo test --target x86_64-unknown-none --test "$TEST_NAME" --no-run 2>&1; then
         echo -e "  -> ${RED}Build failed${NC}"
         FAILED_TESTS=$((FAILED_TESTS + 1))
         FAILED_NAMES+=("$TEST_NAME (build failed)")

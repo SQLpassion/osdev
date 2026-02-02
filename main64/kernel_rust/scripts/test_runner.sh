@@ -82,15 +82,36 @@ echo ""
 # -display none: No graphical window
 # -no-reboot: Don't reboot on triple fault
 
+# Timeout in seconds - prevents hanging tests from blocking the suite
+TIMEOUT_SECONDS=30
+
+# Detect a usable timeout command (GNU coreutils `timeout` or macOS `gtimeout`)
+TIMEOUT_CMD=""
+if command -v timeout &>/dev/null; then
+    TIMEOUT_CMD="timeout"
+elif command -v gtimeout &>/dev/null; then
+    TIMEOUT_CMD="gtimeout"
+fi
+
 # Disable set -e temporarily to capture QEMU exit code
 set +e
 
-sudo qemu-system-x86_64 \
-    -drive format=raw,file="$TEST_IMG" \
-    -serial stdio \
-    -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
-    -display none \
-    -no-reboot
+if [ -n "$TIMEOUT_CMD" ]; then
+    $TIMEOUT_CMD $TIMEOUT_SECONDS qemu-system-x86_64 \
+        -drive format=raw,file="$TEST_IMG" \
+        -serial stdio \
+        -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+        -display none \
+        -no-reboot
+else
+    echo "  -> Warning: no timeout command found, running without timeout"
+    qemu-system-x86_64 \
+        -drive format=raw,file="$TEST_IMG" \
+        -serial stdio \
+        -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+        -display none \
+        -no-reboot
+fi
 
 QEMU_EXIT=$?
 

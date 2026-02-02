@@ -5,12 +5,12 @@
 
 #![no_std]
 #![no_main]
+#![feature(custom_test_frameworks)]
+#![test_runner(kaos_kernel::testing::test_runner)]
+#![reexport_test_harness_main = "test_main"]
 
 use core::panic::PanicInfo;
-use kaos_kernel::arch::qemu::{exit_qemu, QemuExitCode};
-use kaos_kernel::debugln;
 use kaos_kernel::memory::pmm;
-use kaos_kernel::testing::Testable;
 
 /// Entry point for the PMM integration test kernel
 #[no_mangle]
@@ -22,21 +22,9 @@ pub extern "C" fn KernelMain(_kernel_size: u64) -> ! {
     // Initialize the Physical Memory Manager
     pmm::init();
 
-    debugln!("========================================");
-    debugln!("  PMM Integration Test");
-    debugln!("========================================");
-    debugln!();
+    test_main();
 
-    // Run all tests
-    run_tests();
-
-    // If we get here, all tests passed
-    debugln!();
-    debugln!("========================================");
-    debugln!("  All tests passed!");
-    debugln!("========================================");
-
-    exit_qemu(QemuExitCode::Success);
+    loop {}
 }
 
 /// Panic handler for integration tests
@@ -46,32 +34,11 @@ fn panic(info: &PanicInfo) -> ! {
 }
 
 // ============================================================================
-// Test Runner
-// ============================================================================
-
-/// Run all tests in this integration test file
-fn run_tests() {
-    let tests: &[&dyn Testable] = &[
-        &test_pmm_single_allocation,
-        &test_pmm_multiple_allocations,
-        &test_pmm_allocation_and_release,
-        &test_pmm_frame_reuse_after_release,
-        &test_pmm_physical_address_calculation,
-    ];
-
-    debugln!("Running {} tests:", tests.len());
-    debugln!();
-
-    for test in tests {
-        test.run();
-    }
-}
-
-// ============================================================================
 // PMM Tests
 // ============================================================================
 
 /// Test that a single page frame can be allocated
+#[test_case]
 fn test_pmm_single_allocation() {
     pmm::with_pmm(|pmm| {
         let frame = pmm.alloc_frame();
@@ -87,6 +54,7 @@ fn test_pmm_single_allocation() {
 }
 
 /// Test that multiple page frames can be allocated consecutively
+#[test_case]
 fn test_pmm_multiple_allocations() {
     pmm::with_pmm(|pmm| {
         // Allocate 5 frames and store their PFNs
@@ -115,6 +83,7 @@ fn test_pmm_multiple_allocations() {
 }
 
 /// Test that frames can be allocated and then released
+#[test_case]
 fn test_pmm_allocation_and_release() {
     pmm::with_pmm(|pmm| {
         // Allocate 3 frames
@@ -148,6 +117,7 @@ fn test_pmm_allocation_and_release() {
 }
 
 /// Test that released frames are reused by subsequent allocations
+#[test_case]
 fn test_pmm_frame_reuse_after_release() {
     pmm::with_pmm(|pmm| {
         // Allocate 3 frames
@@ -202,6 +172,7 @@ fn test_pmm_frame_reuse_after_release() {
 }
 
 /// Test that physical_address() returns correct addresses
+#[test_case]
 fn test_pmm_physical_address_calculation() {
     pmm::with_pmm(|pmm| {
         let frame = pmm.alloc_frame().expect("Frame allocation failed");

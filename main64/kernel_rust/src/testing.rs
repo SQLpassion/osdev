@@ -3,18 +3,28 @@
 //! This module provides a custom test framework for running tests in a bare-metal
 //! environment. Tests are run inside QEMU and results are output via serial port.
 //!
-//! # Usage
+//! Each integration test file (in `tests/`) must enable the custom test framework
+//! and wire up the entry point:
 //!
-//! Mark test functions with `#[test_case]`:
+//! ```ignore
+//! #![feature(custom_test_frameworks)]
+//! #![test_runner(kaos_kernel::testing::test_runner)]
+//! #![reexport_test_harness_main = "test_main"]
 //! ```
+//!
+//! Then mark test functions with `#[test_case]`:
+//! ```ignore
 //! #[test_case]
 //! fn test_simple_assertion() {
 //!     assert_eq!(1 + 1, 2);
 //! }
 //! ```
 //!
-//! Run tests with: `cargo test`
-//! This will build a test binary, run it in QEMU, and check the exit code.
+//! The compiler collects all `#[test_case]` functions and generates a `test_main()`
+//! entry point that passes them to [`test_runner`]. Call `test_main()` from your
+//! `KernelMain` after performing any required initialization.
+//!
+//! Run tests with: `cargo test` or `./scripts/run_tests.sh`
 
 use crate::arch::qemu::{exit_qemu, QemuExitCode};
 use crate::{debug, debugln};

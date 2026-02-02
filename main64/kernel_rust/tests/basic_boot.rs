@@ -5,11 +5,11 @@
 
 #![no_std]
 #![no_main]
+#![feature(custom_test_frameworks)]
+#![test_runner(kaos_kernel::testing::test_runner)]
+#![reexport_test_harness_main = "test_main"]
 
 use core::panic::PanicInfo;
-use kaos_kernel::arch::qemu::{exit_qemu, QemuExitCode};
-use kaos_kernel::debugln;
-use kaos_kernel::testing::Testable;
 
 /// Entry point for the integration test kernel
 #[no_mangle]
@@ -18,21 +18,9 @@ pub extern "C" fn KernelMain(_kernel_size: u64) -> ! {
     // Initialize serial for test output
     kaos_kernel::drivers::serial::init();
 
-    debugln!("========================================");
-    debugln!("  Basic Boot Integration Test");
-    debugln!("========================================");
-    debugln!();
+    test_main();
 
-    // Run all tests
-    run_tests();
-
-    // If we get here, all tests passed
-    debugln!();
-    debugln!("========================================");
-    debugln!("  All tests passed!");
-    debugln!("========================================");
-
-    exit_qemu(QemuExitCode::Success);
+    loop {}
 }
 
 /// Panic handler for integration tests
@@ -42,39 +30,21 @@ fn panic(info: &PanicInfo) -> ! {
 }
 
 // ============================================================================
-// Test Runner
-// ============================================================================
-
-/// Run all tests in this integration test file
-fn run_tests() {
-    // List of all test functions
-    let tests: &[&dyn Testable] = &[
-        &test_kernel_boots,
-        &test_trivial_assertion,
-        &test_vga_buffer_address,
-    ];
-
-    debugln!("Running {} tests:", tests.len());
-    debugln!();
-
-    for test in tests {
-        test.run();
-    }
-}
-
-// ============================================================================
 // Integration Tests
 // ============================================================================
 
+#[test_case]
 fn test_kernel_boots() {
     // If we get here, the kernel booted successfully!
     kaos_kernel::debug!("    (kernel boot verified)");
 }
 
+#[test_case]
 fn test_trivial_assertion() {
     assert_eq!(1 + 1, 2);
 }
 
+#[test_case]
 fn test_vga_buffer_address() {
     // Verify the VGA buffer address is correct for higher-half kernel
     const VGA_BUFFER: usize = 0xFFFF8000000B8000;
