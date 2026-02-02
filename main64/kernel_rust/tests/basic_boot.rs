@@ -36,7 +36,6 @@ fn panic(info: &PanicInfo) -> ! {
 #[test_case]
 fn test_kernel_boots() {
     // If we get here, the kernel booted successfully!
-    kaos_kernel::debug!("    (kernel boot verified)");
 }
 
 #[test_case]

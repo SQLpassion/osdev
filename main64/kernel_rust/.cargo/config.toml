@@ -13,7 +13,7 @@ rustflags = [
 linker = "rust-lld"
 
 # Custom test runner that boots the test binary in QEMU
-runner = "scripts/test_runner.sh"
+runner = "tests/test_runner.sh"
 
 [alias]
 check = "check --target x86_64-unknown-none"

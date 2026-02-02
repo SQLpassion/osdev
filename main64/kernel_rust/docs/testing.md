@@ -127,14 +127,14 @@ The output is an ELF binary in `target/x86_64-unknown-none/debug/deps/`.
 The `.cargo/config.toml` file specifies a custom runner:
 
 ```toml
-runner = "scripts/test_runner.sh"
+runner = "tests/test_runner.sh"
 ```
 
 After building the test binary, Cargo invokes this script with the path to the ELF binary
 as the first argument:
 
 ```
-scripts/test_runner.sh target/x86_64-unknown-none/debug/deps/basic_boot-08ffcb2841a31825
+tests/test_runner.sh target/x86_64-unknown-none/debug/deps/basic_boot-08ffcb2841a31825
 ```
 
 ### Step 5: ELF-to-Binary Conversion
@@ -344,7 +344,7 @@ failed. `cargo test` reports the result accordingly.
 
 ```
 kernel_rust/
-├── .cargo/config.toml         ← Target, linker flags, runner = "scripts/test_runner.sh"
+├── .cargo/config.toml         ← Target, linker flags, runner = "tests/test_runner.sh"
 ├── Cargo.toml                 ← [[test]] entries for each integration test
 ├── link.ld                    ← Linker script (shared by kernel and test binaries)
 ├── src/
@@ -354,10 +354,8 @@ kernel_rust/
 │       └── qemu.rs            ← QemuExitCode, exit_qemu (isa-debug-exit driver)
 ├── tests/
 │   ├── basic_boot.rs          ← Boot verification tests (3 tests)
-│   └── pmm_test.rs            ← Physical memory manager tests (5 tests)
-└── scripts/
-    ├── test_runner.sh          ← Per-test: ELF conversion, disk image, QEMU execution
-    └── run_tests.sh            ← Suite runner: builds and runs all tests
+│   ├── pmm_test.rs            ← Physical memory manager tests (5 tests)
+│   └── test_runner.sh          ← Per-test: ELF conversion, disk image, QEMU execution
 ```
 
 ## How to Add a New Test
