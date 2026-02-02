@@ -69,6 +69,15 @@
 - break PrintRootDirectory
 - break shell_cls
 
+##############
+# Rust Kernel
+##############
+- Execution: run the following in /osdev/main64:
+    ./build_rust.sh && qemu-system-x86_64 -drive format=raw,file=kaos64_rust.img --serial stdio
+    ./clean_rust.sh
+- Testing: run the following in /osdev/main64/kernel_rust
+    cargo test
+
 ###############
 # Git Commands
 ###############
