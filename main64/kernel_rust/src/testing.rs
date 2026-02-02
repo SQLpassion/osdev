@@ -33,7 +33,6 @@ use core::sync::atomic::{AtomicU32, Ordering};
 // ANSI color codes for terminal output via serial
 const GREEN: &str = "\x1b[0;32m";
 const RED: &str = "\x1b[0;31m";
-const CYAN: &str = "\x1b[0;36m";
 const RESET: &str = "\x1b[0m";
 
 /// Tracks how many tests have passed so far (used by the panic handler to

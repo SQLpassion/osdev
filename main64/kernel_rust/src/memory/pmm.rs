@@ -185,8 +185,10 @@
     (128 MB)
 */
 
+#[allow(unused_imports)]
 use crate::drivers::screen::Screen;
 use crate::memory::bios::{self, BiosInformationBlock, BiosMemoryRegion};
+#[allow(unused_imports)]
 use core::fmt::Write;
 extern "C" {
     /// Linker-defined symbol marking the end of the kernel BSS section
@@ -233,6 +235,7 @@ unsafe fn set_bit(idx: u64, base: *mut u64) {
 }
 
 #[inline]
+#[allow(dead_code)]
 /// Clears a single bit in the PMM bitmap.
 unsafe fn clear_bit(idx: u64, base: *mut u64) {
     let word = base.add((idx / 64) as usize);
@@ -242,6 +245,7 @@ unsafe fn clear_bit(idx: u64, base: *mut u64) {
 
 /// Represents an allocated page frame with its PFN and region info.
 /// This handle is returned by `alloc_frame` and passed to `release_frame`.
+#[allow(dead_code)]
 pub struct PageFrame {
     /// Page Frame Number (physical address / PAGE_SIZE)
     pub pfn: u64,
@@ -250,6 +254,7 @@ pub struct PageFrame {
     region_index: u32,
 }
 
+#[allow(dead_code)]
 impl PageFrame {
     /// Returns the physical address of this page frame.
     #[inline]
@@ -309,6 +314,7 @@ pub fn init() {
 }
 
 /// Executes a closure with a mutable reference to the PMM instance.
+#[allow(dead_code, static_mut_refs)]
 pub fn with_pmm<R>(f: impl FnOnce(&mut PhysicalMemoryManager) -> R) -> R {
     unsafe {
         debug_assert!(!PMM.header.is_null(), "PMM not initialized");
@@ -324,6 +330,7 @@ pub struct PhysicalMemoryManager {
 
 impl PhysicalMemoryManager {
     /// Constructs the PMM layout and initializes region metadata.
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         let (bib, region) = unsafe {
             (
@@ -373,7 +380,7 @@ impl PhysicalMemoryManager {
 
             if r.region_type == 1 && r.start >= MARK_1MB {
                 let frames = r.size / PAGE_SIZE;
-                let bitmap_bytes = align_up((frames + 7) / 8, 8);
+                let bitmap_bytes = align_up(frames.div_ceil(8), 8);
 
                 regions[idx] = PmmRegion {
                     start: r.start,
@@ -447,6 +454,7 @@ impl PhysicalMemoryManager {
 
     /// Releases a previously allocated page frame back to the pool.
     /// The `PageFrame` handle contains all information needed to free the frame.
+    #[allow(dead_code)]
     pub fn release_frame(&mut self, frame: PageFrame) {
         let regions = unsafe {
             let count = (*self.header).region_count as usize;

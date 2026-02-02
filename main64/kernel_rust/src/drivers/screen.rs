@@ -92,6 +92,12 @@ pub struct Screen {
     num_rows: usize,
 }
 
+impl Default for Screen {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Screen {
     /// Initialize the screen driver
     pub fn new() -> Self {

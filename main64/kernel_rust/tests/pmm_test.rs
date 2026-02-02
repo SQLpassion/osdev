@@ -24,7 +24,9 @@ pub extern "C" fn KernelMain(_kernel_size: u64) -> ! {
 
     test_main();
 
-    loop {}
+    loop {
+        core::hint::spin_loop();
+    }
 }
 
 /// Panic handler for integration tests
@@ -125,7 +127,7 @@ fn test_pmm_frame_reuse_after_release() {
         let frame1 = pmm.alloc_frame().expect("Frame 1 allocation failed");
         let frame2 = pmm.alloc_frame().expect("Frame 2 allocation failed");
 
-        let pfn0 = frame0.pfn;
+        let _pfn0 = frame0.pfn;
         let pfn1 = frame1.pfn;
         let pfn2 = frame2.pfn;
 

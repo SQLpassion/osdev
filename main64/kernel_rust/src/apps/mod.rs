@@ -59,12 +59,14 @@ impl<'a> AppContext<'a> {
     /// Read a line of input (blocking), echoing characters to screen.
     /// Returns the number of bytes written to the buffer.
     /// The newline is echoed but not stored in the buffer.
+    #[allow(dead_code)]
     pub fn read_line(&mut self, buf: &mut [u8]) -> usize {
         keyboard::read_line(self.screen, buf)
     }
 
     /// Try to read a character (non-blocking).
     /// Returns None if no input is available.
+    #[allow(dead_code)]
     pub fn try_read_char(&mut self) -> Option<u8> {
         keyboard::poll();
         keyboard::read_char()

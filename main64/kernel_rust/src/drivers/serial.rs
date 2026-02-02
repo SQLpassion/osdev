@@ -26,6 +26,12 @@ pub struct Serial {
     base_port: u16,
 }
 
+impl Default for Serial {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Serial {
     /// Create a new serial port driver for COM1
     pub const fn new() -> Self {

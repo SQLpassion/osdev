@@ -20,7 +20,9 @@ pub extern "C" fn KernelMain(_kernel_size: u64) -> ! {
 
     test_main();
 
-    loop {}
+    loop {
+        core::hint::spin_loop();
+    }
 }
 
 /// Panic handler for integration tests
@@ -39,6 +41,7 @@ fn test_kernel_boots() {
 }
 
 #[test_case]
+#[allow(clippy::eq_op)]
 fn test_trivial_assertion() {
     assert_eq!(1 + 1, 2);
 }
@@ -47,5 +50,5 @@ fn test_trivial_assertion() {
 fn test_vga_buffer_address() {
     // Verify the VGA buffer address is correct for higher-half kernel
     const VGA_BUFFER: usize = 0xFFFF8000000B8000;
-    assert!(VGA_BUFFER > 0xFFFF800000000000, "VGA buffer should be in higher half");
+    const { assert!(VGA_BUFFER > 0xFFFF800000000000, "VGA buffer should be in higher half") };
 }
