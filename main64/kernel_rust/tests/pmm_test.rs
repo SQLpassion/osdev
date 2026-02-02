@@ -129,11 +129,8 @@ fn test_pmm_frame_reuse_after_release() {
         let pfn1 = frame1.pfn;
         let pfn2 = frame2.pfn;
 
-        kaos_kernel::debugln!("    Initial alloc: pfn={}, {}, {}", pfn0, pfn1, pfn2);
-
         // Release the middle frame (frame1)
         pmm.release_frame(frame1);
-        kaos_kernel::debugln!("    Released: pfn={}", pfn1);
 
         // Allocate 3 more frames
         let new_frame0 = pmm.alloc_frame().expect("New frame 0 allocation failed");
@@ -143,8 +140,6 @@ fn test_pmm_frame_reuse_after_release() {
         let new_pfn0 = new_frame0.pfn;
         let new_pfn1 = new_frame1.pfn;
         let new_pfn2 = new_frame2.pfn;
-
-        kaos_kernel::debugln!("    Realloc: pfn={}, {}, {}", new_pfn0, new_pfn1, new_pfn2);
 
         // The first new allocation should reuse the released frame (pfn1)
         assert!(

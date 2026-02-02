@@ -36,6 +36,7 @@ TEST_NAME_FULL=$(basename "$TEST_BINARY")
 # Remove the hash suffix (e.g., basic_boot-08ffcb2841a31825 -> basic_boot)
 TEST_NAME=$(echo "$TEST_NAME_FULL" | sed 's/-[a-f0-9]*$//')
 
+echo ""
 echo "========================================"
 echo "  Running test: $TEST_NAME"
 echo "========================================"
@@ -43,7 +44,6 @@ echo "========================================"
 # Convert ELF to flat binary for booting
 # Store the test kernel binary in main64 directory
 TEST_BIN="$MAIN64_DIR/test_kernel.bin"
-echo "  -> Converting ELF to binary..."
 llvm-objcopy -O binary "$TEST_BINARY" "$TEST_BIN" 2>/dev/null || \
     rust-objcopy -O binary "$TEST_BINARY" "$TEST_BIN" 2>/dev/null || \
     objcopy -O binary "$TEST_BINARY" "$TEST_BIN"
@@ -59,7 +59,6 @@ fi
 
 # Create test disk image in main64 directory
 TEST_IMG="$MAIN64_DIR/kaos64_test.img"
-echo "  -> Creating test disk image: $TEST_IMG"
 
 # Use Docker to create disk image (same as build script)
 docker run --rm -v "$MAIN64_DIR":/src sqlpassion/kaos-buildenv /bin/sh -c "
@@ -72,7 +71,6 @@ docker run --rm -v "$MAIN64_DIR":/src sqlpassion/kaos-buildenv /bin/sh -c "
 " 2>/dev/null
 
 # Run QEMU with the test kernel
-echo "  -> Booting test kernel in QEMU..."
 echo ""
 
 # QEMU arguments:
@@ -104,7 +102,6 @@ if [ -n "$TIMEOUT_CMD" ]; then
         -display none \
         -no-reboot
 else
-    echo "  -> Warning: no timeout command found, running without timeout"
     qemu-system-x86_64 \
         -drive format=raw,file="$TEST_IMG" \
         -serial stdio \
@@ -119,33 +116,3 @@ QEMU_EXIT=$?
 set -e
 
 echo ""
-
-# Interpret exit code
-# QEMU isa-debug-exit transforms the value: actual = (value << 1) | 1
-# So 0x10 (16) becomes 33, and 0x11 (17) becomes 35
-case $QEMU_EXIT in
-    33)
-        echo "========================================"
-        echo "  TEST PASSED"
-        echo "========================================"
-        exit 0
-        ;;
-    35)
-        echo "========================================"
-        echo "  TEST FAILED"
-        echo "========================================"
-        exit 1
-        ;;
-    124)
-        echo "========================================"
-        echo "  TEST TIMED OUT (${TIMEOUT_SECONDS}s)"
-        echo "========================================"
-        exit 1
-        ;;
-    *)
-        echo "========================================"
-        echo "  QEMU ERROR (exit code: $QEMU_EXIT)"
-        echo "========================================"
-        exit 1
-        ;;
-esac

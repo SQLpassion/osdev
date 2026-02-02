@@ -11,6 +11,7 @@
     "rust-analyzer.check.command": "clippy",
     "rust-analyzer.check.allTargets": false,
     "rust-analyzer.cargo.target": "x86_64-unknown-none",
-    "rust-analyzer.checkOnSave.allTargets": false
+    "rust-analyzer.checkOnSave.allTargets": false,
+    "python.REPL.enableREPLSmartSend": false
     
 }

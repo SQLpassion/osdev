@@ -28,6 +28,18 @@
 
 use crate::arch::qemu::{exit_qemu, QemuExitCode};
 use crate::{debug, debugln};
+use core::sync::atomic::{AtomicU32, Ordering};
+
+// ANSI color codes for terminal output via serial
+const GREEN: &str = "\x1b[0;32m";
+const RED: &str = "\x1b[0;31m";
+const CYAN: &str = "\x1b[0;36m";
+const RESET: &str = "\x1b[0m";
+
+/// Tracks how many tests have passed so far (used by the panic handler to
+/// print an accurate summary even when a test fails).
+static TESTS_PASSED: AtomicU32 = AtomicU32::new(0);
+static TESTS_TOTAL: AtomicU32 = AtomicU32::new(0);
 
 /// Trait for types that can be run as tests
 ///
@@ -48,7 +60,8 @@ impl<T: Fn()> Testable for T {
         self();
 
         // If we get here, the test passed
-        debugln!(" [ok]");
+        debugln!(" {}[ok]{}", GREEN, RESET);
+        TESTS_PASSED.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -57,10 +70,9 @@ impl<T: Fn()> Testable for T {
 /// This function is called by the test harness with a slice of all test functions.
 /// It runs each test and exits QEMU with the appropriate exit code.
 pub fn test_runner(tests: &[&dyn Testable]) {
-    debugln!("========================================");
-    debugln!("    KAOS Kernel Test Framework");
-    debugln!("========================================");
-    debugln!();
+    TESTS_TOTAL.store(tests.len() as u32, Ordering::Relaxed);
+    TESTS_PASSED.store(0, Ordering::Relaxed);
+
     debugln!("Running {} tests:", tests.len());
     debugln!();
 
@@ -69,9 +81,7 @@ pub fn test_runner(tests: &[&dyn Testable]) {
     }
 
     debugln!();
-    debugln!("========================================");
-    debugln!("All {} tests passed!", tests.len());
-    debugln!("========================================");
+    print_summary();
 
     exit_qemu(QemuExitCode::Success);
 }
@@ -81,23 +91,36 @@ pub fn test_runner(tests: &[&dyn Testable]) {
 /// This function should be called from the panic handler when in test mode.
 /// It outputs the failure information and exits QEMU with a failure code.
 pub fn test_panic_handler(info: &core::panic::PanicInfo) -> ! {
-    debugln!(" [FAILED]");
+    debugln!(" {}[FAILED]{}", RED, RESET);
     debugln!();
-    debugln!("========================================");
-    debugln!("TEST FAILED!");
-    debugln!("========================================");
 
     if let Some(location) = info.location() {
-        debugln!("Location: {}:{}", location.file(), location.line());
+        debugln!("  Location: {}:{}", location.file(), location.line());
     }
 
     if let Some(message) = info.message().as_str() {
-        debugln!("Message: {}", message);
+        debugln!("  Message: {}", message);
     }
 
     debugln!();
+    print_summary();
 
     exit_qemu(QemuExitCode::Failed);
+}
+
+/// Print a colored test result summary
+fn print_summary() {
+    let total = TESTS_TOTAL.load(Ordering::Relaxed);
+    let passed = TESTS_PASSED.load(Ordering::Relaxed);
+    let failed = total - passed;
+
+    debugln!("Total:  {}", total);
+    debugln!("{}Passed: {}{}", GREEN, passed, RESET);
+    if failed > 0 {
+        debugln!("{}Failed: {}{}", RED, failed, RESET);
+    } else {
+        debugln!("Failed: 0");
+    }
 }
 
 /// Macro to assert equality with better error messages for tests
