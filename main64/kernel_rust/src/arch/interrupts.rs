@@ -274,6 +274,13 @@ fn end_of_interrupt(irq: u8) {
     }
 }
 
+/// Dispatch entry point called from the `irq1_stub` assembly trampoline.
+///
+/// # Safety contract (enforced by caller)
+/// - Must be called with interrupts disabled (`cli` before entry).
+/// - Must not be called reentrantly — the assembly stub does not
+///   re-enable interrupts until after `iretq`.
+/// - `vector` must be a valid IRQ vector number (`IRQ_BASE..IRQ_BASE + 16`).
 #[no_mangle]
 pub extern "C" fn irq1_rust_dispatch(vector: u8) {
     if vector == IRQ1_VECTOR {
