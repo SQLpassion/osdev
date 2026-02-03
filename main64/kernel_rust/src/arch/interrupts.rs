@@ -1,8 +1,8 @@
 //! Interrupt and PIC wiring for Rust-side IRQ handling.
 
 use core::arch::{asm, global_asm};
+use core::cell::UnsafeCell;
 use core::mem::size_of;
-use core::ptr::{addr_of, addr_of_mut};
 
 use crate::arch::port::PortByte;
 
@@ -119,8 +119,29 @@ struct IdtPointer {
 
 type IrqHandler = fn(u8);
 
-static mut IDT: [IdtEntry; IDT_ENTRIES] = [IdtEntry::missing(); IDT_ENTRIES];
-static mut IRQ_HANDLERS: [Option<IrqHandler>; IDT_ENTRIES] = [None; IDT_ENTRIES];
+/// Holds the IDT and IRQ handler table behind `UnsafeCell` to avoid
+/// `static mut` (which permits aliased `&mut` references and is unsound).
+struct InterruptState {
+    idt: UnsafeCell<[IdtEntry; IDT_ENTRIES]>,
+    handlers: UnsafeCell<[Option<IrqHandler>; IDT_ENTRIES]>,
+}
+
+impl InterruptState {
+    const fn new() -> Self {
+        Self {
+            idt: UnsafeCell::new([IdtEntry::missing(); IDT_ENTRIES]),
+            handlers: UnsafeCell::new([None; IDT_ENTRIES]),
+        }
+    }
+}
+
+// Safety: The kernel is single-threaded (no SMP).  The IDT is written only
+// during init() before interrupts are enabled.  IRQ handler slots are written
+// with interrupts disabled and read from dispatch_irq in interrupt context;
+// no concurrent mutation is possible.
+unsafe impl Sync for InterruptState {}
+
+static STATE: InterruptState = InterruptState::new();
 
 /// Initialize IDT and PIC for IRQ handling.
 pub fn init() {
@@ -147,12 +168,12 @@ pub fn disable() {
 
 fn init_idt() {
     unsafe {
-        let idt = &mut *addr_of_mut!(IDT);
+        let idt = &mut *STATE.idt.get();
         idt[IRQ1_VECTOR as usize].set_handler(irq1_stub as *const () as usize);
 
         let idt_ptr = IdtPointer {
             limit: (size_of::<IdtEntry>() * IDT_ENTRIES - 1) as u16,
-            base: addr_of!(IDT) as u64,
+            base: STATE.idt.get() as u64,
         };
 
         asm!(
@@ -166,14 +187,14 @@ fn init_idt() {
 /// Register a callback for a given interrupt vector.
 pub fn register_irq_handler(vector: u8, handler: IrqHandler) {
     unsafe {
-        let handlers = &mut *addr_of_mut!(IRQ_HANDLERS);
+        let handlers = &mut *STATE.handlers.get();
         handlers[vector as usize] = Some(handler);
     }
 }
 
 fn clear_irq_handlers() {
     unsafe {
-        let handlers = &mut *addr_of_mut!(IRQ_HANDLERS);
+        let handlers = &mut *STATE.handlers.get();
         for slot in handlers.iter_mut() {
             *slot = None;
         }
@@ -182,7 +203,7 @@ fn clear_irq_handlers() {
 
 fn dispatch_irq(vector: u8) {
     let handler = unsafe {
-        let handlers = &*addr_of!(IRQ_HANDLERS);
+        let handlers = &*STATE.handlers.get();
         handlers[vector as usize]
     };
     if let Some(handler) = handler {
