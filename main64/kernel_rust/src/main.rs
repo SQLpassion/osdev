@@ -30,7 +30,6 @@ use drivers::serial;
 /// This function is called from assembly with the kernel size in RDI.
 #[no_mangle]
 #[link_section = ".text.boot"]
-#[allow(unconditional_panic)]
 pub extern "C" fn KernelMain(kernel_size: u64) -> ! {
     // Initialize debug serial output first for early debugging
     serial::init();

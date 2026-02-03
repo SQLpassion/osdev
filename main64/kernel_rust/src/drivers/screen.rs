@@ -338,18 +338,10 @@ impl fmt::Write for Screen {
     }
 
     fn write_char(&mut self, c: char) -> fmt::Result {
-        match c {
-            '\n' => self.print_char(b'\n'),
-            '\r' => self.print_char(b'\r'),
-            '\t' => self.print_char(b'\t'),
-            ch => {
-                if ch.is_ascii() {
-                    self.print_char(ch as u8);
-                } else {
-                    // Fallback for non-ASCII
-                    self.print_char(b'?');
-                }
-            }
+        if c.is_ascii() {
+            self.print_char(c as u8);
+        } else {
+            self.print_char(b'?');
         }
         Ok(())
     }
