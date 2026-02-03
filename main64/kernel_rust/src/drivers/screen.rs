@@ -289,10 +289,13 @@ impl Screen {
     pub fn save(&self) -> ScreenSnapshot {
         let mut snapshot = ScreenSnapshot::empty();
 
-        // Copy the entire VGA buffer
+        // Copy the entire VGA buffer using volatile reads (MMIO)
         unsafe {
             let src = VGA_BUFFER as *const u8;
-            ptr::copy_nonoverlapping(src, snapshot.buffer.as_mut_ptr(), VGA_BUFFER_SIZE);
+            let dst = snapshot.buffer.as_mut_ptr();
+            for i in 0..VGA_BUFFER_SIZE {
+                ptr::write(dst.add(i), ptr::read_volatile(src.add(i)));
+            }
         }
 
         // Save cursor position and colors
@@ -307,10 +310,13 @@ impl Screen {
     /// Restore screen state from a previously saved snapshot.
     /// This restores the VGA buffer, cursor position, and colors.
     pub fn restore(&mut self, snapshot: &ScreenSnapshot) {
-        // Restore the VGA buffer
+        // Restore the VGA buffer using volatile writes (MMIO)
         unsafe {
+            let src = snapshot.buffer.as_ptr();
             let dst = VGA_BUFFER as *mut u8;
-            ptr::copy_nonoverlapping(snapshot.buffer.as_ptr(), dst, VGA_BUFFER_SIZE);
+            for i in 0..VGA_BUFFER_SIZE {
+                ptr::write_volatile(dst.add(i), ptr::read(src.add(i)));
+            }
         }
 
         // Restore cursor position and colors
