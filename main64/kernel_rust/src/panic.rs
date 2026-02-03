@@ -24,9 +24,7 @@ fn panic(info: &PanicInfo) -> ! {
         writeln!(screen).unwrap();
     }
 
-    if let Some(message) = info.message().as_str() {
-        writeln!(screen, "Message: {}", message).unwrap();
-    }
+    writeln!(screen, "Message: {}", info.message()).unwrap();
 
     // Halt the CPU
     loop {
