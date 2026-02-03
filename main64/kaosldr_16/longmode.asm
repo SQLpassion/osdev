@@ -196,6 +196,7 @@
 
 %define PAGE_PRESENT    (1 << 0)
 %define PAGE_WRITE      (1 << 1)
+%define PAGE_SIZE       (1 << 7)    ; PS bit - enables 2MB huge pages when set in PDE
  
 %define CODE_SEG     0x0008
 %define DATA_SEG     0x0010
@@ -210,14 +211,14 @@ IDT:
 SwitchToLongMode:
     MOV     EDI, 0x9000
     
-    ; Zero out the 52KiB buffer (page tables).
+    ; Zero out the 16KiB buffer.
     ; Since we are doing a rep stosd, count should be bytes/4.
-    MOV     EDI, 0x9000
-    MOV     ECX, 0x3400
+    PUSH    DI                                  ; REP STOSD alters DI.
+    MOV     ECX, 0x1000
     XOR     EAX, EAX
     CLD
-    A32     REP STOSD
-    MOV     EDI, 0x9000
+    REP     STOSD
+    POP     DI                                  ; Get DI back.
  
     ; Build the Page Map Level 4 (PML4)
     ; es:di points to the Page Map Level 4 table.
@@ -248,55 +249,38 @@ SwitchToLongMode:
     MOV     [ES:DI + 0x3000], EAX               ; Store the value of EAX as the first PDPTE.
     ; END =================================================
  
-    ; Build the Page Directory using 4KB page tables.
-    ; Each PDE points to one PT (512 entries = 2MB per PT).
+    ; Build the Page Directory using 2MB huge pages (PS bit set).
+    ; This maps 0 - 16MB directly without needing separate Page Tables.
+    ; Each PDE entry with PS bit maps 2MB of physical memory.
     PUSH    DI
     LEA     DI, [DI + 0x2000]                   ; Point to Page Directory for identity mapping
-    MOV     EAX, 0xE000
-    OR      EAX, PAGE_PRESENT | PAGE_WRITE
-    MOV     ECX, 8                              ; 8 PTs = 16MB
-.LoopPDE:
+    MOV     EAX, PAGE_PRESENT | PAGE_WRITE | PAGE_SIZE  ; 2MB huge page flags
+    MOV     ECX, 8                              ; Map 8 x 2MB = 16MB
+.LoopPD:
     MOV     [ES:DI], EAX
-    ADD     EAX, 0x1000                         ; Next PT page
-    ADD     DI, 8                               ; Next PDE entry (8 bytes)
+    ADD     EAX, 0x200000                       ; Next 2MB physical region
+    ADD     DI, 8                               ; Next PDE entry
     DEC     ECX
-    JNZ     .LoopPDE
+    JNZ     .LoopPD
     POP     DI
 
     ; =================================================
     ; Needed for the Higher Half Mapping of the Kernel
     ; =================================================
-    ; Build the Page Directory for higher half using the same PTs.
+    ; Build the Page Directory for higher half using 2MB huge pages.
     ; Maps virtual 0xFFFF800000000000+ to physical 0 - 16MB.
     PUSH    DI
     LEA     DI, [DI + 0x4000]                   ; Point to Higher Half Page Directory
-    MOV     EAX, 0xE000
-    OR      EAX, PAGE_PRESENT | PAGE_WRITE
-    MOV     ECX, 8                              ; 8 PTs = 16MB
-.LoopPDEHigherHalf:
+    MOV     EAX, PAGE_PRESENT | PAGE_WRITE | PAGE_SIZE  ; 2MB huge page flags
+    MOV     ECX, 8                              ; Map 8 x 2MB = 16MB
+.LoopPDHigherHalf:
     MOV     [ES:DI], EAX
-    ADD     EAX, 0x1000                         ; Next PT page
+    ADD     EAX, 0x200000                       ; Next 2MB physical region
     ADD     DI, 8                               ; Next PDE entry
     DEC     ECX
-    JNZ     .LoopPDEHigherHalf
+    JNZ     .LoopPDHigherHalf
     POP     DI
     ; END =================================================
-
-    ; Build the Page Tables (4KB pages).
-    ; Maps physical 0 - 16MB into the 8 PTs.
-    PUSH    EDI
-    LEA     EDI, [EDI + 0x5000]                 ; Point to PT0 @ 0xE000
-    XOR     EBX, EBX                            ; Physical address counter
-    MOV     ECX, 4096                           ; 16MB / 4KB
-.LoopPTE:
-    MOV     EAX, EBX
-    OR      EAX, PAGE_PRESENT | PAGE_WRITE
-    MOV     [ES:EDI], EAX
-    ADD     EBX, 0x1000
-    ADD     EDI, 8
-    DEC     ECX
-    JNZ     .LoopPTE
-    POP     EDI
 
     ; Disable IRQs
     MOV     AL, 0xFF                            ; Out 0xFF to 0xA1 and 0x21 to disable all IRQs.
