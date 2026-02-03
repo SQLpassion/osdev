@@ -57,16 +57,15 @@ pub struct BiosMemoryRegion {
 impl BiosInformationBlock {
     /// Prints the memory map that we have obtained from the BIOS in x16 Real Mode.
     pub fn print_memory_map(screen: &mut Screen) {
-        // Mutable view so we can mirror the C code: compute MaxMemory and AvailablePageFrames here.
-        let bib = unsafe { &mut *(BIB_OFFSET as *mut BiosInformationBlock) };
+        let bib = unsafe { &*(BIB_OFFSET as *const BiosInformationBlock) };
 
         let region = MEMORYMAP_OFFSET as *const BiosMemoryRegion;
 
         let entry_count = bib.memory_map_entries as usize;
 
-        // Reset and recompute MaxMemory / AvailablePageFrames like the C physical memory manager.
-        bib.max_memory = 0;
-        bib.available_page_frames = 0;
+        // Compute totals as local variables (don't mutate the shared BIB).
+        let mut max_memory: i64 = 0;
+        let mut available_page_frames: i64 = 0;
 
         // Print header
         writeln!(screen, "{} Memory Map entries found.", entry_count).unwrap();
@@ -80,11 +79,10 @@ impl BiosInformationBlock {
                 // Available
                 screen.set_color(Color::LightGreen);
 
-                // Track totals for available regions (matches C code behavior)
-                bib.max_memory = bib.max_memory.wrapping_add(current_region.size as i64);
-                bib.available_page_frames = bib
-                    .available_page_frames
-                    .wrapping_add((current_region.size / PAGE_SIZE) as i64);
+                // Track totals for available regions
+                max_memory = max_memory.wrapping_add(current_region.size as i64);
+                available_page_frames =
+                    available_page_frames.wrapping_add((current_region.size / PAGE_SIZE) as i64);
             } else {
                 // Everything else
                 screen.set_color(Color::LightRed);
@@ -123,6 +121,6 @@ impl BiosInformationBlock {
         screen.set_color(Color::White);
 
         // Max memory
-        writeln!(screen, "Max Memory: {} MB", bib.max_memory / 1024 / 1024 + 1).unwrap();
+        writeln!(screen, "Max Memory: {} MB", max_memory / 1024 / 1024 + 1).unwrap();
     }
 }

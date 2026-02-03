@@ -33,7 +33,7 @@ const SCANCODES_LOWER: [u8; SCANCODE_TABLE_LEN] = [
 
 /// Upper-case QWERTZ scan code map (printable ASCII only; 0 == ignored)
 const SCANCODES_UPPER: [u8; SCANCODE_TABLE_LEN] = [
-    0, 0, b'!', b'"', b'$', b'$', b'%', b'&', b'/', b'(', b')', b'=', b'?', b'`', 0x08, 0, b'Q',
+    0, 0, b'!', b'"', b'0', b'$', b'%', b'&', b'/', b'(', b')', b'=', b'?', b'`', 0x08, 0, b'Q',
     b'W', b'E', b'R', b'T', b'Z', b'U', b'I', b'O', b'P', b']', b'*', b'\n', 0, b'A', b'S', b'D',
     b'F', b'G', b'H', b'J', b'K', b'L', b'}', b'@', b'>', 0, b'\\', b'Y', b'X', b'C', b'V', b'B',
     b'N', b'M', b';', b':', b'_', 0, b'*', 0, b' ', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
