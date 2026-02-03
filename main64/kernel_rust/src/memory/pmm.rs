@@ -200,11 +200,8 @@ extern "C" {
 /// Size of a single page frame in bytes
 pub const PAGE_SIZE: u64 = 4096;
 
-/// Physical address where the kernel is loaded
+/// Physical address where the kernel is loaded (1 MB)
 const KERNEL_OFFSET: u64 = 0x100000;
-
-/// Physical marker for the first usable memory above low memory
-const MARK_1MB: u64 = 0x100000;
 
 /// Physical address of the stack top (end of reserved stack area)
 const STACK_TOP: u64 = 0x400000;
@@ -380,7 +377,7 @@ impl PhysicalMemoryManager {
 
         for i in 0..bib.memory_map_entries as usize {
             let r = unsafe { &*region.add(i) };
-            if r.region_type == 1 && r.start >= MARK_1MB {
+            if r.region_type == 1 && r.start >= KERNEL_OFFSET {
                 count += 1;
             }
         }
@@ -400,7 +397,7 @@ impl PhysicalMemoryManager {
         for i in 0..bib.memory_map_entries as usize {
             let r = unsafe { &*region.add(i) };
 
-            if r.region_type == 1 && r.start >= MARK_1MB {
+            if r.region_type == 1 && r.start >= KERNEL_OFFSET {
                 let frames = r.size / PAGE_SIZE;
                 let bitmap_bytes = align_up(frames.div_ceil(8), 8);
 

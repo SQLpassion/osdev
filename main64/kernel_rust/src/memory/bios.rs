@@ -1,4 +1,5 @@
 use crate::drivers::screen::{Color, Screen};
+use crate::memory::pmm::PAGE_SIZE;
 use core::fmt::Write;
 
 /// Physical address of the BIOS information block
@@ -6,9 +7,6 @@ pub const BIB_OFFSET: usize = 0x1000;
 
 /// Physical address of the BIOS memory map array
 pub const MEMORYMAP_OFFSET: usize = 0x1200;
-
-/// Size of a single page frame in bytes
-pub const PAGE_SIZE: u64 = 4096;
 
 #[repr(C)]
 /// BIOS-provided system information block shared with the kernel
