@@ -250,11 +250,12 @@ pub fn read_line(screen: &mut Screen, buf: &mut [u8]) -> usize {
                     break;
                 }
                 0x08 => {
-                    // Backspace: erase last character if any
+                    // Backspace: erase last character if any.
+                    // A single print_char(0x08) suffices because the Screen
+                    // backspace handler already moves the cursor back AND
+                    // blanks the erased cell.
                     if len > 0 {
                         len -= 1;
-                        screen.print_char(0x08);
-                        screen.print_char(b' ');
                         screen.print_char(0x08);
                     }
                 }

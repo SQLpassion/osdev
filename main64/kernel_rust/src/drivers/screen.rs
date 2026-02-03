@@ -158,8 +158,11 @@ impl Screen {
         self.update_cursor();
     }
 
-    /// Print a single character
-    pub fn print_char(&mut self, c: u8) {
+    /// Write a character to the VGA buffer and handle scrolling,
+    /// but do NOT update the hardware cursor.
+    /// Used internally for batch operations where the cursor
+    /// only needs to be updated once after all characters are written.
+    fn put_char(&mut self, c: u8) {
         match c {
             b'\n' => {
                 self.row += 1;
@@ -212,14 +215,21 @@ impl Screen {
         }
 
         self.scroll();
+    }
+
+    /// Print a single character and update the hardware cursor.
+    pub fn print_char(&mut self, c: u8) {
+        self.put_char(c);
         self.update_cursor();
     }
 
-    /// Print a string
+    /// Print a string. The hardware cursor is updated once at the end,
+    /// avoiding costly per-character port I/O.
     pub fn print_str(&mut self, s: &str) {
         for byte in s.bytes() {
-            self.print_char(byte);
+            self.put_char(byte);
         }
+        self.update_cursor();
     }
 
     /// Scroll the screen if necessary (matching C Scroll function)
