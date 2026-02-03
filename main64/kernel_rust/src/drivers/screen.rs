@@ -225,12 +225,17 @@ impl Screen {
     /// Scroll the screen if necessary (matching C Scroll function)
     fn scroll(&mut self) {
         if self.row >= self.num_rows {
-            // Move all lines up by one
+            // Move all lines up by one using volatile accesses.
+            // The VGA buffer is MMIO, so every read/write must be volatile
+            // to prevent the compiler from reordering or eliding them.
             let count = (self.num_rows - 1) * self.num_cols;
             unsafe {
                 let dst = self.vga_ptr(0, 0);
                 let src = self.vga_ptr(1, 0);
-                ptr::copy(src, dst, count);
+                for i in 0..count {
+                    let val = ptr::read_volatile(src.add(i));
+                    ptr::write_volatile(dst.add(i), val);
+                }
             }
 
             // Clear the last line
