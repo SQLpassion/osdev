@@ -425,17 +425,52 @@ impl PhysicalMemoryManager {
             bitmap_base += r.bitmap_bytes;
         }
 
-        // Mark kernel + PMM metadata used.
-        let used_frames = (STACK_TOP - KERNEL_OFFSET) / PAGE_SIZE;
-        for _ in 0..used_frames {
-            let _ = pmm.alloc_frame();
-        }
+        // Mark the kernel, stack, and PMM metadata as used.
+        // `bitmap_base` already points past the last bitmap, so it is the
+        // true end of all PMM metadata.  We take the max with STACK_TOP to
+        // also cover the bootloader stack, then align up to a page boundary.
+        let metadata_end = bitmap_base;
+        let reserved_end = align_up(metadata_end.max(STACK_TOP), PAGE_SIZE);
+        pmm.mark_range_used(KERNEL_OFFSET, reserved_end);
 
         pmm
     }
 
+    /// Marks every page frame in the physical range `[range_start, range_end)`
+    /// as used by directly setting the corresponding bitmap bits.
+    /// This does not depend on the allocation order of `alloc_frame()`.
+    fn mark_range_used(&mut self, range_start: u64, range_end: u64) {
+        let regions = unsafe {
+            let count = (*self.header).region_count as usize;
+            let regions_ptr = (*self.header).regions_ptr;
+            core::slice::from_raw_parts_mut(regions_ptr, count)
+        };
+
+        for r in regions.iter_mut() {
+            let region_end = r.start + r.frames_total * PAGE_SIZE;
+
+            // Compute the overlap between the reserved range and this region.
+            let overlap_start = range_start.max(r.start);
+            let overlap_end = range_end.min(region_end);
+
+            if overlap_start >= overlap_end {
+                continue;
+            }
+
+            let first_bit = (overlap_start - r.start) / PAGE_SIZE;
+            let end_bit = (overlap_end - r.start) / PAGE_SIZE;
+            let bitmap = r.bitmap_start as *mut u64;
+
+            for bit in first_bit..end_bit {
+                unsafe { set_bit(bit, bitmap) };
+                r.frames_free -= 1;
+            }
+        }
+    }
+
     /// Allocates a single page frame from the first available region.
     /// Returns `Some(PageFrame)` on success, or `None` if no free frames exist.
+    #[allow(dead_code)]
     pub fn alloc_frame(&mut self) -> Option<PageFrame> {
         let regions = unsafe {
             let count = (*self.header).region_count as usize;

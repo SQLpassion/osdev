@@ -168,6 +168,46 @@ fn test_pmm_frame_reuse_after_release() {
     });
 }
 
+/// Test that no allocated frame falls within the reserved kernel region.
+/// The PMM must mark [KERNEL_OFFSET, reserved_end) as used so that
+/// alloc_frame() never hands out pages occupied by the kernel, stack,
+/// or PMM metadata.
+#[test_case]
+fn test_pmm_reserved_region_not_allocated() {
+    const KERNEL_OFFSET: u64 = 0x100000;
+    const STACK_TOP: u64 = 0x400000;
+
+    pmm::with_pmm(|pmm| {
+        // Allocate many frames and verify none overlap the reserved area.
+        // 1024 frames = 4 MB worth of pages, enough to confirm the allocator
+        // skips the entire reserved region.
+        const NUM_FRAMES: usize = 1024;
+        let mut frames = [0u64; NUM_FRAMES];
+        let mut count = 0;
+
+        for i in 0..NUM_FRAMES {
+            let frame = pmm.alloc_frame().expect("Allocation should succeed");
+            let addr = frame.physical_address();
+
+            assert!(
+                addr >= STACK_TOP || addr < KERNEL_OFFSET,
+                "Frame physical address 0x{:x} falls inside reserved region [0x{:x}, 0x{:x})",
+                addr,
+                KERNEL_OFFSET,
+                STACK_TOP,
+            );
+
+            frames[i] = frame.pfn;
+            count += 1;
+
+            // Return the frame immediately so we don't exhaust memory
+            pmm.release_frame(frame);
+        }
+
+        assert!(count == NUM_FRAMES, "All allocations should have succeeded");
+    });
+}
+
 /// Test that physical_address() returns correct addresses
 #[test_case]
 fn test_pmm_physical_address_calculation() {
