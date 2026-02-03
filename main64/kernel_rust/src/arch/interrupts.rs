@@ -47,7 +47,7 @@ irq1_stub:
     push r15
 
     sub rsp, 8
-    mov edi, 33
+    mov edi, {irq1_vector}
     call irq1_rust_dispatch
     add rsp, 8
 
@@ -68,7 +68,8 @@ irq1_stub:
     pop rax
     sti
     iretq
-"#
+"#,
+    irq1_vector = const IRQ1_VECTOR,
 );
 
 extern "C" {
