@@ -348,6 +348,15 @@ pub struct PhysicalMemoryManager {
 }
 
 impl PhysicalMemoryManager {
+    /// Returns a mutable slice over the PMM region array stored after the header.
+    fn regions(&mut self) -> &mut [PmmRegion] {
+        unsafe {
+            let count = (*self.header).region_count as usize;
+            let regions_ptr = (*self.header).regions_ptr;
+            core::slice::from_raw_parts_mut(regions_ptr, count)
+        }
+    }
+
     /// Constructs the PMM layout and initializes region metadata.
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
@@ -385,11 +394,7 @@ impl PhysicalMemoryManager {
             (*header).region_count = count;
         }
 
-        let regions = unsafe {
-            let count = (*header).region_count as usize;
-            let regions_ptr = (*header).regions_ptr;
-            core::slice::from_raw_parts_mut(regions_ptr, count)
-        };
+        let regions = pmm.regions();
 
         // Fill regions
         let mut idx = 0usize;
@@ -437,11 +442,7 @@ impl PhysicalMemoryManager {
     /// as used by directly setting the corresponding bitmap bits.
     /// This does not depend on the allocation order of `alloc_frame()`.
     fn mark_range_used(&mut self, range_start: u64, range_end: u64) {
-        let regions = unsafe {
-            let count = (*self.header).region_count as usize;
-            let regions_ptr = (*self.header).regions_ptr;
-            core::slice::from_raw_parts_mut(regions_ptr, count)
-        };
+        let regions = self.regions();
 
         for r in regions.iter_mut() {
             let region_end = r.start + r.frames_total * PAGE_SIZE;
@@ -469,11 +470,7 @@ impl PhysicalMemoryManager {
     /// Returns `Some(PageFrame)` on success, or `None` if no free frames exist.
     #[allow(dead_code)]
     pub fn alloc_frame(&mut self) -> Option<PageFrame> {
-        let regions = unsafe {
-            let count = (*self.header).region_count as usize;
-            let regions_ptr = (*self.header).regions_ptr;
-            core::slice::from_raw_parts_mut(regions_ptr, count)
-        };
+        let regions = self.regions();
 
         for (idx, r) in regions.iter_mut().enumerate() {
             if r.frames_free == 0 {
@@ -510,11 +507,7 @@ impl PhysicalMemoryManager {
     /// The `PageFrame` handle contains all information needed to free the frame.
     #[allow(dead_code)]
     pub fn release_frame(&mut self, frame: PageFrame) {
-        let regions = unsafe {
-            let count = (*self.header).region_count as usize;
-            let regions_ptr = (*self.header).regions_ptr;
-            core::slice::from_raw_parts_mut(regions_ptr, count)
-        };
+        let regions = self.regions();
 
         let r = &mut regions[frame.region_index as usize];
         let bitmap = r.bitmap_start as *mut u64;
