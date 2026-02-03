@@ -190,6 +190,8 @@ use crate::drivers::screen::Screen;
 use crate::memory::bios::{self, BiosInformationBlock, BiosMemoryRegion};
 #[allow(unused_imports)]
 use core::fmt::Write;
+use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicBool, Ordering};
 extern "C" {
     /// Linker-defined symbol marking the end of the kernel BSS section
     static __bss_end: u8;
@@ -301,25 +303,45 @@ pub struct PmmRegion {
     bitmap_bytes: u64,
 }
 
-/// Global PMM instance initialized by `init`.
-static mut PMM: PhysicalMemoryManager = PhysicalMemoryManager {
-    header: core::ptr::null_mut(),
-};
+/// Wrapper that holds the global PMM behind an `UnsafeCell` so we avoid
+/// `static mut` (which allows aliased `&mut` references and is unsound).
+/// An `AtomicBool` tracks whether `init()` has been called.
+struct GlobalPmm {
+    inner: UnsafeCell<PhysicalMemoryManager>,
+    initialized: AtomicBool,
+}
+
+impl GlobalPmm {
+    const fn new() -> Self {
+        Self {
+            inner: UnsafeCell::new(PhysicalMemoryManager {
+                header: core::ptr::null_mut(),
+            }),
+            initialized: AtomicBool::new(false),
+        }
+    }
+}
+
+// Safety: The kernel is single-threaded (no SMP) and interrupt handlers never
+// access the PMM.  The atomic flag provides correct Acquire/Release ordering
+// so that callers of `with_pmm` observe the fully-constructed state.
+unsafe impl Sync for GlobalPmm {}
+
+static PMM: GlobalPmm = GlobalPmm::new();
 
 /// Initializes the global physical memory manager.
 pub fn init() {
     unsafe {
-        PMM = PhysicalMemoryManager::new();
+        *PMM.inner.get() = PhysicalMemoryManager::new();
     }
+    PMM.initialized.store(true, Ordering::Release);
 }
 
 /// Executes a closure with a mutable reference to the PMM instance.
-#[allow(dead_code, static_mut_refs)]
+#[allow(dead_code)]
 pub fn with_pmm<R>(f: impl FnOnce(&mut PhysicalMemoryManager) -> R) -> R {
-    unsafe {
-        debug_assert!(!PMM.header.is_null(), "PMM not initialized");
-        f(&mut PMM)
-    }
+    debug_assert!(PMM.initialized.load(Ordering::Acquire), "PMM not initialized");
+    unsafe { f(&mut *PMM.inner.get()) }
 }
 
 /// Physical memory manager for allocating and freeing page frames.
