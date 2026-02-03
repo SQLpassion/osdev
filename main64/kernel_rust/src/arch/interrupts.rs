@@ -203,16 +203,34 @@ fn remap_pic(offset1: u8, offset2: u8) {
 
         let icw1 = PIC_ICW1_INIT | PIC_ICW1_ICW4;
         cmd1.write(icw1);
+        io_wait();
         cmd2.write(icw1);
+        io_wait();
 
         data1.write(offset1);
+        io_wait();
         data2.write(offset2);
+        io_wait();
 
         data1.write(0x04);
+        io_wait();
         data2.write(0x02);
+        io_wait();
 
         data1.write(PIC_ICW4_8086);
+        io_wait();
         data2.write(PIC_ICW4_8086);
+        io_wait();
+    }
+}
+
+/// Small I/O delay by writing to port 0x80 (POST diagnostic port).
+/// This gives the PIC ~1 us to settle between commands, which is
+/// necessary on real hardware but harmless on emulators.
+#[inline]
+fn io_wait() {
+    unsafe {
+        PortByte::new(0x80).write(0);
     }
 }
 
