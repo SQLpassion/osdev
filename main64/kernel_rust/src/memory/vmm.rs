@@ -2,11 +2,10 @@
 
 use core::arch::asm;
 use core::cell::UnsafeCell;
-use core::fmt::{self, Write as _};
-use core::slice;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use crate::drivers::screen::{Color, Screen};
+use crate::drivers::screen::Screen;
+use crate::logging;
 use crate::memory::pmm;
 
 const PT_ENTRIES: usize = 512;
@@ -178,10 +177,6 @@ unsafe fn invlpg(addr: u64) {
 struct VmmState {
     pml4_physical: u64,
     debug_enabled: bool,
-    console_debug_enabled: bool,
-    console_debug_len: usize,
-    console_debug_overflow: bool,
-    console_debug_buf: [u8; 8192],
 }
 
 struct GlobalVmm {
@@ -195,10 +190,6 @@ impl GlobalVmm {
             inner: UnsafeCell::new(VmmState {
                 pml4_physical: 0,
                 debug_enabled: false,
-                console_debug_enabled: false,
-                console_debug_len: 0,
-                console_debug_overflow: false,
-                console_debug_buf: [0; 8192],
             }),
             initialized: AtomicBool::new(false),
         }
@@ -240,58 +231,6 @@ fn debug_enabled() -> bool {
     with_vmm(|state| state.debug_enabled)
 }
 
-struct ConsoleCaptureWriter<'a> {
-    state: &'a mut VmmState,
-}
-
-impl fmt::Write for ConsoleCaptureWriter<'_> {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        let bytes = s.as_bytes();
-        let remaining = self
-            .state
-            .console_debug_buf
-            .len()
-            .saturating_sub(self.state.console_debug_len);
-        let write_len = remaining.min(bytes.len());
-
-        if write_len > 0 {
-            let start = self.state.console_debug_len;
-            let end = start + write_len;
-            self.state.console_debug_buf[start..end].copy_from_slice(&bytes[..write_len]);
-            self.state.console_debug_len = end;
-        }
-
-        if write_len < bytes.len() {
-            self.state.console_debug_overflow = true;
-        }
-
-        Ok(())
-    }
-}
-
-fn capture_console_line(args: fmt::Arguments<'_>) {
-    with_vmm(|state| {
-        if !state.console_debug_enabled {
-            return;
-        }
-
-        let mut writer = ConsoleCaptureWriter { state };
-        let _ = fmt::write(&mut writer, args);
-        let _ = writer.write_char('\n');
-    });
-}
-
-fn log_line(args: fmt::Arguments<'_>) {
-    crate::drivers::serial::_debug_print(format_args!("{}\n", args));
-    capture_console_line(args);
-}
-
-macro_rules! vmm_logln {
-    ($($arg:tt)*) => {{
-        log_line(format_args!($($arg)*));
-    }};
-}
-
 /// Enables or disables VMM debug output and returns the previous setting.
 pub fn set_debug_output(enabled: bool) -> bool {
     with_vmm(|state| {
@@ -305,68 +244,24 @@ pub fn set_debug_output(enabled: bool) -> bool {
 ///
 /// When enabled, VMM debug lines are captured and can be dumped to screen.
 pub fn set_console_debug_output(enabled: bool) {
-    with_vmm(|state| {
-        state.console_debug_enabled = enabled;
-        state.console_debug_len = 0;
-        state.console_debug_overflow = false;
-    });
+    logging::set_capture_enabled(enabled);
 }
 
 /// Writes captured VMM debug output to the screen.
 pub fn print_console_debug_output(screen: &mut Screen) {
-    let (ptr, len, overflow) = with_vmm(|state| {
-        (
-            state.console_debug_buf.as_ptr(),
-            state.console_debug_len,
-            state.console_debug_overflow,
-        )
+    logging::print_captured_target(screen, "vmm", |line| {
+        line.starts_with("VMM: page fault raw=") || line.starts_with("VMM: indices pml4=")
     });
-
-    if len == 0 {
-        return;
-    }
-
-    let bytes = unsafe { slice::from_raw_parts(ptr, len) };
-    if let Ok(text) = core::str::from_utf8(bytes) {
-        let _ = writeln!(screen, "\n--- VMM debug ---");
-        for chunk in text.split_inclusive('\n') {
-            let line = chunk.strip_suffix('\n').unwrap_or(chunk);
-            let highlight = line.starts_with("VMM: page fault raw=")
-                || line.starts_with("VMM: indices pml4=");
-            if highlight {
-                screen.set_color(Color::LightGreen);
-            } else {
-                screen.set_color(Color::White);
-            }
-            let _ = write!(screen, "{}", chunk);
-        }
-        if !text.ends_with('\n') {
-            let line = text.rsplit('\n').next().unwrap_or(text);
-            let highlight = line.starts_with("VMM: page fault raw=")
-                || line.starts_with("VMM: indices pml4=");
-            if highlight {
-                screen.set_color(Color::LightGreen);
-            } else {
-                screen.set_color(Color::White);
-            }
-            let _ = writeln!(screen);
-        }
-        screen.set_color(Color::White);
-        if overflow {
-            let _ = writeln!(screen, "[... VMM debug output truncated ...]");
-        }
-        let _ = writeln!(screen, "--- end VMM debug ---");
-    }
 }
 
 fn debug_alloc(level: &str, idx: usize, pfn: u64) {
     if debug_enabled() {
-        vmm_logln!(
+        logging::logln("vmm", format_args!(
             "VMM: allocated PFN 0x{:x} for {} entry 0x{:x}",
             pfn,
             level,
             idx
-        );
+        ));
     }
 }
 
@@ -518,28 +413,28 @@ pub fn handle_page_fault(virtual_address: u64, error_code: u64) {
 
     if debug_enabled() {
         let cr3 = unsafe { read_cr3() };
-        vmm_logln!(
+        logging::logln("vmm", format_args!(
             "VMM: page fault raw=0x{:x} aligned=0x{:x} cr3=0x{:x} err=0x{:x}",
             fault_address_raw,
             virtual_address,
             cr3,
             error_code
-        );
-        vmm_logln!(
+        ));
+        logging::logln("vmm", format_args!(
             "VMM: indices pml4={} pdp={} pd={} pt={}",
             pml4_index(virtual_address),
             pdp_index(virtual_address),
             pd_index(virtual_address),
             pt_index(virtual_address)
-        );
-        vmm_logln!(
+        ));
+        logging::logln("vmm", format_args!(
             "VMM: err bits p={} w={} u={} rsv={} ifetch={}",
             (error_code & (1 << 0)) != 0,
             (error_code & (1 << 1)) != 0,
             (error_code & (1 << 2)) != 0,
             (error_code & (1 << 3)) != 0,
             (error_code & (1 << 4)) != 0
-        );
+        ));
     }
 
     unsafe {
@@ -586,48 +481,48 @@ pub fn unmap_virtual_address(virtual_address: u64) {
 
 /// Basic VMM smoke test that triggers page faults and verifies readback.
 pub fn test_vmm() -> bool {
-    vmm_logln!("VMM test: start");
+    logging::logln("vmm", format_args!("VMM test: start"));
     const TEST_ADDR1: u64 = 0xFFFF_8009_4F62_D000;
     const TEST_ADDR2: u64 = 0xFFFF_8034_C232_C000;
     const TEST_ADDR3: u64 = 0xFFFF_807F_7200_7000;
     let ok: bool;
     unsafe {
-        vmm_logln!("VMM test: write to 0x{:x}", TEST_ADDR1);
+        logging::logln("vmm", format_args!("VMM test: write to 0x{:x}", TEST_ADDR1));
         let addr1 = TEST_ADDR1 as *mut u8;
         core::ptr::write_volatile(addr1, b'A');
 
-        vmm_logln!("VMM test: write to 0x{:x}", TEST_ADDR2);
+        logging::logln("vmm", format_args!("VMM test: write to 0x{:x}", TEST_ADDR2));
         let ptr2 = TEST_ADDR2 as *mut u8;
         core::ptr::write_volatile(ptr2, b'B');
 
-        vmm_logln!("VMM test: write to 0x{:x}", TEST_ADDR3);
+        logging::logln("vmm", format_args!("VMM test: write to 0x{:x}", TEST_ADDR3));
         let ptr3 = TEST_ADDR3 as *mut u8;
         core::ptr::write_volatile(ptr3, b'C');
 
-        vmm_logln!("VMM test: readback and verify");
+        logging::logln("vmm", format_args!("VMM test: readback and verify"));
         let v1 = core::ptr::read_volatile(addr1);
         let v2 = core::ptr::read_volatile(ptr2);
         let v3 = core::ptr::read_volatile(ptr3);
 
         ok = v1 == b'A' && v2 == b'B' && v3 == b'C';
         if ok {
-            vmm_logln!("VMM test: readback OK (A, B, C)");
+            logging::logln("vmm", format_args!("VMM test: readback OK (A, B, C)"));
         } else {
-            vmm_logln!(
+            logging::logln("vmm", format_args!(
                 "VMM test: readback FAILED got [{:#x}, {:#x}, {:#x}] expected [0x41, 0x42, 0x43]",
                 v1,
                 v2,
                 v3
-            );
+            ));
         }
 
         // Unmap test pages so the next `vmmtest` run triggers page faults again.
         unmap_virtual_address(addr1 as u64);
         unmap_virtual_address(ptr2 as u64);
         unmap_virtual_address(ptr3 as u64);
-        vmm_logln!("VMM test: unmapped test pages");
+        logging::logln("vmm", format_args!("VMM test: unmapped test pages"));
     }
-    vmm_logln!("VMM test: done (ok={})", ok);
-    vmm_logln!("");
+    logging::logln("vmm", format_args!("VMM test: done (ok={})", ok));
+    logging::logln("vmm", format_args!(""));
     ok
 }

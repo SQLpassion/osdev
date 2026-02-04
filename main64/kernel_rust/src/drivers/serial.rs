@@ -184,9 +184,9 @@ macro_rules! debug {
 #[macro_export]
 macro_rules! debugln {
     () => {
-        $crate::debug!("\n")
+        $crate::logging::logln("kernel", format_args!(""))
     };
     ($($arg:tt)*) => {
-        $crate::debug!("{}\n", format_args!($($arg)*))
+        $crate::logging::logln("kernel", format_args!($($arg)*))
     };
 }

@@ -9,6 +9,7 @@
 mod apps;
 mod arch;
 mod drivers;
+mod logging;
 mod memory;
 mod panic;
 
