@@ -16,6 +16,7 @@ use crate::arch::interrupts;
 use crate::arch::power;
 use crate::memory::bios;
 use crate::memory::pmm;
+use crate::memory::vmm;
 use core::fmt::Write;
 use drivers::keyboard;
 use drivers::screen::{Color, Screen};
@@ -39,8 +40,14 @@ pub extern "C" fn KernelMain(kernel_size: u64) -> ! {
     pmm::init();
     debugln!("Physical Memory Manager initialized");
 
-    // Initialize interrupt handling and the keyboard ring buffer.
+    // Prepare IDT/PIC first so exception handlers are in place before CR3 switch.
     interrupts::init();
+    debugln!("Interrupt subsystem initialized");
+
+    vmm::init(false);
+    debugln!("Virtual Memory Manager initialized");
+
+    // Initialize interrupt handling and the keyboard ring buffer.
     interrupts::register_irq_handler(interrupts::IRQ1_VECTOR, |_| {
         keyboard::handle_irq();
     });
@@ -104,6 +111,7 @@ fn execute_command(screen: &mut Screen, line: &str) {
             writeln!(screen, "  run <app>       - run an application").unwrap();
             writeln!(screen, "  meminfo         - display BIOS memory map").unwrap();
             writeln!(screen, "  pmm [n]         - run PMM self-test (default n=2048)").unwrap();
+            writeln!(screen, "  vmmtest [--debug] - run VMM smoke test").unwrap();
             writeln!(screen, "  shutdown        - shutdown the system").unwrap();
         }
         "echo" => {
@@ -163,6 +171,30 @@ fn execute_command(screen: &mut Screen, line: &str) {
                 _ => {
                     writeln!(screen, "Usage: pmm [n]").unwrap();
                 }
+            }
+        }
+        "testvmm" | "vmmtest" => {
+            let console_debug = match (parts.next(), parts.next()) {
+                (None, None) => false,
+                (Some("--debug"), None) => true,
+                _ => {
+                    writeln!(screen, "Usage: vmmtest [--debug]").unwrap();
+                    return;
+                }
+            };
+
+            let prev_debug = vmm::set_debug_output(true);
+            vmm::set_console_debug_output(console_debug);
+            let ok = vmm::test_vmm();
+            if console_debug {
+                vmm::print_console_debug_output(screen);
+            }
+            vmm::set_console_debug_output(false);
+            vmm::set_debug_output(prev_debug);
+            if ok {
+                writeln!(screen, "VMM test complete (readback OK).").unwrap();
+            } else {
+                writeln!(screen, "VMM test complete (readback FAILED).").unwrap();
             }
         }
         _ => {

@@ -593,7 +593,7 @@ pub fn run_self_test(screen: &mut Screen, stress_iters: u32) {
             writeln!(screen, "  [ OK ] physical address alignment").unwrap();
         }
 
-        let reserved = |addr: u64| addr >= KERNEL_OFFSET && addr < STACK_TOP;
+        let reserved = |addr: u64| (KERNEL_OFFSET..STACK_TOP).contains(&addr);
         if reserved(addr0) || reserved(addr1) || reserved(addr2) {
             failures += 1;
             crate::debugln!(

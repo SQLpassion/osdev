@@ -35,3 +35,6 @@ name = "basic_boot"
 
 [[test]]
 name = "pmm_test"
+
+[[test]]
+name = "vmm_test"

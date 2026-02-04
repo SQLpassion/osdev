@@ -9,6 +9,7 @@ use crate::arch::port::PortByte;
 const IDT_ENTRIES: usize = 256;
 const IRQ_BASE: u8 = 32;
 pub const IRQ1_VECTOR: u8 = IRQ_BASE + 1;
+pub const EXCEPTION_PAGE_FAULT: u8 = 14;
 
 const IDT_PRESENT: u8 = 0x80;
 const IDT_INTERRUPT_GATE: u8 = 0x0E;
@@ -68,12 +69,56 @@ irq1_stub:
     pop rax
     sti
     iretq
+
+    .global isr14_stub
+    .type isr14_stub, @function
+isr14_stub:
+    push rax
+    push rcx
+    push rdx
+    push rbx
+    push rbp
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+
+    mov rdi, cr2
+    mov rsi, [rsp + 120]
+    sub rsp, 8
+    call page_fault_handler_rust
+    add rsp, 8
+
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rbp
+    pop rbx
+    pop rdx
+    pop rcx
+    pop rax
+    add rsp, 8
+    iretq
 "#,
     irq1_vector = const IRQ1_VECTOR,
 );
 
 extern "C" {
     fn irq1_stub();
+    fn isr14_stub();
 }
 
 #[repr(C, packed)]
@@ -170,6 +215,7 @@ pub fn disable() {
 fn init_idt() {
     unsafe {
         let idt = &mut *STATE.idt.get();
+        idt[EXCEPTION_PAGE_FAULT as usize].set_handler(isr14_stub as *const () as usize);
         idt[IRQ1_VECTOR as usize].set_handler(irq1_stub as *const () as usize);
 
         let idt_ptr = IdtPointer {
@@ -183,6 +229,11 @@ fn init_idt() {
             options(readonly, nostack, preserves_flags)
         );
     }
+}
+
+#[no_mangle]
+pub extern "C" fn page_fault_handler_rust(faulting_address: u64, error_code: u64) {
+    crate::memory::vmm::handle_page_fault(faulting_address, error_code);
 }
 
 /// Register a callback for a given interrupt vector.
