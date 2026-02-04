@@ -103,6 +103,7 @@ fn execute_command(screen: &mut Screen, line: &str) {
             writeln!(screen, "  apps            - list available applications").unwrap();
             writeln!(screen, "  run <app>       - run an application").unwrap();
             writeln!(screen, "  meminfo         - display BIOS memory map").unwrap();
+            writeln!(screen, "  pmm [n]         - run PMM self-test (default n=2048)").unwrap();
             writeln!(screen, "  shutdown        - shutdown the system").unwrap();
         }
         "echo" => {
@@ -151,6 +152,18 @@ fn execute_command(screen: &mut Screen, line: &str) {
         }
         "meminfo" => {
             bios::BiosInformationBlock::print_memory_map(screen);
+        }
+        "pmm" => {
+            match (parts.next(), parts.next()) {
+                (None, None) => pmm::run_self_test(screen, 2048),
+                (Some(n_str), None) => match n_str.parse::<u32>() {
+                    Ok(n) if n > 0 => pmm::run_self_test(screen, n),
+                    _ => writeln!(screen, "Usage: pmm [n]  (n must be > 0)").unwrap(),
+                },
+                _ => {
+                    writeln!(screen, "Usage: pmm [n]").unwrap();
+                }
+            }
         }
         _ => {
             writeln!(screen, "Unknown command: {}", cmd).unwrap();

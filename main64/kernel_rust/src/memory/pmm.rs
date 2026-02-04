@@ -516,3 +516,169 @@ impl PhysicalMemoryManager {
         r.frames_free += 1;
     }
 }
+
+/// Runs PMM runtime self-tests and prints results to the screen.
+pub fn run_self_test(screen: &mut Screen, stress_iters: u32) {
+    let mut failures = 0u32;
+    crate::debugln!("[pmm-test] start (stress={})", stress_iters);
+    writeln!(screen, "Running PMM self-test (stress: {})...", stress_iters).unwrap();
+
+    with_pmm(|mgr| {
+        let frame0 = match mgr.alloc_frame() {
+            Some(f) => f,
+            None => {
+                failures += 1;
+                crate::debugln!("[pmm-test] FAIL alloc frame0");
+                writeln!(screen, "  [FAIL] alloc frame0").unwrap();
+                return;
+            }
+        };
+        let frame1 = match mgr.alloc_frame() {
+            Some(f) => f,
+            None => {
+                failures += 1;
+                crate::debugln!("[pmm-test] FAIL alloc frame1");
+                writeln!(screen, "  [FAIL] alloc frame1").unwrap();
+                mgr.release_frame(frame0);
+                return;
+            }
+        };
+        let frame2 = match mgr.alloc_frame() {
+            Some(f) => f,
+            None => {
+                failures += 1;
+                crate::debugln!("[pmm-test] FAIL alloc frame2");
+                writeln!(screen, "  [FAIL] alloc frame2").unwrap();
+                mgr.release_frame(frame1);
+                mgr.release_frame(frame0);
+                return;
+            }
+        };
+        crate::debugln!(
+            "[pmm-test] allocated pfns: {}, {}, {}",
+            frame0.pfn,
+            frame1.pfn,
+            frame2.pfn
+        );
+
+        if frame0.pfn == frame1.pfn || frame1.pfn == frame2.pfn || frame0.pfn == frame2.pfn {
+            failures += 1;
+            crate::debugln!("[pmm-test] FAIL unique PFNs");
+            writeln!(screen, "  [FAIL] allocated PFNs are not unique").unwrap();
+        } else {
+            crate::debugln!("[pmm-test] OK unique PFNs");
+            writeln!(screen, "  [ OK ] unique PFNs on consecutive allocations").unwrap();
+        }
+
+        let addr0 = frame0.physical_address();
+        let addr1 = frame1.physical_address();
+        let addr2 = frame2.physical_address();
+
+        if addr0 % PAGE_SIZE != 0 || addr1 % PAGE_SIZE != 0 || addr2 % PAGE_SIZE != 0 {
+            failures += 1;
+            crate::debugln!(
+                "[pmm-test] FAIL alignment: {:#x}, {:#x}, {:#x}",
+                addr0,
+                addr1,
+                addr2
+            );
+            writeln!(screen, "  [FAIL] physical address alignment").unwrap();
+        } else {
+            crate::debugln!(
+                "[pmm-test] OK alignment: {:#x}, {:#x}, {:#x}",
+                addr0,
+                addr1,
+                addr2
+            );
+            writeln!(screen, "  [ OK ] physical address alignment").unwrap();
+        }
+
+        let reserved = |addr: u64| addr >= KERNEL_OFFSET && addr < STACK_TOP;
+        if reserved(addr0) || reserved(addr1) || reserved(addr2) {
+            failures += 1;
+            crate::debugln!(
+                "[pmm-test] FAIL reserved range hit: {:#x}, {:#x}, {:#x}",
+                addr0,
+                addr1,
+                addr2
+            );
+            writeln!(screen, "  [FAIL] frame allocated in reserved range").unwrap();
+        } else {
+            crate::debugln!("[pmm-test] OK reserved range check");
+            writeln!(screen, "  [ OK ] reserved range is not allocated").unwrap();
+        }
+
+        let old_mid_pfn = frame1.pfn;
+        mgr.release_frame(frame1);
+        let reused = match mgr.alloc_frame() {
+            Some(f) => f,
+            None => {
+                failures += 1;
+                crate::debugln!("[pmm-test] FAIL re-allocation after release");
+                writeln!(screen, "  [FAIL] re-allocation after release").unwrap();
+                mgr.release_frame(frame2);
+                mgr.release_frame(frame0);
+                return;
+            }
+        };
+        if reused.pfn != old_mid_pfn {
+            failures += 1;
+            crate::debugln!(
+                "[pmm-test] FAIL reuse mismatch: expected {}, got {}",
+                old_mid_pfn,
+                reused.pfn
+            );
+            writeln!(screen, "  [FAIL] released frame was not reused first").unwrap();
+        } else {
+            crate::debugln!("[pmm-test] OK frame reuse ({})", reused.pfn);
+            writeln!(screen, "  [ OK ] released frame is reused").unwrap();
+        }
+
+        mgr.release_frame(reused);
+        mgr.release_frame(frame2);
+        mgr.release_frame(frame0);
+
+        for i in 0..stress_iters {
+            let f = match mgr.alloc_frame() {
+                Some(f) => f,
+                None => {
+                    failures += 1;
+                    crate::debugln!("[pmm-test] FAIL stress alloc at iter {}", i);
+                    writeln!(screen, "  [FAIL] stress alloc failed at iter {}", i).unwrap();
+                    break;
+                }
+            };
+
+            if f.physical_address() % PAGE_SIZE != 0 {
+                failures += 1;
+                crate::debugln!(
+                    "[pmm-test] FAIL stress alignment at iter {} addr={:#x}",
+                    i,
+                    f.physical_address()
+                );
+                writeln!(screen, "  [FAIL] stress alignment at iter {}", i).unwrap();
+                mgr.release_frame(f);
+                break;
+            }
+
+            mgr.release_frame(f);
+
+            if i != 0 && i % 512 == 0 {
+                crate::debugln!("[pmm-test] stress progress: {}/{}", i, stress_iters);
+            }
+        }
+
+        if failures == 0 {
+            crate::debugln!("[pmm-test] OK stress {} cycles", stress_iters);
+            writeln!(screen, "  [ OK ] stress {} alloc/release cycles", stress_iters).unwrap();
+        }
+    });
+
+    if failures == 0 {
+        crate::debugln!("[pmm-test] PASSED");
+        writeln!(screen, "PMM self-test PASSED").unwrap();
+    } else {
+        crate::debugln!("[pmm-test] FAILED ({} issue(s))", failures);
+        writeln!(screen, "PMM self-test FAILED ({} issue(s))", failures).unwrap();
+    }
+}
