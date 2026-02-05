@@ -16,6 +16,7 @@ mod panic;
 use crate::arch::interrupts;
 use crate::arch::power;
 use crate::memory::bios;
+use crate::memory::heap;
 use crate::memory::pmm;
 use crate::memory::vmm;
 use core::fmt::Write;
@@ -49,6 +50,10 @@ pub extern "C" fn KernelMain(kernel_size: u64) -> ! {
     // Initialize the Virtual Memory Manager
     vmm::init(true);
     debugln!("Virtual Memory Manager initialized");
+
+    // Initialize the Heap Manager
+    heap::init();
+    debugln!("Heap Manager initialized");
 
     // Initialize interrupt handling and the keyboard ring buffer.
     interrupts::register_irq_handler(interrupts::IRQ1_VECTOR, |_| {
@@ -116,6 +121,7 @@ fn execute_command(screen: &mut Screen, line: &str) {
             writeln!(screen, "  meminfo         - display BIOS memory map").unwrap();
             writeln!(screen, "  pmm [n]         - run PMM self-test (default n=2048)").unwrap();
             writeln!(screen, "  vmmtest [--debug] - run VMM smoke test").unwrap();
+            writeln!(screen, "  heaptest        - run heap self-test").unwrap();
             writeln!(screen, "  shutdown        - shutdown the system").unwrap();
         }
         "echo" => {
@@ -198,6 +204,9 @@ fn execute_command(screen: &mut Screen, line: &str) {
             } else {
                 writeln!(screen, "VMM test complete (readback FAILED).").unwrap();
             }
+        }
+        "heaptest" => {
+            heap::run_self_test(screen);
         }
         _ => {
             writeln!(screen, "Unknown command: {}", cmd).unwrap();
