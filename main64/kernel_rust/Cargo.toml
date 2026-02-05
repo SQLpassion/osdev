@@ -38,3 +38,6 @@ name = "pmm_test"
 
 [[test]]
 name = "vmm_test"
+
+[[test]]
+name = "heap_test"
