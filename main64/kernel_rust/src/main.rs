@@ -8,6 +8,7 @@
 
 mod apps;
 mod arch;
+mod allocator;
 mod drivers;
 mod logging;
 mod memory;

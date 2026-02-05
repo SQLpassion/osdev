@@ -59,6 +59,7 @@ struct HeapState {
 struct GlobalHeap {
     inner: SpinLock<HeapState>,
     initialized: AtomicBool,
+    serial_line_synced: AtomicBool,
 }
 
 impl GlobalHeap {
@@ -69,6 +70,7 @@ impl GlobalHeap {
                 heap_end: 0,
             }),
             initialized: AtomicBool::new(false),
+            serial_line_synced: AtomicBool::new(false),
         }
     }
 }
@@ -129,6 +131,7 @@ pub fn init() -> usize {
         state.heap_end = heap_end;
     });
 
+    HEAP.serial_line_synced.store(false, Ordering::Release);
     HEAP.initialized.store(true, Ordering::Release);
     INITIAL_HEAP_SIZE
 }
@@ -138,14 +141,28 @@ pub fn is_initialized() -> bool {
     HEAP.initialized.load(Ordering::Acquire)
 }
 
+/// Returns the minimum alignment guaranteed by the heap allocator.
+pub fn alignment() -> usize {
+    ALIGNMENT
+}
+
+/// Public alignment constant for components that prefer const access.
+pub const HEAP_ALIGNMENT: usize = ALIGNMENT;
+
 /// Allocates `size` bytes and returns a pointer to the payload.
 pub fn malloc(size: usize) -> *mut u8 {
+    let requested_size = size;
     let mut size = size + HEADER_SIZE;
     size = align_up(size, ALIGNMENT);
 
     if let Some(block) = find_block(size) {
         allocate_block(block, size);
-        return payload_ptr(block);
+        let ptr = payload_ptr(block);
+        heap_logln(format_args!(
+            "[heap] alloc ptr={:#x} requested={} block={}",
+            ptr as usize, requested_size, size
+        ));
+        return ptr;
     }
 
     grow_heap(HEAP_GROWTH);
@@ -158,13 +175,19 @@ pub fn free(ptr: *mut u8) {
         return;
     }
 
+    let freed_block_size;
     // SAFETY:
     // - The pointer was previously returned by `malloc`.
     // - Subtracting `HEADER_SIZE` yields the block header.
     unsafe {
         let header = &mut *block_from_payload(ptr);
+        freed_block_size = header.size();
         header.set_in_use(false);
     }
+    heap_logln(format_args!(
+        "[heap] free ptr={:#x} block={}",
+        ptr as usize, freed_block_size
+    ));
 
     while merge_free_blocks() > 0 {}
 }
@@ -268,6 +291,10 @@ fn grow_heap(amount: usize) {
 
 #[inline]
 fn heap_logln(args: core::fmt::Arguments<'_>) {
+    // Ensure the first heap log after init starts on a fresh line in test output.
+    if !HEAP.serial_line_synced.swap(true, Ordering::AcqRel) {
+        logging::logln_with_options("heap", format_args!(""), true, false);
+    }
     logging::logln("heap", args);
 }
 

@@ -8,7 +8,12 @@
 #![test_runner(kaos_kernel::testing::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
+extern crate alloc;
+
+use alloc::vec::Vec;
 use core::panic::PanicInfo;
+use core::alloc::{GlobalAlloc, Layout};
+use kaos_kernel::allocator::GLOBAL_ALLOCATOR;
 use kaos_kernel::arch::interrupts;
 use kaos_kernel::memory::{heap, pmm, vmm};
 use kaos_kernel::sync::spinlock::SpinLock;
@@ -160,4 +165,37 @@ fn test_spinlock_basic_mutation() {
 
     let guard = LOCK.lock();
     assert!(*guard == 1, "spinlock should protect shared state");
+}
+
+#[test_case]
+fn test_global_allocator_round_trip() {
+    heap::init();
+    let layout = Layout::from_size_align(32, 8).unwrap();
+
+    let ptr = unsafe { GLOBAL_ALLOCATOR.alloc(layout) };
+    assert!(!ptr.is_null(), "global allocator should return a pointer");
+
+    // SAFETY:
+    // - `ptr` was allocated with at least 32 bytes.
+    // - We only touch the first byte of the allocation.
+    unsafe {
+        core::ptr::write_volatile(ptr, 0xCC);
+        let val = core::ptr::read_volatile(ptr);
+        assert!(val == 0xCC, "global allocator memory should be readable/writable");
+        GLOBAL_ALLOCATOR.dealloc(ptr, layout);
+    }
+}
+
+#[test_case]
+fn test_rust_vec_uses_kernel_heap() {
+    heap::init();
+
+    let mut values: Vec<u64> = Vec::with_capacity(16);
+    for i in 0..16u64 {
+        values.push(i * 3);
+    }
+
+    assert!(values.len() == 16, "Vec should contain 16 elements");
+    assert!(values[0] == 0, "first Vec element should match");
+    assert!(values[15] == 45, "last Vec element should match");
 }

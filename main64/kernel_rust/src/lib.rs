@@ -9,6 +9,7 @@
 
 pub mod apps;
 pub mod arch;
+pub mod allocator;
 pub mod drivers;
 pub mod logging;
 pub mod memory;
