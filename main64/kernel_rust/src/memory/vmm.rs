@@ -36,6 +36,17 @@ pub enum PageFaultError {
     },
 }
 
+/// Error returned by checked mapping operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MapError {
+    /// Virtual address is already mapped to a different physical frame.
+    AlreadyMapped {
+        virtual_address: u64,
+        current_pfn: u64,
+        requested_pfn: u64,
+    },
+}
+
 #[derive(Clone, Copy)]
 #[repr(transparent)]
 struct PageTableEntry(u64);
@@ -225,7 +236,7 @@ fn invlpg(addr: u64) {
 
 struct VmmState {
     pml4_physical: u64,
-    debug_enabled: bool,
+    serial_debug_enabled: bool,
 }
 
 struct GlobalVmm {
@@ -239,7 +250,7 @@ impl GlobalVmm {
         Self {
             inner: UnsafeCell::new(VmmState {
                 pml4_physical: 0,
-                debug_enabled: false,
+                serial_debug_enabled: false,
             }),
             initialized: AtomicBool::new(false),
         }
@@ -293,6 +304,16 @@ fn zero_virt_page(addr: u64) {
     }
 }
 
+#[inline]
+fn vmm_logln(args: core::fmt::Arguments<'_>) {
+    logging::logln_with_options("vmm", args, serial_debug_enabled(), true);
+}
+
+/// Returns whether VMM serial logging is enabled.
+fn serial_debug_enabled() -> bool {
+    with_vmm(|state| state.serial_debug_enabled)
+}
+
 /// Writes one byte to a mapped virtual address with volatile semantics.
 #[inline]
 fn write_virt_u8(addr: u64, value: u8) {
@@ -311,20 +332,21 @@ fn read_virt_u8(addr: u64) -> u8 {
 fn set_vmm_state_unchecked(pml4_physical: u64, debug_enabled: bool) {
     unsafe {
         (*VMM.inner.get()).pml4_physical = pml4_physical;
-        (*VMM.inner.get()).debug_enabled = debug_enabled;
+        (*VMM.inner.get()).serial_debug_enabled = debug_enabled;
     }
 }
 
 /// Returns whether VMM debug logging is enabled.
 fn debug_enabled() -> bool {
-    with_vmm(|state| state.debug_enabled)
+    serial_debug_enabled()
 }
 
 /// Enables or disables VMM debug output and returns the previous setting.
+#[allow(dead_code)]
 pub fn set_debug_output(enabled: bool) -> bool {
     with_vmm(|state| {
-        let old = state.debug_enabled;
-        state.debug_enabled = enabled;
+        let old = state.serial_debug_enabled;
+        state.serial_debug_enabled = enabled;
         old
     })
 }
@@ -346,7 +368,7 @@ pub fn print_console_debug_output(screen: &mut Screen) {
 /// Emits a structured allocation trace line when debug logging is enabled.
 fn debug_alloc(level: &str, idx: usize, pfn: u64) {
     if debug_enabled() {
-        logging::logln("vmm", format_args!(
+        vmm_logln(format_args!(
             "VMM: allocated PFN 0x{:x} for {} entry 0x{:x}",
             pfn,
             level,
@@ -533,21 +555,21 @@ pub fn try_handle_page_fault(virtual_address: u64, error_code: u64) -> Result<()
 
     if debug_enabled() {
         let cr3 = read_cr3();
-        logging::logln("vmm", format_args!(
+        vmm_logln(format_args!(
             "VMM: page fault raw=0x{:x} aligned=0x{:x} cr3=0x{:x} err=0x{:x}",
             fault_address_raw,
             virtual_address,
             cr3,
             error_code
         ));
-        logging::logln("vmm", format_args!(
+        vmm_logln(format_args!(
             "VMM: indices pml4={} pdp={} pd={} pt={}",
             pml4_index(virtual_address),
             pdp_index(virtual_address),
             pd_index(virtual_address),
             pt_index(virtual_address)
         ));
-        logging::logln("vmm", format_args!(
+        vmm_logln(format_args!(
             "VMM: err bits p={} w={} u={} rsv={} ifetch={}",
             (error_code & (1 << 0)) != 0,
             (error_code & (1 << 1)) != 0,
@@ -560,7 +582,7 @@ pub fn try_handle_page_fault(virtual_address: u64, error_code: u64) -> Result<()
     // Only demand-map on non-present faults.
     // Protection faults indicate a real access violation and must not be hidden.
     if (error_code & PF_ERR_PRESENT) != 0 {
-        logging::logln("vmm", format_args!(
+        vmm_logln(format_args!(
             "VMM: protection fault at 0x{:x} err=0x{:x} (allocation refused)",
             fault_address_raw,
             error_code
@@ -602,17 +624,55 @@ pub fn handle_page_fault(virtual_address: u64, error_code: u64) {
 }
 
 /// Maps `virtual_address` to `physical_address` with present + writable flags.
+///
+/// Returns an error if the VA is already mapped to a different frame.
 #[allow(dead_code)]
-pub fn map_virtual_to_physical(virtual_address: u64, physical_address: u64) {
+pub fn try_map_virtual_to_physical(
+    virtual_address: u64,
+    physical_address: u64,
+) -> Result<(), MapError> {
     let virtual_address = page_align_down(virtual_address);
     let physical_address = page_align_down(physical_address);
+    let requested_pfn = phys_to_pfn(physical_address);
 
     populate_page_table_path(virtual_address);
     let pt = table_at(pt_table_addr(virtual_address));
     let pt_idx = pt_index(virtual_address);
-    pt.entries[pt_idx].set_mapping(phys_to_pfn(physical_address), true, true, false);
+    if pt.entries[pt_idx].present() {
+        let current_pfn = pt.entries[pt_idx].frame();
+        if current_pfn != requested_pfn {
+            return Err(MapError::AlreadyMapped {
+                virtual_address,
+                current_pfn,
+                requested_pfn,
+            });
+        }
+        return Ok(());
+    }
+    pt.entries[pt_idx].set_mapping(requested_pfn, true, true, false);
     invlpg(virtual_address);
     debug_alloc("PT", pt_idx, pt.entries[pt_idx].frame());
+    Ok(())
+}
+
+/// Maps `virtual_address` to `physical_address` with present + writable flags.
+///
+/// Panics if the VA is already mapped to another frame.
+#[allow(dead_code)]
+pub fn map_virtual_to_physical(virtual_address: u64, physical_address: u64) {
+    if let Err(MapError::AlreadyMapped {
+        virtual_address,
+        current_pfn,
+        requested_pfn,
+    }) = try_map_virtual_to_physical(virtual_address, physical_address)
+    {
+        panic!(
+            "VMM: mapping conflict for VA 0x{:x}: current PFN=0x{:x}, requested PFN=0x{:x}",
+            virtual_address,
+            current_pfn,
+            requested_pfn
+        );
+    }
 }
 
 /// Unmaps the given virtual address and invalidates the corresponding TLB entry.
@@ -624,36 +684,45 @@ pub fn unmap_virtual_address(virtual_address: u64) {
     };
     let pt_idx = pt_index(virtual_address);
     if pt.entries[pt_idx].present() {
+        let old_pfn = pt.entries[pt_idx].frame();
         pt.entries[pt_idx].clear();
         invlpg(virtual_address);
+        let released = pmm::with_pmm(|mgr| mgr.release_pfn(old_pfn));
+        if !released {
+            vmm_logln(format_args!(
+                "VMM: warning: unmapped VA 0x{:x} had non-PMM PFN 0x{:x}",
+                virtual_address,
+                old_pfn
+            ));
+        }
     }
 }
 
 /// Basic VMM smoke test that triggers page faults and verifies readback.
 pub fn test_vmm() -> bool {
-    logging::logln("vmm", format_args!("VMM test: start"));
+    vmm_logln(format_args!("VMM test: start"));
     const TEST_ADDR1: u64 = 0xFFFF_8009_4F62_D000;
     const TEST_ADDR2: u64 = 0xFFFF_8034_C232_C000;
     const TEST_ADDR3: u64 = 0xFFFF_807F_7200_7000;
-    logging::logln("vmm", format_args!("VMM test: write to 0x{:x}", TEST_ADDR1));
+    vmm_logln(format_args!("VMM test: write to 0x{:x}", TEST_ADDR1));
     write_virt_u8(TEST_ADDR1, b'A');
 
-    logging::logln("vmm", format_args!("VMM test: write to 0x{:x}", TEST_ADDR2));
+    vmm_logln(format_args!("VMM test: write to 0x{:x}", TEST_ADDR2));
     write_virt_u8(TEST_ADDR2, b'B');
 
-    logging::logln("vmm", format_args!("VMM test: write to 0x{:x}", TEST_ADDR3));
+    vmm_logln(format_args!("VMM test: write to 0x{:x}", TEST_ADDR3));
     write_virt_u8(TEST_ADDR3, b'C');
 
-    logging::logln("vmm", format_args!("VMM test: readback and verify"));
+    vmm_logln(format_args!("VMM test: readback and verify"));
     let v1 = read_virt_u8(TEST_ADDR1);
     let v2 = read_virt_u8(TEST_ADDR2);
     let v3 = read_virt_u8(TEST_ADDR3);
 
     let ok = v1 == b'A' && v2 == b'B' && v3 == b'C';
     if ok {
-        logging::logln("vmm", format_args!("VMM test: readback OK (A, B, C)"));
+        vmm_logln(format_args!("VMM test: readback OK (A, B, C)"));
     } else {
-        logging::logln("vmm", format_args!(
+        vmm_logln(format_args!(
             "VMM test: readback FAILED got [{:#x}, {:#x}, {:#x}] expected [0x41, 0x42, 0x43]",
             v1,
             v2,
@@ -665,8 +734,8 @@ pub fn test_vmm() -> bool {
     unmap_virtual_address(TEST_ADDR1);
     unmap_virtual_address(TEST_ADDR2);
     unmap_virtual_address(TEST_ADDR3);
-    logging::logln("vmm", format_args!("VMM test: unmapped test pages"));
-    logging::logln("vmm", format_args!("VMM test: done (ok={})", ok));
-    logging::logln("vmm", format_args!(""));
+    vmm_logln(format_args!("VMM test: unmapped test pages"));
+    vmm_logln(format_args!("VMM test: done (ok={})", ok));
+    vmm_logln(format_args!(""));
     ok
 }

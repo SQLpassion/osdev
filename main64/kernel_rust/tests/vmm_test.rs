@@ -19,7 +19,7 @@ use kaos_kernel::memory::{pmm, vmm};
 pub extern "C" fn KernelMain(_kernel_size: u64) -> ! {
     kaos_kernel::drivers::serial::init();
 
-    pmm::init();
+    pmm::init(false);
     interrupts::init();
     vmm::init(false);
 
@@ -87,7 +87,6 @@ fn test_faulted_page_is_zero_initialized() {
     }
 
     vmm::unmap_virtual_address(TEST_VA);
-    pmm::with_pmm(|mgr| mgr.release_frame(frame));
 
     vmm::try_handle_page_fault(TEST_VA, 0)
         .expect("non-present fault should be handled by demand allocation");
@@ -136,4 +135,54 @@ fn test_protection_fault_returns_error_in_checked_path() {
         ),
         "expected PageFaultError::ProtectionFault with original fault data"
     );
+}
+
+#[test_case]
+fn test_try_map_rejects_overwrite_of_existing_mapping() {
+    const TEST_VA: u64 = 0xFFFF_8095_6789_A000;
+    vmm::unmap_virtual_address(TEST_VA);
+
+    let frame_a = pmm::with_pmm(|mgr| mgr.alloc_frame().expect("frame_a allocation failed"));
+    let frame_b = pmm::with_pmm(|mgr| mgr.alloc_frame().expect("frame_b allocation failed"));
+
+    vmm::try_map_virtual_to_physical(TEST_VA, frame_a.physical_address())
+        .expect("initial mapping should succeed");
+
+    let err = vmm::try_map_virtual_to_physical(TEST_VA, frame_b.physical_address())
+        .expect_err("overwriting existing mapping must be rejected");
+    assert!(
+        matches!(
+            err,
+            vmm::MapError::AlreadyMapped {
+                virtual_address: TEST_VA,
+                current_pfn: a,
+                requested_pfn: b
+            } if a == frame_a.pfn && b == frame_b.pfn
+        ),
+        "expected AlreadyMapped error with current/requested PFNs"
+    );
+
+    vmm::unmap_virtual_address(TEST_VA);
+    // frame_a is released by unmap; frame_b was never mapped, release it here.
+    pmm::with_pmm(|mgr| mgr.release_frame(frame_b));
+}
+
+#[test_case]
+fn test_unmap_releases_frame_back_to_pmm() {
+    const TEST_VA: u64 = 0xFFFF_8096_789A_B000;
+    vmm::unmap_virtual_address(TEST_VA);
+
+    let frame = pmm::with_pmm(|mgr| mgr.alloc_frame().expect("frame allocation failed"));
+    let mapped_pfn = frame.pfn;
+    vmm::try_map_virtual_to_physical(TEST_VA, frame.physical_address())
+        .expect("mapping should succeed");
+
+    vmm::unmap_virtual_address(TEST_VA);
+
+    let reused = pmm::with_pmm(|mgr| mgr.alloc_frame().expect("re-allocation failed"));
+    assert!(
+        reused.pfn == mapped_pfn,
+        "unmap should release mapped frame back to PMM for reuse"
+    );
+    pmm::with_pmm(|mgr| mgr.release_frame(reused));
 }

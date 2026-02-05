@@ -38,20 +38,23 @@ pub extern "C" fn KernelMain(kernel_size: u64) -> ! {
     debugln!("KAOS Rust Kernel starting...");
     debugln!("Kernel size: {} bytes", kernel_size);
 
-    pmm::init();
+    // Initialize the Physical Memory Manager
+    pmm::init(true);
     debugln!("Physical Memory Manager initialized");
 
     // Prepare IDT/PIC first so exception handlers are in place before CR3 switch.
     interrupts::init();
     debugln!("Interrupt subsystem initialized");
 
-    vmm::init(false);
+    // Initialize the Virtual Memory Manager
+    vmm::init(true);
     debugln!("Virtual Memory Manager initialized");
 
     // Initialize interrupt handling and the keyboard ring buffer.
     interrupts::register_irq_handler(interrupts::IRQ1_VECTOR, |_| {
         keyboard::handle_irq();
     });
+    
     keyboard::init();
     interrupts::enable();
     debugln!("Interrupts enabled");
@@ -184,14 +187,12 @@ fn execute_command(screen: &mut Screen, line: &str) {
                 }
             };
 
-            let prev_debug = vmm::set_debug_output(true);
             vmm::set_console_debug_output(console_debug);
             let ok = vmm::test_vmm();
             if console_debug {
                 vmm::print_console_debug_output(screen);
             }
             vmm::set_console_debug_output(false);
-            vmm::set_debug_output(prev_debug);
             if ok {
                 writeln!(screen, "VMM test complete (readback OK).").unwrap();
             } else {

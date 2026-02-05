@@ -272,26 +272,40 @@ instead of creating temporary mappings for table frames.
 
 - Align VA and PA to 4 KiB.
 - Ensure intermediate levels exist.
-- Set final PT entry to provided physical frame.
+- Reject mapping if VA is already mapped to a different PFN.
+- Set final PT entry only when currently unmapped.
 - `invlpg(va)` to invalidate stale TLB entry.
+
+Checked variant:
+
+- `try_map_virtual_to_physical(va, pa) -> Result<(), MapError>`
+- returns `Err(MapError::AlreadyMapped { .. })` on overwrite attempts.
 
 ### `unmap_virtual_address(va)`
 
 - Align VA.
 - Walk recursive tables with presence checks on PML4/PDP/PD.
 - If table path is missing, return without side effects.
-- Clear PT entry if present.
+- If PT entry is present: capture mapped PFN, clear entry, invalidate TLB entry.
+- Return mapped PFN to PMM (`release_pfn`) when the PFN belongs to a managed PMM region.
 - `invlpg(va)`.
-
-Note: unmapping currently removes translation only; it does not return the old data frame to PMM.
 
 ---
 
 ## 10) VMM logging and console debug output
 
-VMM logs now use the centralized logger (`src/logging.rs`) with target `"vmm"`:
+VMM logs use centralized logging (`src/logging.rs`) with target `"vmm"` and are routed through `vmm_logln(...)` in `vmm.rs`.
 
-- `logging::logln("vmm", format_args!(...))`
+The VMM now has two independent output channels:
+
+- **Serial output (host/COM1):**
+  - controlled by `vmm::init(debug_output)`
+  - `vmm::init(true)` enables VMM serial logs
+  - `vmm::init(false)` suppresses VMM serial logs
+
+- **In-OS console output (screen dump):**
+  - controlled by REPL command flag `vmmtest --debug`
+  - implemented via capture + `print_console_debug_output`
 
 `vmmtest --debug` flow:
 
@@ -353,11 +367,12 @@ Implemented:
 - demand paging on non-present faults
 - explicit map/unmap API
 - recursive page-table mapping
+- map overwrite protection via `try_map_virtual_to_physical(...)->Result`
+- frame reclamation on unmap (`release_pfn`)
 - VMM smoke command + integration tests
 
 Not yet implemented:
 
 - process-specific address spaces / cloning
-- frame reclamation on unmap
 - COW/shared-page policies
 - SMP-aware TLB shootdown

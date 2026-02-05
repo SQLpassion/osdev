@@ -85,8 +85,22 @@ fn capture_target_line(target: &str, args: fmt::Arguments<'_>) {
 
 /// Central target-based log function (serial output + optional capture).
 pub fn logln(target: &str, args: fmt::Arguments<'_>) {
-    serial::_debug_print(format_args!("{}\n", args));
-    capture_target_line(target, args);
+    logln_with_options(target, args, true, true);
+}
+
+/// Target-based log function with independent serial/capture control.
+pub fn logln_with_options(
+    target: &str,
+    args: fmt::Arguments<'_>,
+    serial_enabled: bool,
+    capture_enabled: bool,
+) {
+    if serial_enabled {
+        serial::_debug_print(format_args!("{}\n", args));
+    }
+    if capture_enabled {
+        capture_target_line(target, args);
+    }
 }
 
 /// Enable/disable capture buffer and reset it.

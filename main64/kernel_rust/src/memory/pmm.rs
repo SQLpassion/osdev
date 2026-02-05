@@ -226,6 +226,32 @@ fn virt_to_phys(addr: u64) -> u64 {
 }
 
 #[inline]
+fn log_alloc(pfn: u64, region_index: u32) {
+    if !debug_enabled() {
+        return;
+    }
+    crate::logging::logln("pmm", format_args!(
+        "PMM: allocated frame pfn=0x{:x} phys=0x{:x} region={}",
+        pfn,
+        pfn * PAGE_SIZE,
+        region_index
+    ));
+}
+
+#[inline]
+fn log_release(pfn: u64, region_index: u32) {
+    if !debug_enabled() {
+        return;
+    }
+    crate::logging::logln("pmm", format_args!(
+        "PMM: released frame pfn=0x{:x} phys=0x{:x} region={}",
+        pfn,
+        pfn * PAGE_SIZE,
+        region_index
+    ));
+}
+
+#[inline]
 /// Sets a single bit in the PMM bitmap.
 unsafe fn set_bit(idx: u64, base: *mut u64) {
     let word = base.add((idx / 64) as usize);
@@ -306,6 +332,7 @@ pub struct PmmRegion {
 struct GlobalPmm {
     inner: UnsafeCell<PhysicalMemoryManager>,
     initialized: AtomicBool,
+    debug_enabled: AtomicBool,
 }
 
 impl GlobalPmm {
@@ -315,6 +342,7 @@ impl GlobalPmm {
                 header: core::ptr::null_mut(),
             }),
             initialized: AtomicBool::new(false),
+            debug_enabled: AtomicBool::new(false),
         }
     }
 }
@@ -326,11 +354,19 @@ unsafe impl Sync for GlobalPmm {}
 
 static PMM: GlobalPmm = GlobalPmm::new();
 
+#[inline]
+fn debug_enabled() -> bool {
+    PMM.debug_enabled.load(Ordering::Acquire)
+}
+
 /// Initializes the global physical memory manager.
-pub fn init() {
+///
+/// `debug_output` controls whether PMM allocation/free events are logged.
+pub fn init(debug_output: bool) {
     unsafe {
         *PMM.inner.get() = PhysicalMemoryManager::new();
     }
+    PMM.debug_enabled.store(debug_output, Ordering::Release);
     PMM.initialized.store(true, Ordering::Release);
 }
 
@@ -490,9 +526,14 @@ impl PhysicalMemoryManager {
                         unsafe { set_bit(bit_idx, bitmap) };
                         r.frames_free -= 1;
 
+                        // Log the allocation
+                        let pfn = r.start / PAGE_SIZE + bit_idx;
+                        let region_index = idx as u32;
+                        log_alloc(pfn, region_index);
+
                         return Some(PageFrame {
-                            pfn: r.start / PAGE_SIZE + bit_idx,
-                            region_index: idx as u32,
+                            pfn,
+                            region_index,
                         });
                     }
                 }
@@ -513,6 +554,43 @@ impl PhysicalMemoryManager {
         let bit_idx = frame.pfn - (r.start / PAGE_SIZE);
         unsafe { clear_bit(bit_idx, bitmap) };
         r.frames_free += 1;
+
+        // Log the deallocation
+        log_release(frame.pfn, frame.region_index);
+    }
+
+    /// Releases a page frame identified by PFN.
+    ///
+    /// Returns `true` when the PFN belongs to a known region and was marked used.
+    /// Returns `false` when the PFN is outside all regions or already free.
+    pub fn release_pfn(&mut self, pfn: u64) -> bool {
+        let regions = self.regions();
+
+        for (region_index, r) in regions.iter_mut().enumerate() {
+            let region_start_pfn = r.start / PAGE_SIZE;
+            let region_end_pfn = region_start_pfn + r.frames_total;
+            if pfn < region_start_pfn || pfn >= region_end_pfn {
+                continue;
+            }
+
+            let bit_idx = pfn - region_start_pfn;
+            let bitmap = r.bitmap_start as *mut u64;
+            let word_idx = (bit_idx / 64) as usize;
+            let bit_mask = 1u64 << (bit_idx % 64);
+            let word_ptr = unsafe { bitmap.add(word_idx) };
+            let word_val = unsafe { *word_ptr };
+
+            if (word_val & bit_mask) == 0 {
+                return false;
+            }
+
+            unsafe { clear_bit(bit_idx, bitmap) };
+            r.frames_free += 1;
+            log_release(pfn, region_index as u32);
+            return true;
+        }
+
+        false
     }
 }
 

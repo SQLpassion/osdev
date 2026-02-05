@@ -20,7 +20,7 @@ pub extern "C" fn KernelMain(_kernel_size: u64) -> ! {
     kaos_kernel::drivers::serial::init();
 
     // Initialize the Physical Memory Manager
-    pmm::init();
+    pmm::init(false);
 
     test_main();
 
