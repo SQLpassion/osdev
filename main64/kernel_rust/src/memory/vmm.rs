@@ -196,9 +196,8 @@ fn phys_to_pfn(addr: u64) -> u64 {
 
 /// Reads the current CR3 value.
 ///
-/// # Safety
-/// Must run in ring 0 on x86_64.
-unsafe fn read_cr3() -> u64 {
+/// Caller contract: must run in ring 0 on x86_64.
+fn read_cr3() -> u64 {
     let val: u64;
     unsafe {
         asm!("mov {}, cr3", out(reg) val, options(nomem, nostack, preserves_flags));
@@ -208,9 +207,8 @@ unsafe fn read_cr3() -> u64 {
 
 /// Writes a new CR3 value.
 ///
-/// # Safety
-/// `val` must point to a valid PML4 frame.
-unsafe fn write_cr3(val: u64) {
+/// Caller contract: `val` must point to a valid PML4 frame.
+fn write_cr3(val: u64) {
     unsafe {
         asm!("mov cr3, {}", in(reg) val, options(nostack, preserves_flags));
     }
@@ -218,9 +216,8 @@ unsafe fn write_cr3(val: u64) {
 
 /// Invalidates one TLB entry for the given virtual address.
 ///
-/// # Safety
-/// Must run in ring 0 on x86_64.
-unsafe fn invlpg(addr: u64) {
+/// Caller contract: must run in ring 0 on x86_64.
+fn invlpg(addr: u64) {
     unsafe {
         asm!("invlpg [{}]", in(reg) addr, options(nostack, preserves_flags));
     }
@@ -272,21 +269,49 @@ fn alloc_frame_phys() -> u64 {
 
 /// Interprets a recursive-mapped virtual address as a mutable page table.
 ///
-/// # Safety
-/// `addr` must point to a valid, mapped page-table page.
+/// Caller contract: `addr` must point to a valid, mapped page-table page.
 #[inline]
-unsafe fn table_at(addr: u64) -> &'static mut PageTable {
+fn table_at(addr: u64) -> &'static mut PageTable {
     unsafe { &mut *(addr as *mut PageTable) }
 }
 
 /// Zeros one 4 KiB page in physical memory.
 ///
-/// # Safety
-/// `addr` must be writable and page-aligned physical memory.
+/// Caller contract: `addr` must be writable and page-aligned physical memory.
 #[inline]
-unsafe fn zero_phys_page(addr: u64) {
+fn zero_phys_page(addr: u64) {
     unsafe {
         core::ptr::write_bytes(addr as *mut u8, 0, SMALL_PAGE_SIZE as usize);
+    }
+}
+
+/// Zeros one already-mapped 4 KiB virtual page.
+#[inline]
+fn zero_virt_page(addr: u64) {
+    unsafe {
+        core::ptr::write_bytes(addr as *mut u8, 0, SMALL_PAGE_SIZE as usize);
+    }
+}
+
+/// Writes one byte to a mapped virtual address with volatile semantics.
+#[inline]
+fn write_virt_u8(addr: u64, value: u8) {
+    unsafe {
+        core::ptr::write_volatile(addr as *mut u8, value);
+    }
+}
+
+/// Reads one byte from a mapped virtual address with volatile semantics.
+#[inline]
+fn read_virt_u8(addr: u64) -> u8 {
+    unsafe { core::ptr::read_volatile(addr as *const u8) }
+}
+
+/// Sets the initial VMM state before the initialized flag is published.
+fn set_vmm_state_unchecked(pml4_physical: u64, debug_enabled: bool) {
+    unsafe {
+        (*VMM.inner.get()).pml4_physical = pml4_physical;
+        (*VMM.inner.get()).debug_enabled = debug_enabled;
     }
 }
 
@@ -358,61 +383,56 @@ pub fn init(debug_output: bool) {
         pt_identity_0,
         pt_identity_1,
     ] {
-        unsafe { zero_phys_page(addr) };
+        zero_phys_page(addr);
     }
 
-    unsafe {
-        let pml4_tbl = table_at(pml4);
-        pml4_tbl.entries[0].set_mapping(phys_to_pfn(pdp_identity), true, true, false);
-        pml4_tbl.entries[256].set_mapping(phys_to_pfn(pdp_higher), true, true, false);
-        pml4_tbl.entries[511].set_mapping(phys_to_pfn(pml4), true, true, false);
+    let pml4_tbl = table_at(pml4);
+    pml4_tbl.entries[0].set_mapping(phys_to_pfn(pdp_identity), true, true, false);
+    pml4_tbl.entries[256].set_mapping(phys_to_pfn(pdp_higher), true, true, false);
+    pml4_tbl.entries[511].set_mapping(phys_to_pfn(pml4), true, true, false);
 
-        let pdp_identity_tbl = table_at(pdp_identity);
-        pdp_identity_tbl.entries[0].set_mapping(phys_to_pfn(pd_identity), true, true, false);
+    let pdp_identity_tbl = table_at(pdp_identity);
+    pdp_identity_tbl.entries[0].set_mapping(phys_to_pfn(pd_identity), true, true, false);
 
-        let pd_identity_tbl = table_at(pd_identity);
-        pd_identity_tbl.entries[0].set_mapping(phys_to_pfn(pt_identity_0), true, true, false);
-        pd_identity_tbl.entries[1].set_mapping(phys_to_pfn(pt_identity_1), true, true, false);
+    let pd_identity_tbl = table_at(pd_identity);
+    pd_identity_tbl.entries[0].set_mapping(phys_to_pfn(pt_identity_0), true, true, false);
+    pd_identity_tbl.entries[1].set_mapping(phys_to_pfn(pt_identity_1), true, true, false);
 
-        let pt_identity_tbl_0 = table_at(pt_identity_0);
-        for i in 0..PT_ENTRIES {
-            pt_identity_tbl_0.entries[i].set_mapping(i as u64, true, true, false);
-        }
-
-        let pt_identity_tbl_1 = table_at(pt_identity_1);
-        for i in 0..PT_ENTRIES {
-            pt_identity_tbl_1
-                .entries[i]
-                .set_mapping((PT_ENTRIES + i) as u64, true, true, false);
-        }
-
-        let pdp_higher_tbl = table_at(pdp_higher);
-        pdp_higher_tbl.entries[0].set_mapping(phys_to_pfn(pd_higher), true, true, false);
-
-        let pd_higher_tbl = table_at(pd_higher);
-        pd_higher_tbl.entries[0].set_mapping(phys_to_pfn(pt_higher_0), true, true, false);
-        pd_higher_tbl.entries[1].set_mapping(phys_to_pfn(pt_higher_1), true, true, false);
-
-        let pt_higher_tbl_0 = table_at(pt_higher_0);
-        for i in 0..PT_ENTRIES {
-            pt_higher_tbl_0.entries[i].set_mapping(i as u64, true, true, false);
-        }
-
-        let pt_higher_tbl_1 = table_at(pt_higher_1);
-        for i in 0..PT_ENTRIES {
-            pt_higher_tbl_1
-                .entries[i]
-                .set_mapping((PT_ENTRIES + i) as u64, true, true, false);
-        }
+    let pt_identity_tbl_0 = table_at(pt_identity_0);
+    for i in 0..PT_ENTRIES {
+        pt_identity_tbl_0.entries[i].set_mapping(i as u64, true, true, false);
     }
 
-    unsafe {
-        (*VMM.inner.get()).pml4_physical = pml4;
-        (*VMM.inner.get()).debug_enabled = debug_output;
+    let pt_identity_tbl_1 = table_at(pt_identity_1);
+    for i in 0..PT_ENTRIES {
+        pt_identity_tbl_1
+            .entries[i]
+            .set_mapping((PT_ENTRIES + i) as u64, true, true, false);
     }
+
+    let pdp_higher_tbl = table_at(pdp_higher);
+    pdp_higher_tbl.entries[0].set_mapping(phys_to_pfn(pd_higher), true, true, false);
+
+    let pd_higher_tbl = table_at(pd_higher);
+    pd_higher_tbl.entries[0].set_mapping(phys_to_pfn(pt_higher_0), true, true, false);
+    pd_higher_tbl.entries[1].set_mapping(phys_to_pfn(pt_higher_1), true, true, false);
+
+    let pt_higher_tbl_0 = table_at(pt_higher_0);
+    for i in 0..PT_ENTRIES {
+        pt_higher_tbl_0.entries[i].set_mapping(i as u64, true, true, false);
+    }
+
+    let pt_higher_tbl_1 = table_at(pt_higher_1);
+    for i in 0..PT_ENTRIES {
+        pt_higher_tbl_1
+            .entries[i]
+            .set_mapping((PT_ENTRIES + i) as u64, true, true, false);
+    }
+
+    set_vmm_state_unchecked(pml4, debug_output);
     VMM.initialized.store(true, Ordering::Release);
 
-    unsafe { write_cr3(pml4) };
+    write_cr3(pml4);
 }
 
 /// Returns the currently active kernel PML4 physical address.
@@ -429,7 +449,7 @@ pub fn get_pml4_address() -> u64 {
 /// immediately crash the kernel due to page faults/triple fault.
 #[allow(dead_code)]
 pub unsafe fn switch_page_directory(pml4_phys: u64) {
-    unsafe { write_cr3(pml4_phys) };
+    write_cr3(pml4_phys);
     with_vmm(|state| {
         state.pml4_physical = pml4_phys;
     });
@@ -437,39 +457,37 @@ pub unsafe fn switch_page_directory(pml4_phys: u64) {
 
 /// Builds any missing intermediate page tables (PML4/PDP/PD) for `virtual_address`.
 ///
-/// # Safety
-/// Requires a valid recursive mapping and mutable access to active page tables.
 #[inline]
-unsafe fn populate_page_table_path(virtual_address: u64) {
-    let pml4 = unsafe { table_at(PML4_TABLE_ADDR) };
+fn populate_page_table_path(virtual_address: u64) {
+    let pml4 = table_at(PML4_TABLE_ADDR);
     let pml4_idx = pml4_index(virtual_address);
     if !pml4.entries[pml4_idx].present() {
         let new_table_phys = alloc_frame_phys();
         pml4.entries[pml4_idx].set_mapping(phys_to_pfn(new_table_phys), true, true, false);
-        unsafe { invlpg(pdp_table_addr(virtual_address)) };
-        let new_pdp = unsafe { table_at(pdp_table_addr(virtual_address)) };
+        invlpg(pdp_table_addr(virtual_address));
+        let new_pdp = table_at(pdp_table_addr(virtual_address));
         new_pdp.zero();
         debug_alloc("PML4", pml4_idx, pml4.entries[pml4_idx].frame());
     }
 
-    let pdp = unsafe { table_at(pdp_table_addr(virtual_address)) };
+    let pdp = table_at(pdp_table_addr(virtual_address));
     let pdp_idx = pdp_index(virtual_address);
     if !pdp.entries[pdp_idx].present() {
         let new_table_phys = alloc_frame_phys();
         pdp.entries[pdp_idx].set_mapping(phys_to_pfn(new_table_phys), true, true, false);
-        unsafe { invlpg(pd_table_addr(virtual_address)) };
-        let new_pd = unsafe { table_at(pd_table_addr(virtual_address)) };
+        invlpg(pd_table_addr(virtual_address));
+        let new_pd = table_at(pd_table_addr(virtual_address));
         new_pd.zero();
         debug_alloc("PDP", pdp_idx, pdp.entries[pdp_idx].frame());
     }
 
-    let pd = unsafe { table_at(pd_table_addr(virtual_address)) };
+    let pd = table_at(pd_table_addr(virtual_address));
     let pd_idx = pd_index(virtual_address);
     if !pd.entries[pd_idx].present() {
         let new_table_phys = alloc_frame_phys();
         pd.entries[pd_idx].set_mapping(phys_to_pfn(new_table_phys), true, true, false);
-        unsafe { invlpg(pt_table_addr(virtual_address)) };
-        let new_pt = unsafe { table_at(pt_table_addr(virtual_address)) };
+        invlpg(pt_table_addr(virtual_address));
+        let new_pt = table_at(pt_table_addr(virtual_address));
         new_pt.zero();
         debug_alloc("PD", pd_idx, pd.entries[pd_idx].frame());
     }
@@ -479,32 +497,30 @@ unsafe fn populate_page_table_path(virtual_address: u64) {
 ///
 /// Returns `None` if any level is non-present or uses a huge page mapping.
 ///
-/// # Safety
-/// Requires a valid recursive mapping of the active page tables.
 #[inline]
-unsafe fn pt_for_if_present(virtual_address: u64) -> Option<&'static mut PageTable> {
-    let pml4 = unsafe { table_at(PML4_TABLE_ADDR) };
+fn pt_for_if_present(virtual_address: u64) -> Option<&'static mut PageTable> {
+    let pml4 = table_at(PML4_TABLE_ADDR);
     let pml4_idx = pml4_index(virtual_address);
     let pml4e = pml4.entries[pml4_idx];
     if !pml4e.present() || pml4e.huge() {
         return None;
     }
 
-    let pdp = unsafe { table_at(pdp_table_addr(virtual_address)) };
+    let pdp = table_at(pdp_table_addr(virtual_address));
     let pdp_idx = pdp_index(virtual_address);
     let pdpe = pdp.entries[pdp_idx];
     if !pdpe.present() || pdpe.huge() {
         return None;
     }
 
-    let pd = unsafe { table_at(pd_table_addr(virtual_address)) };
+    let pd = table_at(pd_table_addr(virtual_address));
     let pd_idx = pd_index(virtual_address);
     let pde = pd.entries[pd_idx];
     if !pde.present() || pde.huge() {
         return None;
     }
 
-    Some(unsafe { table_at(pt_table_addr(virtual_address)) })
+    Some(table_at(pt_table_addr(virtual_address)))
 }
 
 /// Handles page faults by demand-allocating page tables and target page frame.
@@ -516,7 +532,7 @@ pub fn try_handle_page_fault(virtual_address: u64, error_code: u64) -> Result<()
     let virtual_address = page_align_down(fault_address_raw);
 
     if debug_enabled() {
-        let cr3 = unsafe { read_cr3() };
+        let cr3 = read_cr3();
         logging::logln("vmm", format_args!(
             "VMM: page fault raw=0x{:x} aligned=0x{:x} cr3=0x{:x} err=0x{:x}",
             fault_address_raw,
@@ -555,17 +571,15 @@ pub fn try_handle_page_fault(virtual_address: u64, error_code: u64) -> Result<()
         });
     }
 
-    unsafe {
-        populate_page_table_path(virtual_address);
-        let pt = table_at(pt_table_addr(virtual_address));
-        let pt_idx = pt_index(virtual_address);
-        if !pt.entries[pt_idx].present() {
-            let new_page_phys = alloc_frame_phys();
-            pt.entries[pt_idx].set_mapping(phys_to_pfn(new_page_phys), true, true, false);
-            invlpg(virtual_address);
-            core::ptr::write_bytes(virtual_address as *mut u8, 0, SMALL_PAGE_SIZE as usize);
-            debug_alloc("PT", pt_idx, pt.entries[pt_idx].frame());
-        }
+    populate_page_table_path(virtual_address);
+    let pt = table_at(pt_table_addr(virtual_address));
+    let pt_idx = pt_index(virtual_address);
+    if !pt.entries[pt_idx].present() {
+        let new_page_phys = alloc_frame_phys();
+        pt.entries[pt_idx].set_mapping(phys_to_pfn(new_page_phys), true, true, false);
+        invlpg(virtual_address);
+        zero_virt_page(virtual_address);
+        debug_alloc("PT", pt_idx, pt.entries[pt_idx].frame());
     }
     Ok(())
 }
@@ -593,29 +607,25 @@ pub fn map_virtual_to_physical(virtual_address: u64, physical_address: u64) {
     let virtual_address = page_align_down(virtual_address);
     let physical_address = page_align_down(physical_address);
 
-    unsafe {
-        populate_page_table_path(virtual_address);
-        let pt = table_at(pt_table_addr(virtual_address));
-        let pt_idx = pt_index(virtual_address);
-        pt.entries[pt_idx].set_mapping(phys_to_pfn(physical_address), true, true, false);
-        invlpg(virtual_address);
-        debug_alloc("PT", pt_idx, pt.entries[pt_idx].frame());
-    }
+    populate_page_table_path(virtual_address);
+    let pt = table_at(pt_table_addr(virtual_address));
+    let pt_idx = pt_index(virtual_address);
+    pt.entries[pt_idx].set_mapping(phys_to_pfn(physical_address), true, true, false);
+    invlpg(virtual_address);
+    debug_alloc("PT", pt_idx, pt.entries[pt_idx].frame());
 }
 
 /// Unmaps the given virtual address and invalidates the corresponding TLB entry.
 pub fn unmap_virtual_address(virtual_address: u64) {
     let virtual_address = page_align_down(virtual_address);
 
-    unsafe {
-        let Some(pt) = pt_for_if_present(virtual_address) else {
-            return;
-        };
-        let pt_idx = pt_index(virtual_address);
-        if pt.entries[pt_idx].present() {
-            pt.entries[pt_idx].clear();
-            invlpg(virtual_address);
-        }
+    let Some(pt) = pt_for_if_present(virtual_address) else {
+        return;
+    };
+    let pt_idx = pt_index(virtual_address);
+    if pt.entries[pt_idx].present() {
+        pt.entries[pt_idx].clear();
+        invlpg(virtual_address);
     }
 }
 
@@ -625,43 +635,37 @@ pub fn test_vmm() -> bool {
     const TEST_ADDR1: u64 = 0xFFFF_8009_4F62_D000;
     const TEST_ADDR2: u64 = 0xFFFF_8034_C232_C000;
     const TEST_ADDR3: u64 = 0xFFFF_807F_7200_7000;
-    let ok: bool;
-    unsafe {
-        logging::logln("vmm", format_args!("VMM test: write to 0x{:x}", TEST_ADDR1));
-        let addr1 = TEST_ADDR1 as *mut u8;
-        core::ptr::write_volatile(addr1, b'A');
+    logging::logln("vmm", format_args!("VMM test: write to 0x{:x}", TEST_ADDR1));
+    write_virt_u8(TEST_ADDR1, b'A');
 
-        logging::logln("vmm", format_args!("VMM test: write to 0x{:x}", TEST_ADDR2));
-        let ptr2 = TEST_ADDR2 as *mut u8;
-        core::ptr::write_volatile(ptr2, b'B');
+    logging::logln("vmm", format_args!("VMM test: write to 0x{:x}", TEST_ADDR2));
+    write_virt_u8(TEST_ADDR2, b'B');
 
-        logging::logln("vmm", format_args!("VMM test: write to 0x{:x}", TEST_ADDR3));
-        let ptr3 = TEST_ADDR3 as *mut u8;
-        core::ptr::write_volatile(ptr3, b'C');
+    logging::logln("vmm", format_args!("VMM test: write to 0x{:x}", TEST_ADDR3));
+    write_virt_u8(TEST_ADDR3, b'C');
 
-        logging::logln("vmm", format_args!("VMM test: readback and verify"));
-        let v1 = core::ptr::read_volatile(addr1);
-        let v2 = core::ptr::read_volatile(ptr2);
-        let v3 = core::ptr::read_volatile(ptr3);
+    logging::logln("vmm", format_args!("VMM test: readback and verify"));
+    let v1 = read_virt_u8(TEST_ADDR1);
+    let v2 = read_virt_u8(TEST_ADDR2);
+    let v3 = read_virt_u8(TEST_ADDR3);
 
-        ok = v1 == b'A' && v2 == b'B' && v3 == b'C';
-        if ok {
-            logging::logln("vmm", format_args!("VMM test: readback OK (A, B, C)"));
-        } else {
-            logging::logln("vmm", format_args!(
-                "VMM test: readback FAILED got [{:#x}, {:#x}, {:#x}] expected [0x41, 0x42, 0x43]",
-                v1,
-                v2,
-                v3
-            ));
-        }
-
-        // Unmap test pages so the next `vmmtest` run triggers page faults again.
-        unmap_virtual_address(addr1 as u64);
-        unmap_virtual_address(ptr2 as u64);
-        unmap_virtual_address(ptr3 as u64);
-        logging::logln("vmm", format_args!("VMM test: unmapped test pages"));
+    let ok = v1 == b'A' && v2 == b'B' && v3 == b'C';
+    if ok {
+        logging::logln("vmm", format_args!("VMM test: readback OK (A, B, C)"));
+    } else {
+        logging::logln("vmm", format_args!(
+            "VMM test: readback FAILED got [{:#x}, {:#x}, {:#x}] expected [0x41, 0x42, 0x43]",
+            v1,
+            v2,
+            v3
+        ));
     }
+
+    // Unmap test pages so the next `vmmtest` run triggers page faults again.
+    unmap_virtual_address(TEST_ADDR1);
+    unmap_virtual_address(TEST_ADDR2);
+    unmap_virtual_address(TEST_ADDR3);
+    logging::logln("vmm", format_args!("VMM test: unmapped test pages"));
     logging::logln("vmm", format_args!("VMM test: done (ok={})", ok));
     logging::logln("vmm", format_args!(""));
     ok
