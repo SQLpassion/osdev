@@ -56,7 +56,7 @@ pub extern "C" fn KernelMain(kernel_size: u64) -> ! {
     debugln!("Virtual Memory Manager initialized");
 
     // Initialize the Heap Manager
-    heap::init();
+    heap::init(true);
     debugln!("Heap Manager initialized");
 
     // Initialize interrupt handling and the keyboard ring buffer.

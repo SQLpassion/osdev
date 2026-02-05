@@ -38,17 +38,13 @@ fn panic(info: &PanicInfo) -> ! {
 
 #[test_case]
 fn test_vmm_smoke_once() {
-    vmm::set_debug_output(true);
     assert!(vmm::test_vmm(), "vmm::test_vmm() should succeed");
-    vmm::set_debug_output(false);
 }
 
 #[test_case]
 fn test_vmm_smoke_twice() {
-    vmm::set_debug_output(true);
     assert!(vmm::test_vmm(), "first vmm::test_vmm() run should succeed");
     assert!(vmm::test_vmm(), "second vmm::test_vmm() run should succeed");
-    vmm::set_debug_output(false);
 }
 
 #[test_case]

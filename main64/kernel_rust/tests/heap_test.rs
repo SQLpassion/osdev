@@ -27,7 +27,7 @@ pub extern "C" fn KernelMain(_kernel_size: u64) -> ! {
     pmm::init(false);
     interrupts::init();
     vmm::init(false);
-    heap::init();
+    heap::init(false);
 
     test_main();
 
@@ -44,7 +44,7 @@ fn panic(info: &PanicInfo) -> ! {
 
 #[test_case]
 fn test_heap_alloc_free_round_trip() {
-    heap::init();
+    heap::init(false);
     let ptr = heap::malloc(16);
     assert!(!ptr.is_null(), "malloc should return non-null pointer");
     assert!(
@@ -66,7 +66,7 @@ fn test_heap_alloc_free_round_trip() {
 
 #[test_case]
 fn test_heap_reuse_after_free() {
-    heap::init();
+    heap::init(false);
     let ptr1 = heap::malloc(32);
     let ptr2 = heap::malloc(32);
     assert!(!ptr1.is_null() && !ptr2.is_null(), "allocations should succeed");
@@ -84,7 +84,7 @@ fn test_heap_reuse_after_free() {
 
 #[test_case]
 fn test_heap_merge_allows_large_alloc() {
-    heap::init();
+    heap::init(false);
     let ptr1 = heap::malloc(100);
     let ptr2 = heap::malloc(200);
     assert!(!ptr1.is_null() && !ptr2.is_null(), "allocations should succeed");
@@ -102,7 +102,7 @@ fn test_heap_merge_allows_large_alloc() {
 
 #[test_case]
 fn test_heap_alignment_for_small_allocs() {
-    heap::init();
+    heap::init(false);
     let ptr1 = heap::malloc(1);
     let ptr2 = heap::malloc(7);
     let ptr3 = heap::malloc(8);
@@ -119,7 +119,7 @@ fn test_heap_alignment_for_small_allocs() {
 
 #[test_case]
 fn test_heap_large_allocation_requires_growth() {
-    heap::init();
+    heap::init(false);
     let ptr = heap::malloc(4096);
     assert!(!ptr.is_null(), "large allocation should succeed after heap growth");
     assert!((ptr as usize) % 8 == 0, "large allocation should be 8-byte aligned");
@@ -137,8 +137,124 @@ fn test_heap_large_allocation_requires_growth() {
 }
 
 #[test_case]
+fn test_heap_large_allocation_requires_multiple_growth_steps() {
+    heap::init(false);
+    let ptr = heap::malloc(9000);
+    assert!(
+        !ptr.is_null(),
+        "large allocation should succeed after multiple heap growth steps"
+    );
+    assert!((ptr as usize) % 8 == 0, "large allocation should be 8-byte aligned");
+
+    // SAFETY:
+    // - `ptr` is returned by `heap::malloc(9000)`, so 9000 bytes are valid.
+    // - We only touch the last byte within that allocation.
+    unsafe {
+        core::ptr::write_volatile(ptr.add(8999), 0x3C);
+        let val = core::ptr::read_volatile(ptr.add(8999));
+        assert!(val == 0x3C, "large allocation should be writable/readable");
+    }
+
+    heap::free(ptr);
+}
+
+#[test_case]
+fn test_heap_overflow_request_returns_null_and_heap_remains_usable() {
+    heap::init(false);
+    let overflow_ptr = heap::malloc(usize::MAX);
+    assert!(
+        overflow_ptr.is_null(),
+        "overflow-size allocation should fail with null pointer"
+    );
+
+    let ptr = heap::malloc(32);
+    assert!(
+        !ptr.is_null(),
+        "heap should remain usable after rejected overflow request"
+    );
+    heap::free(ptr);
+}
+
+#[test_case]
+fn test_heap_rejects_invalid_free_and_remains_usable() {
+    heap::init(false);
+    let ptr = heap::malloc(64);
+    assert!(!ptr.is_null(), "allocation should succeed");
+
+    // SAFETY:
+    // - `ptr` points to a valid allocation.
+    // - `ptr.add(1)` intentionally creates an invalid payload pointer for `free`.
+    unsafe {
+        heap::free(ptr.add(1));
+    }
+
+    // Original pointer must still be valid and free-able after rejected invalid free.
+    heap::free(ptr);
+    let ptr2 = heap::malloc(64);
+    assert!(ptr2 == ptr, "heap should still be consistent after invalid free");
+    heap::free(ptr2);
+}
+
+#[test_case]
+fn test_heap_rejects_double_free_and_remains_usable() {
+    heap::init(false);
+    let ptr = heap::malloc(64);
+    assert!(!ptr.is_null(), "allocation should succeed");
+
+    heap::free(ptr);
+    heap::free(ptr);
+
+    let ptr2 = heap::malloc(64);
+    assert!(
+        ptr2 == ptr,
+        "double free should be rejected without corrupting heap state"
+    );
+    heap::free(ptr2);
+}
+
+#[test_case]
+fn test_heap_growth_is_bounded_and_reports_oom() {
+    heap::init(false);
+    let ptr = heap::malloc(32 * 1024 * 1024);
+    assert!(
+        ptr.is_null(),
+        "allocation beyond configured heap limit should fail"
+    );
+
+    let small = heap::malloc(64);
+    assert!(
+        !small.is_null(),
+        "heap should remain usable after OOM failure"
+    );
+    heap::free(small);
+}
+
+#[test_case]
+fn test_heap_debug_output_toggle_round_trip() {
+    heap::init(false);
+    assert!(
+        !heap::debug_output_enabled(),
+        "heap debug output should be disabled after init(false)"
+    );
+
+    let old = heap::set_debug_output(true);
+    assert!(!old, "previous debug state should be false");
+    assert!(
+        heap::debug_output_enabled(),
+        "heap debug output should now be enabled"
+    );
+
+    let old = heap::set_debug_output(false);
+    assert!(old, "previous debug state should be true");
+    assert!(
+        !heap::debug_output_enabled(),
+        "heap debug output should now be disabled"
+    );
+}
+
+#[test_case]
 fn test_heap_preserves_interrupt_state_when_disabled() {
-    heap::init();
+    heap::init(false);
     interrupts::disable();
     assert!(
         !interrupts::are_enabled(),
@@ -169,7 +285,7 @@ fn test_spinlock_basic_mutation() {
 
 #[test_case]
 fn test_global_allocator_round_trip() {
-    heap::init();
+    heap::init(false);
     let layout = Layout::from_size_align(32, 8).unwrap();
 
     let ptr = unsafe { GLOBAL_ALLOCATOR.alloc(layout) };
@@ -187,8 +303,32 @@ fn test_global_allocator_round_trip() {
 }
 
 #[test_case]
+fn test_global_allocator_supports_overaligned_layout() {
+    heap::init(false);
+    let layout = Layout::from_size_align(64, 64).unwrap();
+    let ptr = unsafe { GLOBAL_ALLOCATOR.alloc(layout) };
+    assert!(!ptr.is_null(), "over-aligned allocation should succeed");
+    assert!(
+        (ptr as usize) % 64 == 0,
+        "over-aligned allocation should satisfy requested alignment"
+    );
+
+    // SAFETY:
+    // - `ptr` was allocated for 64 bytes with alignment 64.
+    // - Access stays within allocation bounds.
+    unsafe {
+        core::ptr::write_volatile(ptr, 0xAA);
+        core::ptr::write_volatile(ptr.add(63), 0xBB);
+        let first = core::ptr::read_volatile(ptr);
+        let last = core::ptr::read_volatile(ptr.add(63));
+        assert!(first == 0xAA && last == 0xBB, "memory should be readable/writable");
+        GLOBAL_ALLOCATOR.dealloc(ptr, layout);
+    }
+}
+
+#[test_case]
 fn test_rust_vec_uses_kernel_heap() {
-    heap::init();
+    heap::init(false);
 
     let mut values: Vec<u64> = Vec::with_capacity(16);
     for i in 0..16u64 {

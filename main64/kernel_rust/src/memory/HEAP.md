@@ -26,6 +26,7 @@ The heap is a contiguous virtual memory range:
 - Start: `HEAP_START_OFFSET = 0xFFFF_8000_0050_0000`
 - Initial size: `INITIAL_HEAP_SIZE = 0x1000` (4 KiB)
 - Growth chunk: `HEAP_GROWTH = 0x1000` (4 KiB)
+- Hard limit: `MAX_HEAP_SIZE = 0x0100_0000` (16 MiB)
 
 The heap is represented as a sequence of variable-size blocks.
 
@@ -80,7 +81,7 @@ Global container:
 - `GlobalHeap`
 - `inner: SpinLock<HeapState>`
 - `initialized: AtomicBool`
-- `serial_line_synced: AtomicBool`
+- `serial_debug_enabled: AtomicBool`
 
 `HeapState`:
 
@@ -117,16 +118,16 @@ addr_2 = addr_1 + size(addr_1)
 
 ## 6. Initialization (`init`)
 
-`init()` does:
+`init(debug_output)` does:
 
 1. Compute `[heap_start, heap_end)` from constants.
 2. Zero the initial heap range.
 3. Create one single free block covering the full initial region.
 4. Store bounds in `HeapState`.
-5. Reset `serial_line_synced` for clean logging line state.
+5. Store the heap serial debug flag (`debug_output`).
 6. Mark heap initialized.
 
-After `init()`, layout:
+After `init(debug_output)`, layout:
 
 ```text
 heap_start
@@ -144,12 +145,15 @@ heap_start
 `malloc(size)`:
 
 1. Save requested payload size for logging.
-2. Convert to full block size: `size + HEADER_SIZE`, aligned up.
-3. Search first-fit free block with `find_block`.
+2. Convert to full block size with checked arithmetic:
+   `compute_aligned_heapblock_size(size)`.
+3. Search first-fit free block with `find_block_in_heap`.
 4. If found: `allocate_block` (split if useful), return payload pointer.
-5. If not found: `grow_heap(HEAP_GROWTH)`, then retry recursively.
+5. If not found: grow heap by a page-aligned amount derived from requested
+   block size, then retry iteratively.
+6. If growth would exceed `MAX_HEAP_SIZE` or arithmetic fails, return `null`.
 
-### 7.2 First-Fit Search (`find_block`)
+### 7.2 First-Fit Search (`find_block_in_heap`)
 
 Linear scan from `heap_start`:
 
@@ -195,13 +199,14 @@ After (split):
 `free(ptr)`:
 
 1. If `ptr == null`, return.
-2. Compute header address as `ptr - HEADER_SIZE`.
-3. Mark block as free (`in_use = false`).
-4. Log free operation.
-5. Repeatedly call `merge_free_blocks()` until no merges remain.
+2. Validate pointer by walking block boundaries with
+   `find_block_by_payload_ptr` (reject invalid pointers).
+3. Reject already free blocks (`double free`) instead of mutating metadata.
+4. Mark block as free (`in_use = false`) for valid in-use blocks.
+5. Coalesce via `merge_free_blocks()`.
+6. Log success or rejection reason.
 
-Repeated merge loop ensures full coalescing in one `free` call even if
-multiple adjacent free ranges become mergeable.
+This adds debug hardening against invalid free and double free corruption.
 
 ## 9. Coalescing (`merge_free_blocks`)
 
@@ -210,7 +215,7 @@ Linear pass:
 1. For each block `current`, compute `next = current + size(current)`.
 2. If both `current` and `next` are free, merge by:
 - `current.size = current.size + next.size`
-3. Continue scanning.
+3. Continue scanning, coalescing contiguous free runs in one pass.
 
 No backward pointers are needed because merge is done with physically adjacent
 neighbors discovered by forward traversal.
@@ -233,9 +238,12 @@ After:
 
 When allocation fails due to no fitting free block:
 
-1. Append new free block at old `heap_end` with `size = amount`.
-2. Advance `heap_end` by `amount`.
-3. Run merge to combine with previous trailing free block if possible.
+1. Compute growth size with `compute_heap_growth_for_request(requested_block_size)`
+   (page-aligned, at least one page).
+2. Reject growth when it would exceed `MAX_HEAP_SIZE`.
+3. Append new free block at old `heap_end` with `size = amount`.
+4. Advance `heap_end` by `amount`.
+5. Run merge to combine with previous trailing free block if possible.
 
 Growth diagram:
 
@@ -244,7 +252,7 @@ Before:
 [ existing heap blocks ] [heap_end]
 
 After append:
-[ existing heap blocks ][ New free block(size=HEAP_GROWTH) ][new heap_end]
+[ existing heap blocks ][ New free block(size=amount) ][new heap_end]
 
 After merge:
 If last old block was free, it coalesces with new block.
@@ -254,14 +262,19 @@ If last old block was free, it coalesces with new block.
 
 - `header_at(addr)` -> `*mut HeapBlockHeader`
 - `payload_ptr(block)` -> `block + HEADER_SIZE`
-- `block_from_payload(ptr)` -> `ptr - HEADER_SIZE`
 
 These are central to map between allocator-internal metadata and public
 payload pointers.
 
 ## 12. Logging Behavior
 
-`heap_logln(...)` writes through central logging subsystem.
+Heap logs use `logging::logln_with_options("heap", ..., serial_enabled, true)`.
+`serial_enabled` is controlled by `init(debug_output)`.
+
+Runtime toggles:
+
+- `debug_output_enabled()` returns current heap serial debug state.
+- `set_debug_output(enabled)` updates heap serial debug state and returns old value.
 
 `malloc` log format:
 
@@ -275,8 +288,11 @@ payload pointers.
 [heap] free ptr=0x... block=<total_block_size>
 ```
 
-`serial_line_synced` ensures first heap log after `init()` starts on a fresh
-line to avoid formatting collisions with test harness output.
+Rejected free log format:
+
+```text
+[heap] free rejected ptr=0x... reason=<invalid pointer|double free|corrupt block header>
+```
 
 ## 13. Self-Test (`run_self_test`)
 
@@ -289,7 +305,7 @@ The self-test validates:
 5. Merge behavior after full free
 6. Rust allocator path via `Vec` allocation
 
-`read_heapblock_metadata(base, offset)` inspects `(size, in_use)` for a block
+`read_block_metadata(base, offset)` inspects `(size, in_use)` for a block
 at `base + offset` and is only used for layout assertions in the self-test.
 
 ## 14. Rust Global Allocator Integration
@@ -301,7 +317,8 @@ at `base + offset` and is only used for layout assertions in the self-test.
 - `dealloc` forwards to `heap::free`
 
 Therefore Rust containers (`Vec`, `Box`, etc.) allocate from this heap
-when alignment constraints are supported.
+including over-aligned layouts, which are handled by allocator-side
+over-allocation plus a stored back-reference to the raw heap pointer.
 
 ## 15. Safety and Invariants
 
@@ -328,7 +345,7 @@ Safety relies on:
 ## 16. Performance Characteristics
 
 - `malloc`: `O(n)` scan in number of blocks.
-- `free`: `O(n)` for repeated merge passes in worst case.
+- `free`: `O(n)` for validation + one-pass coalescing.
 - Memory overhead: one header per block.
 
 This is acceptable for early-stage kernel usage, but not optimized for
@@ -336,11 +353,11 @@ large, highly fragmented heaps.
 
 ## 17. Known Limitations
 
-1. Recursive retry in `malloc` after growth.
-2. No dedicated OOM policy (null return/panic strategy is minimal).
-3. No per-CPU arenas.
+1. Bounded growth only: allocation can fail when `MAX_HEAP_SIZE` is reached.
+2. No per-CPU arenas.
+3. Single global lock (no lock-free fast paths).
 4. No segregated free lists.
-5. Debug hardening (canaries, double-free detection) is limited.
+5. Header canaries/poisoning are not implemented.
 
 ## 18. Worked Example
 
@@ -371,4 +388,3 @@ Remaining free tail starts at `X + 64`.
 - Global allocator bridge: `main64/kernel_rust/src/allocator.rs`
 - Integration tests: `main64/kernel_rust/tests/heap_test.rs`
 - Spinlock primitive: `main64/kernel_rust/src/sync/spinlock.rs`
-

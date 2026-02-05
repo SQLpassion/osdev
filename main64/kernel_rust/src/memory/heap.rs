@@ -34,6 +34,8 @@ const HEAP_START_OFFSET: usize = 0xFFFF_8000_0050_0000;
 const INITIAL_HEAP_SIZE: usize = 0x1000;
 /// Increment used when extending the heap arena.
 const HEAP_GROWTH: usize = 0x1000;
+/// Hard upper bound for total managed heap bytes.
+const MAX_HEAP_SIZE: usize = 0x0100_0000; // 16 MiB
 
 /// LSB encodes allocation state in `size_and_flags`.
 const IN_USE_MASK: usize = 0x1;
@@ -92,8 +94,8 @@ struct GlobalHeap {
     inner: SpinLock<HeapState>,
     /// Set to `true` after `init()` completed.
     initialized: AtomicBool,
-    /// Tracks whether a newline sync was already emitted for heap logs.
-    serial_line_synced: AtomicBool,
+    /// Controls whether heap logs are emitted to serial output.
+    serial_debug_enabled: AtomicBool,
 }
 
 impl GlobalHeap {
@@ -104,23 +106,27 @@ impl GlobalHeap {
                 heap_end: 0,
             }),
             initialized: AtomicBool::new(false),
-            serial_line_synced: AtomicBool::new(false),
+            serial_debug_enabled: AtomicBool::new(false),
         }
     }
 }
-
-/// SAFETY:
-/// - `inner` access is synchronized through `SpinLock`.
-/// - `AtomicBool` fields are thread-safe.
-unsafe impl Sync for GlobalHeap {}
 
 /// Process-wide heap instance.
 static HEAP: GlobalHeap = GlobalHeap::new();
 
 /// Aligns `value` up to the next `align` boundary.
 #[inline]
-fn align_up(value: usize, align: usize) -> usize {
-    (value + align - 1) & !(align - 1)
+fn align_up_checked(value: usize, align: usize) -> Option<usize> {
+    let mask = align.checked_sub(1)?;
+    value.checked_add(mask).map(|v| v & !mask)
+}
+
+/// Computes the full aligned block size for a payload request.
+#[inline]
+fn compute_aligned_heapblock_size(requested_size: usize) -> Option<usize> {
+    requested_size
+        .checked_add(HEADER_SIZE)
+        .and_then(|v| align_up_checked(v, ALIGNMENT))
 }
 
 /// Reinterprets an address as a mutable block-header pointer.
@@ -135,12 +141,6 @@ fn payload_ptr(block: *mut HeapBlockHeader) -> *mut u8 {
     block.cast::<u8>().wrapping_add(HEADER_SIZE)
 }
 
-/// Computes the block header pointer from a payload pointer.
-#[inline]
-fn block_from_payload(ptr: *mut u8) -> *mut HeapBlockHeader {
-    ptr.wrapping_sub(HEADER_SIZE).cast::<HeapBlockHeader>()
-}
-
 /// Executes a closure with exclusive mutable access to heap state.
 fn with_heap<R>(f: impl FnOnce(&mut HeapState) -> R) -> R {
     let mut guard = HEAP.inner.lock();
@@ -148,7 +148,7 @@ fn with_heap<R>(f: impl FnOnce(&mut HeapState) -> R) -> R {
 }
 
 /// Initializes the heap manager and returns the heap size.
-pub fn init() -> usize {
+pub fn init(debug_output: bool) -> usize {
     let heap_start = HEAP_START_OFFSET;
     let heap_end = HEAP_START_OFFSET + INITIAL_HEAP_SIZE;
 
@@ -174,9 +174,27 @@ pub fn init() -> usize {
         state.heap_end = heap_end;
     });
 
-    HEAP.serial_line_synced.store(false, Ordering::Release);
+    HEAP.serial_debug_enabled
+        .store(debug_output, Ordering::Release);
     HEAP.initialized.store(true, Ordering::Release);
     INITIAL_HEAP_SIZE
+}
+
+#[inline]
+fn serial_debug_enabled() -> bool {
+    HEAP.serial_debug_enabled.load(Ordering::Acquire)
+}
+
+/// Returns whether heap debug output to serial is enabled.
+#[allow(dead_code)]
+pub fn debug_output_enabled() -> bool {
+    serial_debug_enabled()
+}
+
+/// Enables or disables heap debug output and returns the previous setting.
+#[allow(dead_code)]
+pub fn set_debug_output(enabled: bool) -> bool {
+    HEAP.serial_debug_enabled.swap(enabled, Ordering::AcqRel)
 }
 
 /// Returns whether the heap manager has been initialized.
@@ -190,22 +208,53 @@ pub const HEAP_ALIGNMENT: usize = ALIGNMENT;
 /// Allocates `size` bytes and returns a pointer to the payload.
 pub fn malloc(size: usize) -> *mut u8 {
     let requested_size = size;
-    let mut size = size + HEADER_SIZE;
-    size = align_up(size, ALIGNMENT);
+    let Some(size) = compute_aligned_heapblock_size(requested_size) else {
+        logging::logln_with_options("heap", format_args!(
+            "[heap] alloc failed (overflow) requested={}",
+            requested_size
+        ), serial_debug_enabled(), true);
+        return core::ptr::null_mut();
+    };
 
-    if let Some(block) = find_block(size) {
-        allocate_block(block, size);
-        let ptr = payload_ptr(block);
-        heap_logln(format_args!(
-            "[heap] alloc ptr={:#x} requested={} block={}",
-            ptr as usize, requested_size, size
-        ));
-        return ptr;
+    enum AllocAttempt {
+        Allocated(*mut u8),
+        Retry,
+        Fail,
     }
 
-    // No suitable free block found: extend heap and retry.
-    grow_heap(HEAP_GROWTH);
-    malloc(size - HEADER_SIZE)
+    loop {
+        let attempt = with_heap(|state| {
+            if let Some(block) = find_block_in_heap(state, size) {
+                allocate_block(block, size);
+                return AllocAttempt::Allocated(payload_ptr(block));
+            }
+
+            let growth = compute_heap_growth_for_request(size);
+            if grow_heap(state, growth) {
+                AllocAttempt::Retry
+            } else {
+                AllocAttempt::Fail
+            }
+        });
+
+        match attempt {
+            AllocAttempt::Allocated(ptr) => {
+                logging::logln_with_options("heap", format_args!(
+                    "[heap] alloc ptr={:#x} requested={} block={}",
+                    ptr as usize, requested_size, size
+                ), serial_debug_enabled(), true);
+                return ptr;
+            }
+            AllocAttempt::Retry => {}
+            AllocAttempt::Fail => {
+                logging::logln_with_options("heap", format_args!(
+                    "[heap] alloc failed (grow) requested={} block={}",
+                    requested_size, size
+                ), serial_debug_enabled(), true);
+                return core::ptr::null_mut();
+            }
+        }
+    }
 }
 
 /// Frees a previously allocated heap pointer.
@@ -214,46 +263,110 @@ pub fn free(ptr: *mut u8) {
         return;
     }
 
-    let freed_block_size;
-    // SAFETY:
-    // - The pointer was previously returned by `malloc`.
-    // - Subtracting `HEADER_SIZE` yields the block header.
-    unsafe {
-        let header = &mut *block_from_payload(ptr);
-        freed_block_size = header.size();
-        header.set_in_use(false);
+    enum FreeResult {
+        Freed { block_size: usize },
+        Rejected { reason: &'static str },
     }
-    heap_logln(format_args!(
-        "[heap] free ptr={:#x} block={}",
-        ptr as usize, freed_block_size
-    ));
 
-    while merge_free_blocks() > 0 {}
+    let result = with_heap(|state| {
+        let Some(block) = find_block_by_payload_ptr(state, ptr) else {
+            return FreeResult::Rejected {
+                reason: "invalid pointer",
+            };
+        };
+
+        // SAFETY:
+        // - `block` was found via a full heap walk matching `payload_ptr(block) == ptr`.
+        // - Therefore it points to a valid block header.
+        let header = unsafe { &mut *block };
+        if !header.in_use() {
+            return FreeResult::Rejected {
+                reason: "double free",
+            };
+        }
+
+        let block_size = header.size();
+        if block_size < HEADER_SIZE {
+            return FreeResult::Rejected {
+                reason: "corrupt block header",
+            };
+        }
+
+        header.set_in_use(false);
+        let _ = merge_free_blocks(state);
+        FreeResult::Freed { block_size }
+    });
+
+    match result {
+        FreeResult::Freed { block_size } => {
+            logging::logln_with_options("heap", format_args!(
+                "[heap] free ptr={:#x} block={}",
+                ptr as usize, block_size
+            ), serial_debug_enabled(), true);
+        }
+        FreeResult::Rejected { reason } => {
+            logging::logln_with_options("heap", format_args!(
+                "[heap] free rejected ptr={:#x} reason={}",
+                ptr as usize, reason
+            ), serial_debug_enabled(), true);
+        }
+    }
 }
 
-fn find_block(size: usize) -> Option<*mut HeapBlockHeader> {
-    with_heap(|state| {
-        let mut current = state.heap_start;
-        while current < state.heap_end {
-            // SAFETY:
-            // - `current` is within the heap bounds.
-            // - The heap region is mapped on demand.
-            let header = unsafe { &mut *header_at(current) };
-            let block_size = header.size();
+fn find_block_in_heap(state: &HeapState, size: usize) -> Option<*mut HeapBlockHeader> {
+    let mut current = state.heap_start;
+    while current < state.heap_end {
+        // SAFETY:
+        // - `current` is within the heap bounds.
+        // - The heap region is mapped on demand.
+        let header = unsafe { &*header_at(current) };
+        let block_size = header.size();
 
-            if block_size < HEADER_SIZE {
-                break;
-            }
-
-            // First-fit strategy: return the first sufficiently large free block.
-            if !header.in_use() && block_size >= size {
-                return Some(header_at(current));
-            }
-
-            current = current.saturating_add(block_size);
+        if block_size < HEADER_SIZE {
+            break;
         }
-        None
-    })
+
+        // First-fit strategy: return the first sufficiently large free block.
+        if !header.in_use() && block_size >= size {
+            return Some(header_at(current));
+        }
+
+        current = current.saturating_add(block_size);
+    }
+    None
+}
+
+fn find_block_by_payload_ptr(state: &HeapState, ptr: *mut u8) -> Option<*mut HeapBlockHeader> {
+    let ptr_addr = ptr as usize;
+    let min_payload = state.heap_start.checked_add(HEADER_SIZE)?;
+    if ptr_addr < min_payload || ptr_addr >= state.heap_end {
+        return None;
+    }
+
+    let mut current = state.heap_start;
+    while current < state.heap_end {
+        // SAFETY:
+        // - `current` is within heap bounds and points to a block header.
+        let header = unsafe { &*header_at(current) };
+        let block_size = header.size();
+        if block_size < HEADER_SIZE {
+            return None;
+        }
+
+        let Some(next_addr) = current.checked_add(block_size) else {
+            return None;
+        };
+        if next_addr > state.heap_end {
+            return None;
+        }
+
+        let block = header_at(current);
+        if payload_ptr(block) as usize == ptr_addr {
+            return Some(block);
+        }
+        current = next_addr;
+    }
+    None
 }
 
 fn allocate_block(block: *mut HeapBlockHeader, size: usize) {
@@ -280,72 +393,121 @@ fn allocate_block(block: *mut HeapBlockHeader, size: usize) {
 }
 
 /// Merges adjacent free blocks and returns the number of merges performed.
-fn merge_free_blocks() -> usize {
-    with_heap(|state| {
-        let mut merged = 0;
-        let mut current = state.heap_start;
-        while current < state.heap_end {
-            // SAFETY:
-            // - `current` is within the heap.
-            let header = unsafe { &mut *header_at(current) };
-            let size = header.size();
-            if size < HEADER_SIZE {
-                break;
-            }
+///
+/// Requires the global heap lock (`HEAP.inner`) to already be held by the caller
+/// via `with_heap`, i.e. this function must only run with exclusive heap access.
+fn merge_free_blocks(state: &mut HeapState) -> usize {
+    let mut merged = 0;
+    let mut current = state.heap_start;
+    while current < state.heap_end {
+        // SAFETY:
+        // - `current` is within the heap.
+        let header = unsafe { &mut *header_at(current) };
+        let size = header.size();
+        if size < HEADER_SIZE {
+            break;
+        }
 
-            let next_addr = current.saturating_add(size);
+        let Some(mut next_addr) = current.checked_add(size) else {
+            break;
+        };
+        if next_addr >= state.heap_end {
+            break;
+        }
+
+        if header.in_use() {
+            current = next_addr;
+            continue;
+        }
+
+        let mut merged_size = size;
+        loop {
             if next_addr >= state.heap_end {
                 break;
             }
 
             // SAFETY:
             // - `next_addr` is within the heap.
-            let next_header = unsafe { &mut *header_at(next_addr) };
-            if !header.in_use() && !next_header.in_use() {
-                header.set_size(size + next_header.size());
-                merged += 1;
-            } else {
-                current = next_addr;
+            let next_header = unsafe { &*header_at(next_addr) };
+            let next_size = next_header.size();
+            if next_size < HEADER_SIZE || next_header.in_use() {
+                break;
             }
+
+            let Some(new_size) = merged_size.checked_add(next_size) else {
+                break;
+            };
+            merged_size = new_size;
+            merged += 1;
+            let Some(after_next) = next_addr.checked_add(next_size) else {
+                break;
+            };
+            if after_next > state.heap_end {
+                break;
+            }
+            next_addr = after_next;
         }
-        merged
-    })
+
+        if merged_size != size {
+            header.set_size(merged_size);
+            let Some(next_current) = current.checked_add(merged_size) else {
+                break;
+            };
+            current = next_current;
+        } else {
+            current = next_addr;
+        }
+    }
+    merged
 }
 
-fn grow_heap(amount: usize) {
-    with_heap(|state| {
-        let old_end = state.heap_end;
-        let new_end = old_end.saturating_add(amount);
+/// Appends a new free block at the current heap end and coalesces neighbors.
+///
+/// Requires the global heap lock (`HEAP.inner`) to already be held by the caller
+/// via `with_heap`, i.e. this function must only run with exclusive heap access.
+fn grow_heap(state: &mut HeapState, amount: usize) -> bool {
+    if amount < HEADER_SIZE {
+        return false;
+    }
 
-        // SAFETY:
-        // - `old_end` is the previous heap end, so it is safe to place a new block there.
-        // - Pages are mapped on demand via the VMM.
-        unsafe {
-            let header = &mut *header_at(old_end);
-            header.set_in_use(false);
-            header.set_size(amount);
-        }
+    let current_size = state.heap_end.saturating_sub(state.heap_start);
+    if current_size >= MAX_HEAP_SIZE {
+        return false;
+    }
 
-        state.heap_end = new_end;
-    });
+    let remaining = MAX_HEAP_SIZE - current_size;
+    if amount > remaining {
+        return false;
+    }
 
-    // Merge with a possible free predecessor at the old heap end.
-    let _ = merge_free_blocks();
+    let old_end = state.heap_end;
+    let Some(new_end) = old_end.checked_add(amount) else {
+        return false;
+    };
+
+    // SAFETY:
+    // - `old_end` is the previous heap end, so it is safe to place a new block there.
+    // - Pages are mapped on demand via the VMM.
+    unsafe {
+        let header = &mut *header_at(old_end);
+        header.set_in_use(false);
+        header.set_size(amount);
+    }
+
+    state.heap_end = new_end;
+    let _ = merge_free_blocks(state);
+    true
 }
 
 #[inline]
-fn heap_logln(args: core::fmt::Arguments<'_>) {
-    // Ensure the first heap log after init starts on a fresh line in test output.
-    if !HEAP.serial_line_synced.swap(true, Ordering::AcqRel) {
-        logging::logln_with_options("heap", format_args!(""), true, false);
-    }
-    logging::logln("heap", args);
+fn compute_heap_growth_for_request(required_block_size: usize) -> usize {
+    align_up_checked(required_block_size, HEAP_GROWTH).unwrap_or(HEAP_GROWTH)
 }
 
 /// Returns `(block_size, in_use)` for a block at `base + offset`.
 ///
 /// This helper is intended for heap self-tests to validate internal layout.
-fn read_heapblock_metadata(base: usize, offset: usize) -> (usize, bool) {
+fn read_block_metadata(base: usize, offset: usize) -> (usize, bool) {
     // SAFETY:
     // - Caller ensures `base + offset` points into the heap.
     unsafe {
@@ -357,91 +519,126 @@ fn read_heapblock_metadata(base: usize, offset: usize) -> (usize, bool) {
 /// Runs heap self-tests and prints results to the screen.
 pub fn run_self_test(screen: &mut Screen) {
     let mut failures = 0u32;
-    heap_logln(format_args!("[heap-test] start"));
+    logging::logln_with_options(
+        "heap",
+        format_args!("[heap-test] start"),
+        serial_debug_enabled(),
+        true,
+    );
     if is_initialized() {
-        heap_logln(format_args!("[heap-test] reinitializing heap"));
+        logging::logln_with_options(
+            "heap",
+            format_args!("[heap-test] reinitializing heap"),
+            serial_debug_enabled(),
+            true,
+        );
     }
-    init();
+    init(serial_debug_enabled());
 
     let heap_base = HEAP_START_OFFSET;
     let ptr1 = malloc(100);
     let ptr2 = malloc(100);
 
-    let (size1, in_use1) = read_heapblock_metadata(heap_base, 0);
-    let (size2, in_use2) = read_heapblock_metadata(heap_base, 112);
-    let (size3, in_use3) = read_heapblock_metadata(heap_base, 224);
+    let (size1, in_use1) = read_block_metadata(heap_base, 0);
+    let (size2, in_use2) = read_block_metadata(heap_base, 112);
+    let (size3, in_use3) = read_block_metadata(heap_base, 224);
 
     if size1 == 112 && in_use1 && size2 == 112 && in_use2 && size3 == 3872 && !in_use3 {
         writeln!(screen, "  [ OK ] initial allocation layout").unwrap();
-        heap_logln(format_args!("[heap-test] OK initial layout"));
+        logging::logln_with_options(
+            "heap",
+            format_args!("[heap-test] OK initial layout"),
+            serial_debug_enabled(),
+            true,
+        );
     } else {
         failures += 1;
         writeln!(screen, "  [FAIL] initial allocation layout").unwrap();
-        heap_logln(format_args!(
+        logging::logln_with_options("heap", format_args!(
             "[heap-test] FAIL initial layout: ({},{}), ({},{}), ({},{})",
             size1, in_use1, size2, in_use2, size3, in_use3
-        ));
+        ), serial_debug_enabled(), true);
     }
 
     free(ptr1);
-    let (size1, in_use1) = read_heapblock_metadata(heap_base, 0);
-    let (size2, in_use2) = read_heapblock_metadata(heap_base, 112);
+    let (size1, in_use1) = read_block_metadata(heap_base, 0);
+    let (size2, in_use2) = read_block_metadata(heap_base, 112);
     if size1 == 112 && !in_use1 && size2 == 112 && in_use2 {
         writeln!(screen, "  [ OK ] free first block").unwrap();
-        heap_logln(format_args!("[heap-test] OK free first block"));
+        logging::logln_with_options(
+            "heap",
+            format_args!("[heap-test] OK free first block"),
+            serial_debug_enabled(),
+            true,
+        );
     } else {
         failures += 1;
         writeln!(screen, "  [FAIL] free first block").unwrap();
-        heap_logln(format_args!(
+        logging::logln_with_options("heap", format_args!(
             "[heap-test] FAIL free first block: ({},{}), ({},{})",
             size1, in_use1, size2, in_use2
-        ));
+        ), serial_debug_enabled(), true);
     }
 
     let ptr3 = malloc(50);
-    let (size1, in_use1) = read_heapblock_metadata(heap_base, 0);
-    let (size2, in_use2) = read_heapblock_metadata(heap_base, 64);
+    let (size1, in_use1) = read_block_metadata(heap_base, 0);
+    let (size2, in_use2) = read_block_metadata(heap_base, 64);
     if size1 == 64 && in_use1 && size2 == 48 && !in_use2 {
         writeln!(screen, "  [ OK ] split after 50-byte alloc").unwrap();
-        heap_logln(format_args!("[heap-test] OK split after 50-byte alloc"));
+        logging::logln_with_options(
+            "heap",
+            format_args!("[heap-test] OK split after 50-byte alloc"),
+            serial_debug_enabled(),
+            true,
+        );
     } else {
         failures += 1;
         writeln!(screen, "  [FAIL] split after 50-byte alloc").unwrap();
-        heap_logln(format_args!(
+        logging::logln_with_options("heap", format_args!(
             "[heap-test] FAIL split after 50-byte alloc: ({},{}), ({},{})",
             size1, in_use1, size2, in_use2
-        ));
+        ), serial_debug_enabled(), true);
     }
 
     let ptr4 = malloc(40);
-    let (size2, in_use2) = read_heapblock_metadata(heap_base, 64);
+    let (size2, in_use2) = read_block_metadata(heap_base, 64);
     if size2 == 48 && in_use2 {
         writeln!(screen, "  [ OK ] allocate 40-byte block").unwrap();
-        heap_logln(format_args!("[heap-test] OK allocate 40-byte block"));
+        logging::logln_with_options(
+            "heap",
+            format_args!("[heap-test] OK allocate 40-byte block"),
+            serial_debug_enabled(),
+            true,
+        );
     } else {
         failures += 1;
         writeln!(screen, "  [FAIL] allocate 40-byte block").unwrap();
-        heap_logln(format_args!(
+        logging::logln_with_options("heap", format_args!(
             "[heap-test] FAIL allocate 40-byte block: ({},{})",
             size2, in_use2
-        ));
+        ), serial_debug_enabled(), true);
     }
 
     free(ptr2);
     free(ptr3);
     free(ptr4);
 
-    let (size1, in_use1) = read_heapblock_metadata(heap_base, 0);
+    let (size1, in_use1) = read_block_metadata(heap_base, 0);
     if size1 == INITIAL_HEAP_SIZE && !in_use1 {
         writeln!(screen, "  [ OK ] merge after frees").unwrap();
-        heap_logln(format_args!("[heap-test] OK merge after frees"));
+        logging::logln_with_options(
+            "heap",
+            format_args!("[heap-test] OK merge after frees"),
+            serial_debug_enabled(),
+            true,
+        );
     } else {
         failures += 1;
         writeln!(screen, "  [FAIL] merge after frees").unwrap();
-        heap_logln(format_args!(
+        logging::logln_with_options("heap", format_args!(
             "[heap-test] FAIL merge after frees: ({},{})",
             size1, in_use1
-        ));
+        ), serial_debug_enabled(), true);
     }
 
     let mut values: Vec<u64> = Vec::with_capacity(16);
@@ -450,23 +647,38 @@ pub fn run_self_test(screen: &mut Screen) {
     }
     if values.len() == 16 && values[0] == 0 && values[15] == 15 {
         writeln!(screen, "  [ OK ] rust alloc (Vec) on heap").unwrap();
-        heap_logln(format_args!("[heap-test] OK rust alloc (Vec)"));
+        logging::logln_with_options(
+            "heap",
+            format_args!("[heap-test] OK rust alloc (Vec)"),
+            serial_debug_enabled(),
+            true,
+        );
     } else {
         failures += 1;
         writeln!(screen, "  [FAIL] rust alloc (Vec) on heap").unwrap();
-        heap_logln(format_args!(
+        logging::logln_with_options("heap", format_args!(
             "[heap-test] FAIL rust alloc (Vec): len={}, first={}, last={}",
             values.len(),
             values.first().copied().unwrap_or(0),
             values.last().copied().unwrap_or(0)
-        ));
+        ), serial_debug_enabled(), true);
     }
 
     if failures == 0 {
         writeln!(screen, "Heap self-test complete (OK).").unwrap();
-        heap_logln(format_args!("[heap-test] done (ok)"));
+        logging::logln_with_options(
+            "heap",
+            format_args!("[heap-test] done (ok)"),
+            serial_debug_enabled(),
+            true,
+        );
     } else {
         writeln!(screen, "Heap self-test complete ({} failures).", failures).unwrap();
-        heap_logln(format_args!("[heap-test] done (failures={})", failures));
+        logging::logln_with_options(
+            "heap",
+            format_args!("[heap-test] done (failures={})", failures),
+            serial_debug_enabled(),
+            true,
+        );
     }
 }
