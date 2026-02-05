@@ -164,7 +164,7 @@ fn test_try_map_rejects_overwrite_of_existing_mapping() {
 
     vmm::unmap_virtual_address(TEST_VA);
     // frame_a is released by unmap; frame_b was never mapped, release it here.
-    pmm::with_pmm(|mgr| mgr.release_frame(frame_b));
+    pmm::with_pmm(|mgr| assert!(mgr.release_pfn(frame_b.pfn)));
 }
 
 #[test_case]
@@ -184,5 +184,5 @@ fn test_unmap_releases_frame_back_to_pmm() {
         reused.pfn == mapped_pfn,
         "unmap should release mapped frame back to PMM for reuse"
     );
-    pmm::with_pmm(|mgr| mgr.release_frame(reused));
+    pmm::with_pmm(|mgr| assert!(mgr.release_pfn(reused.pfn)));
 }

@@ -269,7 +269,7 @@ unsafe fn clear_bit(idx: u64, base: *mut u64) {
 }
 
 /// Represents an allocated page frame with its PFN and region info.
-/// This handle is returned by `alloc_frame` and passed to `release_frame`.
+/// This handle is returned by `alloc_frame`.
 #[allow(dead_code)]
 pub struct PageFrame {
     /// Page Frame Number (physical address / PAGE_SIZE)
@@ -543,22 +543,6 @@ impl PhysicalMemoryManager {
         None
     }
 
-    /// Releases a previously allocated page frame back to the pool.
-    /// The `PageFrame` handle contains all information needed to free the frame.
-    #[allow(dead_code)]
-    pub fn release_frame(&mut self, frame: PageFrame) {
-        let regions = self.regions();
-
-        let r = &mut regions[frame.region_index as usize];
-        let bitmap = r.bitmap_start as *mut u64;
-        let bit_idx = frame.pfn - (r.start / PAGE_SIZE);
-        unsafe { clear_bit(bit_idx, bitmap) };
-        r.frames_free += 1;
-
-        // Log the deallocation
-        log_release(frame.pfn, frame.region_index);
-    }
-
     /// Releases a page frame identified by PFN.
     ///
     /// Returns `true` when the PFN belongs to a known region and was marked used.
@@ -616,7 +600,7 @@ pub fn run_self_test(screen: &mut Screen, stress_iters: u32) {
                 failures += 1;
                 crate::logging::logln("pmm", format_args!("[pmm-test] FAIL alloc frame1"));
                 writeln!(screen, "  [FAIL] alloc frame1").unwrap();
-                mgr.release_frame(frame0);
+                let _ = mgr.release_pfn(frame0.pfn);
                 return;
             }
         };
@@ -626,8 +610,8 @@ pub fn run_self_test(screen: &mut Screen, stress_iters: u32) {
                 failures += 1;
                 crate::logging::logln("pmm", format_args!("[pmm-test] FAIL alloc frame2"));
                 writeln!(screen, "  [FAIL] alloc frame2").unwrap();
-                mgr.release_frame(frame1);
-                mgr.release_frame(frame0);
+                let _ = mgr.release_pfn(frame1.pfn);
+                let _ = mgr.release_pfn(frame0.pfn);
                 return;
             }
         };
@@ -686,7 +670,7 @@ pub fn run_self_test(screen: &mut Screen, stress_iters: u32) {
         }
 
         let old_mid_pfn = frame1.pfn;
-        mgr.release_frame(frame1);
+        let _ = mgr.release_pfn(frame1.pfn);
         let reused = match mgr.alloc_frame() {
             Some(f) => f,
             None => {
@@ -696,8 +680,8 @@ pub fn run_self_test(screen: &mut Screen, stress_iters: u32) {
                     format_args!("[pmm-test] FAIL re-allocation after release"),
                 );
                 writeln!(screen, "  [FAIL] re-allocation after release").unwrap();
-                mgr.release_frame(frame2);
-                mgr.release_frame(frame0);
+                let _ = mgr.release_pfn(frame2.pfn);
+                let _ = mgr.release_pfn(frame0.pfn);
                 return;
             }
         };
@@ -714,9 +698,9 @@ pub fn run_self_test(screen: &mut Screen, stress_iters: u32) {
             writeln!(screen, "  [ OK ] released frame is reused").unwrap();
         }
 
-        mgr.release_frame(reused);
-        mgr.release_frame(frame2);
-        mgr.release_frame(frame0);
+        let _ = mgr.release_pfn(reused.pfn);
+        let _ = mgr.release_pfn(frame2.pfn);
+        let _ = mgr.release_pfn(frame0.pfn);
 
         for i in 0..stress_iters {
             let f = match mgr.alloc_frame() {
@@ -740,11 +724,11 @@ pub fn run_self_test(screen: &mut Screen, stress_iters: u32) {
                     f.physical_address()
                 ));
                 writeln!(screen, "  [FAIL] stress alignment at iter {}", i).unwrap();
-                mgr.release_frame(f);
+                let _ = mgr.release_pfn(f.pfn);
                 break;
             }
 
-            mgr.release_frame(f);
+            let _ = mgr.release_pfn(f.pfn);
 
             if i != 0 && i % 512 == 0 {
                 crate::logging::logln(

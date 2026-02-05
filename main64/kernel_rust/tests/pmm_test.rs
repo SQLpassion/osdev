@@ -51,7 +51,7 @@ fn test_pmm_single_allocation() {
         assert!(frame.pfn > 0, "PFN should be greater than 0");
 
         // Clean up
-        pmm.release_frame(frame);
+        assert!(pmm.release_pfn(frame.pfn));
     });
 }
 
@@ -76,11 +76,11 @@ fn test_pmm_multiple_allocations() {
         }
 
         // Clean up - release all frames
-        pmm.release_frame(frame0);
-        pmm.release_frame(frame1);
-        pmm.release_frame(frame2);
-        pmm.release_frame(frame3);
-        pmm.release_frame(frame4);
+        assert!(pmm.release_pfn(frame0.pfn));
+        assert!(pmm.release_pfn(frame1.pfn));
+        assert!(pmm.release_pfn(frame2.pfn));
+        assert!(pmm.release_pfn(frame3.pfn));
+        assert!(pmm.release_pfn(frame4.pfn));
     });
 }
 
@@ -107,9 +107,9 @@ fn test_pmm_allocation_and_release() {
         let pfn2 = f2.pfn;
 
         // Release all frames (should not panic)
-        pmm.release_frame(f0);
-        pmm.release_frame(f1);
-        pmm.release_frame(f2);
+        assert!(pmm.release_pfn(f0.pfn));
+        assert!(pmm.release_pfn(f1.pfn));
+        assert!(pmm.release_pfn(f2.pfn));
 
         // Verify frames were unique
         assert!(pfn0 != pfn1, "Frame 0 and 1 should have different PFNs");
@@ -132,7 +132,7 @@ fn test_pmm_frame_reuse_after_release() {
         let pfn2 = frame2.pfn;
 
         // Release the middle frame (frame1)
-        pmm.release_frame(frame1);
+        assert!(pmm.release_pfn(frame1.pfn));
 
         // Allocate 3 more frames
         let new_frame0 = pmm.alloc_frame().expect("New frame 0 allocation failed");
@@ -160,11 +160,11 @@ fn test_pmm_frame_reuse_after_release() {
         );
 
         // Clean up
-        pmm.release_frame(frame0);
-        pmm.release_frame(frame2);
-        pmm.release_frame(new_frame0);
-        pmm.release_frame(new_frame1);
-        pmm.release_frame(new_frame2);
+        assert!(pmm.release_pfn(frame0.pfn));
+        assert!(pmm.release_pfn(frame2.pfn));
+        assert!(pmm.release_pfn(new_frame0.pfn));
+        assert!(pmm.release_pfn(new_frame1.pfn));
+        assert!(pmm.release_pfn(new_frame2.pfn));
     });
 }
 
@@ -201,7 +201,7 @@ fn test_pmm_reserved_region_not_allocated() {
             count += 1;
 
             // Return the frame immediately so we don't exhaust memory
-            pmm.release_frame(frame);
+            assert!(pmm.release_pfn(frame.pfn));
         }
 
         assert!(count == NUM_FRAMES, "All allocations should have succeeded");
@@ -231,6 +231,6 @@ fn test_pmm_physical_address_calculation() {
         );
 
         // Clean up
-        pmm.release_frame(frame);
+        assert!(pmm.release_pfn(frame.pfn));
     });
 }
