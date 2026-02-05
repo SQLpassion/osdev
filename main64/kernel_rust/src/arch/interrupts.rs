@@ -212,6 +212,24 @@ pub fn disable() {
     }
 }
 
+/// Returns whether interrupts are currently enabled (IF flag set).
+#[inline]
+pub fn are_enabled() -> bool {
+    let rflags: u64;
+    // SAFETY:
+    // - Reading RFLAGS via pushfq/pop is safe and does not modify flags.
+    // - `rflags` is a plain register output.
+    unsafe {
+        asm!(
+            "pushfq",
+            "pop {}",
+            out(reg) rflags,
+            options(nomem, preserves_flags)
+        );
+    }
+    (rflags & (1 << 9)) != 0
+}
+
 fn init_idt() {
     unsafe {
         let idt = &mut *STATE.idt.get();

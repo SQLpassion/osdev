@@ -12,4 +12,5 @@ pub mod arch;
 pub mod drivers;
 pub mod logging;
 pub mod memory;
+pub mod sync;
 pub mod testing;

@@ -1,12 +1,12 @@
 //! Simple heap manager for the Rust kernel, modeled after the C implementation.
 
-use core::cell::UnsafeCell;
 use core::fmt::Write;
 use core::mem::{align_of, size_of};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::drivers::screen::Screen;
 use crate::logging;
+use crate::sync::spinlock::SpinLock;
 
 const HEADER_SIZE: usize = size_of::<HeapBlockHeader>();
 const ALIGNMENT: usize = align_of::<usize>();
@@ -57,14 +57,14 @@ struct HeapState {
 }
 
 struct GlobalHeap {
-    inner: UnsafeCell<HeapState>,
+    inner: SpinLock<HeapState>,
     initialized: AtomicBool,
 }
 
 impl GlobalHeap {
     const fn new() -> Self {
         Self {
-            inner: UnsafeCell::new(HeapState {
+            inner: SpinLock::new(HeapState {
                 heap_start: 0,
                 heap_end: 0,
             }),
@@ -98,7 +98,8 @@ fn block_from_payload(ptr: *mut u8) -> *mut HeapBlockHeader {
 }
 
 fn with_heap<R>(f: impl FnOnce(&mut HeapState) -> R) -> R {
-    unsafe { f(&mut *HEAP.inner.get()) }
+    let mut guard = HEAP.inner.lock();
+    f(&mut *guard)
 }
 
 /// Initializes the heap manager and returns the heap size.

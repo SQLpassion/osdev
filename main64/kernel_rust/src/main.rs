@@ -12,6 +12,7 @@ mod drivers;
 mod logging;
 mod memory;
 mod panic;
+mod sync;
 
 use crate::arch::interrupts;
 use crate::arch::power;

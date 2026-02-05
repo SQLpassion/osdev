@@ -11,6 +11,7 @@
 use core::panic::PanicInfo;
 use kaos_kernel::arch::interrupts;
 use kaos_kernel::memory::{heap, pmm, vmm};
+use kaos_kernel::sync::spinlock::SpinLock;
 
 /// Entry point for the heap integration test kernel.
 #[no_mangle]
@@ -128,4 +129,35 @@ fn test_heap_large_allocation_requires_growth() {
     }
 
     heap::free(ptr);
+}
+
+#[test_case]
+fn test_heap_preserves_interrupt_state_when_disabled() {
+    heap::init();
+    interrupts::disable();
+    assert!(
+        !interrupts::are_enabled(),
+        "interrupts should be disabled for this test"
+    );
+
+    let ptr = heap::malloc(16);
+    heap::free(ptr);
+
+    assert!(
+        !interrupts::are_enabled(),
+        "heap operations should not enable interrupts when they were disabled"
+    );
+}
+
+#[test_case]
+fn test_spinlock_basic_mutation() {
+    static LOCK: SpinLock<usize> = SpinLock::new(0);
+
+    {
+        let mut guard = LOCK.lock();
+        *guard += 1;
+    }
+
+    let guard = LOCK.lock();
+    assert!(*guard == 1, "spinlock should protect shared state");
 }
