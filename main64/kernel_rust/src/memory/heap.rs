@@ -2,37 +2,38 @@
 
 use core::cell::UnsafeCell;
 use core::fmt::Write;
+use core::mem::{align_of, size_of};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::drivers::screen::Screen;
 use crate::logging;
 
-const HEADER_SIZE: usize = 4;
-const ALIGNMENT: usize = 4;
+const HEADER_SIZE: usize = size_of::<HeapBlockHeader>();
+const ALIGNMENT: usize = align_of::<usize>();
 const MIN_SPLIT_SIZE: usize = HEADER_SIZE + 1;
 
 const HEAP_START_OFFSET: usize = 0xFFFF_8000_0050_0000;
 const INITIAL_HEAP_SIZE: usize = 0x1000;
 const HEAP_GROWTH: usize = 0x1000;
 
-const IN_USE_MASK: u32 = 0x1;
-const SIZE_MASK: u32 = !IN_USE_MASK;
+const IN_USE_MASK: usize = 0x1;
+const SIZE_MASK: usize = !IN_USE_MASK;
 
 #[repr(C)]
 struct HeapBlockHeader {
-    size_and_flags: u32,
+    size_and_flags: usize,
 }
 
 impl HeapBlockHeader {
     #[inline]
     fn size(&self) -> usize {
-        (self.size_and_flags & SIZE_MASK) as usize
+        self.size_and_flags & SIZE_MASK
     }
 
     #[inline]
     fn set_size(&mut self, size: usize) {
         let flags = self.size_and_flags & IN_USE_MASK;
-        self.size_and_flags = flags | (size as u32 & SIZE_MASK);
+        self.size_and_flags = flags | (size & SIZE_MASK);
     }
 
     #[inline]
@@ -292,10 +293,10 @@ pub fn run_self_test(screen: &mut Screen) {
     let ptr2 = malloc(100);
 
     let (size1, in_use1) = block_snapshot(heap_base, 0);
-    let (size2, in_use2) = block_snapshot(heap_base, 104);
-    let (size3, in_use3) = block_snapshot(heap_base, 208);
+    let (size2, in_use2) = block_snapshot(heap_base, 112);
+    let (size3, in_use3) = block_snapshot(heap_base, 224);
 
-    if size1 == 104 && in_use1 && size2 == 104 && in_use2 && size3 == 3888 && !in_use3 {
+    if size1 == 112 && in_use1 && size2 == 112 && in_use2 && size3 == 3872 && !in_use3 {
         writeln!(screen, "  [ OK ] initial allocation layout").unwrap();
         heap_logln(format_args!("[heap-test] OK initial layout"));
     } else {
@@ -309,8 +310,8 @@ pub fn run_self_test(screen: &mut Screen) {
 
     free(ptr1);
     let (size1, in_use1) = block_snapshot(heap_base, 0);
-    let (size2, in_use2) = block_snapshot(heap_base, 104);
-    if size1 == 104 && !in_use1 && size2 == 104 && in_use2 {
+    let (size2, in_use2) = block_snapshot(heap_base, 112);
+    if size1 == 112 && !in_use1 && size2 == 112 && in_use2 {
         writeln!(screen, "  [ OK ] free first block").unwrap();
         heap_logln(format_args!("[heap-test] OK free first block"));
     } else {
@@ -324,8 +325,8 @@ pub fn run_self_test(screen: &mut Screen) {
 
     let ptr3 = malloc(50);
     let (size1, in_use1) = block_snapshot(heap_base, 0);
-    let (size2, in_use2) = block_snapshot(heap_base, 56);
-    if size1 == 56 && in_use1 && size2 == 48 && !in_use2 {
+    let (size2, in_use2) = block_snapshot(heap_base, 64);
+    if size1 == 64 && in_use1 && size2 == 48 && !in_use2 {
         writeln!(screen, "  [ OK ] split after 50-byte alloc").unwrap();
         heap_logln(format_args!("[heap-test] OK split after 50-byte alloc"));
     } else {
@@ -337,16 +338,16 @@ pub fn run_self_test(screen: &mut Screen) {
         ));
     }
 
-    let ptr4 = malloc(44);
-    let (size2, in_use2) = block_snapshot(heap_base, 56);
+    let ptr4 = malloc(40);
+    let (size2, in_use2) = block_snapshot(heap_base, 64);
     if size2 == 48 && in_use2 {
-        writeln!(screen, "  [ OK ] allocate 44-byte block").unwrap();
-        heap_logln(format_args!("[heap-test] OK allocate 44-byte block"));
+        writeln!(screen, "  [ OK ] allocate 40-byte block").unwrap();
+        heap_logln(format_args!("[heap-test] OK allocate 40-byte block"));
     } else {
         failures += 1;
-        writeln!(screen, "  [FAIL] allocate 44-byte block").unwrap();
+        writeln!(screen, "  [FAIL] allocate 40-byte block").unwrap();
         heap_logln(format_args!(
-            "[heap-test] FAIL allocate 44-byte block: ({},{})",
+            "[heap-test] FAIL allocate 40-byte block: ({},{})",
             size2, in_use2
         ));
     }

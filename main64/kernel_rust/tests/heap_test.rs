@@ -42,8 +42,8 @@ fn test_heap_alloc_free_round_trip() {
     let ptr = heap::malloc(16);
     assert!(!ptr.is_null(), "malloc should return non-null pointer");
     assert!(
-        (ptr as usize) % 4 == 0,
-        "heap allocation should be 4-byte aligned"
+        (ptr as usize) % 8 == 0,
+        "heap allocation should be 8-byte aligned"
     );
 
     // SAFETY:
@@ -92,4 +92,40 @@ fn test_heap_merge_allows_large_alloc() {
         "merged free blocks should satisfy larger allocation from heap start"
     );
     heap::free(ptr3);
+}
+
+#[test_case]
+fn test_heap_alignment_for_small_allocs() {
+    heap::init();
+    let ptr1 = heap::malloc(1);
+    let ptr2 = heap::malloc(7);
+    let ptr3 = heap::malloc(8);
+
+    assert!(!ptr1.is_null() && !ptr2.is_null() && !ptr3.is_null(), "allocations should succeed");
+    assert!((ptr1 as usize) % 8 == 0, "ptr1 should be 8-byte aligned");
+    assert!((ptr2 as usize) % 8 == 0, "ptr2 should be 8-byte aligned");
+    assert!((ptr3 as usize) % 8 == 0, "ptr3 should be 8-byte aligned");
+
+    heap::free(ptr1);
+    heap::free(ptr2);
+    heap::free(ptr3);
+}
+
+#[test_case]
+fn test_heap_large_allocation_requires_growth() {
+    heap::init();
+    let ptr = heap::malloc(4096);
+    assert!(!ptr.is_null(), "large allocation should succeed after heap growth");
+    assert!((ptr as usize) % 8 == 0, "large allocation should be 8-byte aligned");
+
+    // SAFETY:
+    // - `ptr` is returned by `heap::malloc(4096)`, so 4096 bytes are valid.
+    // - We only touch the last byte within that allocation.
+    unsafe {
+        core::ptr::write_volatile(ptr.add(4095), 0x5A);
+        let val = core::ptr::read_volatile(ptr.add(4095));
+        assert!(val == 0x5A, "large allocation should be writable/readable");
+    }
+
+    heap::free(ptr);
 }
