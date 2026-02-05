@@ -1,396 +1,354 @@
-# Virtual Memory Manager (VMM) in KAOS Rust Kernel
+# KAOS Rust VMM - Detailed Implementation Guide
 
-This document is a deep technical guide to the current VMM implementation in `src/memory/vmm.rs`.
+This document describes the **current** implementation in:
 
-It is written for developers who are new to paging and to this codebase. After reading it, you should be able to:
+- `src/memory/vmm.rs`
+- `src/arch/interrupts.rs` (page-fault ISR wiring)
+- `src/logging.rs` (targeted logging/capture used by VMM debug output)
 
-- explain how virtual memory translation works in this kernel,
-- understand why and how page faults are handled,
-- understand recursive page-table mapping and the exact address formulas used,
-- reason about `map_virtual_to_physical` / `unmap_virtual_address`,
-- debug the common failure modes (wrong mask, wrong CR3, missing mappings).
+It is written as a technical onboarding guide, including concrete address examples and page-walk diagrams.
 
 ---
 
-## 1) Mental model: virtual memory vs physical memory
+## 1) Virtual memory vs physical memory (in this kernel)
 
-### 1.1 Physical memory
-Physical memory is RAM, addressed by physical addresses. The PMM (`src/memory/pmm.rs`) allocates physical page frames of 4 KiB (`PAGE_SIZE = 4096`).
+### Physical memory
+Physical memory is RAM addressed by physical addresses. Frames are 4 KiB (`SMALL_PAGE_SIZE = 4096`).
 
-The VMM never asks "where is free virtual memory?"; it asks PMM for physical frames and wires them into page tables.
+The PMM (`src/memory/pmm.rs`) is responsible for allocating/freeing physical frames.
 
-### 1.2 Virtual memory
-The CPU executes using **virtual addresses**. Translation to physical addresses happens in hardware via page tables.
+### Virtual memory
+CPU memory accesses are made with virtual addresses. x86_64 hardware translates virtual -> physical using page tables referenced by CR3.
 
-For this kernel:
+In this kernel:
 
-- page size: 4 KiB
-- 4-level paging on x86_64
-- 512 entries per table
-- levels: `PML4 -> PDP -> PD -> PT -> page`
+- Paging mode: x86_64, 4-level paging
+- Page size in the Rust VMM: **4 KiB**
+- Table fanout: 512 entries per level
 
-### 1.3 Why we need this
-Virtual memory gives us:
+### Important note about huge pages
+The bootloader (`main64/kaosldr_16/longmode.asm`) initially uses 2 MiB huge pages to enter long mode quickly.
 
-- stable higher-half kernel addresses (`0xFFFF_8000_...`),
-- sparse mappings (map only touched pages),
-- access-control bits (present/read-write/user),
-- fault-driven on-demand allocation.
+After `vmm::init()` builds new page tables and switches CR3, those bootloader tables are no longer active.
+
+**Therefore: after VMM initialization, the Rust kernel does not use huge pages.**
 
 ---
 
-## 2) x86_64 paging structure in this implementation
+## 2) x86_64 page hierarchy used here
 
-## 2.1 Bit-level breakdown of a 48-bit canonical virtual address
+For canonical 48-bit virtual addresses:
 
-For 4 KiB pages:
+- bits 47..39 -> PML4 index
+- bits 38..30 -> PDP index
+- bits 29..21 -> PD index
+- bits 20..12 -> PT index
+- bits 11..0 -> offset inside page
 
-- bits `47..39` -> `PML4 index`
-- bits `38..30` -> `PDP index`
-- bits `29..21` -> `PD index`
-- bits `20..12` -> `PT index`
-- bits `11..0`  -> page offset
-
-In code (see `vmm.rs`):
+In `vmm.rs` this is:
 
 - `pml4_index(va)`
 - `pdp_index(va)`
 - `pd_index(va)`
 - `pt_index(va)`
 
-### 2.2 Visual decomposition
+### ASCII view of address decomposition
 
 ```text
-63                    48 47         39 38         30 29         21 20         12 11        0
-+-----------------------+-------------+-------------+-------------+-------------+-----------+
-| sign extension        | PML4 index  | PDP index   | PD index    | PT index    | offset    |
-+-----------------------+-------------+-------------+-------------+-------------+-----------+
+63                    48 47         39 38         30 29         21 20         12 11         0
++-----------------------+-------------+-------------+-------------+-------------+------------+
+| sign extension        | PML4 index  | PDP index   | PD index    | PT index    | page off   |
++-----------------------+-------------+-------------+-------------+-------------+------------+
 ```
 
-### 2.3 Concrete decomposition example
+---
 
-For `VA = 0xFFFF_8034_C232_C000`:
+## 3) Page-table entry representation
 
-- `PML4 = 256`
-- `PDP  = 211`
-- `PD   = 17`
-- `PT   = 300`
-- `offset = 0`
+`PageTableEntry(u64)` wraps one 64-bit entry and exposes bit-level helpers.
 
-This is one of the `vmmtest` addresses and is intentionally far from kernel bootstrap pages.
+Used flags:
+
+- Present (`bit 0`)
+- Writable (`bit 1`)
+- User (`bit 2`)
+- Frame base (`bits 12..`, via `ENTRY_FRAME_MASK`)
+
+`set_mapping(pfn, present, writable, user)` writes frame + flags in one call.
+
+Current kernel mappings in VMM are created as supervisor (`user = false`).
 
 ---
 
-## 3) Page-table entries used by this VMM
+## 4) Initial VMM setup (`vmm::init`)
 
-`PageTableEntry` is a transparent newtype over `u64`.
+`vmm::init(debug_output)` allocates and initializes paging structures, then switches CR3.
 
-Bits used:
+Allocated table frames:
 
-- bit 0: Present
-- bit 1: Writable
-- bit 2: User
-- bits 12..: frame base (`ENTRY_FRAME_MASK = 0x0000_FFFF_FFFF_F000`)
+- 1x PML4
+- Identity branch: 1x PDP + 1x PD + 2x PT
+- Higher-half branch: 1x PDP + 1x PD + 2x PT
 
-The code uses explicit setters/getters instead of C-style bitfields.
+Then:
 
-Important behavior:
+- `PML4[0]` -> identity branch
+- `PML4[256]` -> higher-half branch
+- `PML4[511]` -> points to PML4 itself (recursive mapping)
 
-- the implementation maps kernel pages as supervisor (`user = false`),
-- writable is set for all current kernel mappings,
-- `clear()` zeroes the entire entry.
+Mapped ranges:
 
----
+- identity `0..4 MiB`
+- higher-half mirror of `0..4 MiB` at `0xFFFF_8000_0000_0000 + offset`
 
-## 4) Boot-time VMM initialization (`vmm::init`)
+Finally:
 
-`vmm::init(debug_output)` builds a minimal but usable page-tree and then switches CR3.
-
-### 4.1 Frames allocated
-
-Current implementation allocates nine frames:
-
-- `pml4`
-- identity branch: `pdp_identity`, `pd_identity`, `pt_identity_0`, `pt_identity_1`
-- higher-half branch: `pdp_higher`, `pd_higher`, `pt_higher_0`, `pt_higher_1`
-
-All are explicitly zeroed with `write_bytes`.
-
-### 4.2 Top-level wiring
-
-- `PML4[0]   -> identity branch`
-- `PML4[256] -> higher-half branch`
-- `PML4[511] -> PML4 itself` (**recursive mapping**)
-
-### 4.3 Initial mapped regions
-
-Both identity and higher-half branch map `0..4 MiB`:
-
-- first PT maps frames `0..511` (0..2 MiB)
-- second PT maps frames `512..1023` (2..4 MiB)
-
-This is a practical stability choice (stack / early runtime after CR3 switch).
-
-### 4.4 CR3 switch ordering
-
-The kernel startup order in `src/main.rs` is intentional:
-
-1. `pmm::init()`
-2. `interrupts::init()` (IDT incl. PF handler installed)
-3. `vmm::init(false)` (CR3 switch)
-4. later: register IRQ handlers, enable interrupts
-
-If page-fault handling were not installed before risky memory accesses, an early PF could become a triple fault reset.
+- `write_cr3(pml4_phys)` activates the new page tables.
 
 ---
 
-## 5) Recursive mapping: what it is and why we need it
+## 5) Page faults: how the kernel handles them
 
-## 5.1 Problem without recursion
+## 5.1 Interrupt wiring
 
-Page tables are physical-memory structures. Without recursion, modifying them needs either:
+In `src/arch/interrupts.rs`:
 
-- temporary ad-hoc mappings, or
-- assumptions about identity-mapped physical memory.
+- IDT vector 14 (`EXCEPTION_PAGE_FAULT`) uses `isr14_stub`.
+- Stub reads:
+  - `CR2` (faulting VA) -> first argument
+  - page-fault error code from stack -> second argument
+- Calls Rust handler: `page_fault_handler_rust(faulting_address, error_code)`
+- Rust dispatches to `vmm::handle_page_fault(...)`.
 
-Both are brittle.
+## 5.2 Demand paging behavior
 
-### 5.2 Recursive trick
+`handle_page_fault(virtual_address, error_code)`:
 
-Set `PML4[511]` to the PML4's own physical frame.
+1. Align VA down to page boundary.
+2. Optional debug logs (raw/aligned VA, CR3, indexes, error bits).
+3. `ensure_tables_for(va)` ensures intermediate levels exist (PML4/PDP/PD entries).
+4. If final PT entry absent, allocate one physical frame and map it.
 
-That creates a virtual region where the page-table hierarchy becomes self-addressable. In other words: page tables are mapped into virtual space, so the kernel can treat them as normal pointers.
+After return, CPU retries the faulting instruction and access succeeds.
 
-### 5.3 Windows used in this implementation
+---
 
-Constants:
+## 6) Recursive page mapping: concept and mechanics
+
+Recursive mapping is the key technique enabling easy page-table edits.
+
+## 6.1 Why it exists
+
+Without recursion, page tables are just physical memory. To edit them, kernel would need temporary mappings of each table frame.
+
+With recursion:
+
+- `PML4[511] = PML4 frame`
+
+This creates virtual windows where paging structures are directly addressable as virtual memory.
+
+## 6.2 Recursive windows used in current code
+
+Constants in `vmm.rs`:
 
 - `PML4_TABLE_ADDR = 0xFFFF_FFFF_FFFF_F000`
-- `PDP_TABLE_BASE  = 0xFFFF_FFFF_FFE0_0000`
-- `PD_TABLE_BASE   = 0xFFFF_FFFF_C000_0000`
-- `PT_TABLE_BASE   = 0xFFFF_FF80_0000_0000`
+- `PDP_TABLE_BASE = 0xFFFF_FFFF_FFE0_0000`
+- `PD_TABLE_BASE  = 0xFFFF_FFFF_C000_0000`
+- `PT_TABLE_BASE  = 0xFFFF_FF80_0000_0000`
 
-Address helpers:
+Address helper formulas:
 
 - `pdp_table_addr(va) = PDP_TABLE_BASE + ((va >> 27) & 0x0000_001F_F000)`
 - `pd_table_addr(va)  = PD_TABLE_BASE  + ((va >> 18) & 0x0000_3FFF_F000)`
 - `pt_table_addr(va)  = PT_TABLE_BASE  + ((va >>  9) & 0x0000_007F_FFFF_F000)`
 
-The masks are critical. A wrong mask means wrong table address, which causes repeated page faults or full system reset.
-
-### 5.4 Example of computed recursive addresses
-
-For `VA = 0xFFFF_8034_C232_C000`, the helper windows resolve to:
-
-- PDP table VA: `0xFFFF_FFFF_FFF0_0000`
-- PD table VA : `0xFFFF_FFFF_E00D_3000`
-- PT table VA : `0xFFFF_FFC0_1A61_1000`
-
-These are **virtual addresses to table pages**, not to payload data pages.
+These produce virtual addresses for the relevant table pages for `va`.
 
 ---
 
-## 6) Page faults in this kernel
+## 7) Concrete example: mapping a virtual address using recursive mapping
 
-## 6.1 Fault entry path
+We use one test address from `test_vmm()`:
 
-In `src/arch/interrupts.rs`:
+- `VA = 0xFFFF_8034_C232_C000`
 
-- IDT vector 14 points to `isr14_stub`.
-- stub saves registers,
-- reads `CR2` into first arg register (`rdi`),
-- reads fault error code from interrupt stack (`[rsp + 120]`) into `rsi`,
-- calls `page_fault_handler_rust(fault_va, error_code)`.
+Indexes:
 
-Then Rust dispatches to `vmm::handle_page_fault(...)`.
+- `pml4 = 256`
+- `pdp = 211`
+- `pd = 17`
+- `pt = 300`
+- `offset = 0`
 
-### 6.2 Error-code bits (x86 page-fault error code)
+Assume this VA is currently unmapped and triggers a non-present page fault.
 
-Current debug output decodes:
+### 7.1 Table windows for this VA
 
-- `p`      (bit 0): protection violation vs non-present
-- `w`      (bit 1): write access
-- `u`      (bit 2): user-mode access
-- `rsv`    (bit 3): reserved bit set in paging structures
-- `ifetch` (bit 4): instruction fetch fault
+Using current formulas, code computes:
 
-### 6.3 Handler behavior (`handle_page_fault`)
+- `pdp_table_addr(VA) = 0xFFFF_FFFF_FFF0_0000`
+- `pd_table_addr(VA)  = 0xFFFF_FFFF_E00D_3000`
+- `pt_table_addr(VA)  = 0xFFFF_FFC0_1A61_1000`
 
-1. align fault address to page boundary,
-2. log raw/aligned address, CR3, error bits (if debug enabled),
-3. call `ensure_tables_for(va)` to allocate missing intermediate tables,
-4. allocate final data frame if PT entry not present,
-5. set PT entry present+writable+supervisor.
+Now the handler can treat these as `*mut PageTable` and write entries.
 
-The faulting instruction is then retried by CPU and should succeed.
+### 7.2 Step-by-step (what `ensure_tables_for` + handler do)
 
----
+1. Read PML4 at `PML4_TABLE_ADDR`.
+2. Check `PML4[256]`:
+   - if not present, allocate frame F1 and set entry to F1.
+3. Read PDP table via `pdp_table_addr(VA)`.
+4. Check `PDP[211]`:
+   - if not present, allocate frame F2 and set entry to F2.
+5. Read PD table via `pd_table_addr(VA)`.
+6. Check `PD[17]`:
+   - if not present, allocate frame F3 and set entry to F3.
+7. Read PT table via `pt_table_addr(VA)`.
+8. Check `PT[300]`:
+   - if not present, allocate data frame F4 and set entry to F4.
 
-## 7) How `ensure_tables_for` works
+Final translation for this VA:
 
-`ensure_tables_for(va)` walks top-down through recursive windows:
-
-- get PML4 via `PML4_TABLE_ADDR`,
-- if needed, allocate missing PML4 entry target frame,
-- access corresponding PDP table via `pdp_table_addr(va)`,
-- if needed, allocate missing PDP entry target frame,
-- access corresponding PD table via `pd_table_addr(va)`,
-- if needed, allocate missing PD entry target frame,
-- zero each newly created table page.
-
-`invlpg(...)` is used when moving into freshly created next-level views to avoid stale translation artifacts.
+```text
+VA 0xFFFF_8034_C232_C000 -> PFN(F4) * 4096 + 0x0
+```
 
 ---
 
-## 8) Mapping a VA to an explicit PA
+## 8) ASCII diagrams: page walk and recursive modification
 
-Function: `map_virtual_to_physical(virtual_address, physical_address)`
+## 8.1 Hardware page walk for one VA
 
-Steps:
+```text
+CR3 --> PML4 table
+          |
+          | index = pml4_index(VA) = 256
+          v
+        PML4[256] --points to--> PDP table
+                                   |
+                                   | index = pdp_index(VA) = 211
+                                   v
+                                 PDP[211] --points to--> PD table
+                                                           |
+                                                           | index = pd_index(VA) = 17
+                                                           v
+                                                         PD[17] --points to--> PT table
+                                                                               |
+                                                                               | index = pt_index(VA) = 300
+                                                                               v
+                                                                             PT[300] -> physical frame base
+                                                                                           + VA offset
+```
 
-1. align VA and PA to 4 KiB,
-2. ensure all intermediate levels exist,
-3. write PT entry with target PFN,
-4. `invlpg(va)`.
+## 8.2 How recursive mapping gives virtual access to those tables
 
-This is explicit mapping (caller chooses PA), unlike demand paging in PF handler (VMM allocates PA).
+```text
+PML4[511] = PML4 frame (self-reference)
 
----
+This creates special VA windows:
+- fixed VA for PML4 itself
+- computed VA for PDP/PD/PT pages corresponding to any target VA
 
-## 9) Unmapping a VA
+So software can do:
+  pt = (pt_table_addr(target_va) as *mut PageTable)
+  pt.entries[pt_index(target_va)] = new mapping
 
-Function: `unmap_virtual_address(virtual_address)`
-
-Steps:
-
-1. align VA,
-2. compute PT window address,
-3. clear PT entry if present,
-4. `invlpg(va)`.
-
-Important: current implementation does **not** free the physical frame backing that page. It only removes translation.
-
----
-
-## 10) `vmmtest` behavior (command + semantics)
-
-Shell command in `src/main.rs`:
-
-- `vmmtest`
-- `vmmtest --debug`
-- (`testvmm` alias kept for compatibility)
-
-`vmm::test_vmm()` writes to three far-distributed higher-half addresses:
-
-- `0xFFFF_8009_4F62_D000` (`PML4=256, PDP=37,  PD=123, PT=45`)
-- `0xFFFF_8034_C232_C000` (`PML4=256, PDP=211, PD=17,  PT=300`)
-- `0xFFFF_807F_7200_7000` (`PML4=256, PDP=509, PD=400, PT=7`)
-
-It then:
-
-1. reads values back,
-2. verifies expected bytes,
-3. unmaps those three pages,
-4. returns success/failure.
-
-Because pages are unmapped at the end, next test run triggers page faults again (repeatable test cycle).
+instead of creating temporary mappings for table frames.
+```
 
 ---
 
-## 11) Debug output architecture
+## 9) Mapping and unmapping APIs
 
-VMM logging has two paths:
+### `map_virtual_to_physical(va, pa)`
 
-1. serial (`vmm_logln!` always writes serial)
-2. optional console capture buffer (enabled by `set_console_debug_output(true)`)
+- Align VA and PA to 4 KiB.
+- Ensure intermediate levels exist.
+- Set final PT entry to provided physical frame.
+- `invlpg(va)` to invalidate stale TLB entry.
 
-Console dump is printed via `print_console_debug_output(screen)`.
+### `unmap_virtual_address(va)`
 
-Color policy:
+- Align VA.
+- Find PT via recursive window.
+- Clear PT entry if present.
+- `invlpg(va)`.
+
+Note: unmapping currently removes translation only; it does not return the old data frame to PMM.
+
+---
+
+## 10) VMM logging and console debug output
+
+VMM logs now use the centralized logger (`src/logging.rs`) with target `"vmm"`:
+
+- `logging::logln("vmm", format_args!(...))`
+
+`vmmtest --debug` flow:
+
+1. enables log capture,
+2. runs `vmm::test_vmm()`,
+3. dumps captured target `"vmm"` logs to screen,
+4. disables capture.
+
+Coloring rule in VMM console dump:
 
 - green: lines beginning with
   - `VMM: page fault raw=`
   - `VMM: indices pml4=`
-- white: all other VMM lines
-
-`vmmtest --debug` enables capture and prints the buffered block to VGA console.
+- white: all other VMM lines.
 
 ---
 
-## 12) Integration tests
+## 11) `vmmtest` behavior (current)
 
-`tests/vmm_test.rs` adds dedicated integration coverage:
+`test_vmm()` does:
 
-- `test_vmm_smoke_once`
-- `test_vmm_smoke_twice`
+1. write `A/B/C` to three far distributed higher-half addresses,
+2. read them back and verify,
+3. unmap all three pages,
+4. report pass/fail.
 
-Test kernel initializes:
-
-- serial
-- PMM
-- interrupts (IDT/PF handler)
-- VMM
-
-Then runs `vmm::test_vmm()` and asserts success.
-
-The second test validates repeatability of map/fault/unmap cycle.
+Because it unmaps at the end, rerunning `vmmtest` generates page faults again.
 
 ---
 
-## 13) Safety boundaries and invariants
+## 12) Safety boundaries and critical invariants
 
-Unsafe areas are localized around hardware and raw memory operations:
+Unsafe operations are isolated in:
 
-- `read_cr3` / `write_cr3` / `invlpg` inline asm
-- raw pointer table access (`table_at`)
+- CR3/TLB asm (`read_cr3`, `write_cr3`, `invlpg`)
+- pointer casts to table pages (`table_at`)
 - raw memory zeroing (`zero_phys_page`)
 
-Critical invariants:
+Must-hold invariants:
 
-- PMM returns valid 4 KiB-aligned frames,
-- recursive entry `PML4[511]` always points to active PML4 frame,
-- recursive masks remain exact,
-- page-fault handler is installed before vulnerable accesses,
-- CR3 only switched to valid, fully initialized page trees.
+- recursive entry `PML4[511]` is correct,
+- recursive masks/formulas are exact,
+- page-fault handler is installed before risky post-CR3 accesses,
+- PMM returns valid 4 KiB frames.
 
-Violation symptoms:
+Typical break symptoms:
 
-- repeated PFs at strange recursive addresses,
-- faults with non-sensical indices,
-- immediate reset/triple-fault.
+- repeated faults with odd recursive indices,
+- faults in seemingly unrelated addresses,
+- triple-fault/reset.
 
 ---
 
-## 14) Scope and current limitations
+## 13) Scope and limitations (as of current code)
 
-Implemented today:
+Implemented:
 
-- kernel 4-level paging,
-- higher-half + identity bootstrap mappings,
-- recursive mapping,
-- demand page allocation on PF,
-- explicit map/unmap helpers,
-- command-level and integration tests.
+- kernel 4-level paging with 4 KiB pages
+- demand paging on non-present faults
+- explicit map/unmap API
+- recursive page-table mapping
+- VMM smoke command + integration tests
 
 Not yet implemented:
 
-- cloning/switching per-process address spaces,
-- user-space memory management policy,
-- physical-frame reclamation on unmap,
-- copy-on-write/shared-page semantics,
-- advanced TLB shootdown strategy for SMP (system is currently single-core oriented).
-
----
-
-## 15) Practical debugging checklist
-
-When VMM behavior looks wrong, check in this order:
-
-1. Is `EXCEPTION_PAGE_FAULT` (14) installed in IDT before CR3 switch?
-2. Is `PML4[511]` recursive entry valid?
-3. Are recursive masks exactly those shown above?
-4. Do debug logs show plausible indices for your fault VA?
-5. Is the fault error code `p/w/u/rsv/ifetch` consistent with expectation?
-6. After map/unmap changes, did `invlpg` run on the affected VA?
-
-This checklist catches most practical regressions in this code path.
+- process-specific address spaces / cloning
+- frame reclamation on unmap
+- COW/shared-page policies
+- SMP-aware TLB shootdown
