@@ -20,18 +20,23 @@ const PT_TABLE_BASE: u64 = 0xFFFF_FF80_0000_0000;
 const ENTRY_PRESENT: u64 = 1 << 0;
 const ENTRY_WRITABLE: u64 = 1 << 1;
 const ENTRY_USER: u64 = 1 << 2;
+const ENTRY_HUGE: u64 = 1 << 7;
 const ENTRY_FRAME_MASK: u64 = 0x0000_FFFF_FFFF_F000;
+
+const PF_ERR_PRESENT: u64 = 1 << 0;
 
 #[derive(Clone, Copy)]
 #[repr(transparent)]
 struct PageTableEntry(u64);
 
 impl PageTableEntry {
+    /// Returns whether this entry is marked present.
     #[inline]
     fn present(self) -> bool {
         (self.0 & ENTRY_PRESENT) != 0
     }
 
+    /// Sets or clears the present bit.
     #[inline]
     fn set_present(&mut self, val: bool) {
         if val {
@@ -41,12 +46,14 @@ impl PageTableEntry {
         }
     }
 
+    /// Returns whether this entry is writable.
     #[inline]
     #[allow(dead_code)]
     fn writable(self) -> bool {
         (self.0 & ENTRY_WRITABLE) != 0
     }
 
+    /// Sets or clears the writable bit.
     #[inline]
     fn set_writable(&mut self, val: bool) {
         if val {
@@ -56,12 +63,14 @@ impl PageTableEntry {
         }
     }
 
+    /// Returns whether this entry is user-accessible.
     #[inline]
     #[allow(dead_code)]
     fn user(self) -> bool {
         (self.0 & ENTRY_USER) != 0
     }
 
+    /// Sets or clears the user-accessible bit.
     #[inline]
     fn set_user(&mut self, val: bool) {
         if val {
@@ -71,16 +80,19 @@ impl PageTableEntry {
         }
     }
 
+    /// Returns the mapped page-frame number.
     #[inline]
     fn frame(self) -> u64 {
         (self.0 & ENTRY_FRAME_MASK) >> 12
     }
 
+    /// Writes the page-frame number into the entry frame field.
     #[inline]
     fn set_frame(&mut self, pfn: u64) {
         self.0 = (self.0 & !ENTRY_FRAME_MASK) | ((pfn << 12) & ENTRY_FRAME_MASK);
     }
 
+    /// Sets frame plus basic permission bits in one call.
     #[inline]
     fn set_mapping(&mut self, pfn: u64, present: bool, writable: bool, user: bool) {
         self.set_frame(pfn);
@@ -89,9 +101,16 @@ impl PageTableEntry {
         self.set_user(user);
     }
 
+    /// Clears the entry to an unmapped state.
     #[inline]
     fn clear(&mut self) {
         self.0 = 0;
+    }
+
+    /// Returns whether the huge-page bit is set.
+    #[inline]
+    fn huge(self) -> bool {
+        (self.0 & ENTRY_HUGE) != 0
     }
 }
 
@@ -101,6 +120,7 @@ struct PageTable {
 }
 
 impl PageTable {
+    /// Clears all page-table entries.
     #[inline]
     fn zero(&mut self) {
         for entry in self.entries.iter_mut() {
@@ -109,51 +129,64 @@ impl PageTable {
     }
 }
 
+/// Returns the PML4 index for a canonical virtual address.
 #[inline]
 fn pml4_index(va: u64) -> usize {
     ((va >> 39) & 0x1FF) as usize
 }
 
+/// Returns the PDP index for a canonical virtual address.
 #[inline]
 fn pdp_index(va: u64) -> usize {
     ((va >> 30) & 0x1FF) as usize
 }
 
+/// Returns the PD index for a canonical virtual address.
 #[inline]
 fn pd_index(va: u64) -> usize {
     ((va >> 21) & 0x1FF) as usize
 }
 
+/// Returns the PT index for a canonical virtual address.
 #[inline]
 fn pt_index(va: u64) -> usize {
     ((va >> 12) & 0x1FF) as usize
 }
 
+/// Returns the recursive-mapping virtual address of the PDP table for `va`.
 #[inline]
 fn pdp_table_addr(va: u64) -> u64 {
     PDP_TABLE_BASE + ((va >> 27) & 0x0000_001F_F000)
 }
 
+/// Returns the recursive-mapping virtual address of the PD table for `va`.
 #[inline]
 fn pd_table_addr(va: u64) -> u64 {
     PD_TABLE_BASE + ((va >> 18) & 0x0000_3FFF_F000)
 }
 
+/// Returns the recursive-mapping virtual address of the PT table for `va`.
 #[inline]
 fn pt_table_addr(va: u64) -> u64 {
     PT_TABLE_BASE + ((va >> 9) & 0x0000_007F_FFFF_F000)
 }
 
+/// Aligns an address down to a 4 KiB page boundary.
 #[inline]
 fn page_align_down(addr: u64) -> u64 {
     addr & PAGE_MASK
 }
 
+/// Converts a physical byte address to a page-frame number.
 #[inline]
 fn phys_to_pfn(addr: u64) -> u64 {
     addr / SMALL_PAGE_SIZE
 }
 
+/// Reads the current CR3 value.
+///
+/// # Safety
+/// Must run in ring 0 on x86_64.
 unsafe fn read_cr3() -> u64 {
     let val: u64;
     unsafe {
@@ -162,12 +195,20 @@ unsafe fn read_cr3() -> u64 {
     val
 }
 
+/// Writes a new CR3 value.
+///
+/// # Safety
+/// `val` must point to a valid PML4 frame.
 unsafe fn write_cr3(val: u64) {
     unsafe {
         asm!("mov cr3, {}", in(reg) val, options(nostack, preserves_flags));
     }
 }
 
+/// Invalidates one TLB entry for the given virtual address.
+///
+/// # Safety
+/// Must run in ring 0 on x86_64.
 unsafe fn invlpg(addr: u64) {
     unsafe {
         asm!("invlpg [{}]", in(reg) addr, options(nostack, preserves_flags));
@@ -185,6 +226,7 @@ struct GlobalVmm {
 }
 
 impl GlobalVmm {
+    /// Creates the zero-initialized global VMM container.
     const fn new() -> Self {
         Self {
             inner: UnsafeCell::new(VmmState {
@@ -200,12 +242,14 @@ unsafe impl Sync for GlobalVmm {}
 
 static VMM: GlobalVmm = GlobalVmm::new();
 
+/// Executes a closure with mutable access to global VMM state.
 #[inline]
 fn with_vmm<R>(f: impl FnOnce(&mut VmmState) -> R) -> R {
     debug_assert!(VMM.initialized.load(Ordering::Acquire), "VMM not initialized");
     unsafe { f(&mut *VMM.inner.get()) }
 }
 
+/// Allocates one physical frame and returns its physical address.
 #[inline]
 fn alloc_frame_phys() -> u64 {
     pmm::with_pmm(|mgr| {
@@ -215,11 +259,19 @@ fn alloc_frame_phys() -> u64 {
     })
 }
 
+/// Interprets a recursive-mapped virtual address as a mutable page table.
+///
+/// # Safety
+/// `addr` must point to a valid, mapped page-table page.
 #[inline]
 unsafe fn table_at(addr: u64) -> &'static mut PageTable {
     unsafe { &mut *(addr as *mut PageTable) }
 }
 
+/// Zeros one 4 KiB page in physical memory.
+///
+/// # Safety
+/// `addr` must be writable and page-aligned physical memory.
 #[inline]
 unsafe fn zero_phys_page(addr: u64) {
     unsafe {
@@ -227,6 +279,7 @@ unsafe fn zero_phys_page(addr: u64) {
     }
 }
 
+/// Returns whether VMM debug logging is enabled.
 fn debug_enabled() -> bool {
     with_vmm(|state| state.debug_enabled)
 }
@@ -254,6 +307,7 @@ pub fn print_console_debug_output(screen: &mut Screen) {
     });
 }
 
+/// Emits a structured allocation trace line when debug logging is enabled.
 fn debug_alloc(level: &str, idx: usize, pfn: u64) {
     if debug_enabled() {
         logging::logln("vmm", format_args!(
@@ -370,8 +424,12 @@ pub unsafe fn switch_page_directory(pml4_phys: u64) {
     });
 }
 
+/// Builds any missing intermediate page tables (PML4/PDP/PD) for `virtual_address`.
+///
+/// # Safety
+/// Requires a valid recursive mapping and mutable access to active page tables.
 #[inline]
-unsafe fn ensure_tables_for(virtual_address: u64) {
+unsafe fn populate_page_table_path(virtual_address: u64) {
     let pml4 = unsafe { table_at(PML4_TABLE_ADDR) };
     let pml4_idx = pml4_index(virtual_address);
     if !pml4.entries[pml4_idx].present() {
@@ -406,6 +464,38 @@ unsafe fn ensure_tables_for(virtual_address: u64) {
     }
 }
 
+/// Returns the PT containing `virtual_address` if all intermediate levels exist.
+///
+/// Returns `None` if any level is non-present or uses a huge page mapping.
+///
+/// # Safety
+/// Requires a valid recursive mapping of the active page tables.
+#[inline]
+unsafe fn pt_for_if_present(virtual_address: u64) -> Option<&'static mut PageTable> {
+    let pml4 = unsafe { table_at(PML4_TABLE_ADDR) };
+    let pml4_idx = pml4_index(virtual_address);
+    let pml4e = pml4.entries[pml4_idx];
+    if !pml4e.present() || pml4e.huge() {
+        return None;
+    }
+
+    let pdp = unsafe { table_at(pdp_table_addr(virtual_address)) };
+    let pdp_idx = pdp_index(virtual_address);
+    let pdpe = pdp.entries[pdp_idx];
+    if !pdpe.present() || pdpe.huge() {
+        return None;
+    }
+
+    let pd = unsafe { table_at(pd_table_addr(virtual_address)) };
+    let pd_idx = pd_index(virtual_address);
+    let pde = pd.entries[pd_idx];
+    if !pde.present() || pde.huge() {
+        return None;
+    }
+
+    Some(unsafe { table_at(pt_table_addr(virtual_address)) })
+}
+
 /// Handles page faults by demand-allocating page tables and target page frame.
 pub fn handle_page_fault(virtual_address: u64, error_code: u64) {
     let fault_address_raw = virtual_address;
@@ -437,13 +527,30 @@ pub fn handle_page_fault(virtual_address: u64, error_code: u64) {
         ));
     }
 
+    // Only demand-map on non-present faults.
+    // Protection faults indicate a real access violation and must not be hidden.
+    if (error_code & PF_ERR_PRESENT) != 0 {
+        logging::logln("vmm", format_args!(
+            "VMM: protection fault at 0x{:x} err=0x{:x} (allocation refused)",
+            fault_address_raw,
+            error_code
+        ));
+        panic!(
+            "VMM: protection page fault at 0x{:x} err=0x{:x}",
+            fault_address_raw,
+            error_code
+        );
+    }
+
     unsafe {
-        ensure_tables_for(virtual_address);
+        populate_page_table_path(virtual_address);
         let pt = table_at(pt_table_addr(virtual_address));
         let pt_idx = pt_index(virtual_address);
         if !pt.entries[pt_idx].present() {
             let new_page_phys = alloc_frame_phys();
             pt.entries[pt_idx].set_mapping(phys_to_pfn(new_page_phys), true, true, false);
+            invlpg(virtual_address);
+            core::ptr::write_bytes(virtual_address as *mut u8, 0, SMALL_PAGE_SIZE as usize);
             debug_alloc("PT", pt_idx, pt.entries[pt_idx].frame());
         }
     }
@@ -456,7 +563,7 @@ pub fn map_virtual_to_physical(virtual_address: u64, physical_address: u64) {
     let physical_address = page_align_down(physical_address);
 
     unsafe {
-        ensure_tables_for(virtual_address);
+        populate_page_table_path(virtual_address);
         let pt = table_at(pt_table_addr(virtual_address));
         let pt_idx = pt_index(virtual_address);
         pt.entries[pt_idx].set_mapping(phys_to_pfn(physical_address), true, true, false);
@@ -470,7 +577,9 @@ pub fn unmap_virtual_address(virtual_address: u64) {
     let virtual_address = page_align_down(virtual_address);
 
     unsafe {
-        let pt = table_at(pt_table_addr(virtual_address));
+        let Some(pt) = pt_for_if_present(virtual_address) else {
+            return;
+        };
         let pt_idx = pt_index(virtual_address);
         if pt.entries[pt_idx].present() {
             pt.entries[pt_idx].clear();

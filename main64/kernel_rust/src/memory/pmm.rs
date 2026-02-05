@@ -468,7 +468,6 @@ impl PhysicalMemoryManager {
 
     /// Allocates a single page frame from the first available region.
     /// Returns `Some(PageFrame)` on success, or `None` if no free frames exist.
-    #[allow(dead_code)]
     pub fn alloc_frame(&mut self) -> Option<PageFrame> {
         let regions = self.regions();
 
