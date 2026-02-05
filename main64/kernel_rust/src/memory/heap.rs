@@ -353,9 +353,7 @@ fn find_block_by_payload_ptr(state: &HeapState, ptr: *mut u8) -> Option<*mut Hea
             return None;
         }
 
-        let Some(next_addr) = current.checked_add(block_size) else {
-            return None;
-        };
+        let next_addr = current.checked_add(block_size)?;
         if next_addr > state.heap_end {
             return None;
         }
