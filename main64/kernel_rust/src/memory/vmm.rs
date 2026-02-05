@@ -25,6 +25,17 @@ const ENTRY_FRAME_MASK: u64 = 0x0000_FFFF_FFFF_F000;
 
 const PF_ERR_PRESENT: u64 = 1 << 0;
 
+/// Error returned by the checked page-fault handling path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageFaultError {
+    /// Fault had `P=1` in the CPU error code, i.e. a protection violation.
+    /// These faults must not trigger demand allocation.
+    ProtectionFault {
+        virtual_address: u64,
+        error_code: u64,
+    },
+}
+
 #[derive(Clone, Copy)]
 #[repr(transparent)]
 struct PageTableEntry(u64);
@@ -497,7 +508,10 @@ unsafe fn pt_for_if_present(virtual_address: u64) -> Option<&'static mut PageTab
 }
 
 /// Handles page faults by demand-allocating page tables and target page frame.
-pub fn handle_page_fault(virtual_address: u64, error_code: u64) {
+///
+/// Returns `Err(PageFaultError::ProtectionFault)` for protection faults (`P=1`),
+/// and `Ok(())` for handled non-present faults.
+pub fn try_handle_page_fault(virtual_address: u64, error_code: u64) -> Result<(), PageFaultError> {
     let fault_address_raw = virtual_address;
     let virtual_address = page_align_down(fault_address_raw);
 
@@ -535,11 +549,10 @@ pub fn handle_page_fault(virtual_address: u64, error_code: u64) {
             fault_address_raw,
             error_code
         ));
-        panic!(
-            "VMM: protection page fault at 0x{:x} err=0x{:x}",
-            fault_address_raw,
-            error_code
-        );
+        return Err(PageFaultError::ProtectionFault {
+            virtual_address: fault_address_raw,
+            error_code,
+        });
     }
 
     unsafe {
@@ -553,6 +566,24 @@ pub fn handle_page_fault(virtual_address: u64, error_code: u64) {
             core::ptr::write_bytes(virtual_address as *mut u8, 0, SMALL_PAGE_SIZE as usize);
             debug_alloc("PT", pt_idx, pt.entries[pt_idx].frame());
         }
+    }
+    Ok(())
+}
+
+/// Handles page faults for production interrupt paths.
+///
+/// This wrapper preserves the existing behavior: protection faults are fatal.
+pub fn handle_page_fault(virtual_address: u64, error_code: u64) {
+    if let Err(PageFaultError::ProtectionFault {
+        virtual_address,
+        error_code,
+    }) = try_handle_page_fault(virtual_address, error_code)
+    {
+        panic!(
+            "VMM: protection page fault at 0x{:x} err=0x{:x}",
+            virtual_address,
+            error_code
+        );
     }
 }
 

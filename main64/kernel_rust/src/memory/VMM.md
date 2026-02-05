@@ -122,14 +122,22 @@ In `src/arch/interrupts.rs`:
 
 ## 5.2 Demand paging behavior
 
-`handle_page_fault(virtual_address, error_code)`:
+The VMM now has two page-fault entry points:
+
+- `try_handle_page_fault(virtual_address, error_code) -> Result<(), PageFaultError>`
+- `handle_page_fault(virtual_address, error_code)` (production wrapper used by interrupts)
+
+`try_handle_page_fault(virtual_address, error_code)`:
 
 1. Align VA down to page boundary.
 2. Optional debug logs (raw/aligned VA, CR3, indexes, error bits).
-3. `ensure_tables_for(va)` ensures intermediate levels exist (PML4/PDP/PD entries).
-4. If final PT entry absent, allocate one physical frame and map it.
+3. If `error_code` has `P=1` (protection fault), return `Err(PageFaultError::ProtectionFault { .. })` and do **not** allocate.
+4. `populate_page_table_path(va)` ensures intermediate levels exist (PML4/PDP/PD entries).
+5. If final PT entry is absent, allocate one physical frame, map it, invalidate TLB entry, and zero the new page.
 
-After return, CPU retries the faulting instruction and access succeeds.
+`handle_page_fault(...)` calls `try_handle_page_fault(...)` and panics on `ProtectionFault`, preserving the kernel's fatal behavior for real access violations.
+
+For non-present faults, after return, CPU retries the faulting instruction and access succeeds.
 
 ---
 
@@ -192,7 +200,7 @@ Using current formulas, code computes:
 
 Now the handler can treat these as `*mut PageTable` and write entries.
 
-### 7.2 Step-by-step (what `ensure_tables_for` + handler do)
+### 7.2 Step-by-step (what `populate_page_table_path` + handler do)
 
 1. Read PML4 at `PML4_TABLE_ADDR`.
 2. Check `PML4[256]`:
@@ -270,7 +278,8 @@ instead of creating temporary mappings for table frames.
 ### `unmap_virtual_address(va)`
 
 - Align VA.
-- Find PT via recursive window.
+- Walk recursive tables with presence checks on PML4/PDP/PD.
+- If table path is missing, return without side effects.
 - Clear PT entry if present.
 - `invlpg(va)`.
 
