@@ -7,6 +7,8 @@
 #![no_std]
 #![no_main]
 
+extern crate alloc;
+
 pub mod apps;
 pub mod arch;
 pub mod allocator;

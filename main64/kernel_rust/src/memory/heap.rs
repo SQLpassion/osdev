@@ -1,5 +1,18 @@
-//! Simple heap manager for the Rust kernel, modeled after the C implementation.
+//! Kernel heap manager.
+//!
+//! Design summary:
+//! - Contiguous heap region with variable-sized blocks.
+//! - First-fit allocation strategy.
+//! - One header per block (`HeapBlockHeader`) storing `size` + `in_use` flag.
+//! - Block splitting on allocation and block coalescing on free.
+//! - Backed by a global spinlock for synchronized access.
+//!
+//! Notes:
+//! - Block size includes the header itself.
+//! - Payload pointer is always `header + HEADER_SIZE`.
+//! - Heap growth is page-sized (`HEAP_GROWTH`) and relies on demand paging.
 
+use alloc::vec::Vec;
 use core::fmt::Write;
 use core::mem::{align_of, size_of};
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -8,39 +21,53 @@ use crate::drivers::screen::Screen;
 use crate::logging;
 use crate::sync::spinlock::SpinLock;
 
+/// Size of one block header in bytes.
 const HEADER_SIZE: usize = size_of::<HeapBlockHeader>();
+/// Global heap payload alignment.
 const ALIGNMENT: usize = align_of::<usize>();
+/// Minimum tail size that is still worth splitting into a new block.
 const MIN_SPLIT_SIZE: usize = HEADER_SIZE + 1;
 
+/// Virtual start address of the kernel heap arena.
 const HEAP_START_OFFSET: usize = 0xFFFF_8000_0050_0000;
+/// Heap size after `init()`.
 const INITIAL_HEAP_SIZE: usize = 0x1000;
+/// Increment used when extending the heap arena.
 const HEAP_GROWTH: usize = 0x1000;
 
+/// LSB encodes allocation state in `size_and_flags`.
 const IN_USE_MASK: usize = 0x1;
+/// Remaining bits encode block size.
 const SIZE_MASK: usize = !IN_USE_MASK;
 
+/// Per-block metadata stored directly in heap memory.
 #[repr(C)]
 struct HeapBlockHeader {
+    /// Packed representation: `[size bits | in-use bit]`.
     size_and_flags: usize,
 }
 
 impl HeapBlockHeader {
+    /// Returns full block size in bytes (header + payload).
     #[inline]
     fn size(&self) -> usize {
         self.size_and_flags & SIZE_MASK
     }
 
+    /// Updates size bits while preserving the in-use flag.
     #[inline]
     fn set_size(&mut self, size: usize) {
         let flags = self.size_and_flags & IN_USE_MASK;
         self.size_and_flags = flags | (size & SIZE_MASK);
     }
 
+    /// Returns whether this block is currently allocated.
     #[inline]
     fn in_use(&self) -> bool {
         (self.size_and_flags & IN_USE_MASK) != 0
     }
 
+    /// Sets or clears the in-use bit.
     #[inline]
     fn set_in_use(&mut self, in_use: bool) {
         if in_use {
@@ -51,14 +78,21 @@ impl HeapBlockHeader {
     }
 }
 
+/// Mutable heap bounds guarded by the global spinlock.
 struct HeapState {
+    /// Start address of the managed heap region.
     heap_start: usize,
+    /// End address (exclusive) of the managed heap region.
     heap_end: usize,
 }
 
+/// Global heap singleton.
 struct GlobalHeap {
+    /// Protected mutable heap state.
     inner: SpinLock<HeapState>,
+    /// Set to `true` after `init()` completed.
     initialized: AtomicBool,
+    /// Tracks whether a newline sync was already emitted for heap logs.
     serial_line_synced: AtomicBool,
 }
 
@@ -75,33 +109,42 @@ impl GlobalHeap {
     }
 }
 
+/// SAFETY:
+/// - `inner` access is synchronized through `SpinLock`.
+/// - `AtomicBool` fields are thread-safe.
 unsafe impl Sync for GlobalHeap {}
 
+/// Process-wide heap instance.
 static HEAP: GlobalHeap = GlobalHeap::new();
 
+/// Aligns `value` up to the next `align` boundary.
 #[inline]
 fn align_up(value: usize, align: usize) -> usize {
     (value + align - 1) & !(align - 1)
 }
 
+/// Reinterprets an address as a mutable block-header pointer.
 #[inline]
 fn header_at(addr: usize) -> *mut HeapBlockHeader {
     addr as *mut HeapBlockHeader
 }
 
+/// Converts a block header pointer to the corresponding payload pointer.
 #[inline]
 fn payload_ptr(block: *mut HeapBlockHeader) -> *mut u8 {
     block.cast::<u8>().wrapping_add(HEADER_SIZE)
 }
 
+/// Computes the block header pointer from a payload pointer.
 #[inline]
 fn block_from_payload(ptr: *mut u8) -> *mut HeapBlockHeader {
     ptr.wrapping_sub(HEADER_SIZE).cast::<HeapBlockHeader>()
 }
 
+/// Executes a closure with exclusive mutable access to heap state.
 fn with_heap<R>(f: impl FnOnce(&mut HeapState) -> R) -> R {
     let mut guard = HEAP.inner.lock();
-    f(&mut *guard)
+    f(&mut guard)
 }
 
 /// Initializes the heap manager and returns the heap size.
@@ -141,11 +184,6 @@ pub fn is_initialized() -> bool {
     HEAP.initialized.load(Ordering::Acquire)
 }
 
-/// Returns the minimum alignment guaranteed by the heap allocator.
-pub fn alignment() -> usize {
-    ALIGNMENT
-}
-
 /// Public alignment constant for components that prefer const access.
 pub const HEAP_ALIGNMENT: usize = ALIGNMENT;
 
@@ -165,6 +203,7 @@ pub fn malloc(size: usize) -> *mut u8 {
         return ptr;
     }
 
+    // No suitable free block found: extend heap and retry.
     grow_heap(HEAP_GROWTH);
     malloc(size - HEADER_SIZE)
 }
@@ -206,6 +245,7 @@ fn find_block(size: usize) -> Option<*mut HeapBlockHeader> {
                 break;
             }
 
+            // First-fit strategy: return the first sufficiently large free block.
             if !header.in_use() && block_size >= size {
                 return Some(header_at(current));
             }
@@ -224,6 +264,7 @@ fn allocate_block(block: *mut HeapBlockHeader, size: usize) {
         let header = &mut *block;
         let old_size = header.size();
         if old_size >= size + MIN_SPLIT_SIZE {
+            // Split block into: allocated head + free tail.
             header.set_in_use(true);
             header.set_size(size);
 
@@ -232,11 +273,13 @@ fn allocate_block(block: *mut HeapBlockHeader, size: usize) {
             next_header.set_in_use(false);
             next_header.set_size(old_size - size);
         } else {
+            // Tail would be too small: consume entire block.
             header.set_in_use(true);
         }
     }
 }
 
+/// Merges adjacent free blocks and returns the number of merges performed.
 fn merge_free_blocks() -> usize {
     with_heap(|state| {
         let mut merged = 0;
@@ -286,6 +329,7 @@ fn grow_heap(amount: usize) {
         state.heap_end = new_end;
     });
 
+    // Merge with a possible free predecessor at the old heap end.
     let _ = merge_free_blocks();
 }
 
@@ -298,7 +342,10 @@ fn heap_logln(args: core::fmt::Arguments<'_>) {
     logging::logln("heap", args);
 }
 
-fn block_snapshot(base: usize, offset: usize) -> (usize, bool) {
+/// Returns `(block_size, in_use)` for a block at `base + offset`.
+///
+/// This helper is intended for heap self-tests to validate internal layout.
+fn read_heapblock_metadata(base: usize, offset: usize) -> (usize, bool) {
     // SAFETY:
     // - Caller ensures `base + offset` points into the heap.
     unsafe {
@@ -320,9 +367,9 @@ pub fn run_self_test(screen: &mut Screen) {
     let ptr1 = malloc(100);
     let ptr2 = malloc(100);
 
-    let (size1, in_use1) = block_snapshot(heap_base, 0);
-    let (size2, in_use2) = block_snapshot(heap_base, 112);
-    let (size3, in_use3) = block_snapshot(heap_base, 224);
+    let (size1, in_use1) = read_heapblock_metadata(heap_base, 0);
+    let (size2, in_use2) = read_heapblock_metadata(heap_base, 112);
+    let (size3, in_use3) = read_heapblock_metadata(heap_base, 224);
 
     if size1 == 112 && in_use1 && size2 == 112 && in_use2 && size3 == 3872 && !in_use3 {
         writeln!(screen, "  [ OK ] initial allocation layout").unwrap();
@@ -337,8 +384,8 @@ pub fn run_self_test(screen: &mut Screen) {
     }
 
     free(ptr1);
-    let (size1, in_use1) = block_snapshot(heap_base, 0);
-    let (size2, in_use2) = block_snapshot(heap_base, 112);
+    let (size1, in_use1) = read_heapblock_metadata(heap_base, 0);
+    let (size2, in_use2) = read_heapblock_metadata(heap_base, 112);
     if size1 == 112 && !in_use1 && size2 == 112 && in_use2 {
         writeln!(screen, "  [ OK ] free first block").unwrap();
         heap_logln(format_args!("[heap-test] OK free first block"));
@@ -352,8 +399,8 @@ pub fn run_self_test(screen: &mut Screen) {
     }
 
     let ptr3 = malloc(50);
-    let (size1, in_use1) = block_snapshot(heap_base, 0);
-    let (size2, in_use2) = block_snapshot(heap_base, 64);
+    let (size1, in_use1) = read_heapblock_metadata(heap_base, 0);
+    let (size2, in_use2) = read_heapblock_metadata(heap_base, 64);
     if size1 == 64 && in_use1 && size2 == 48 && !in_use2 {
         writeln!(screen, "  [ OK ] split after 50-byte alloc").unwrap();
         heap_logln(format_args!("[heap-test] OK split after 50-byte alloc"));
@@ -367,7 +414,7 @@ pub fn run_self_test(screen: &mut Screen) {
     }
 
     let ptr4 = malloc(40);
-    let (size2, in_use2) = block_snapshot(heap_base, 64);
+    let (size2, in_use2) = read_heapblock_metadata(heap_base, 64);
     if size2 == 48 && in_use2 {
         writeln!(screen, "  [ OK ] allocate 40-byte block").unwrap();
         heap_logln(format_args!("[heap-test] OK allocate 40-byte block"));
@@ -384,7 +431,7 @@ pub fn run_self_test(screen: &mut Screen) {
     free(ptr3);
     free(ptr4);
 
-    let (size1, in_use1) = block_snapshot(heap_base, 0);
+    let (size1, in_use1) = read_heapblock_metadata(heap_base, 0);
     if size1 == INITIAL_HEAP_SIZE && !in_use1 {
         writeln!(screen, "  [ OK ] merge after frees").unwrap();
         heap_logln(format_args!("[heap-test] OK merge after frees"));
@@ -394,6 +441,24 @@ pub fn run_self_test(screen: &mut Screen) {
         heap_logln(format_args!(
             "[heap-test] FAIL merge after frees: ({},{})",
             size1, in_use1
+        ));
+    }
+
+    let mut values: Vec<u64> = Vec::with_capacity(16);
+    for i in 0..16u64 {
+        values.push(i);
+    }
+    if values.len() == 16 && values[0] == 0 && values[15] == 15 {
+        writeln!(screen, "  [ OK ] rust alloc (Vec) on heap").unwrap();
+        heap_logln(format_args!("[heap-test] OK rust alloc (Vec)"));
+    } else {
+        failures += 1;
+        writeln!(screen, "  [FAIL] rust alloc (Vec) on heap").unwrap();
+        heap_logln(format_args!(
+            "[heap-test] FAIL rust alloc (Vec): len={}, first={}, last={}",
+            values.len(),
+            values.first().copied().unwrap_or(0),
+            values.last().copied().unwrap_or(0)
         ));
     }
 
