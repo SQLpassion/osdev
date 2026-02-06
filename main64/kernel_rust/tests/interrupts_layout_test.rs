@@ -74,6 +74,34 @@ fn test_irq_vector_constants_are_contiguous() {
 }
 
 #[test_case]
+fn test_exception_vector_constants_match_x86_spec() {
+    assert!(
+        interrupts::EXCEPTION_DIVIDE_ERROR == 0,
+        "divide error vector must be 0"
+    );
+    assert!(
+        interrupts::EXCEPTION_INVALID_OPCODE == 6,
+        "invalid opcode vector must be 6"
+    );
+    assert!(
+        interrupts::EXCEPTION_DEVICE_NOT_AVAILABLE == 7,
+        "device-not-available vector must be 7"
+    );
+    assert!(
+        interrupts::EXCEPTION_DOUBLE_FAULT == 8,
+        "double-fault vector must be 8"
+    );
+    assert!(
+        interrupts::EXCEPTION_GENERAL_PROTECTION == 13,
+        "general-protection vector must be 13"
+    );
+    assert!(
+        interrupts::EXCEPTION_PAGE_FAULT == 14,
+        "page-fault vector must be 14"
+    );
+}
+
+#[test_case]
 fn test_exception_error_code_classification() {
     assert!(
         !interrupts::exception_has_error_code(interrupts::EXCEPTION_DIVIDE_ERROR),
