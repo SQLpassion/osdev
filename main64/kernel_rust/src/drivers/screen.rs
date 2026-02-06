@@ -204,6 +204,13 @@ impl Screen {
                     self.col = 0;
                 }
 
+                // Ensure the write target is always in-bounds before touching VGA MMIO.
+                // Without this, a wrap at the last screen cell can transiently produce
+                // `row == num_rows` and write one row past the visible text buffer.
+                if self.row >= self.num_rows {
+                    self.scroll();
+                }
+
                 let vga_char = VgaChar {
                     character: c,
                     attribute: self.attribute(),

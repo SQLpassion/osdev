@@ -50,3 +50,6 @@ name = "interrupts_layout_test"
 
 [[test]]
 name = "scheduler_rr_test"
+
+[[test]]
+name = "screen_test"

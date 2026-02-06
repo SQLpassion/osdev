@@ -257,6 +257,10 @@ pub fn on_timer_tick(current_frame: *mut TrapFrame) -> *mut TrapFrame {
         if let Some(slot) = detected_slot {
             // Save only when the interrupted frame can be mapped to a known task stack.
             state.slots[slot].frame_ptr = current_frame;
+        } else if let Some(running_slot) = state.running_slot {
+            // Unexpected frame source (not part of any task stack): keep running task.
+            // This avoids corrupting RR state when called with a foreign frame pointer.
+            return state.slots[running_slot].frame_ptr;
         }
 
         let base_pos = if let Some(slot) = detected_slot {
@@ -376,6 +380,18 @@ demo_task_fn!(demo_task_b, 19, b'B', 0x2F);
 demo_task_fn!(demo_task_c, 20, b'C', 0x4F);
 
 pub fn start_round_robin_demo() -> ! {
+    // Invariant: no IRQ0 during rrdemo setup.
+    //
+    // Rationale:
+    // - PIT programming is a multi-write I/O sequence (mode + low/high divisor bytes).
+    // - If a timer IRQ preempts in the middle, we can leave setup early by switching
+    //   away from the bootstrap context before the sequence/state is complete.
+    // - On real hardware this can leave the PIT/scheduler startup in a broken state
+    //   (often only one task keeps running). QEMU tends to be more forgiving.
+    //
+    // Therefore: keep IF=0 from here until all scheduler state is fully initialized.
+    interrupts::disable();
+
     // SAFETY:
     // - VGA text buffer is MMIO at `VGA_BUFFER`.
     // - Writes are bounded to rows 18..20 and visible columns.
@@ -396,8 +412,12 @@ pub fn start_round_robin_demo() -> ! {
     let _ = spawn(demo_task_c).expect("rrdemo: spawn C failed");
     start();
 
-    // Ensure demo never stalls in `hlt` because IF happened to be cleared.
-    interrupts::init_periodic_timer(250);
+    // Do not reprogram PIT here:
+    // - KernelMain already configured 250 Hz.
+    // - Reprogramming in this path would reintroduce the IRQ-vs-setup race above.
+    //
+    // Re-enable interrupts only after init/spawn/start are complete so the first
+    // timer tick sees a consistent scheduler state.
     interrupts::enable();
 
     loop {
