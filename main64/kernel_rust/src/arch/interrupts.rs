@@ -8,7 +8,27 @@ use crate::arch::port::PortByte;
 
 const IDT_ENTRIES: usize = 256;
 const IRQ_BASE: u8 = 32;
+pub const IRQ0_VECTOR: u8 = IRQ_BASE;
 pub const IRQ1_VECTOR: u8 = IRQ_BASE + 1;
+const IRQ2_VECTOR: u8 = IRQ_BASE + 2;
+const IRQ3_VECTOR: u8 = IRQ_BASE + 3;
+const IRQ4_VECTOR: u8 = IRQ_BASE + 4;
+const IRQ5_VECTOR: u8 = IRQ_BASE + 5;
+const IRQ6_VECTOR: u8 = IRQ_BASE + 6;
+const IRQ7_VECTOR: u8 = IRQ_BASE + 7;
+const IRQ8_VECTOR: u8 = IRQ_BASE + 8;
+const IRQ9_VECTOR: u8 = IRQ_BASE + 9;
+const IRQ10_VECTOR: u8 = IRQ_BASE + 10;
+const IRQ11_VECTOR: u8 = IRQ_BASE + 11;
+const IRQ12_VECTOR: u8 = IRQ_BASE + 12;
+const IRQ13_VECTOR: u8 = IRQ_BASE + 13;
+const IRQ14_VECTOR: u8 = IRQ_BASE + 14;
+const IRQ15_VECTOR: u8 = IRQ_BASE + 15;
+pub const EXCEPTION_DIVIDE_ERROR: u8 = 0;
+pub const EXCEPTION_INVALID_OPCODE: u8 = 6;
+pub const EXCEPTION_DEVICE_NOT_AVAILABLE: u8 = 7;
+pub const EXCEPTION_DOUBLE_FAULT: u8 = 8;
+pub const EXCEPTION_GENERAL_PROTECTION: u8 = 13;
 pub const EXCEPTION_PAGE_FAULT: u8 = 14;
 
 const IDT_PRESENT: u8 = 0x80;
@@ -24,9 +44,100 @@ const PIC_ICW1_INIT: u8 = 0x10;
 const PIC_ICW1_ICW4: u8 = 0x01;
 const PIC_ICW4_8086: u8 = 0x01;
 
+const PIT_COMMAND: u16 = 0x43;
+const PIT_CHANNEL0: u16 = 0x40;
+const PIT_MODE_RATE_GENERATOR: u8 = 0x36;
+const PIT_INPUT_HZ: u32 = 1_193_182;
+const VGA_TEXT_BUFFER: usize = 0xFFFF_8000_000B_8000;
+const VGA_COLS: usize = 80;
+
+/// Saved general-purpose register state as pushed by the IRQ trampolines.
+///
+/// Layout contract:
+/// - Must match the push/pop order in `irq0_stub`/`irq1_stub`.
+/// - Any change requires synchronized updates in assembly and tests.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TrapFrame {
+    pub r15: u64,
+    pub r14: u64,
+    pub r13: u64,
+    pub r12: u64,
+    pub r11: u64,
+    pub r10: u64,
+    pub r9: u64,
+    pub r8: u64,
+    pub rdi: u64,
+    pub rsi: u64,
+    pub rbp: u64,
+    pub rbx: u64,
+    pub rdx: u64,
+    pub rcx: u64,
+    pub rax: u64,
+}
+
+/// Hardware interrupt return frame for `iretq` in 64-bit long mode.
+///
+/// Layout contract:
+/// - In IA-32e mode, `iretq` **unconditionally** pops all five values
+///   (RIP, CS, RFLAGS, RSP, SS), regardless of privilege-level change.
+/// - Must match the push order used by the CPU on interrupt entry.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct InterruptStackFrame {
+    pub rip: u64,
+    pub cs: u64,
+    pub rflags: u64,
+    pub rsp: u64,
+    pub ss: u64,
+}
+
 global_asm!(
     r#"
     .section .text
+    .global irq0_stub
+    .type irq0_stub, @function
+irq0_stub:
+    cli
+    push rax
+    push rcx
+    push rdx
+    push rbx
+    push rbp
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+
+    mov edi, {irq0_vector}
+    mov rsi, rsp
+    and rsp, -16
+    call irq_rust_dispatch
+    mov rsp, rax
+
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rbp
+    pop rbx
+    pop rdx
+    pop rcx
+    pop rax
+    iretq
+
     .global irq1_stub
     .type irq1_stub, @function
 irq1_stub:
@@ -47,10 +158,11 @@ irq1_stub:
     push r14
     push r15
 
-    sub rsp, 8
     mov edi, {irq1_vector}
-    call irq1_rust_dispatch
-    add rsp, 8
+    mov rsi, rsp
+    and rsp, -16
+    call irq_rust_dispatch
+    mov rsp, rax
 
     pop r15
     pop r14
@@ -67,8 +179,759 @@ irq1_stub:
     pop rdx
     pop rcx
     pop rax
-    sti
     iretq
+
+    .global irq2_stub
+    .type irq2_stub, @function
+irq2_stub:
+    cli
+    push rax
+    push rcx
+    push rdx
+    push rbx
+    push rbp
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+
+    mov edi, {irq2_vector}
+    mov rsi, rsp
+    and rsp, -16
+    call irq_rust_dispatch
+    mov rsp, rax
+
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rbp
+    pop rbx
+    pop rdx
+    pop rcx
+    pop rax
+    iretq
+
+    .global irq3_stub
+    .type irq3_stub, @function
+irq3_stub:
+    cli
+    push rax
+    push rcx
+    push rdx
+    push rbx
+    push rbp
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+
+    mov edi, {irq3_vector}
+    mov rsi, rsp
+    and rsp, -16
+    call irq_rust_dispatch
+    mov rsp, rax
+
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rbp
+    pop rbx
+    pop rdx
+    pop rcx
+    pop rax
+    iretq
+
+    .global irq4_stub
+    .type irq4_stub, @function
+irq4_stub:
+    cli
+    push rax
+    push rcx
+    push rdx
+    push rbx
+    push rbp
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+
+    mov edi, {irq4_vector}
+    mov rsi, rsp
+    and rsp, -16
+    call irq_rust_dispatch
+    mov rsp, rax
+
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rbp
+    pop rbx
+    pop rdx
+    pop rcx
+    pop rax
+    iretq
+
+    .global irq5_stub
+    .type irq5_stub, @function
+irq5_stub:
+    cli
+    push rax
+    push rcx
+    push rdx
+    push rbx
+    push rbp
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+
+    mov edi, {irq5_vector}
+    mov rsi, rsp
+    and rsp, -16
+    call irq_rust_dispatch
+    mov rsp, rax
+
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rbp
+    pop rbx
+    pop rdx
+    pop rcx
+    pop rax
+    iretq
+
+    .global irq6_stub
+    .type irq6_stub, @function
+irq6_stub:
+    cli
+    push rax
+    push rcx
+    push rdx
+    push rbx
+    push rbp
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+
+    mov edi, {irq6_vector}
+    mov rsi, rsp
+    and rsp, -16
+    call irq_rust_dispatch
+    mov rsp, rax
+
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rbp
+    pop rbx
+    pop rdx
+    pop rcx
+    pop rax
+    iretq
+
+    .global irq7_stub
+    .type irq7_stub, @function
+irq7_stub:
+    cli
+    push rax
+    push rcx
+    push rdx
+    push rbx
+    push rbp
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+
+    mov edi, {irq7_vector}
+    mov rsi, rsp
+    and rsp, -16
+    call irq_rust_dispatch
+    mov rsp, rax
+
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rbp
+    pop rbx
+    pop rdx
+    pop rcx
+    pop rax
+    iretq
+
+    .global irq8_stub
+    .type irq8_stub, @function
+irq8_stub:
+    cli
+    push rax
+    push rcx
+    push rdx
+    push rbx
+    push rbp
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+
+    mov edi, {irq8_vector}
+    mov rsi, rsp
+    and rsp, -16
+    call irq_rust_dispatch
+    mov rsp, rax
+
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rbp
+    pop rbx
+    pop rdx
+    pop rcx
+    pop rax
+    iretq
+
+    .global irq9_stub
+    .type irq9_stub, @function
+irq9_stub:
+    cli
+    push rax
+    push rcx
+    push rdx
+    push rbx
+    push rbp
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+
+    mov edi, {irq9_vector}
+    mov rsi, rsp
+    and rsp, -16
+    call irq_rust_dispatch
+    mov rsp, rax
+
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rbp
+    pop rbx
+    pop rdx
+    pop rcx
+    pop rax
+    iretq
+
+    .global irq10_stub
+    .type irq10_stub, @function
+irq10_stub:
+    cli
+    push rax
+    push rcx
+    push rdx
+    push rbx
+    push rbp
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+
+    mov edi, {irq10_vector}
+    mov rsi, rsp
+    and rsp, -16
+    call irq_rust_dispatch
+    mov rsp, rax
+
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rbp
+    pop rbx
+    pop rdx
+    pop rcx
+    pop rax
+    iretq
+
+    .global irq11_stub
+    .type irq11_stub, @function
+irq11_stub:
+    cli
+    push rax
+    push rcx
+    push rdx
+    push rbx
+    push rbp
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+
+    mov edi, {irq11_vector}
+    mov rsi, rsp
+    and rsp, -16
+    call irq_rust_dispatch
+    mov rsp, rax
+
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rbp
+    pop rbx
+    pop rdx
+    pop rcx
+    pop rax
+    iretq
+
+    .global irq12_stub
+    .type irq12_stub, @function
+irq12_stub:
+    cli
+    push rax
+    push rcx
+    push rdx
+    push rbx
+    push rbp
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+
+    mov edi, {irq12_vector}
+    mov rsi, rsp
+    and rsp, -16
+    call irq_rust_dispatch
+    mov rsp, rax
+
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rbp
+    pop rbx
+    pop rdx
+    pop rcx
+    pop rax
+    iretq
+
+    .global irq13_stub
+    .type irq13_stub, @function
+irq13_stub:
+    cli
+    push rax
+    push rcx
+    push rdx
+    push rbx
+    push rbp
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+
+    mov edi, {irq13_vector}
+    mov rsi, rsp
+    and rsp, -16
+    call irq_rust_dispatch
+    mov rsp, rax
+
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rbp
+    pop rbx
+    pop rdx
+    pop rcx
+    pop rax
+    iretq
+
+    .global irq14_stub
+    .type irq14_stub, @function
+irq14_stub:
+    cli
+    push rax
+    push rcx
+    push rdx
+    push rbx
+    push rbp
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+
+    mov edi, {irq14_vector}
+    mov rsi, rsp
+    and rsp, -16
+    call irq_rust_dispatch
+    mov rsp, rax
+
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rbp
+    pop rbx
+    pop rdx
+    pop rcx
+    pop rax
+    iretq
+
+    .global irq15_stub
+    .type irq15_stub, @function
+irq15_stub:
+    cli
+    push rax
+    push rcx
+    push rdx
+    push rbx
+    push rbp
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+
+    mov edi, {irq15_vector}
+    mov rsi, rsp
+    and rsp, -16
+    call irq_rust_dispatch
+    mov rsp, rax
+
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rbp
+    pop rbx
+    pop rdx
+    pop rcx
+    pop rax
+    iretq
+
+    .global isr0_stub
+    .type isr0_stub, @function
+isr0_stub:
+    cli
+    push rax
+    push rcx
+    push rdx
+    push rbx
+    push rbp
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+
+    mov edi, {exc_divide}
+    xor esi, esi
+    mov rdx, rsp
+    and rsp, -16
+    call exception_handler_rust
+1:
+    cli
+    hlt
+    jmp 1b
+
+    .global isr6_stub
+    .type isr6_stub, @function
+isr6_stub:
+    cli
+    push rax
+    push rcx
+    push rdx
+    push rbx
+    push rbp
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+
+    mov edi, {exc_invalid_opcode}
+    xor esi, esi
+    mov rdx, rsp
+    and rsp, -16
+    call exception_handler_rust
+2:
+    cli
+    hlt
+    jmp 2b
+
+    .global isr7_stub
+    .type isr7_stub, @function
+isr7_stub:
+    cli
+    push rax
+    push rcx
+    push rdx
+    push rbx
+    push rbp
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+
+    mov edi, {exc_device_not_available}
+    xor esi, esi
+    mov rdx, rsp
+    and rsp, -16
+    call exception_handler_rust
+5:
+    cli
+    hlt
+    jmp 5b
+
+    .global isr8_stub
+    .type isr8_stub, @function
+isr8_stub:
+    cli
+    push rax
+    push rcx
+    push rdx
+    push rbx
+    push rbp
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+
+    mov edi, {exc_double_fault}
+    mov rsi, [rsp + 120]
+    mov rdx, rsp
+    and rsp, -16
+    call exception_handler_rust
+3:
+    cli
+    hlt
+    jmp 3b
+
+    .global isr13_stub
+    .type isr13_stub, @function
+isr13_stub:
+    cli
+    push rax
+    push rcx
+    push rdx
+    push rbx
+    push rbp
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+
+    mov edi, {exc_general_protection}
+    mov rsi, [rsp + 120]
+    mov rdx, rsp
+    and rsp, -16
+    call exception_handler_rust
+4:
+    cli
+    hlt
+    jmp 4b
 
     .global isr14_stub
     .type isr14_stub, @function
@@ -113,11 +976,51 @@ isr14_stub:
     add rsp, 8
     iretq
 "#,
+    irq0_vector = const IRQ0_VECTOR,
     irq1_vector = const IRQ1_VECTOR,
+    irq2_vector = const IRQ2_VECTOR,
+    irq3_vector = const IRQ3_VECTOR,
+    irq4_vector = const IRQ4_VECTOR,
+    irq5_vector = const IRQ5_VECTOR,
+    irq6_vector = const IRQ6_VECTOR,
+    irq7_vector = const IRQ7_VECTOR,
+    irq8_vector = const IRQ8_VECTOR,
+    irq9_vector = const IRQ9_VECTOR,
+    irq10_vector = const IRQ10_VECTOR,
+    irq11_vector = const IRQ11_VECTOR,
+    irq12_vector = const IRQ12_VECTOR,
+    irq13_vector = const IRQ13_VECTOR,
+    irq14_vector = const IRQ14_VECTOR,
+    irq15_vector = const IRQ15_VECTOR,
+    exc_divide = const EXCEPTION_DIVIDE_ERROR,
+    exc_invalid_opcode = const EXCEPTION_INVALID_OPCODE,
+    exc_device_not_available = const EXCEPTION_DEVICE_NOT_AVAILABLE,
+    exc_double_fault = const EXCEPTION_DOUBLE_FAULT,
+    exc_general_protection = const EXCEPTION_GENERAL_PROTECTION,
 );
 
 extern "C" {
+    fn isr0_stub();
+    fn isr6_stub();
+    fn isr7_stub();
+    fn isr8_stub();
+    fn isr13_stub();
+    fn irq0_stub();
     fn irq1_stub();
+    fn irq2_stub();
+    fn irq3_stub();
+    fn irq4_stub();
+    fn irq5_stub();
+    fn irq6_stub();
+    fn irq7_stub();
+    fn irq8_stub();
+    fn irq9_stub();
+    fn irq10_stub();
+    fn irq11_stub();
+    fn irq12_stub();
+    fn irq13_stub();
+    fn irq14_stub();
+    fn irq15_stub();
     fn isr14_stub();
 }
 
@@ -163,7 +1066,7 @@ struct IdtPointer {
     base: u64,
 }
 
-type IrqHandler = fn(u8);
+type IrqHandler = fn(u8, &mut TrapFrame) -> *mut TrapFrame;
 
 /// Holds the IDT and IRQ handler table behind `UnsafeCell` to avoid
 /// `static mut` (which permits aliased `&mut` references and is unsound).
@@ -233,8 +1136,28 @@ pub fn are_enabled() -> bool {
 fn init_idt() {
     unsafe {
         let idt = &mut *STATE.idt.get();
+        idt[EXCEPTION_DIVIDE_ERROR as usize].set_handler(isr0_stub as *const () as usize);
+        idt[EXCEPTION_INVALID_OPCODE as usize].set_handler(isr6_stub as *const () as usize);
+        idt[EXCEPTION_DEVICE_NOT_AVAILABLE as usize].set_handler(isr7_stub as *const () as usize);
+        idt[EXCEPTION_DOUBLE_FAULT as usize].set_handler(isr8_stub as *const () as usize);
+        idt[EXCEPTION_GENERAL_PROTECTION as usize].set_handler(isr13_stub as *const () as usize);
         idt[EXCEPTION_PAGE_FAULT as usize].set_handler(isr14_stub as *const () as usize);
+        idt[IRQ0_VECTOR as usize].set_handler(irq0_stub as *const () as usize);
         idt[IRQ1_VECTOR as usize].set_handler(irq1_stub as *const () as usize);
+        idt[IRQ2_VECTOR as usize].set_handler(irq2_stub as *const () as usize);
+        idt[IRQ3_VECTOR as usize].set_handler(irq3_stub as *const () as usize);
+        idt[IRQ4_VECTOR as usize].set_handler(irq4_stub as *const () as usize);
+        idt[IRQ5_VECTOR as usize].set_handler(irq5_stub as *const () as usize);
+        idt[IRQ6_VECTOR as usize].set_handler(irq6_stub as *const () as usize);
+        idt[IRQ7_VECTOR as usize].set_handler(irq7_stub as *const () as usize);
+        idt[IRQ8_VECTOR as usize].set_handler(irq8_stub as *const () as usize);
+        idt[IRQ9_VECTOR as usize].set_handler(irq9_stub as *const () as usize);
+        idt[IRQ10_VECTOR as usize].set_handler(irq10_stub as *const () as usize);
+        idt[IRQ11_VECTOR as usize].set_handler(irq11_stub as *const () as usize);
+        idt[IRQ12_VECTOR as usize].set_handler(irq12_stub as *const () as usize);
+        idt[IRQ13_VECTOR as usize].set_handler(irq13_stub as *const () as usize);
+        idt[IRQ14_VECTOR as usize].set_handler(irq14_stub as *const () as usize);
+        idt[IRQ15_VECTOR as usize].set_handler(irq15_stub as *const () as usize);
 
         let idt_ptr = IdtPointer {
             limit: (size_of::<IdtEntry>() * IDT_ENTRIES - 1) as u16,
@@ -254,6 +1177,106 @@ pub extern "C" fn page_fault_handler_rust(faulting_address: u64, error_code: u64
     crate::memory::vmm::handle_page_fault(faulting_address, error_code);
 }
 
+/// Returns whether a CPU exception vector pushes an error code on entry.
+pub const fn exception_has_error_code(vector: u8) -> bool {
+    matches!(vector, 8 | 10 | 11 | 12 | 13 | 14 | 17 | 21 | 29 | 30)
+}
+
+#[inline]
+const fn hex_nibble_ascii(nibble: u8) -> u8 {
+    if nibble < 10 {
+        b'0' + nibble
+    } else {
+        b'a' + (nibble - 10)
+    }
+}
+
+fn write_exception_banner(vector: u8, error_code: u64, frame: *const TrapFrame) {
+    let mut line = [b' '; VGA_COLS];
+    line[0] = b'!';
+    line[1] = b'!';
+    line[2] = b' ';
+    line[3] = b'E';
+    line[4] = b'X';
+    line[5] = b'C';
+    line[6] = b' ';
+    line[7] = b'v';
+    line[8] = b'e';
+    line[9] = b'c';
+    line[10] = b'=';
+    line[11] = hex_nibble_ascii((vector >> 4) & 0x0F);
+    line[12] = hex_nibble_ascii(vector & 0x0F);
+    line[13] = b' ';
+    line[14] = b'e';
+    line[15] = b'r';
+    line[16] = b'r';
+    line[17] = b'=';
+    for i in 0..16 {
+        let shift = (15 - i) * 4;
+        line[18 + i] = hex_nibble_ascii(((error_code >> shift) & 0x0F) as u8);
+    }
+    line[34] = b' ';
+    line[35] = b'f';
+    line[36] = b'r';
+    line[37] = b'm';
+    line[38] = b'=';
+    let frame_u64 = frame as u64;
+    for i in 0..16 {
+        let shift = (15 - i) * 4;
+        line[39 + i] = hex_nibble_ascii(((frame_u64 >> shift) & 0x0F) as u8);
+    }
+
+    // SAFETY:
+    // - VGA text memory is MMIO-mapped at `VGA_TEXT_BUFFER`.
+    // - We only write one in-bounds row (0..80 cells).
+    // - Volatile writes are required for MMIO ordering/visibility.
+    unsafe {
+        for (col, ch) in line.iter().enumerate() {
+            let cell = VGA_TEXT_BUFFER + col * 2;
+            core::ptr::write_volatile(cell as *mut u8, *ch);
+            core::ptr::write_volatile((cell + 1) as *mut u8, 0x4F);
+        }
+    }
+}
+
+/// Fatal exception sink for vectors with dedicated stubs.
+///
+/// Called from assembly stubs for faults we currently treat as unrecoverable.
+#[no_mangle]
+pub extern "C" fn exception_handler_rust(vector: u8, error_code: u64, frame: *const TrapFrame) -> ! {
+    let has_error_code = exception_has_error_code(vector);
+    let iret_ptr = (frame as usize)
+        + size_of::<TrapFrame>()
+        + if has_error_code { size_of::<u64>() } else { 0 };
+    let iret_frame = unsafe {
+        // SAFETY:
+        // - `frame` points at the register-save area pushed by the ISR stub.
+        // - The CPU-pushed interrupt return frame immediately follows saved regs
+        //   (plus optional error code for vectors that carry one).
+        &*(iret_ptr as *const InterruptStackFrame)
+    };
+    crate::drivers::serial::_debug_print(format_args!(
+        "FATAL EXCEPTION vec=0x{:02x} has_err={} err=0x{:016x} frame=0x{:016x} rip=0x{:016x} cs=0x{:016x} rflags=0x{:016x}\n",
+        vector,
+        has_error_code,
+        error_code,
+        frame as u64,
+        iret_frame.rip,
+        iret_frame.cs,
+        iret_frame.rflags
+    ));
+    write_exception_banner(vector, error_code, frame);
+
+    loop {
+        // SAFETY:
+        // - We are in a fatal exception path and intentionally stop forward progress.
+        // - `cli; hlt` is the standard terminal halt sequence for kernel panic/fault sinks.
+        unsafe {
+            asm!("cli", "hlt", options(nomem, nostack, preserves_flags));
+        }
+    }
+}
+
 /// Register a callback for a given interrupt vector.
 pub fn register_irq_handler(vector: u8, handler: IrqHandler) {
     unsafe {
@@ -271,18 +1294,21 @@ fn clear_irq_handlers() {
     }
 }
 
-fn dispatch_irq(vector: u8) {
+fn dispatch_irq(vector: u8, frame: &mut TrapFrame) -> *mut TrapFrame {
     let handler = unsafe {
         let handlers = &*STATE.handlers.get();
         handlers[vector as usize]
     };
+    let mut next_frame = frame as *mut TrapFrame;
     if let Some(handler) = handler {
-        handler(vector);
+        next_frame = handler(vector, frame);
     }
 
     if (IRQ_BASE..IRQ_BASE + 16).contains(&vector) {
         end_of_interrupt(vector - IRQ_BASE);
     }
+
+    next_frame
 }
 
 fn remap_pic(offset1: u8, offset2: u8) {
@@ -330,7 +1356,7 @@ fn mask_pic() {
         let data1 = PortByte::new(PIC1_DATA);
         let data2 = PortByte::new(PIC2_DATA);
 
-        data1.write(0xFD); // Unmask IRQ1 only.
+        data1.write(0xFC); // Unmask IRQ0 + IRQ1.
         data2.write(0xFF); // Mask all slave IRQs.
     }
 }
@@ -344,7 +1370,44 @@ fn end_of_interrupt(irq: u8) {
     }
 }
 
-/// Dispatch entry point called from the `irq1_stub` assembly trampoline.
+/// Computes the PIT divisor for the requested interrupt frequency.
+///
+/// Returns 0 for `hz == 0` so callers can decide how to handle invalid input.
+pub const fn pit_divisor_for_hz(hz: u32) -> u16 {
+    if hz == 0 {
+        return 0;
+    }
+
+    let divisor = PIT_INPUT_HZ / hz;
+    if divisor == 0 {
+        1
+    } else if divisor > u16::MAX as u32 {
+        u16::MAX
+    } else {
+        divisor as u16
+    }
+}
+
+/// Programs PIT channel 0 as periodic timer with the given frequency.
+pub fn init_periodic_timer(hz: u32) {
+    let divisor = pit_divisor_for_hz(hz);
+    if divisor == 0 {
+        return;
+    }
+
+    // SAFETY:
+    // - Writing PIT command/data ports is required to program channel 0.
+    // - Caller controls when to initialize; this routine only performs I/O port writes.
+    unsafe {
+        let cmd = PortByte::new(PIT_COMMAND);
+        let data = PortByte::new(PIT_CHANNEL0);
+        cmd.write(PIT_MODE_RATE_GENERATOR);
+        data.write((divisor & 0xFF) as u8);
+        data.write((divisor >> 8) as u8);
+    }
+}
+
+/// Dispatch entry point called from the IRQ assembly trampoline.
 ///
 /// # Safety contract (enforced by caller)
 /// - Must be called with interrupts disabled (`cli` before entry).
@@ -352,8 +1415,26 @@ fn end_of_interrupt(irq: u8) {
 ///   re-enable interrupts until after `iretq`.
 /// - `vector` must be a valid IRQ vector number (`IRQ_BASE..IRQ_BASE + 16`).
 #[no_mangle]
-pub extern "C" fn irq1_rust_dispatch(vector: u8) {
-    if vector == IRQ1_VECTOR {
-        dispatch_irq(vector);
+pub extern "C" fn irq_rust_dispatch(vector: u8, frame: *mut TrapFrame) -> *mut TrapFrame {
+    if !(IRQ_BASE..IRQ_BASE + 16).contains(&vector) {
+        return frame;
     }
+
+    let frame = unsafe {
+        // SAFETY:
+        // - `frame` is provided by the IRQ assembly stubs and points to the
+        //   register save area currently living on the active kernel stack.
+        // - It remains valid until the stub restores registers and executes `iretq`.
+        &mut *frame
+    };
+
+    dispatch_irq(vector, frame)
 }
+
+const _: () = {
+    assert!(size_of::<TrapFrame>() == 15 * 8);
+};
+
+const _: () = {
+    assert!(size_of::<InterruptStackFrame>() == 5 * 8);
+};

@@ -44,3 +44,9 @@ name = "heap_test"
 
 [[test]]
 name = "spinlock_test"
+
+[[test]]
+name = "interrupts_layout_test"
+
+[[test]]
+name = "scheduler_rr_test"

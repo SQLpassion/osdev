@@ -15,5 +15,6 @@ pub mod allocator;
 pub mod drivers;
 pub mod logging;
 pub mod memory;
+pub mod sched;
 pub mod sync;
 pub mod testing;
