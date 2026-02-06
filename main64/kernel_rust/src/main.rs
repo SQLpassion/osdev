@@ -15,7 +15,7 @@ mod drivers;
 mod logging;
 mod memory;
 mod panic;
-mod sched;
+mod scheduler;
 mod sync;
 
 use crate::arch::interrupts;
@@ -219,7 +219,7 @@ fn execute_command(screen: &mut Screen, line: &str) {
         }
         "rrdemo" => {
             writeln!(screen, "Starting round-robin demo (VGA rows 17-20, press 'q' to quit)...").unwrap();
-            sched::start_round_robin_demo();
+            scheduler::start_round_robin_demo();
             writeln!(screen, "Round-robin demo stopped. Back in REPL.").unwrap();
         }
         _ => {

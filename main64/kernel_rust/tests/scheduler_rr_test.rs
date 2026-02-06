@@ -8,7 +8,7 @@
 
 use core::panic::PanicInfo;
 use kaos_kernel::arch::interrupts::{self, TrapFrame};
-use kaos_kernel::sched::{self, SpawnError};
+use kaos_kernel::scheduler::{self as sched, SpawnError};
 
 #[no_mangle]
 #[link_section = ".text.boot"]
