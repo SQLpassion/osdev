@@ -109,13 +109,6 @@ fn test_spawn_allocates_distinct_task_frames() {
 }
 
 #[test_case]
-fn test_wrap_next_col_wraps_at_screen_width() {
-    assert!(sched::wrap_next_col(0) == 1);
-    assert!(sched::wrap_next_col(78) == 79);
-    assert!(sched::wrap_next_col(79) == 0);
-}
-
-#[test_case]
 fn test_task_frame_iret_defaults_are_kernel_mode() {
     sched::init();
     let task = sched::spawn(dummy_task_a).expect("task should spawn");

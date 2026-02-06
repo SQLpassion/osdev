@@ -2,10 +2,10 @@ use core::arch::global_asm;
 
 use super::{
     EXCEPTION_DEVICE_NOT_AVAILABLE, EXCEPTION_DIVIDE_ERROR, EXCEPTION_DOUBLE_FAULT,
-    EXCEPTION_GENERAL_PROTECTION, EXCEPTION_INVALID_OPCODE, IRQ0_VECTOR, IRQ10_VECTOR,
-    IRQ11_VECTOR, IRQ12_VECTOR, IRQ13_VECTOR, IRQ14_VECTOR, IRQ15_VECTOR, IRQ1_VECTOR,
-    IRQ2_VECTOR, IRQ3_VECTOR, IRQ4_VECTOR, IRQ5_VECTOR, IRQ6_VECTOR, IRQ7_VECTOR, IRQ8_VECTOR,
-    IRQ9_VECTOR,
+    EXCEPTION_GENERAL_PROTECTION, EXCEPTION_INVALID_OPCODE, IRQ0_PIT_TIMER_VECTOR, IRQ10_FREE_VECTOR,
+    IRQ11_FREE_VECTOR, IRQ12_PS2_MOUSE_VECTOR, IRQ13_FPU_VECTOR, IRQ14_PRIMARY_ATA_VECTOR, IRQ15_SECONDARY_ATA_VECTOR, IRQ1_KEYBOARD_VECTOR,
+    IRQ2_PIC_CASCADE_VECTOR, IRQ3_COM2_VECTOR, IRQ4_COM1_VECTOR, IRQ5_LPT2_OR_SOUND_VECTOR, IRQ6_FLOPPY_VECTOR, IRQ7_LPT1_OR_SPURIOUS_VECTOR, IRQ8_CMOS_RTC_VECTOR,
+    IRQ9_ACPI_OR_LEGACY_VECTOR,
 };
 
 macro_rules! irq_stub_asm {
@@ -152,22 +152,22 @@ macro_rules! isr_stub_with_error_code_asm {
     };
 }
 
-irq_stub_asm!(irq0_pit_timer_stub, IRQ0_VECTOR);
-irq_stub_asm!(irq1_keyboard_stub, IRQ1_VECTOR);
-irq_stub_asm!(irq2_pic_cascade_stub, IRQ2_VECTOR);
-irq_stub_asm!(irq3_com2_stub, IRQ3_VECTOR);
-irq_stub_asm!(irq4_com1_stub, IRQ4_VECTOR);
-irq_stub_asm!(irq5_lpt2_or_sound_stub, IRQ5_VECTOR);
-irq_stub_asm!(irq6_floppy_stub, IRQ6_VECTOR);
-irq_stub_asm!(irq7_lpt1_or_spurious_stub, IRQ7_VECTOR);
-irq_stub_asm!(irq8_cmos_rtc_stub, IRQ8_VECTOR);
-irq_stub_asm!(irq9_acpi_or_legacy_stub, IRQ9_VECTOR);
-irq_stub_asm!(irq10_free_stub, IRQ10_VECTOR);
-irq_stub_asm!(irq11_free_stub, IRQ11_VECTOR);
-irq_stub_asm!(irq12_ps2_mouse_stub, IRQ12_VECTOR);
-irq_stub_asm!(irq13_fpu_stub, IRQ13_VECTOR);
-irq_stub_asm!(irq14_primary_ata_stub, IRQ14_VECTOR);
-irq_stub_asm!(irq15_secondary_ata_stub, IRQ15_VECTOR);
+irq_stub_asm!(irq0_pit_timer_stub, IRQ0_PIT_TIMER_VECTOR);
+irq_stub_asm!(irq1_keyboard_stub, IRQ1_KEYBOARD_VECTOR);
+irq_stub_asm!(irq2_pic_cascade_stub, IRQ2_PIC_CASCADE_VECTOR);
+irq_stub_asm!(irq3_com2_stub, IRQ3_COM2_VECTOR);
+irq_stub_asm!(irq4_com1_stub, IRQ4_COM1_VECTOR);
+irq_stub_asm!(irq5_lpt2_or_sound_stub, IRQ5_LPT2_OR_SOUND_VECTOR);
+irq_stub_asm!(irq6_floppy_stub, IRQ6_FLOPPY_VECTOR);
+irq_stub_asm!(irq7_lpt1_or_spurious_stub, IRQ7_LPT1_OR_SPURIOUS_VECTOR);
+irq_stub_asm!(irq8_cmos_rtc_stub, IRQ8_CMOS_RTC_VECTOR);
+irq_stub_asm!(irq9_acpi_or_legacy_stub, IRQ9_ACPI_OR_LEGACY_VECTOR);
+irq_stub_asm!(irq10_free_stub, IRQ10_FREE_VECTOR);
+irq_stub_asm!(irq11_free_stub, IRQ11_FREE_VECTOR);
+irq_stub_asm!(irq12_ps2_mouse_stub, IRQ12_PS2_MOUSE_VECTOR);
+irq_stub_asm!(irq13_fpu_stub, IRQ13_FPU_VECTOR);
+irq_stub_asm!(irq14_primary_ata_stub, IRQ14_PRIMARY_ATA_VECTOR);
+irq_stub_asm!(irq15_secondary_ata_stub, IRQ15_SECONDARY_ATA_VECTOR);
 
 isr_stub_without_error_code_asm!(isr0_divide_by_zero_stub, EXCEPTION_DIVIDE_ERROR);
 isr_stub_without_error_code_asm!(isr6_invalid_opcode_stub, EXCEPTION_INVALID_OPCODE);

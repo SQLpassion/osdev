@@ -68,7 +68,7 @@ fn test_trap_frame_size_and_offsets() {
 #[test_case]
 fn test_irq_vector_constants_are_contiguous() {
     assert!(
-        interrupts::IRQ1_VECTOR == interrupts::IRQ0_VECTOR + 1,
+        interrupts::IRQ1_KEYBOARD_VECTOR == interrupts::IRQ0_PIT_TIMER_VECTOR + 1,
         "IRQ1 vector must follow IRQ0 vector"
     );
 }

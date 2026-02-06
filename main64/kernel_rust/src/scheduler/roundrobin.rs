@@ -11,8 +11,11 @@ use core::mem::size_of;
 use core::ptr;
 
 use crate::arch::interrupts::{self, InterruptStackFrame, TrapFrame};
-use crate::drivers::keyboard;
 
+/// Entry point type for schedulable kernel tasks.
+///
+/// Tasks are entered via a synthetic interrupt-return frame and are expected
+/// to never return.
 pub type KernelTaskFn = extern "C" fn() -> !;
 
 const MAX_TASKS: usize = 8;
@@ -21,18 +24,16 @@ const PAGE_SIZE: usize = 4096;
 const KERNEL_CODE_SELECTOR: u64 = 0x08;
 const KERNEL_DATA_SELECTOR: u64 = 0x10;
 const DEFAULT_RFLAGS: u64 = 0x202;
-const DEMO_SPIN_DELAY: u32 = 200_000;
-const VGA_BUFFER: usize = 0xFFFF_8000_000B_8000;
-const VGA_COLS: usize = 80;
-const TRACE_ROW: usize = 17;
-const DEMO_ROWS: [usize; 3] = [18, 19, 20];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpawnError {
+    /// Scheduler has not been initialized via [`init`].
     NotInitialized,
+    /// Static task pool is full.
     CapacityExceeded,
 }
 
+/// One slot in the static task table.
 #[derive(Clone, Copy)]
 struct TaskSlot {
     used: bool,
@@ -40,6 +41,7 @@ struct TaskSlot {
 }
 
 impl TaskSlot {
+    /// Returns an unused slot marker.
     const fn empty() -> Self {
         Self {
             used: false,
@@ -48,6 +50,7 @@ impl TaskSlot {
     }
 }
 
+/// Runtime state of the round-robin scheduler.
 struct SchedulerState {
     initialized: bool,
     started: bool,
@@ -62,6 +65,7 @@ struct SchedulerState {
 }
 
 impl SchedulerState {
+    /// Returns the initial scheduler state.
     const fn new() -> Self {
         Self {
             initialized: false,
@@ -78,12 +82,14 @@ impl SchedulerState {
     }
 }
 
+/// Global scheduler storage containing mutable state and per-task stacks.
 struct SchedulerGlobal {
     state: UnsafeCell<SchedulerState>,
     stacks: UnsafeCell<[[u8; TASK_STACK_SIZE]; MAX_TASKS]>,
 }
 
 impl SchedulerGlobal {
+    /// Creates zero-initialized global storage.
     const fn new() -> Self {
         Self {
             state: UnsafeCell::new(SchedulerState::new()),
@@ -99,6 +105,9 @@ unsafe impl Sync for SchedulerGlobal {}
 
 static SCHED: SchedulerGlobal = SchedulerGlobal::new();
 
+/// Executes `f` with mutable scheduler state while interrupts are masked.
+///
+/// Interrupt enablement is restored to its previous state afterwards.
 #[inline]
 fn with_state<R>(f: impl FnOnce(&mut SchedulerState) -> R) -> R {
     let interrupts_were_enabled = interrupts::are_enabled();
@@ -115,11 +124,15 @@ fn with_state<R>(f: impl FnOnce(&mut SchedulerState) -> R) -> R {
     result
 }
 
+/// Aligns `value` down to the given power-of-two `align`.
 #[inline]
 const fn align_down(value: usize, align: usize) -> usize {
     value & !(align - 1)
 }
 
+/// Builds the initial task context on the stack of `slot_idx`.
+///
+/// Returns a pointer to the saved [`TrapFrame`] used as scheduler context.
 fn build_initial_task_frame(slot_idx: usize, entry: KernelTaskFn) -> *mut TrapFrame {
     // SAFETY:
     // - `slot_idx` is validated by caller to be in-bounds and unique.
@@ -160,6 +173,7 @@ fn build_initial_task_frame(slot_idx: usize, entry: KernelTaskFn) -> *mut TrapFr
     }
 }
 
+/// Checks whether `frame_ptr` points into the stack owned by `slot_idx`.
 fn frame_in_slot_stack(slot_idx: usize, frame_ptr: *const TrapFrame) -> bool {
     if frame_ptr.is_null() {
         return false;
@@ -179,6 +193,7 @@ fn frame_in_slot_stack(slot_idx: usize, frame_ptr: *const TrapFrame) -> bool {
     }
 }
 
+/// Resolves a trap frame pointer back to its owning task slot.
 fn slot_for_frame(state: &SchedulerState, frame_ptr: *const TrapFrame) -> Option<usize> {
     if frame_ptr.is_null() {
         return None;
@@ -194,28 +209,31 @@ fn slot_for_frame(state: &SchedulerState, frame_ptr: *const TrapFrame) -> Option
     None
 }
 
+/// Finds the run-queue position for a given task slot index.
 fn queue_pos_for_slot(state: &SchedulerState, slot: usize) -> Option<usize> {
     (0..state.task_count).find(|pos| state.run_queue[*pos] == slot)
 }
 
-#[inline]
-pub const fn wrap_next_col(col: usize) -> usize {
-    (col + 1) % VGA_COLS
-}
-
+/// IRQ adapter that routes PIT ticks into the scheduler core.
 fn timer_irq_handler(_vector: u8, frame: &mut TrapFrame) -> *mut TrapFrame {
     on_timer_tick(frame as *mut TrapFrame)
 }
 
+/// Resets and initializes the round-robin scheduler.
+///
+/// This also registers the PIT IRQ handler that drives preemption.
 pub fn init() {
     with_state(|state| {
         *state = SchedulerState::new();
         state.initialized = true;
     });
 
-    interrupts::register_irq_handler(interrupts::IRQ0_VECTOR, timer_irq_handler);
+    interrupts::register_irq_handler(interrupts::IRQ0_PIT_TIMER_VECTOR, timer_irq_handler);
 }
 
+/// Creates a new kernel task and appends it to the run queue.
+///
+/// Returns the allocated task slot index on success.
 pub fn spawn(entry: KernelTaskFn) -> Result<usize, SpawnError> {
     with_state(|state| {
         if !state.initialized {
@@ -242,6 +260,7 @@ pub fn spawn(entry: KernelTaskFn) -> Result<usize, SpawnError> {
     })
 }
 
+/// Starts scheduling if initialized and at least one task is available.
 pub fn start() {
     with_state(|state| {
         if state.initialized && state.task_count > 0 {
@@ -254,6 +273,7 @@ pub fn start() {
     });
 }
 
+/// Requests a cooperative scheduler stop on the next timer tick.
 pub fn request_stop() {
     with_state(|state| {
         if state.started {
@@ -262,10 +282,15 @@ pub fn request_stop() {
     });
 }
 
+/// Returns whether the scheduler is currently active.
 pub fn is_running() -> bool {
     with_state(|state| state.started)
 }
 
+/// Scheduler core executed on every timer IRQ.
+///
+/// The function saves current context (when known), selects the next runnable
+/// task in round-robin order, and returns the frame pointer to resume.
 pub fn on_timer_tick(current_frame: *mut TrapFrame) -> *mut TrapFrame {
     with_state(|state| {
         if !state.started || state.task_count == 0 {
@@ -294,6 +319,7 @@ pub fn on_timer_tick(current_frame: *mut TrapFrame) -> *mut TrapFrame {
             state.slots = [TaskSlot::empty(); MAX_TASKS];
             return return_frame;
         }
+
         if let Some(slot) = detected_slot {
             // Save only when the interrupted frame can be mapped to a known task stack.
             state.slots[slot].frame_ptr = current_frame;
@@ -308,6 +334,7 @@ pub fn on_timer_tick(current_frame: *mut TrapFrame) -> *mut TrapFrame {
         } else {
             state.current_queue_pos
         };
+
         let search_start_pos = (base_pos + 1) % state.task_count;
 
         let mut selected_pos = None;
@@ -318,6 +345,7 @@ pub fn on_timer_tick(current_frame: *mut TrapFrame) -> *mut TrapFrame {
             let pos = (search_start_pos + step) % state.task_count;
             let slot = state.run_queue[pos];
             let frame = state.slots[slot].frame_ptr;
+            
             if frame_in_slot_stack(slot, frame) {
                 selected_pos = Some(pos);
                 selected_slot = slot;
@@ -327,23 +355,6 @@ pub fn on_timer_tick(current_frame: *mut TrapFrame) -> *mut TrapFrame {
         }
 
         state.tick_count = state.tick_count.wrapping_add(1);
-        let trace_col = (state.tick_count as usize) % VGA_COLS;
-        let trace_char = if let Some(pos) = selected_pos {
-            let slot = state.run_queue[pos];
-            b'0' + (slot as u8)
-        } else {
-            b'X'
-        };
-
-        // SAFETY:
-        // - VGA text buffer is MMIO at `VGA_BUFFER`.
-        // - Writes stay within visible row/column bounds.
-        // - Volatile access is required for MMIO semantics.
-        unsafe {
-            let cell = VGA_BUFFER + (TRACE_ROW * VGA_COLS + trace_col) * 2;
-            ptr::write_volatile(cell as *mut u8, trace_char);
-            ptr::write_volatile((cell + 1) as *mut u8, 0x1E);
-        }
 
         if let Some(pos) = selected_pos {
             state.current_queue_pos = pos;
@@ -358,6 +369,9 @@ pub fn on_timer_tick(current_frame: *mut TrapFrame) -> *mut TrapFrame {
     })
 }
 
+/// Returns the saved frame pointer for `task_id` if that slot is active.
+///
+/// Primarily intended for integration tests and diagnostics.
 #[allow(dead_code)]
 pub fn task_frame_ptr(task_id: usize) -> Option<*mut TrapFrame> {
     with_state(|state| {
@@ -369,6 +383,7 @@ pub fn task_frame_ptr(task_id: usize) -> Option<*mut TrapFrame> {
     })
 }
 
+/// Triggers a software timer interrupt to force an immediate reschedule.
 #[allow(dead_code)]
 pub fn yield_now() {
     // SAFETY:
@@ -377,102 +392,8 @@ pub fn yield_now() {
     unsafe {
         asm!(
             "int {vector}",
-            vector = const interrupts::IRQ0_VECTOR,
+            vector = const interrupts::IRQ0_PIT_TIMER_VECTOR,
             options(nomem)
         );
-    }
-}
-
-macro_rules! demo_task_fn {
-    ($name:ident, $row:expr, $ch:expr, $attr:expr) => {
-        extern "C" fn $name() -> ! {
-            let mut col = 0usize;
-            let mut previous_col = VGA_COLS - 1;
-            loop {
-                keyboard::poll();
-                if let Some(ch) = keyboard::read_char() {
-                    if ch == b'q' || ch == b'Q' {
-                        request_stop();
-                    }
-                }
-
-                // SAFETY:
-                // - VGA text buffer is MMIO at `VGA_BUFFER`.
-                // - Writes stay within one fixed visible row.
-                // - Volatile access is required for MMIO semantics.
-                unsafe {
-                    let old_cell = VGA_BUFFER + ($row * VGA_COLS + previous_col) * 2;
-                    ptr::write_volatile(old_cell as *mut u8, b' ');
-                    ptr::write_volatile((old_cell + 1) as *mut u8, $attr);
-
-                    let cell = VGA_BUFFER + ($row * VGA_COLS + col) * 2;
-                    ptr::write_volatile(cell as *mut u8, $ch);
-                    ptr::write_volatile((cell + 1) as *mut u8, $attr);
-                }
-                previous_col = col;
-                col = wrap_next_col(col);
-
-                let mut delay = 0u32;
-                while delay < DEMO_SPIN_DELAY {
-                    core::hint::spin_loop();
-                    delay += 1;
-                }
-            }
-        }
-    };
-}
-
-demo_task_fn!(demo_task_a, 18, b'A', 0x1F);
-demo_task_fn!(demo_task_b, 19, b'B', 0x2F);
-demo_task_fn!(demo_task_c, 20, b'C', 0x4F);
-
-pub fn start_round_robin_demo() {
-    // Invariant: no IRQ0 during rrdemo setup.
-    //
-    // Rationale:
-    // - PIT programming is a multi-write I/O sequence (mode + low/high divisor bytes).
-    // - If a timer IRQ preempts in the middle, we can leave setup early by switching
-    //   away from the bootstrap context before the sequence/state is complete.
-    // - On real hardware this can leave the PIT/scheduler startup in a broken state
-    //   (often only one task keeps running). QEMU tends to be more forgiving.
-    //
-    // Therefore: keep IF=0 from here until all scheduler state is fully initialized.
-    interrupts::disable();
-
-    // SAFETY:
-    // - VGA text buffer is MMIO at `VGA_BUFFER`.
-    // - Writes are bounded to rows 18..20 and visible columns.
-    // - Volatile writes preserve MMIO semantics.
-    unsafe {
-        for row in DEMO_ROWS {
-            for col in 0..VGA_COLS {
-                let cell = VGA_BUFFER + (row * VGA_COLS + col) * 2;
-                ptr::write_volatile(cell as *mut u8, b' ');
-                ptr::write_volatile((cell + 1) as *mut u8, 0x07);
-            }
-        }
-    }
-
-    init();
-    let _ = spawn(demo_task_a).expect("rrdemo: spawn A failed");
-    let _ = spawn(demo_task_b).expect("rrdemo: spawn B failed");
-    let _ = spawn(demo_task_c).expect("rrdemo: spawn C failed");
-    start();
-
-    // Do not reprogram PIT here:
-    // - KernelMain already configured 250 Hz.
-    // - Reprogramming in this path would reintroduce the IRQ-vs-setup race above.
-    //
-    // Re-enable interrupts only after init/spawn/start are complete so the first
-    // timer tick sees a consistent scheduler state.
-    interrupts::enable();
-
-    while is_running() {
-        // SAFETY:
-        // - While demo is running, interrupts are enabled and IRQ0 drives scheduling.
-        // - `hlt` sleeps until the next interrupt and is valid in ring 0.
-        unsafe {
-            core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
-        }
     }
 }

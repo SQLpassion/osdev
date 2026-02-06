@@ -61,7 +61,7 @@ pub extern "C" fn KernelMain(kernel_size: u64) -> ! {
     debugln!("Heap Manager initialized");
 
     // Initialize interrupt handling and the keyboard ring buffer.
-    interrupts::register_irq_handler(interrupts::IRQ1_VECTOR, |_, frame| {
+    interrupts::register_irq_handler(interrupts::IRQ1_KEYBOARD_VECTOR, |_, frame| {
         keyboard::handle_irq();
         frame as *mut _
     });
