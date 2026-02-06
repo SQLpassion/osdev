@@ -221,3 +221,39 @@ fn test_unmapped_current_frame_does_not_clobber_saved_task_context() {
         "unexpected current frame must not overwrite saved task context"
     );
 }
+
+#[test_case]
+fn test_request_stop_returns_to_bootstrap_frame_and_stops_scheduler() {
+    sched::init();
+
+    let task_a = sched::spawn(dummy_task_a).expect("task A should spawn");
+    let frame_a = sched::task_frame_ptr(task_a).expect("task A frame should exist");
+    sched::start();
+
+    let mut bootstrap = TrapFrame::default();
+    let bootstrap_ptr = &mut bootstrap as *mut TrapFrame;
+
+    let running = sched::on_timer_tick(bootstrap_ptr);
+    assert!(running == frame_a, "first timer tick should enter task A");
+    assert!(sched::is_running(), "scheduler should report running after start");
+
+    sched::request_stop();
+    let after_stop = sched::on_timer_tick(running);
+    assert!(
+        after_stop == bootstrap_ptr,
+        "stop request must switch back to the original bootstrap frame"
+    );
+    assert!(
+        !sched::is_running(),
+        "scheduler must report stopped after stop request"
+    );
+
+    let new_task = sched::spawn(dummy_task_b).expect("spawn should work again after stop");
+    let new_frame = sched::task_frame_ptr(new_task).expect("new task frame should exist");
+    sched::start();
+    let resumed = sched::on_timer_tick(bootstrap_ptr);
+    assert!(
+        resumed == new_frame,
+        "scheduler should be able to start again after a stop cycle"
+    );
+}

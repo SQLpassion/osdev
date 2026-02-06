@@ -11,6 +11,7 @@ use core::mem::size_of;
 use core::ptr;
 
 use crate::arch::interrupts::{self, InterruptStackFrame, TrapFrame};
+use crate::drivers::keyboard;
 
 pub type KernelTaskFn = extern "C" fn() -> !;
 
@@ -50,6 +51,8 @@ impl TaskSlot {
 struct SchedulerState {
     initialized: bool,
     started: bool,
+    stop_requested: bool,
+    bootstrap_frame: *mut TrapFrame,
     running_slot: Option<usize>,
     current_queue_pos: usize,
     task_count: usize,
@@ -63,6 +66,8 @@ impl SchedulerState {
         Self {
             initialized: false,
             started: false,
+            stop_requested: false,
+            bootstrap_frame: ptr::null_mut(),
             running_slot: None,
             current_queue_pos: 0,
             task_count: 0,
@@ -241,10 +246,24 @@ pub fn start() {
     with_state(|state| {
         if state.initialized && state.task_count > 0 {
             state.started = true;
+            state.stop_requested = false;
+            state.bootstrap_frame = ptr::null_mut();
             state.running_slot = None;
             state.current_queue_pos = state.task_count - 1;
         }
     });
+}
+
+pub fn request_stop() {
+    with_state(|state| {
+        if state.started {
+            state.stop_requested = true;
+        }
+    });
+}
+
+pub fn is_running() -> bool {
+    with_state(|state| state.started)
 }
 
 pub fn on_timer_tick(current_frame: *mut TrapFrame) -> *mut TrapFrame {
@@ -254,6 +273,27 @@ pub fn on_timer_tick(current_frame: *mut TrapFrame) -> *mut TrapFrame {
         }
 
         let detected_slot = slot_for_frame(state, current_frame);
+        if state.bootstrap_frame.is_null() && detected_slot.is_none() {
+            state.bootstrap_frame = current_frame;
+        }
+
+        if state.stop_requested {
+            let return_frame = if !state.bootstrap_frame.is_null() {
+                state.bootstrap_frame
+            } else {
+                current_frame
+            };
+            state.started = false;
+            state.stop_requested = false;
+            state.bootstrap_frame = ptr::null_mut();
+            state.running_slot = None;
+            state.current_queue_pos = 0;
+            state.task_count = 0;
+            state.tick_count = 0;
+            state.run_queue = [0; MAX_TASKS];
+            state.slots = [TaskSlot::empty(); MAX_TASKS];
+            return return_frame;
+        }
         if let Some(slot) = detected_slot {
             // Save only when the interrupted frame can be mapped to a known task stack.
             state.slots[slot].frame_ptr = current_frame;
@@ -349,6 +389,13 @@ macro_rules! demo_task_fn {
             let mut col = 0usize;
             let mut previous_col = VGA_COLS - 1;
             loop {
+                keyboard::poll();
+                if let Some(ch) = keyboard::read_char() {
+                    if ch == b'q' || ch == b'Q' {
+                        request_stop();
+                    }
+                }
+
                 // SAFETY:
                 // - VGA text buffer is MMIO at `VGA_BUFFER`.
                 // - Writes stay within one fixed visible row.
@@ -379,7 +426,7 @@ demo_task_fn!(demo_task_a, 18, b'A', 0x1F);
 demo_task_fn!(demo_task_b, 19, b'B', 0x2F);
 demo_task_fn!(demo_task_c, 20, b'C', 0x4F);
 
-pub fn start_round_robin_demo() -> ! {
+pub fn start_round_robin_demo() {
     // Invariant: no IRQ0 during rrdemo setup.
     //
     // Rationale:
@@ -420,7 +467,10 @@ pub fn start_round_robin_demo() -> ! {
     // timer tick sees a consistent scheduler state.
     interrupts::enable();
 
-    loop {
+    while is_running() {
+        // SAFETY:
+        // - While demo is running, interrupts are enabled and IRQ0 drives scheduling.
+        // - `hlt` sleeps until the next interrupt and is valid in ring 0.
         unsafe {
             core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
         }

@@ -218,8 +218,9 @@ fn execute_command(screen: &mut Screen, line: &str) {
             heap::run_self_test(screen);
         }
         "rrdemo" => {
-            writeln!(screen, "Starting round-robin demo (VGA rows 17-20)...").unwrap();
+            writeln!(screen, "Starting round-robin demo (VGA rows 17-20, press 'q' to quit)...").unwrap();
             sched::start_round_robin_demo();
+            writeln!(screen, "Round-robin demo stopped. Back in REPL.").unwrap();
         }
         _ => {
             writeln!(screen, "Unknown command: {}", cmd).unwrap();
