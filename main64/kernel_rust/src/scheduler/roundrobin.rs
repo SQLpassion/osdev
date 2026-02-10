@@ -135,7 +135,7 @@ const fn align_down(value: usize, align: usize) -> usize {
 #[inline]
 fn with_sched<R>(f: impl FnOnce(&mut SchedulerData) -> R) -> R {
     let mut sched = SCHED.lock();
-    f(&mut *sched)
+    f(&mut sched)
 }
 
 /// Builds the initial task context on the stack of `slot_idx`.
