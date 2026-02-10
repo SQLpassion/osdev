@@ -6,11 +6,11 @@
 //! - kernel-mode function pointers as task entries
 
 use core::arch::asm;
-use core::cell::UnsafeCell;
 use core::mem::size_of;
 use core::ptr;
 
 use crate::arch::interrupts::{self, InterruptStackFrame, SavedRegisters};
+use crate::sync::spinlock::SpinLock;
 
 /// Entry point type for schedulable kernel tasks.
 ///
@@ -117,24 +117,13 @@ impl SchedulerData {
     }
 }
 
-/// Global scheduler holder with interior mutability for `static` storage.
-struct Scheduler {
-    inner: UnsafeCell<SchedulerData>,
-}
-
-impl Scheduler {
-    const fn new() -> Self {
-        Self {
-            inner: UnsafeCell::new(SchedulerData::new()),
-        }
-    }
-}
+unsafe impl Send for SchedulerData {}
 
 // SAFETY:
-// - Kernel is currently single-core.
-// - Access is serialized via interrupt masking in `with_sched`.
-unsafe impl Sync for Scheduler {}
-static SCHED: Scheduler = Scheduler::new();
+// - `SchedulerData` is only accessed behind `SpinLock<SchedulerData>`.
+// - Raw pointers in `meta` point into scheduler-owned stacks and are only
+//   read/written while holding the lock.
+static SCHED: SpinLock<SchedulerData> = SpinLock::new(SchedulerData::new());
 
 /// Aligns `value` down to the given power-of-two `align`.
 #[inline]
@@ -142,24 +131,11 @@ const fn align_down(value: usize, align: usize) -> usize {
     value & !(align - 1)
 }
 
-/// Executes `f` with mutable scheduler storage while interrupts are masked.
-///
-/// Interrupt enablement is restored to its previous state afterwards.
+/// Executes `f` while holding the scheduler spinlock.
 #[inline]
 fn with_sched<R>(f: impl FnOnce(&mut SchedulerData) -> R) -> R {
-    let interrupts_were_enabled = interrupts::are_enabled();
-    interrupts::disable();
-
-    // SAFETY:
-    // - Access is protected by interrupt masking on a single core.
-    // - No concurrent mutable access can occur while interrupts stay disabled.
-    let result = unsafe { f(&mut *SCHED.inner.get()) };
-
-    if interrupts_were_enabled {
-        interrupts::enable();
-    }
-    
-    result
+    let mut sched = SCHED.lock();
+    f(&mut *sched)
 }
 
 /// Builds the initial task context on the stack of `slot_idx`.

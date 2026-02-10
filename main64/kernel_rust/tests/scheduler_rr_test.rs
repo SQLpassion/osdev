@@ -57,6 +57,26 @@ fn test_start_without_tasks_does_not_enter_running_state() {
 }
 
 #[test_case]
+fn test_scheduler_api_preserves_enabled_interrupt_state() {
+    interrupts::enable();
+    assert!(
+        interrupts::are_enabled(),
+        "interrupts should be enabled at test start"
+    );
+
+    sched::init();
+    let _ = sched::spawn(dummy_task_a).expect("spawn should succeed after init");
+    sched::start();
+
+    assert!(
+        interrupts::are_enabled(),
+        "scheduler API calls must restore enabled interrupt state"
+    );
+
+    interrupts::disable();
+}
+
+#[test_case]
 fn test_scheduler_round_robin_pointer_sequence() {
     sched::init();
 
