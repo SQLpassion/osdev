@@ -251,6 +251,149 @@ fn test_spawning_tasks_after_scheduler_start_integrates_into_round_robin() {
     assert!(current == frame_a, "round robin should wrap back to task A");
 }
 
+/// Contract: terminate task removes slot from round robin and allows reuse.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "terminate task removes slot from round robin and allows reuse".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_terminate_task_removes_slot_from_round_robin_and_allows_reuse() {
+    sched::init();
+
+    let task_a = sched::spawn(dummy_task_a).expect("task A should spawn");
+    let task_b = sched::spawn(dummy_task_b).expect("task B should spawn");
+    let task_c = sched::spawn(dummy_task_c).expect("task C should spawn");
+
+    let frame_a = sched::task_frame_ptr(task_a).expect("task A frame should exist");
+    let frame_c = sched::task_frame_ptr(task_c).expect("task C frame should exist");
+
+    sched::start();
+
+    let mut bootstrap = SavedRegisters::default();
+    let mut current = &mut bootstrap as *mut SavedRegisters;
+
+    current = sched::on_timer_tick(current);
+    assert!(current == frame_a, "first tick should select task A");
+
+    assert!(
+        sched::terminate_task(task_b),
+        "terminate_task should remove an existing task"
+    );
+    assert!(
+        sched::task_frame_ptr(task_b).is_none(),
+        "terminated task B should no longer expose a frame pointer"
+    );
+
+    current = sched::on_timer_tick(current);
+    assert!(
+        current == frame_c,
+        "after removing task B, scheduler should continue with task C"
+    );
+
+    let task_d = sched::spawn(dummy_task_d).expect("task D should spawn into freed slot capacity");
+    let frame_d = sched::task_frame_ptr(task_d).expect("task D frame should exist");
+
+    current = sched::on_timer_tick(current);
+    assert!(
+        current == frame_d,
+        "newly spawned task D should participate in round robin after task C"
+    );
+}
+
+/// Contract: terminating running task switches to the next runnable task.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "terminating running task switches to the next runnable task".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_terminating_running_task_switches_to_next_runnable_task() {
+    sched::init();
+
+    let task_a = sched::spawn(dummy_task_a).expect("task A should spawn");
+    let task_b = sched::spawn(dummy_task_b).expect("task B should spawn");
+    let frame_a = sched::task_frame_ptr(task_a).expect("task A frame should exist");
+    let frame_b = sched::task_frame_ptr(task_b).expect("task B frame should exist");
+
+    sched::start();
+    let mut bootstrap = SavedRegisters::default();
+    let mut current = &mut bootstrap as *mut SavedRegisters;
+
+    current = sched::on_timer_tick(current);
+    assert!(current == frame_a, "first tick should enter task A");
+
+    assert!(
+        sched::terminate_task(task_a),
+        "terminate_task should remove the currently running task"
+    );
+
+    current = sched::on_timer_tick(current);
+    assert!(
+        current == frame_b,
+        "scheduler should switch to remaining runnable task B after task A termination"
+    );
+}
+
+/// Contract: terminate task reports false for non-existent or stale task id.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "terminate task reports false for non-existent or stale task id".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_terminate_task_reports_false_for_non_existent_or_stale_task_id() {
+    sched::init();
+
+    assert!(
+        !sched::terminate_task(0),
+        "terminate_task must return false for an unused slot"
+    );
+
+    let task_a = sched::spawn(dummy_task_a).expect("task A should spawn");
+    assert!(
+        sched::terminate_task(task_a),
+        "first terminate should remove existing task A"
+    );
+    assert!(
+        !sched::terminate_task(task_a),
+        "second terminate should report false because task A is already removed"
+    );
+}
+
+/// Contract: terminating multiple tasks allows same-count respawn cycle.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "terminating multiple tasks allows same-count respawn cycle".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_terminating_multiple_tasks_allows_same_count_respawn_cycle() {
+    sched::init();
+
+    let task_a = sched::spawn(dummy_task_a).expect("task A should spawn");
+    let task_b = sched::spawn(dummy_task_b).expect("task B should spawn");
+    let task_c = sched::spawn(dummy_task_c).expect("task C should spawn");
+
+    assert!(sched::terminate_task(task_a), "task A should terminate");
+    assert!(sched::terminate_task(task_b), "task B should terminate");
+    assert!(sched::terminate_task(task_c), "task C should terminate");
+
+    assert!(
+        sched::task_frame_ptr(task_a).is_none()
+            && sched::task_frame_ptr(task_b).is_none()
+            && sched::task_frame_ptr(task_c).is_none(),
+        "all terminated tasks must be fully removed from scheduler slots"
+    );
+
+    let respawn_a = sched::spawn(dummy_task_a).expect("respawn A should succeed");
+    let respawn_b = sched::spawn(dummy_task_b).expect("respawn B should succeed");
+    let respawn_c = sched::spawn(dummy_task_c).expect("respawn C should succeed");
+
+    assert!(
+        sched::task_frame_ptr(respawn_a).is_some()
+            && sched::task_frame_ptr(respawn_b).is_some()
+            && sched::task_frame_ptr(respawn_c).is_some(),
+        "after bulk terminate, scheduler must accept same-count respawn"
+    );
+}
+
 /// Contract: scheduler capacity limit.
 /// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
 /// When: The exact operation sequence in this function is executed against that state.

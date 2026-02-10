@@ -152,6 +152,10 @@ fn with_sched<R>(f: impl FnOnce(&mut SchedulerData) -> R) -> R {
     f(&mut sched)
 }
 
+extern "C" fn task_return_trap() -> ! {
+    exit_current_task()
+}
+
 /// Builds the initial task context on the stack of `slot_idx`.
 ///
 /// Returns a pointer to the saved [`SavedRegisters`] used as scheduler context.
@@ -175,12 +179,19 @@ fn build_initial_task_frame(
         }
 
         // SysV-friendly entry stack alignment.
+        // Keep one return-address slot below RSP for a synthetic trap target.
         let entry_rsp = align_down(stack_top, 16) - 8;
         let iret_addr = entry_rsp - size_of::<InterruptStackFrame>();
         let frame_addr = iret_addr - size_of::<SavedRegisters>();
 
         let frame_ptr = frame_addr as *mut SavedRegisters;
         let iret_ptr = iret_addr as *mut InterruptStackFrame;
+
+        // SAFETY:
+        // - `entry_rsp` lies within the task's private stack memory.
+        // - Writing a synthetic return address ensures an accidental task return
+        //   traps into scheduler-controlled termination.
+        ptr::write(entry_rsp as *mut u64, task_return_trap as *const () as usize as u64);
 
         ptr::write(frame_ptr, SavedRegisters::default());
         ptr::write(
@@ -217,6 +228,41 @@ fn find_entry_by_frame(
     }
 
     None
+}
+
+/// Removes `task_id` from the run queue and clears its slot.
+///
+/// Returns `true` when an active task was removed.
+fn remove_task(meta: &mut SchedulerMetadata, task_id: usize) -> bool {
+    if task_id >= MAX_TASKS || !meta.slots[task_id].used {
+        return false;
+    }
+
+    let Some(removed_pos) = (0..meta.task_count).find(|pos| meta.run_queue[*pos] == task_id) else {
+        return false;
+    };
+
+    for pos in removed_pos..meta.task_count - 1 {
+        meta.run_queue[pos] = meta.run_queue[pos + 1];
+    }
+    meta.run_queue[meta.task_count - 1] = 0;
+    meta.task_count -= 1;
+
+    if meta.running_slot == Some(task_id) {
+        meta.running_slot = None;
+    }
+
+    meta.slots[task_id] = TaskEntry::empty();
+
+    if meta.task_count == 0 {
+        meta.current_queue_pos = 0;
+    } else if removed_pos < meta.current_queue_pos {
+        meta.current_queue_pos -= 1;
+    } else if meta.current_queue_pos >= meta.task_count {
+        meta.current_queue_pos = meta.task_count - 1;
+    }
+
+    true
 }
 
 /// Resets and initializes the round-robin scheduler.
@@ -306,7 +352,15 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
     with_sched(|sched| {
         let meta = &mut sched.meta;
 
-        if !meta.started || meta.task_count == 0 {
+        if !meta.started {
+            return current_frame;
+        }
+
+        if meta.task_count == 0 {
+            meta.running_slot = None;
+            if !meta.bootstrap_frame.is_null() {
+                return meta.bootstrap_frame;
+            }
             return current_frame;
         }
 
@@ -446,6 +500,25 @@ pub fn unblock_task(task_id: usize) {
             sched.meta.slots[task_id].state = TaskState::Ready;
         }
     });
+}
+
+/// Terminates `task_id`, removing it from the run queue and freeing its slot.
+///
+/// Returns `true` if the task existed and was removed.
+pub fn terminate_task(task_id: usize) -> bool {
+    with_sched(|sched| remove_task(&mut sched.meta, task_id))
+}
+
+/// Terminates the currently running task and forces an immediate reschedule.
+///
+/// This function never returns.
+pub fn exit_current_task() -> ! {
+    let task_id = current_task_id().expect("exit_current_task called outside scheduled task");
+    let _ = terminate_task(task_id);
+    yield_now();
+    loop {
+        core::hint::spin_loop();
+    }
 }
 
 /// Triggers a software timer interrupt to force an immediate reschedule.

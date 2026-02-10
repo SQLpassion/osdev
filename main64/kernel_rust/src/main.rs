@@ -25,7 +25,6 @@ use crate::memory::heap;
 use crate::memory::pmm;
 use crate::memory::vmm;
 use core::fmt::Write;
-use core::sync::atomic::{AtomicBool, Ordering};
 use drivers::keyboard;
 use drivers::screen::{Color, Screen};
 use drivers::serial;
@@ -34,8 +33,6 @@ use drivers::serial;
 /// in the welcome banner.  Written once before the scheduler starts, read
 /// only afterwards — no synchronization needed.
 static mut KERNEL_SIZE: u64 = 0;
-static PATTERN_TASKS_ACTIVE: AtomicBool = AtomicBool::new(false);
-static PATTERN_TASKS_SPAWNED: AtomicBool = AtomicBool::new(false);
 
 const PATTERN_DELAY_SPINS: usize = 500_000;
 const VGA_TEXT_COLS: usize = 80;
@@ -274,31 +271,40 @@ fn execute_command(screen: &mut Screen, line: &str) {
 }
 
 fn run_multitasking_vga_demo(screen: &mut Screen) {
-    spawn_pattern_tasks_once();
-    PATTERN_TASKS_ACTIVE.store(true, Ordering::Release);
+    let task_ids = spawn_pattern_tasks();
 
     writeln!(screen, "Multitasking demo active (rows 22-24). Press q to stop.").unwrap();
     loop {
         let ch = keyboard::read_char_blocking();
         if ch == b'q' || ch == b'Q' {
-            PATTERN_TASKS_ACTIVE.store(false, Ordering::Release);
+            terminate_pattern_tasks(&task_ids);
+            while !pattern_tasks_terminated(&task_ids) {
+                scheduler::yield_now();
+            }
             writeln!(screen, "\nMultitasking demo stopped.").unwrap();
             return;
         }
     }
 }
 
-fn spawn_pattern_tasks_once() {
-    if PATTERN_TASKS_SPAWNED
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        return;
-    }
+fn spawn_pattern_tasks() -> [usize; 3] {
+    [
+        scheduler::spawn(vga_pattern_task_a).expect("failed to spawn VGA pattern task A"),
+        scheduler::spawn(vga_pattern_task_b).expect("failed to spawn VGA pattern task B"),
+        scheduler::spawn(vga_pattern_task_c).expect("failed to spawn VGA pattern task C"),
+    ]
+}
 
-    scheduler::spawn(vga_pattern_task_a).expect("failed to spawn VGA pattern task A");
-    scheduler::spawn(vga_pattern_task_b).expect("failed to spawn VGA pattern task B");
-    scheduler::spawn(vga_pattern_task_c).expect("failed to spawn VGA pattern task C");
+fn pattern_tasks_terminated(task_ids: &[usize; 3]) -> bool {
+    task_ids
+        .iter()
+        .all(|task_id| scheduler::task_frame_ptr(*task_id).is_none())
+}
+
+fn terminate_pattern_tasks(task_ids: &[usize; 3]) {
+    for task_id in task_ids {
+        let _ = scheduler::terminate_task(*task_id);
+    }
 }
 
 fn draw_progress_bar(screen: &mut Screen, row: usize, color: Color, label: u8, progress: usize) {
@@ -321,11 +327,6 @@ fn vga_pattern_task(row: usize, label: u8, color: Color, step: usize) -> ! {
     let mut progress = 0usize;
 
     loop {
-        if !PATTERN_TASKS_ACTIVE.load(Ordering::Acquire) {
-            scheduler::yield_now();
-            continue;
-        }
-
         draw_progress_bar(&mut screen, row, color, label, progress);
         progress = (progress + step) % (VGA_TEXT_COLS + 1);
 
