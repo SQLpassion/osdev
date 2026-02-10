@@ -68,22 +68,15 @@ impl<'a> AppContext<'a> {
     /// Returns None if no input is available.
     #[allow(dead_code)]
     pub fn try_read_char(&mut self) -> Option<u8> {
-        keyboard::poll();
         keyboard::read_char()
     }
 
     /// Read a character (blocking, waits for input).
+    ///
+    /// Uses the keyboard worker's wait-queue so the calling task sleeps
+    /// instead of busy-waiting.
     pub fn read_char(&mut self) -> u8 {
-        loop {
-            keyboard::poll();
-            if let Some(ch) = keyboard::read_char() {
-                return ch;
-            }
-            // Sleep until the next interrupt to avoid busy-waiting
-            unsafe {
-                core::arch::asm!("hlt");
-            }
-        }
+        keyboard::read_char_blocking()
     }
 
     /// Wait for the Enter key to be pressed.

@@ -9,6 +9,9 @@
 use core::panic::PanicInfo;
 use kaos_kernel::arch::interrupts::{self, SavedRegisters};
 use kaos_kernel::scheduler::{self as sched, SpawnError};
+use kaos_kernel::sync::singlewaitqueue::SingleWaitQueue;
+use kaos_kernel::sync::waitqueue::WaitQueue;
+use kaos_kernel::sync::waitqueue_adapter;
 
 #[no_mangle]
 #[link_section = ".text.boot"]
@@ -278,5 +281,80 @@ fn test_request_stop_returns_to_bootstrap_frame_and_stops_scheduler() {
     assert!(
         resumed == new_frame,
         "scheduler should be able to start again after a stop cycle"
+    );
+}
+
+#[test_case]
+fn test_waitqueue_wake_all_returns_all_registered_waiters_once() {
+    let q: WaitQueue<8> = WaitQueue::new();
+
+    assert!(q.register_waiter(1), "register waiter 1 must succeed");
+    assert!(q.register_waiter(3), "register waiter 3 must succeed");
+    assert!(q.register_waiter(6), "register waiter 6 must succeed");
+
+    let mut woke = [usize::MAX; 8];
+    let mut count = 0usize;
+    q.wake_all(|task_id| {
+        woke[count] = task_id;
+        count += 1;
+    });
+
+    assert!(count == 3, "wake_all should wake exactly 3 waiters");
+    assert!(woke[0] == 1, "first woken waiter should be slot 1");
+    assert!(woke[1] == 3, "second woken waiter should be slot 3");
+    assert!(woke[2] == 6, "third woken waiter should be slot 6");
+
+    let mut woke_again = false;
+    q.wake_all(|_| woke_again = true);
+    assert!(
+        !woke_again,
+        "wake_all should clear waiter flags so second wake has no targets"
+    );
+}
+
+#[test_case]
+fn test_single_waitqueue_wake_all_wakes_one_and_clears_slot() {
+    let q = SingleWaitQueue::new();
+    assert!(q.register_waiter(2), "single waiter registration must succeed");
+
+    let mut woke = usize::MAX;
+    q.wake_all(|task_id| woke = task_id);
+    assert!(woke == 2, "single wake_all should wake the registered waiter");
+
+    let mut woke_again = false;
+    q.wake_all(|_| woke_again = true);
+    assert!(
+        !woke_again,
+        "single wake_all should clear waiter slot after first wake"
+    );
+}
+
+#[test_case]
+fn test_waitqueue_adapter_blocks_then_wakes_task() {
+    sched::init();
+
+    let task_a = sched::spawn(dummy_task_a).expect("task A should spawn");
+    let _task_b = sched::spawn(dummy_task_b).expect("task B should spawn");
+    let frame_a = sched::task_frame_ptr(task_a).expect("task A frame should exist");
+
+    let q: WaitQueue<8> = WaitQueue::new();
+    let blocked = waitqueue_adapter::sleep_if_multi(&q, task_a, || true);
+    assert!(blocked, "sleep_if_multi should block when predicate is true");
+
+    sched::start();
+    let mut bootstrap = SavedRegisters::default();
+    let bootstrap_ptr = &mut bootstrap as *mut SavedRegisters;
+
+    let first = sched::on_timer_tick(bootstrap_ptr);
+    assert!(
+        first != frame_a,
+        "blocked task A must not be selected while waitqueue sleep is active"
+    );
+
+    waitqueue_adapter::wake_all_multi(&q);
+    let second = sched::on_timer_tick(first);
+    assert!(
+        second == frame_a,
+        "waking waitqueue must make blocked task A runnable again"
     );
 }
