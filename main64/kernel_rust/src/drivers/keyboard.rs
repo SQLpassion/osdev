@@ -2,8 +2,6 @@
 //!
 //! Handles scan code processing and stores decoded input in a ring buffer.
 
-use core::cell::UnsafeCell;
-
 use crate::arch::port::PortByte;
 use crate::drivers::screen::Screen;
 use crate::scheduler;
@@ -52,10 +50,19 @@ struct KeyboardState {
     left_ctrl: bool,
 }
 
+impl KeyboardState {
+    const fn new() -> Self {
+        Self {
+            shift: false,
+            caps_lock: false,
+            left_ctrl: false,
+        }
+    }
+}
+
 struct Keyboard {
     raw: RingBuffer<RAW_BUFFER_CAPACITY>,
     buffer: RingBuffer<INPUT_BUFFER_CAPACITY>,
-    state: UnsafeCell<KeyboardState>,
 }
 
 impl Keyboard {
@@ -63,24 +70,9 @@ impl Keyboard {
         Self {
             raw: RingBuffer::new(),
             buffer: RingBuffer::new(),
-            state: UnsafeCell::new(KeyboardState {
-                shift: false,
-                caps_lock: false,
-                left_ctrl: false,
-            }),
         }
     }
-
-    /// # Safety
-    /// Caller must ensure no concurrent access to keyboard state.
-    /// Safe in single-threaded kernel context with proper IRQ handling.
-    #[allow(clippy::mut_from_ref)]
-    unsafe fn state_mut(&self) -> &mut KeyboardState {
-        &mut *self.state.get()
-    }
 }
-
-unsafe impl Sync for Keyboard {}
 
 static KEYBOARD: Keyboard = Keyboard::new();
 
@@ -94,10 +86,6 @@ static INPUT_WAITQUEUE: WaitQueue<INPUT_WAITERS_CAPACITY> = WaitQueue::new();
 pub fn init() {
     KEYBOARD.raw.clear();
     KEYBOARD.buffer.clear();
-    let state = unsafe { KEYBOARD.state_mut() };
-    state.shift = false;
-    state.caps_lock = false;
-    state.left_ctrl = false;
 }
 
 /// Handle IRQ1 (keyboard) top half: enqueue raw scancode and wake the
@@ -153,11 +141,13 @@ pub extern "C" fn keyboard_worker_task() -> ! {
         scheduler::yield_now();
     };
 
+    let mut state = KeyboardState::new();
+
     loop {
         // Drain all available raw scancodes.
         let mut decoded_any = false;
         while let Some(code) = KEYBOARD.raw.pop() {
-            handle_scancode(code);
+            handle_scancode(&mut state, code);
             decoded_any = true;
         }
 
@@ -176,16 +166,15 @@ pub extern "C" fn keyboard_worker_task() -> ! {
     }
 }
 
-fn handle_scancode(code: u8) {
+fn handle_scancode(state: &mut KeyboardState, code: u8) {
     if (code & 0x80) != 0 {
-        handle_break(code & 0x7f);
+        handle_break(state, code & 0x7f);
     } else {
-        handle_make(code);
+        handle_make(state, code);
     }
 }
 
-fn handle_break(code: u8) {
-    let state = unsafe { KEYBOARD.state_mut() };
+fn handle_break(state: &mut KeyboardState, code: u8) {
     match code {
         0x1d => state.left_ctrl = false,
         0x2a | 0x36 => state.shift = false,
@@ -193,8 +182,7 @@ fn handle_break(code: u8) {
     }
 }
 
-fn handle_make(code: u8) {
-    let state = unsafe { KEYBOARD.state_mut() };
+fn handle_make(state: &mut KeyboardState, code: u8) {
     match code {
         0x1d => {
             state.left_ctrl = true;

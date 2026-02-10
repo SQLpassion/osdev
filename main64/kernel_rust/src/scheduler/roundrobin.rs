@@ -311,7 +311,13 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
         }
 
         let detected_slot = find_entry_by_frame(meta, &sched.stacks, current_frame);
-        if meta.bootstrap_frame.is_null() && detected_slot.is_none() {
+        if detected_slot.is_none() {
+            // Always update bootstrap_frame to the latest non-task frame.
+            // This is necessary because the boot stack layout may shift
+            // between the initial capture (inside KernelMain) and later
+            // ticks (inside idle_loop after the call), which would leave
+            // bootstrap_frame pointing at a stale IRET frame with
+            // corrupted CS/SS values.
             meta.bootstrap_frame = current_frame;
         }
 
@@ -381,8 +387,11 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
             meta.current_queue_pos = pos;
             meta.running_slot = Some(selected_slot);
             selected_frame
-        } else if let Some(slot) = meta.running_slot {
-            meta.slots[slot].frame_ptr
+        } else if !meta.bootstrap_frame.is_null() {
+            // All tasks are blocked — return to the idle loop so the CPU
+            // can execute `hlt` instead of busy-spinning a blocked task.
+            meta.running_slot = None;
+            meta.bootstrap_frame
         } else {
             meta.running_slot = None;
             current_frame
