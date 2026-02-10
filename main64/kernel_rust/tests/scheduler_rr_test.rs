@@ -7,7 +7,7 @@
 #![reexport_test_harness_main = "test_main"]
 
 use core::panic::PanicInfo;
-use kaos_kernel::arch::interrupts::{self, TrapFrame};
+use kaos_kernel::arch::interrupts::{self, SavedRegisters};
 use kaos_kernel::scheduler::{self as sched, SpawnError};
 
 #[no_mangle]
@@ -47,6 +47,16 @@ extern "C" fn dummy_task_c() -> ! {
 }
 
 #[test_case]
+fn test_start_without_tasks_does_not_enter_running_state() {
+    sched::init();
+    sched::start();
+    assert!(
+        !sched::is_running(),
+        "scheduler must stay stopped when start is called without tasks"
+    );
+}
+
+#[test_case]
 fn test_scheduler_round_robin_pointer_sequence() {
     sched::init();
 
@@ -60,8 +70,8 @@ fn test_scheduler_round_robin_pointer_sequence() {
 
     sched::start();
 
-    let mut bootstrap = TrapFrame::default();
-    let mut current = &mut bootstrap as *mut TrapFrame;
+    let mut bootstrap = SavedRegisters::default();
+    let mut current = &mut bootstrap as *mut SavedRegisters;
 
     current = sched::on_timer_tick(current);
     assert!(current == frame_a, "first timer tick should switch to task A");
@@ -114,10 +124,10 @@ fn test_task_frame_iret_defaults_are_kernel_mode() {
     let task = sched::spawn(dummy_task_a).expect("task should spawn");
     let frame = sched::task_frame_ptr(task).expect("task frame should exist") as usize;
 
-    let iret_ptr = frame + core::mem::size_of::<TrapFrame>();
+    let iret_ptr = frame + core::mem::size_of::<SavedRegisters>();
     // SAFETY:
     // - `task_frame_ptr` points into scheduler-owned stack memory.
-    // - Initial frame layout writes `InterruptStackFrame` directly behind `TrapFrame`.
+    // - Initial frame layout writes `InterruptStackFrame` directly behind `SavedRegisters`.
     let iret = unsafe {
         &*(iret_ptr as *const kaos_kernel::arch::interrupts::InterruptStackFrame)
     };
@@ -143,8 +153,8 @@ fn test_scheduler_recovers_when_current_frame_slot_mismatches_expected_slot() {
 
     sched::start();
 
-    let mut bootstrap = TrapFrame::default();
-    let mut current = &mut bootstrap as *mut TrapFrame;
+    let mut bootstrap = SavedRegisters::default();
+    let mut current = &mut bootstrap as *mut SavedRegisters;
 
     // First tick selects A.
     current = sched::on_timer_tick(current);
@@ -175,8 +185,8 @@ fn test_scheduler_mismatch_fallback_reselects_valid_task_frame() {
 
     sched::start();
 
-    let mut bootstrap = TrapFrame::default();
-    let bootstrap_ptr = &mut bootstrap as *mut TrapFrame;
+    let mut bootstrap = SavedRegisters::default();
+    let bootstrap_ptr = &mut bootstrap as *mut SavedRegisters;
 
     // First tick enters task A.
     let _ = sched::on_timer_tick(bootstrap_ptr);
@@ -198,8 +208,8 @@ fn test_unmapped_current_frame_does_not_clobber_saved_task_context() {
 
     sched::start();
 
-    let mut bootstrap = TrapFrame::default();
-    let bootstrap_ptr = &mut bootstrap as *mut TrapFrame;
+    let mut bootstrap = SavedRegisters::default();
+    let bootstrap_ptr = &mut bootstrap as *mut SavedRegisters;
 
     // First tick switches into task A.
     let current = sched::on_timer_tick(bootstrap_ptr);
@@ -223,8 +233,8 @@ fn test_request_stop_returns_to_bootstrap_frame_and_stops_scheduler() {
     let frame_a = sched::task_frame_ptr(task_a).expect("task A frame should exist");
     sched::start();
 
-    let mut bootstrap = TrapFrame::default();
-    let bootstrap_ptr = &mut bootstrap as *mut TrapFrame;
+    let mut bootstrap = SavedRegisters::default();
+    let bootstrap_ptr = &mut bootstrap as *mut SavedRegisters;
 
     let running = sched::on_timer_tick(bootstrap_ptr);
     assert!(running == frame_a, "first timer tick should enter task A");

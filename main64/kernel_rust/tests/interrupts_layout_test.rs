@@ -12,7 +12,7 @@
 use core::mem::{size_of, MaybeUninit};
 use core::panic::PanicInfo;
 use core::ptr::addr_of;
-use kaos_kernel::arch::interrupts::{self, TrapFrame};
+use kaos_kernel::arch::interrupts::{self, SavedRegisters};
 
 /// Entry point for the interrupt-layout test kernel.
 #[no_mangle]
@@ -36,11 +36,11 @@ fn panic(info: &PanicInfo) -> ! {
 #[test_case]
 fn test_trap_frame_size_and_offsets() {
     assert!(
-        size_of::<TrapFrame>() == 15 * 8,
-        "TrapFrame must contain exactly 15 saved GPRs"
+        size_of::<SavedRegisters>() == 15 * 8,
+        "SavedRegisters must contain exactly 15 saved GPRs"
     );
 
-    let tf = MaybeUninit::<TrapFrame>::uninit();
+    let tf = MaybeUninit::<SavedRegisters>::uninit();
     let base = tf.as_ptr() as usize;
 
     // SAFETY:

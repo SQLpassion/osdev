@@ -58,7 +58,7 @@ const VGA_COLS: usize = 80;
 /// - Any change requires synchronized updates in assembly and tests.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
-pub struct TrapFrame {
+pub struct SavedRegisters {
     pub r15: u64,
     pub r14: u64,
     pub r13: u64,
@@ -162,7 +162,7 @@ struct IdtPointer {
     base: u64,
 }
 
-type IrqHandler = fn(u8, &mut TrapFrame) -> *mut TrapFrame;
+type IrqHandler = fn(u8, &mut SavedRegisters) -> *mut SavedRegisters;
 
 /// Holds the IDT and IRQ handler table behind `UnsafeCell` to avoid
 /// `static mut` (which permits aliased `&mut` references and is unsound).
@@ -289,7 +289,7 @@ const fn hex_nibble_ascii(nibble: u8) -> u8 {
     }
 }
 
-fn write_exception_banner(vector: u8, error_code: u64, frame: *const TrapFrame) {
+fn write_exception_banner(vector: u8, error_code: u64, frame: *const SavedRegisters) {
     let mut line = [b' '; VGA_COLS];
     line[0] = b'!';
     line[1] = b'!';
@@ -341,10 +341,10 @@ fn write_exception_banner(vector: u8, error_code: u64, frame: *const TrapFrame) 
 ///
 /// Called from assembly stubs for faults we currently treat as unrecoverable.
 #[no_mangle]
-pub extern "C" fn exception_handler_rust(vector: u8, error_code: u64, frame: *const TrapFrame) -> ! {
+pub extern "C" fn exception_handler_rust(vector: u8, error_code: u64, frame: *const SavedRegisters) -> ! {
     let has_error_code = exception_has_error_code(vector);
     let iret_ptr = (frame as usize)
-        + size_of::<TrapFrame>()
+        + size_of::<SavedRegisters>()
         + if has_error_code { size_of::<u64>() } else { 0 };
     let iret_frame = unsafe {
         // SAFETY:
@@ -392,12 +392,12 @@ fn clear_irq_handlers() {
     }
 }
 
-fn dispatch_irq(vector: u8, frame: &mut TrapFrame) -> *mut TrapFrame {
+fn dispatch_irq(vector: u8, frame: &mut SavedRegisters) -> *mut SavedRegisters {
     let handler = unsafe {
         let handlers = &*STATE.handlers.get();
         handlers[vector as usize]
     };
-    let mut next_frame = frame as *mut TrapFrame;
+    let mut next_frame = frame as *mut SavedRegisters;
     if let Some(handler) = handler {
         next_frame = handler(vector, frame);
     }
@@ -513,7 +513,7 @@ pub fn init_periodic_timer(hz: u32) {
 ///   re-enable interrupts until after `iretq`.
 /// - `vector` must be a valid IRQ vector number (`IRQ_BASE..IRQ_BASE + 16`).
 #[no_mangle]
-pub unsafe extern "C" fn irq_rust_dispatch(vector: u8, frame: *mut TrapFrame) -> *mut TrapFrame {
+pub unsafe extern "C" fn irq_rust_dispatch(vector: u8, frame: *mut SavedRegisters) -> *mut SavedRegisters {
     if !(IRQ_BASE..IRQ_BASE + 16).contains(&vector) {
         return frame;
     }
@@ -530,7 +530,7 @@ pub unsafe extern "C" fn irq_rust_dispatch(vector: u8, frame: *mut TrapFrame) ->
 }
 
 const _: () = {
-    assert!(size_of::<TrapFrame>() == 15 * 8);
+    assert!(size_of::<SavedRegisters>() == 15 * 8);
 };
 
 const _: () = {
