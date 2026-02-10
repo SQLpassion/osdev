@@ -53,3 +53,6 @@ name = "scheduler_rr_test"
 
 [[test]]
 name = "screen_test"
+
+[[test]]
+name = "keyboard_e2e_test"

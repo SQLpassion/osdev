@@ -9,6 +9,7 @@ use crate::sync::ringbuffer::RingBuffer;
 use crate::sync::singlewaitqueue::SingleWaitQueue;
 use crate::sync::waitqueue::WaitQueue;
 use crate::sync::waitqueue_adapter;
+use crate::sync::spinlock::SpinLock;
 
 /// Keyboard controller ports
 const KYBRD_CTRL_STATS_REG: u16 = 0x64;
@@ -75,6 +76,7 @@ impl Keyboard {
 }
 
 static KEYBOARD: Keyboard = Keyboard::new();
+static KEYBOARD_STATE: SpinLock<KeyboardState> = SpinLock::new(KeyboardState::new());
 
 /// Wakes the keyboard worker task when raw scancodes are available.
 static RAW_WAITQUEUE: SingleWaitQueue = SingleWaitQueue::new();
@@ -86,6 +88,8 @@ static INPUT_WAITQUEUE: WaitQueue<INPUT_WAITERS_CAPACITY> = WaitQueue::new();
 pub fn init() {
     KEYBOARD.raw.clear();
     KEYBOARD.buffer.clear();
+    let mut state = KEYBOARD_STATE.lock();
+    *state = KeyboardState::new();
 }
 
 /// Handle IRQ1 (keyboard) top half: enqueue raw scancode and wake the
@@ -97,6 +101,14 @@ pub fn handle_irq() {
     }
 
     let code = unsafe { PortByte::new(KYBRD_ENC_INPUT_BUF).read() };
+    enqueue_raw_scancode(code);
+}
+
+/// Enqueue a raw keyboard scancode and wake the keyboard worker task.
+///
+/// This is used by the IRQ top-half and by integration tests that inject
+/// synthetic scancodes to exercise the full decode pipeline.
+pub fn enqueue_raw_scancode(code: u8) {
     let _ = KEYBOARD.raw.push(code);
     waitqueue_adapter::wake_all_single(&RAW_WAITQUEUE);
 }
@@ -141,20 +153,9 @@ pub extern "C" fn keyboard_worker_task() -> ! {
         scheduler::yield_now();
     };
 
-    let mut state = KeyboardState::new();
-
     loop {
         // Drain all available raw scancodes.
-        let mut decoded_any = false;
-        while let Some(code) = KEYBOARD.raw.pop() {
-            handle_scancode(&mut state, code);
-            decoded_any = true;
-        }
-
-        // If we decoded at least one character, wake consumer tasks.
-        if decoded_any && !KEYBOARD.buffer.is_empty() {
-            waitqueue_adapter::wake_all_multi(&INPUT_WAITQUEUE);
-        }
+        process_pending_scancodes();
 
         // Sleep until the IRQ handler enqueues the next scancode.
         // `sleep_if` checks `is_empty()` with interrupts disabled so an IRQ
@@ -164,6 +165,26 @@ pub extern "C" fn keyboard_worker_task() -> ! {
             scheduler::yield_now();
         }
     }
+}
+
+/// Execute one keyboard bottom-half iteration: drain raw scancodes, decode
+/// into characters, and wake waiting consumers when input became available.
+///
+/// Returns `true` when at least one raw scancode was processed.
+pub fn process_pending_scancodes() -> bool {
+    let mut state = KEYBOARD_STATE.lock();
+    let mut processed_any = false;
+
+    while let Some(code) = KEYBOARD.raw.pop() {
+        handle_scancode(&mut state, code);
+        processed_any = true;
+    }
+
+    if processed_any && !KEYBOARD.buffer.is_empty() {
+        waitqueue_adapter::wake_all_multi(&INPUT_WAITQUEUE);
+    }
+
+    processed_any
 }
 
 fn handle_scancode(state: &mut KeyboardState, code: u8) {
