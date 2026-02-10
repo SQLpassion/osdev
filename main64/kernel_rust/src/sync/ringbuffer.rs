@@ -166,6 +166,12 @@ impl<const N: usize> RingBuffer<N> {
     }
 }
 
+impl<const N: usize> Default for RingBuffer<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // SAFETY: All mutable access to `buf` is synchronized via atomic indices —
 // the producer writes only to `buf[head_producer]` before publishing, and
 // consumers read only slots between `tail_consumer` and `head_producer`.
