@@ -52,7 +52,19 @@ name = "interrupts_layout_test"
 name = "scheduler_rr_test"
 
 [[test]]
+name = "scheduler_not_initialized_test"
+
+[[test]]
+name = "scheduler_invalid_frame_death_test"
+
+[[test]]
 name = "screen_test"
 
 [[test]]
 name = "keyboard_e2e_test"
+
+[[test]]
+name = "keyboard_panic_contract_test"
+
+[[test]]
+name = "page_fault_death_test"

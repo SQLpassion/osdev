@@ -28,6 +28,11 @@ fn panic(info: &PanicInfo) -> ! {
     kaos_kernel::testing::test_panic_handler(info)
 }
 
+/// Contract: print char wrap at last cell keeps cursor in bounds.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "print char wrap at last cell keeps cursor in bounds".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_print_char_wrap_at_last_cell_keeps_cursor_in_bounds() {
     let mut screen = Screen::new();
@@ -46,6 +51,11 @@ fn test_print_char_wrap_at_last_cell_keeps_cursor_in_bounds() {
     );
 }
 
+/// Contract: print char wrap writes to last row after scroll.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "print char wrap writes to last row after scroll".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_print_char_wrap_writes_to_last_row_after_scroll() {
     let mut screen = Screen::new();

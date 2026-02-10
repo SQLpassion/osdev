@@ -35,6 +35,11 @@ fn panic(info: &PanicInfo) -> ! {
 // Integration Tests
 // ============================================================================
 
+/// Contract: kernel boots.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "kernel boots".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_kernel_boots() {
     // If we get here, the kernel booted successfully!
@@ -42,10 +47,20 @@ fn test_kernel_boots() {
 
 #[test_case]
 #[allow(clippy::eq_op)]
+/// Contract: trivial arithmetic assertion.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "trivial arithmetic assertion".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 fn test_trivial_assertion() {
     assert_eq!(1 + 1, 2);
 }
 
+/// Contract: vga buffer address.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "vga buffer address".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_vga_buffer_address() {
     // Verify the VGA buffer address is correct for higher-half kernel

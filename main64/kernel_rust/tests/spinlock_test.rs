@@ -34,6 +34,11 @@ fn panic(info: &PanicInfo) -> ! {
     kaos_kernel::testing::test_panic_handler(info)
 }
 
+/// Contract: spinlock basic mutation.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "spinlock basic mutation".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_spinlock_basic_mutation() {
     static LOCK: SpinLock<usize> = SpinLock::new(0);
@@ -47,6 +52,11 @@ fn test_spinlock_basic_mutation() {
     assert!(*guard == 1, "spinlock should protect shared state");
 }
 
+/// Contract: spinlock preserves interrupt state when disabled.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "spinlock preserves interrupt state when disabled".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_spinlock_preserves_interrupt_state_when_disabled() {
     static LOCK: SpinLock<usize> = SpinLock::new(0);
@@ -68,6 +78,11 @@ fn test_spinlock_preserves_interrupt_state_when_disabled() {
     );
 }
 
+/// Contract: spinlock preserves interrupt state when enabled.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "spinlock preserves interrupt state when enabled".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_spinlock_preserves_interrupt_state_when_enabled() {
     static LOCK: SpinLock<usize> = SpinLock::new(0);

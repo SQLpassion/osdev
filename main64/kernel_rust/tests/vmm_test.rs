@@ -36,17 +36,32 @@ fn panic(info: &PanicInfo) -> ! {
     kaos_kernel::testing::test_panic_handler(info)
 }
 
+/// Contract: vmm smoke once.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "vmm smoke once".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_vmm_smoke_once() {
     assert!(vmm::test_vmm(), "vmm::test_vmm() should succeed");
 }
 
+/// Contract: vmm smoke twice.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "vmm smoke twice".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_vmm_smoke_twice() {
     assert!(vmm::test_vmm(), "first vmm::test_vmm() run should succeed");
     assert!(vmm::test_vmm(), "second vmm::test_vmm() run should succeed");
 }
 
+/// Contract: non present fault allocates and maps page.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "non present fault allocates and maps page".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_non_present_fault_allocates_and_maps_page() {
     const TEST_VA: u64 = 0xFFFF_8091_2345_6000;
@@ -65,6 +80,11 @@ fn test_non_present_fault_allocates_and_maps_page() {
     vmm::unmap_virtual_address(TEST_VA);
 }
 
+/// Contract: faulted page is zero initialized.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "faulted page is zero initialized".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_faulted_page_is_zero_initialized() {
     const TEST_VA: u64 = 0xFFFF_8092_3456_7000;
@@ -98,6 +118,11 @@ fn test_faulted_page_is_zero_initialized() {
     vmm::unmap_virtual_address(TEST_VA);
 }
 
+/// Contract: unmap absent address is noop.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "unmap absent address is noop".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_unmap_absent_address_is_noop() {
     const TEST_VA: u64 = 0xFFFF_8093_4567_8000;
@@ -116,6 +141,11 @@ fn test_unmap_absent_address_is_noop() {
     vmm::unmap_virtual_address(TEST_VA);
 }
 
+/// Contract: protection fault returns error in checked path.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "protection fault returns error in checked path".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_protection_fault_returns_error_in_checked_path() {
     const TEST_VA: u64 = 0xFFFF_8094_5678_9000;
@@ -133,6 +163,11 @@ fn test_protection_fault_returns_error_in_checked_path() {
     );
 }
 
+/// Contract: try map rejects overwrite of existing mapping.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "try map rejects overwrite of existing mapping".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_try_map_rejects_overwrite_of_existing_mapping() {
     const TEST_VA: u64 = 0xFFFF_8095_6789_A000;
@@ -163,6 +198,11 @@ fn test_try_map_rejects_overwrite_of_existing_mapping() {
     pmm::with_pmm(|mgr| assert!(mgr.release_pfn(frame_b.pfn)));
 }
 
+/// Contract: unmap releases frame back to pmm.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "unmap releases frame back to pmm".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_unmap_releases_frame_back_to_pmm() {
     const TEST_VA: u64 = 0xFFFF_8096_789A_B000;

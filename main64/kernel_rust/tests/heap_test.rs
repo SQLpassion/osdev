@@ -42,6 +42,11 @@ fn panic(info: &PanicInfo) -> ! {
     kaos_kernel::testing::test_panic_handler(info)
 }
 
+/// Contract: heap alloc free round trip.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "heap alloc free round trip".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_heap_alloc_free_round_trip() {
     heap::init(false);
@@ -64,6 +69,11 @@ fn test_heap_alloc_free_round_trip() {
     heap::free(ptr);
 }
 
+/// Contract: heap reuse after free.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "heap reuse after free".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_heap_reuse_after_free() {
     heap::init(false);
@@ -82,6 +92,11 @@ fn test_heap_reuse_after_free() {
     heap::free(ptr3);
 }
 
+/// Contract: heap merge allows large alloc.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "heap merge allows large alloc".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_heap_merge_allows_large_alloc() {
     heap::init(false);
@@ -100,6 +115,11 @@ fn test_heap_merge_allows_large_alloc() {
     heap::free(ptr3);
 }
 
+/// Contract: heap alignment for small allocs.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "heap alignment for small allocs".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_heap_alignment_for_small_allocs() {
     heap::init(false);
@@ -117,6 +137,11 @@ fn test_heap_alignment_for_small_allocs() {
     heap::free(ptr3);
 }
 
+/// Contract: heap large allocation requires growth.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "heap large allocation requires growth".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_heap_large_allocation_requires_growth() {
     heap::init(false);
@@ -136,6 +161,11 @@ fn test_heap_large_allocation_requires_growth() {
     heap::free(ptr);
 }
 
+/// Contract: heap large allocation requires multiple growth steps.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "heap large allocation requires multiple growth steps".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_heap_large_allocation_requires_multiple_growth_steps() {
     heap::init(false);
@@ -158,6 +188,11 @@ fn test_heap_large_allocation_requires_multiple_growth_steps() {
     heap::free(ptr);
 }
 
+/// Contract: heap overflow request returns null and heap remains usable.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "heap overflow request returns null and heap remains usable".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_heap_overflow_request_returns_null_and_heap_remains_usable() {
     heap::init(false);
@@ -175,6 +210,11 @@ fn test_heap_overflow_request_returns_null_and_heap_remains_usable() {
     heap::free(ptr);
 }
 
+/// Contract: heap rejects invalid free and remains usable.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "heap rejects invalid free and remains usable".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_heap_rejects_invalid_free_and_remains_usable() {
     heap::init(false);
@@ -195,6 +235,11 @@ fn test_heap_rejects_invalid_free_and_remains_usable() {
     heap::free(ptr2);
 }
 
+/// Contract: heap rejects double free and remains usable.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "heap rejects double free and remains usable".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_heap_rejects_double_free_and_remains_usable() {
     heap::init(false);
@@ -212,6 +257,11 @@ fn test_heap_rejects_double_free_and_remains_usable() {
     heap::free(ptr2);
 }
 
+/// Contract: heap growth is bounded and reports oom.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "heap growth is bounded and reports oom".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_heap_growth_is_bounded_and_reports_oom() {
     heap::init(false);
@@ -229,6 +279,11 @@ fn test_heap_growth_is_bounded_and_reports_oom() {
     heap::free(small);
 }
 
+/// Contract: heap debug output toggle round trip.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "heap debug output toggle round trip".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_heap_debug_output_toggle_round_trip() {
     heap::init(false);
@@ -252,6 +307,11 @@ fn test_heap_debug_output_toggle_round_trip() {
     );
 }
 
+/// Contract: heap preserves interrupt state when disabled.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "heap preserves interrupt state when disabled".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_heap_preserves_interrupt_state_when_disabled() {
     heap::init(false);
@@ -270,6 +330,11 @@ fn test_heap_preserves_interrupt_state_when_disabled() {
     );
 }
 
+/// Contract: spinlock basic mutation.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "spinlock basic mutation".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_spinlock_basic_mutation() {
     static LOCK: SpinLock<usize> = SpinLock::new(0);
@@ -283,6 +348,11 @@ fn test_spinlock_basic_mutation() {
     assert!(*guard == 1, "spinlock should protect shared state");
 }
 
+/// Contract: global allocator round trip.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "global allocator round trip".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_global_allocator_round_trip() {
     heap::init(false);
@@ -302,6 +372,11 @@ fn test_global_allocator_round_trip() {
     }
 }
 
+/// Contract: global allocator supports overaligned layout.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "global allocator supports overaligned layout".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_global_allocator_supports_overaligned_layout() {
     heap::init(false);
@@ -326,6 +401,11 @@ fn test_global_allocator_supports_overaligned_layout() {
     }
 }
 
+/// Contract: rust vec uses kernel heap.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "rust vec uses kernel heap".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_rust_vec_uses_kernel_heap() {
     heap::init(false);

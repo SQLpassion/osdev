@@ -49,6 +49,11 @@ extern "C" fn dummy_task_c() -> ! {
     }
 }
 
+/// Contract: start without tasks does not enter running state.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "start without tasks does not enter running state".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_start_without_tasks_does_not_enter_running_state() {
     sched::init();
@@ -59,6 +64,11 @@ fn test_start_without_tasks_does_not_enter_running_state() {
     );
 }
 
+/// Contract: scheduler api preserves enabled interrupt state.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "scheduler api preserves enabled interrupt state".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_scheduler_api_preserves_enabled_interrupt_state() {
     interrupts::enable();
@@ -79,6 +89,11 @@ fn test_scheduler_api_preserves_enabled_interrupt_state() {
     interrupts::disable();
 }
 
+/// Contract: scheduler round robin pointer sequence.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "scheduler round robin pointer sequence".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_scheduler_round_robin_pointer_sequence() {
     sched::init();
@@ -109,6 +124,11 @@ fn test_scheduler_round_robin_pointer_sequence() {
     assert!(current == frame_a, "fourth timer tick should wrap to task A");
 }
 
+/// Contract: scheduler capacity limit.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "scheduler capacity limit".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_scheduler_capacity_limit() {
     sched::init();
@@ -124,6 +144,11 @@ fn test_scheduler_capacity_limit() {
     );
 }
 
+/// Contract: spawn allocates distinct task frames.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "spawn allocates distinct task frames".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_spawn_allocates_distinct_task_frames() {
     sched::init();
@@ -141,6 +166,11 @@ fn test_spawn_allocates_distinct_task_frames() {
     assert!(frame_a != frame_c, "task A and C frames must differ");
 }
 
+/// Contract: task frame iret defaults are kernel mode.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "task frame iret defaults are kernel mode".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_task_frame_iret_defaults_are_kernel_mode() {
     sched::init();
@@ -162,6 +192,11 @@ fn test_task_frame_iret_defaults_are_kernel_mode() {
     );
 }
 
+/// Contract: scheduler recovers when current frame slot mismatches expected slot.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "scheduler recovers when current frame slot mismatches expected slot".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_scheduler_recovers_when_current_frame_slot_mismatches_expected_slot() {
     sched::init();
@@ -197,6 +232,11 @@ fn test_scheduler_recovers_when_current_frame_slot_mismatches_expected_slot() {
     assert!(current == frame_c, "round robin should continue with task C");
 }
 
+/// Contract: scheduler mismatch fallback reselects valid task frame.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "scheduler mismatch fallback reselects valid task frame".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_scheduler_mismatch_fallback_reselects_valid_task_frame() {
     sched::init();
@@ -222,6 +262,11 @@ fn test_scheduler_mismatch_fallback_reselects_valid_task_frame() {
     );
 }
 
+/// Contract: unmapped current frame does not clobber saved task context.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "unmapped current frame does not clobber saved task context".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_unmapped_current_frame_does_not_clobber_saved_task_context() {
     sched::init();
@@ -248,6 +293,11 @@ fn test_unmapped_current_frame_does_not_clobber_saved_task_context() {
     );
 }
 
+/// Contract: request stop returns to bootstrap frame and stops scheduler.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "request stop returns to bootstrap frame and stops scheduler".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_request_stop_returns_to_bootstrap_frame_and_stops_scheduler() {
     sched::init();
@@ -284,6 +334,57 @@ fn test_request_stop_returns_to_bootstrap_frame_and_stops_scheduler() {
     );
 }
 
+/// Contract: scheduler reinit clears blocked state from previous run.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "scheduler reinit clears blocked state from previous run".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_scheduler_reinit_clears_blocked_state_from_previous_run() {
+    sched::init();
+
+    let task_a = sched::spawn(dummy_task_a).expect("task A should spawn");
+    let task_b = sched::spawn(dummy_task_b).expect("task B should spawn");
+    let frame_a = sched::task_frame_ptr(task_a).expect("task A frame should exist");
+    let frame_b = sched::task_frame_ptr(task_b).expect("task B frame should exist");
+
+    sched::block_task(task_a);
+    sched::start();
+
+    let mut bootstrap = SavedRegisters::default();
+    let bootstrap_ptr = &mut bootstrap as *mut SavedRegisters;
+
+    let first = sched::on_timer_tick(bootstrap_ptr);
+    assert!(
+        first == frame_b,
+        "blocked task A must not be selected in first scheduler run"
+    );
+    assert!(first != frame_a, "sanity check: blocked frame must differ");
+
+    sched::request_stop();
+    let _ = sched::on_timer_tick(first);
+    assert!(
+        !sched::is_running(),
+        "scheduler should be stopped after stop request"
+    );
+
+    sched::init();
+    let new_task = sched::spawn(dummy_task_a).expect("task spawn after re-init must work");
+    let new_frame = sched::task_frame_ptr(new_task).expect("new frame should exist");
+    sched::start();
+
+    let resumed = sched::on_timer_tick(bootstrap_ptr);
+    assert!(
+        resumed == new_frame,
+        "re-init must start from clean state without stale blocked tasks"
+    );
+}
+
+/// Contract: waitqueue wake all returns all registered waiters once.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "waitqueue wake all returns all registered waiters once".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_waitqueue_wake_all_returns_all_registered_waiters_once() {
     let q: WaitQueue<8> = WaitQueue::new();
@@ -312,6 +413,11 @@ fn test_waitqueue_wake_all_returns_all_registered_waiters_once() {
     );
 }
 
+/// Contract: single waitqueue wake all wakes one and clears slot.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "single waitqueue wake all wakes one and clears slot".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_single_waitqueue_wake_all_wakes_one_and_clears_slot() {
     let q = SingleWaitQueue::new();
@@ -329,6 +435,53 @@ fn test_single_waitqueue_wake_all_wakes_one_and_clears_slot() {
     );
 }
 
+/// Contract: waitqueue register out of range is rejected.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "waitqueue register out of range is rejected".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_waitqueue_register_out_of_range_is_rejected() {
+    let q: WaitQueue<4> = WaitQueue::new();
+    assert!(
+        !q.register_waiter(4),
+        "register_waiter must reject task_id == capacity"
+    );
+    assert!(
+        !q.register_waiter(7),
+        "register_waiter must reject task_id > capacity"
+    );
+}
+
+/// Contract: single waitqueue register second waiter is rejected.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "single waitqueue register second waiter is rejected".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_single_waitqueue_register_second_waiter_is_rejected() {
+    let q = SingleWaitQueue::new();
+
+    assert!(q.register_waiter(1), "first waiter must register");
+    assert!(
+        !q.register_waiter(2),
+        "different second waiter must be rejected while slot is occupied"
+    );
+    assert!(
+        q.register_waiter(1),
+        "same waiter id may re-register while still owner"
+    );
+
+    let mut woke = usize::MAX;
+    q.wake_all(|task_id| woke = task_id);
+    assert!(woke == 1, "wake_all must wake the originally registered waiter");
+}
+
+/// Contract: waitqueue adapter blocks then wakes task.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "waitqueue adapter blocks then wakes task".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_waitqueue_adapter_blocks_then_wakes_task() {
     sched::init();
