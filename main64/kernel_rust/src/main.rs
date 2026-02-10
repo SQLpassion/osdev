@@ -29,6 +29,11 @@ use drivers::keyboard;
 use drivers::screen::{Color, Screen};
 use drivers::serial;
 
+/// Kernel size stored by `KernelMain` so that the REPL task can display it
+/// in the welcome banner.  Written once before the scheduler starts, read
+/// only afterwards — no synchronization needed.
+static mut KERNEL_SIZE: u64 = 0;
+
 /// Kernel entry point - called from bootloader (kaosldr_64)
 ///
 /// The function signature matches the C version:
@@ -43,6 +48,10 @@ pub extern "C" fn KernelMain(kernel_size: u64) -> ! {
     serial::init();
     debugln!("KAOS Rust Kernel starting...");
     debugln!("Kernel size: {} bytes", kernel_size);
+
+    // Store kernel size for the REPL task banner.
+    // SAFETY: Written once before any task is spawned; read-only afterwards.
+    unsafe { KERNEL_SIZE = kernel_size; }
 
     // Initialize the Physical Memory Manager
     pmm::init(true);
@@ -69,14 +78,47 @@ pub extern "C" fn KernelMain(kernel_size: u64) -> ! {
     interrupts::init_periodic_timer(250);
 
     keyboard::init();
-    interrupts::enable();
-    debugln!("Interrupts enabled");
+    debugln!("Keyboard initialized");
 
-    // Initialize the screen
+    // Initialize the scheduler and spawn the system tasks.
+    // Interrupts stay disabled until the scheduler is fully set up so the
+    // first timer tick sees a consistent state.
+    scheduler::init();
+    scheduler::spawn(keyboard::keyboard_worker_task)
+        .expect("failed to spawn keyboard worker task");
+    scheduler::spawn(repl_task)
+        .expect("failed to spawn REPL task");
+    scheduler::start();
+    debugln!("Scheduler started with keyboard worker + REPL tasks");
+
+    // Enable interrupts — the first timer tick will preempt into a task.
+    interrupts::enable();
+
+    // Idle loop: the CPU halts until each timer interrupt.  The scheduler
+    // selects a ready task on every tick; when all tasks are blocked the
+    // CPU stays here in low-power halt.
+    idle_loop()
+}
+
+/// Low-power idle loop entered after the scheduler is started.
+fn idle_loop() -> ! {
+    loop {
+        unsafe {
+            core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
+        }
+    }
+}
+
+/// REPL task entry point — runs as a scheduled kernel task.
+///
+/// Creates its own `Screen` instance (VGA MMIO wrapper) and enters the
+/// interactive command prompt loop.
+extern "C" fn repl_task() -> ! {
     let mut screen = Screen::new();
     screen.clear();
 
     // Print welcome message
+    let kernel_size = unsafe { KERNEL_SIZE };
     screen.set_color(Color::LightGreen);
     writeln!(screen, "========================================").unwrap();
     writeln!(screen, "    KAOS - Klaus' Operating System").unwrap();
@@ -86,7 +128,6 @@ pub extern "C" fn KernelMain(kernel_size: u64) -> ! {
     writeln!(screen, "Kernel loaded successfully!").unwrap();
     writeln!(screen, "Kernel size: {} bytes\n", kernel_size).unwrap();
 
-    // Execute the command prompt loop
     command_prompt_loop(&mut screen);
 }
 
@@ -130,7 +171,6 @@ fn execute_command(screen: &mut Screen, line: &str) {
             writeln!(screen, "  pmm [n]         - run PMM self-test (default n=2048)").unwrap();
             writeln!(screen, "  vmmtest [--debug] - run VMM smoke test").unwrap();
             writeln!(screen, "  heaptest        - run heap self-test").unwrap();
-            writeln!(screen, "  rrdemo          - start kernel round-robin demo").unwrap();
             writeln!(screen, "  shutdown        - shutdown the system").unwrap();
         }
         "echo" => {
@@ -216,11 +256,6 @@ fn execute_command(screen: &mut Screen, line: &str) {
         }
         "heaptest" => {
             heap::run_self_test(screen);
-        }
-        "rrdemo" => {
-            writeln!(screen, "Starting round-robin demo (VGA rows 17-20, press 'q' to quit)...").unwrap();
-            scheduler::start_round_robin_demo();
-            writeln!(screen, "Round-robin demo stopped. Back in REPL.").unwrap();
         }
         _ => {
             writeln!(screen, "Unknown command: {}", cmd).unwrap();

@@ -33,10 +33,23 @@ pub enum SpawnError {
     CapacityExceeded,
 }
 
+/// Lifecycle state of a scheduled task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum TaskState {
+    /// Task is eligible for scheduling.
+    Ready,
+    /// Task is the one currently executing on the CPU.
+    Running,
+    /// Task is waiting for an external event (e.g. keyboard input).
+    Blocked,
+}
+
 /// One slot in the static task table.
 #[derive(Clone, Copy)]
 struct TaskEntry {
     used: bool,
+    state: TaskState,
     frame_ptr: *mut SavedRegisters,
 }
 
@@ -45,6 +58,7 @@ impl TaskEntry {
     const fn empty() -> Self {
         Self {
             used: false,
+            state: TaskState::Ready,
             frame_ptr: ptr::null_mut(),
         }
     }
@@ -253,6 +267,7 @@ pub fn spawn(entry: KernelTaskFn) -> Result<usize, SpawnError> {
         let frame_ptr = build_initial_task_frame(&mut sched.stacks, slot_idx, entry);
         sched.meta.slots[slot_idx] = TaskEntry {
             used: true,
+            state: TaskState::Ready,
             frame_ptr,
         };
         sched.meta.run_queue[sched.meta.task_count] = slot_idx;
@@ -263,6 +278,7 @@ pub fn spawn(entry: KernelTaskFn) -> Result<usize, SpawnError> {
 }
 
 /// Requests a cooperative scheduler stop on the next timer tick.
+#[allow(dead_code)]
 pub fn request_stop() {
     with_sched(|sched| {
         if sched.meta.started {
@@ -272,6 +288,7 @@ pub fn request_stop() {
 }
 
 /// Returns whether the scheduler is currently active.
+#[allow(dead_code)]
 pub fn is_running() -> bool {
     with_sched(|sched| sched.meta.started)
 }
@@ -342,6 +359,12 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
         for step in 0..meta.task_count {
             let pos = (search_start_pos + step) % meta.task_count;
             let slot = meta.run_queue[pos];
+
+            // Skip blocked tasks — they are waiting for an external event.
+            if meta.slots[slot].state == TaskState::Blocked {
+                continue;
+            }
+
             let frame = meta.slots[slot].frame_ptr;
 
             if meta.slots[slot].is_frame_within_stack(&sched.stacks, slot, frame) {
@@ -381,8 +404,42 @@ pub fn task_frame_ptr(task_id: usize) -> Option<*mut SavedRegisters> {
     })
 }
 
+/// Returns the slot index of the currently running task, if any.
+pub fn current_task_id() -> Option<usize> {
+    with_sched(|sched| sched.meta.running_slot)
+}
+
+/// Marks the task in `task_id` as [`TaskState::Blocked`].
+///
+/// A blocked task is skipped by the round-robin selector until it is
+/// unblocked via [`unblock_task`].
+pub fn block_task(task_id: usize) {
+    with_sched(|sched| {
+        if task_id < MAX_TASKS
+            && sched.meta.slots[task_id].used
+            && sched.meta.slots[task_id].state != TaskState::Blocked
+        {
+            sched.meta.slots[task_id].state = TaskState::Blocked;
+        }
+    });
+}
+
+/// Marks a previously blocked task as [`TaskState::Ready`].
+///
+/// Safe to call from IRQ context (the scheduler spinlock handles
+/// interrupt masking internally).
+pub fn unblock_task(task_id: usize) {
+    with_sched(|sched| {
+        if task_id < MAX_TASKS
+            && sched.meta.slots[task_id].used
+            && sched.meta.slots[task_id].state == TaskState::Blocked
+        {
+            sched.meta.slots[task_id].state = TaskState::Ready;
+        }
+    });
+}
+
 /// Triggers a software timer interrupt to force an immediate reschedule.
-#[allow(dead_code)]
 pub fn yield_now() {
     // SAFETY:
     // - Software interrupt to IRQ0 vector enters the same scheduler path as timer IRQ.
