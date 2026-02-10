@@ -25,6 +25,7 @@ use crate::memory::heap;
 use crate::memory::pmm;
 use crate::memory::vmm;
 use core::fmt::Write;
+use core::sync::atomic::{AtomicBool, Ordering};
 use drivers::keyboard;
 use drivers::screen::{Color, Screen};
 use drivers::serial;
@@ -33,6 +34,11 @@ use drivers::serial;
 /// in the welcome banner.  Written once before the scheduler starts, read
 /// only afterwards — no synchronization needed.
 static mut KERNEL_SIZE: u64 = 0;
+static PATTERN_TASKS_ACTIVE: AtomicBool = AtomicBool::new(false);
+static PATTERN_TASKS_SPAWNED: AtomicBool = AtomicBool::new(false);
+
+const PATTERN_DELAY_SPINS: usize = 500_000;
+const VGA_TEXT_COLS: usize = 80;
 
 /// Kernel entry point - called from bootloader (kaosldr_64)
 ///
@@ -89,7 +95,7 @@ pub extern "C" fn KernelMain(kernel_size: u64) -> ! {
     scheduler::spawn(repl_task)
         .expect("failed to spawn REPL task");
     scheduler::start();
-    debugln!("Scheduler started with keyboard worker + REPL tasks");
+    debugln!("Scheduler started with keyboard worker + REPL task");
 
     // Enable interrupts — the first timer tick will preempt into a task.
     interrupts::enable();
@@ -167,6 +173,7 @@ fn execute_command(screen: &mut Screen, line: &str) {
             writeln!(screen, "  color <name>    - set color (white, cyan, green)").unwrap();
             writeln!(screen, "  apps            - list available applications").unwrap();
             writeln!(screen, "  run <app>       - run an application").unwrap();
+            writeln!(screen, "  mtdemo          - run VGA multitasking demo (press q to stop)").unwrap();
             writeln!(screen, "  meminfo         - display BIOS memory map").unwrap();
             writeln!(screen, "  pmm [n]         - run PMM self-test (default n=2048)").unwrap();
             writeln!(screen, "  vmmtest [--debug] - run VMM smoke test").unwrap();
@@ -217,6 +224,9 @@ fn execute_command(screen: &mut Screen, line: &str) {
                 writeln!(screen, "Use 'apps' to list available applications.").unwrap();
             }
         }
+        "mtdemo" => {
+            run_multitasking_vga_demo(screen);
+        }
         "meminfo" => {
             bios::BiosInformationBlock::print_memory_map(screen);
         }
@@ -261,4 +271,80 @@ fn execute_command(screen: &mut Screen, line: &str) {
             writeln!(screen, "Unknown command: {}", cmd).unwrap();
         }
     }
+}
+
+fn run_multitasking_vga_demo(screen: &mut Screen) {
+    spawn_pattern_tasks_once();
+    PATTERN_TASKS_ACTIVE.store(true, Ordering::Release);
+
+    writeln!(screen, "Multitasking demo active (rows 22-24). Press q to stop.").unwrap();
+    loop {
+        let ch = keyboard::read_char_blocking();
+        if ch == b'q' || ch == b'Q' {
+            PATTERN_TASKS_ACTIVE.store(false, Ordering::Release);
+            writeln!(screen, "\nMultitasking demo stopped.").unwrap();
+            return;
+        }
+    }
+}
+
+fn spawn_pattern_tasks_once() {
+    if PATTERN_TASKS_SPAWNED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+
+    scheduler::spawn(vga_pattern_task_a).expect("failed to spawn VGA pattern task A");
+    scheduler::spawn(vga_pattern_task_b).expect("failed to spawn VGA pattern task B");
+    scheduler::spawn(vga_pattern_task_c).expect("failed to spawn VGA pattern task C");
+}
+
+fn draw_progress_bar(screen: &mut Screen, row: usize, color: Color, label: u8, progress: usize) {
+    let fill = progress.min(VGA_TEXT_COLS);
+    screen.set_color(color);
+    screen.set_cursor(row, 0);
+    for idx in 0..VGA_TEXT_COLS {
+        let ch = if idx < fill { b'#' } else { b'.' };
+        if idx == 0 {
+            screen.print_char(label);
+        } else {
+            screen.print_char(ch);
+        }
+    }
+}
+
+/// Generic VGA progress-bar task used to visualize task switching on live screen output.
+fn vga_pattern_task(row: usize, label: u8, color: Color, step: usize) -> ! {
+    let mut screen = Screen::new();
+    let mut progress = 0usize;
+
+    loop {
+        if !PATTERN_TASKS_ACTIVE.load(Ordering::Acquire) {
+            scheduler::yield_now();
+            continue;
+        }
+
+        draw_progress_bar(&mut screen, row, color, label, progress);
+        progress = (progress + step) % (VGA_TEXT_COLS + 1);
+
+        for _ in 0..PATTERN_DELAY_SPINS {
+            core::hint::spin_loop();
+        }
+
+        scheduler::yield_now();
+    }
+}
+
+extern "C" fn vga_pattern_task_a() -> ! {
+    vga_pattern_task(22, b'A', Color::LightCyan, 1)
+}
+
+extern "C" fn vga_pattern_task_b() -> ! {
+    vga_pattern_task(23, b'B', Color::Yellow, 2)
+}
+
+extern "C" fn vga_pattern_task_c() -> ! {
+    vga_pattern_task(24, b'C', Color::Pink, 3)
 }

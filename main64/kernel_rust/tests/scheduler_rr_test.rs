@@ -49,6 +49,18 @@ extern "C" fn dummy_task_c() -> ! {
     }
 }
 
+extern "C" fn dummy_task_d() -> ! {
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+extern "C" fn dummy_task_e() -> ! {
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
 /// Contract: start without tasks does not enter running state.
 /// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
 /// When: The exact operation sequence in this function is executed against that state.
@@ -122,6 +134,121 @@ fn test_scheduler_round_robin_pointer_sequence() {
 
     current = sched::on_timer_tick(current);
     assert!(current == frame_a, "fourth timer tick should wrap to task A");
+}
+
+/// Contract: scheduler round robin pointer sequence with five tasks.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "scheduler round robin pointer sequence with five tasks".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_scheduler_round_robin_pointer_sequence_with_five_tasks() {
+    sched::init();
+
+    let task_a = sched::spawn(dummy_task_a).expect("task A should spawn");
+    let task_b = sched::spawn(dummy_task_b).expect("task B should spawn");
+    let task_c = sched::spawn(dummy_task_c).expect("task C should spawn");
+    let task_d = sched::spawn(dummy_task_d).expect("task D should spawn");
+    let task_e = sched::spawn(dummy_task_e).expect("task E should spawn");
+
+    let frame_a = sched::task_frame_ptr(task_a).expect("task A frame should exist");
+    let frame_b = sched::task_frame_ptr(task_b).expect("task B frame should exist");
+    let frame_c = sched::task_frame_ptr(task_c).expect("task C frame should exist");
+    let frame_d = sched::task_frame_ptr(task_d).expect("task D frame should exist");
+    let frame_e = sched::task_frame_ptr(task_e).expect("task E frame should exist");
+
+    sched::start();
+
+    let mut bootstrap = SavedRegisters::default();
+    let mut current = &mut bootstrap as *mut SavedRegisters;
+
+    current = sched::on_timer_tick(current);
+    assert!(current == frame_a, "first timer tick should switch to task A");
+
+    current = sched::on_timer_tick(current);
+    assert!(current == frame_b, "second timer tick should switch to task B");
+
+    current = sched::on_timer_tick(current);
+    assert!(current == frame_c, "third timer tick should switch to task C");
+
+    current = sched::on_timer_tick(current);
+    assert!(current == frame_d, "fourth timer tick should switch to task D");
+
+    current = sched::on_timer_tick(current);
+    assert!(current == frame_e, "fifth timer tick should switch to task E");
+
+    current = sched::on_timer_tick(current);
+    assert!(current == frame_a, "sixth timer tick should wrap to task A");
+}
+
+/// Contract: block and unblock influence next round-robin selections.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "block and unblock influence next round-robin selections".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_block_and_unblock_influence_next_round_robin_selections() {
+    sched::init();
+
+    let task_a = sched::spawn(dummy_task_a).expect("task A should spawn");
+    let task_b = sched::spawn(dummy_task_b).expect("task B should spawn");
+    let frame_a = sched::task_frame_ptr(task_a).expect("task A frame should exist");
+    let frame_b = sched::task_frame_ptr(task_b).expect("task B frame should exist");
+
+    sched::start();
+    let mut bootstrap = SavedRegisters::default();
+    let bootstrap_ptr = &mut bootstrap as *mut SavedRegisters;
+
+    let mut current = sched::on_timer_tick(bootstrap_ptr);
+    assert!(current == frame_a, "first tick should select task A");
+
+    sched::block_task(task_b);
+    current = sched::on_timer_tick(current);
+    assert!(
+        current == frame_a,
+        "with task B blocked, scheduler should keep selecting task A"
+    );
+
+    sched::unblock_task(task_b);
+    current = sched::on_timer_tick(current);
+    assert!(
+        current == frame_b,
+        "after unblocking task B, scheduler should select task B next"
+    );
+}
+
+/// Contract: spawning tasks after scheduler start integrates them into round robin.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "spawning tasks after scheduler start integrates them into round robin".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_spawning_tasks_after_scheduler_start_integrates_into_round_robin() {
+    sched::init();
+
+    let task_a = sched::spawn(dummy_task_a).expect("task A should spawn");
+    let frame_a = sched::task_frame_ptr(task_a).expect("task A frame should exist");
+
+    sched::start();
+    let mut bootstrap = SavedRegisters::default();
+    let mut current = &mut bootstrap as *mut SavedRegisters;
+
+    current = sched::on_timer_tick(current);
+    assert!(current == frame_a, "first tick should select initial task A");
+
+    let task_b = sched::spawn(dummy_task_b).expect("task B should spawn after start");
+    let task_c = sched::spawn(dummy_task_c).expect("task C should spawn after start");
+    let frame_b = sched::task_frame_ptr(task_b).expect("task B frame should exist");
+    let frame_c = sched::task_frame_ptr(task_c).expect("task C frame should exist");
+
+    current = sched::on_timer_tick(current);
+    assert!(current == frame_b, "newly spawned task B should be scheduled next");
+
+    current = sched::on_timer_tick(current);
+    assert!(current == frame_c, "newly spawned task C should be scheduled next");
+
+    current = sched::on_timer_tick(current);
+    assert!(current == frame_a, "round robin should wrap back to task A");
 }
 
 /// Contract: scheduler capacity limit.
