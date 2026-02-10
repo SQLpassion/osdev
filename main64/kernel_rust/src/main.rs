@@ -15,6 +15,7 @@ mod drivers;
 mod logging;
 mod memory;
 mod panic;
+mod scheduler;
 mod sync;
 
 use crate::arch::interrupts;
@@ -60,10 +61,13 @@ pub extern "C" fn KernelMain(kernel_size: u64) -> ! {
     debugln!("Heap Manager initialized");
 
     // Initialize interrupt handling and the keyboard ring buffer.
-    interrupts::register_irq_handler(interrupts::IRQ1_VECTOR, |_| {
+    interrupts::register_irq_handler(interrupts::IRQ1_KEYBOARD_VECTOR, |_, frame| {
         keyboard::handle_irq();
+        frame as *mut _
     });
-    
+
+    interrupts::init_periodic_timer(250);
+
     keyboard::init();
     interrupts::enable();
     debugln!("Interrupts enabled");
@@ -126,6 +130,7 @@ fn execute_command(screen: &mut Screen, line: &str) {
             writeln!(screen, "  pmm [n]         - run PMM self-test (default n=2048)").unwrap();
             writeln!(screen, "  vmmtest [--debug] - run VMM smoke test").unwrap();
             writeln!(screen, "  heaptest        - run heap self-test").unwrap();
+            writeln!(screen, "  rrdemo          - start kernel round-robin demo").unwrap();
             writeln!(screen, "  shutdown        - shutdown the system").unwrap();
         }
         "echo" => {
@@ -211,6 +216,11 @@ fn execute_command(screen: &mut Screen, line: &str) {
         }
         "heaptest" => {
             heap::run_self_test(screen);
+        }
+        "rrdemo" => {
+            writeln!(screen, "Starting round-robin demo (VGA rows 17-20, press 'q' to quit)...").unwrap();
+            scheduler::start_round_robin_demo();
+            writeln!(screen, "Round-robin demo stopped. Back in REPL.").unwrap();
         }
         _ => {
             writeln!(screen, "Unknown command: {}", cmd).unwrap();

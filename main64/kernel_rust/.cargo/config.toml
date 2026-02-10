@@ -9,6 +9,7 @@ rustflags = [
     "-C", "link-arg=-Map=kernel.map",
     "-C", "code-model=large",
     "-C", "relocation-model=static",
+    "-C", "no-redzone=yes",
 ]
 linker = "rust-lld"
 
