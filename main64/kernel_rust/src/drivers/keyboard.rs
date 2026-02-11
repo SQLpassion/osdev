@@ -2,11 +2,14 @@
 //!
 //! Handles scan code processing and stores decoded input in a ring buffer.
 
-use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicUsize, Ordering};
-
 use crate::arch::port::PortByte;
 use crate::drivers::screen::Screen;
+use crate::scheduler;
+use crate::sync::ringbuffer::RingBuffer;
+use crate::sync::singlewaitqueue::SingleWaitQueue;
+use crate::sync::waitqueue::WaitQueue;
+use crate::sync::waitqueue_adapter;
+use crate::sync::spinlock::SpinLock;
 
 /// Keyboard controller ports
 const KYBRD_CTRL_STATS_REG: u16 = 0x64;
@@ -21,6 +24,7 @@ const SCANCODE_TABLE_LEN: usize = 0x59;
 /// Ring buffer capacity (must be > 1)
 const INPUT_BUFFER_CAPACITY: usize = 256;
 const RAW_BUFFER_CAPACITY: usize = 64;
+const INPUT_WAITERS_CAPACITY: usize = 8;
 
 /// Lower-case QWERTZ scan code map (printable ASCII only; 0 == ignored)
 const SCANCODES_LOWER: [u8; SCANCODE_TABLE_LEN] = [
@@ -47,65 +51,19 @@ struct KeyboardState {
     left_ctrl: bool,
 }
 
-/// Lock-free ring buffer for keyboard input (single producer, single consumer).
-struct RingBuffer<const N: usize> {
-    buf: UnsafeCell<[u8; N]>,
-    head: AtomicUsize,
-    tail: AtomicUsize,
-}
-
-impl<const N: usize> RingBuffer<N> {
+impl KeyboardState {
     const fn new() -> Self {
         Self {
-            buf: UnsafeCell::new([0; N]),
-            head: AtomicUsize::new(0),
-            tail: AtomicUsize::new(0),
+            shift: false,
+            caps_lock: false,
+            left_ctrl: false,
         }
-    }
-
-    fn clear(&self) {
-        self.head.store(0, Ordering::Relaxed);
-        self.tail.store(0, Ordering::Relaxed);
-    }
-
-    fn push(&self, value: u8) -> bool {
-        let head = self.head.load(Ordering::Relaxed);
-        let next = (head + 1) % N;
-        let tail = self.tail.load(Ordering::Acquire);
-
-        if next == tail {
-            return false;
-        }
-
-        unsafe {
-            (*self.buf.get())[head] = value;
-        }
-
-        self.head.store(next, Ordering::Release);
-        true
-    }
-
-    fn pop(&self) -> Option<u8> {
-        let tail = self.tail.load(Ordering::Relaxed);
-        let head = self.head.load(Ordering::Acquire);
-
-        if tail == head {
-            return None;
-        }
-
-        let value = unsafe { (*self.buf.get())[tail] };
-        let next = (tail + 1) % N;
-        self.tail.store(next, Ordering::Release);
-        Some(value)
     }
 }
-
-unsafe impl<const N: usize> Sync for RingBuffer<N> {}
 
 struct Keyboard {
     raw: RingBuffer<RAW_BUFFER_CAPACITY>,
     buffer: RingBuffer<INPUT_BUFFER_CAPACITY>,
-    state: UnsafeCell<KeyboardState>,
 }
 
 impl Keyboard {
@@ -113,38 +71,29 @@ impl Keyboard {
         Self {
             raw: RingBuffer::new(),
             buffer: RingBuffer::new(),
-            state: UnsafeCell::new(KeyboardState {
-                shift: false,
-                caps_lock: false,
-                left_ctrl: false,
-            }),
         }
-    }
-
-    /// # Safety
-    /// Caller must ensure no concurrent access to keyboard state.
-    /// Safe in single-threaded kernel context with proper IRQ handling.
-    #[allow(clippy::mut_from_ref)]
-    unsafe fn state_mut(&self) -> &mut KeyboardState {
-        &mut *self.state.get()
     }
 }
 
-unsafe impl Sync for Keyboard {}
-
 static KEYBOARD: Keyboard = Keyboard::new();
+static KEYBOARD_STATE: SpinLock<KeyboardState> = SpinLock::new(KeyboardState::new());
+
+/// Wakes the keyboard worker task when raw scancodes are available.
+static RAW_WAITQUEUE: SingleWaitQueue = SingleWaitQueue::new();
+
+/// Wakes consumer tasks when decoded characters are available.
+static INPUT_WAITQUEUE: WaitQueue<INPUT_WAITERS_CAPACITY> = WaitQueue::new();
 
 /// Initialize the keyboard driver state.
 pub fn init() {
     KEYBOARD.raw.clear();
     KEYBOARD.buffer.clear();
-    let state = unsafe { KEYBOARD.state_mut() };
-    state.shift = false;
-    state.caps_lock = false;
-    state.left_ctrl = false;
+    let mut state = KEYBOARD_STATE.lock();
+    *state = KeyboardState::new();
 }
 
-/// Handle IRQ1 (keyboard) top half: enqueue raw scancode only.
+/// Handle IRQ1 (keyboard) top half: enqueue raw scancode and wake the
+/// keyboard worker task so it can decode the scancode into ASCII.
 pub fn handle_irq() {
     let status = unsafe { PortByte::new(KYBRD_CTRL_STATS_REG).read() };
     if (status & KYBRD_CTRL_STATS_MASK_OUT_BUF) == 0 {
@@ -152,33 +101,101 @@ pub fn handle_irq() {
     }
 
     let code = unsafe { PortByte::new(KYBRD_ENC_INPUT_BUF).read() };
-    let _ = KEYBOARD.raw.push(code);
+    enqueue_raw_scancode(code);
 }
 
-/// Bottom half: drain raw scancodes and decode them. Call this regularly from
-/// your main loop before consuming characters.
-pub fn poll() {
-    while let Some(code) = KEYBOARD.raw.pop() {
-        handle_scancode(code);
-    }
+/// Enqueue a raw keyboard scancode and wake the keyboard worker task.
+///
+/// This is used by the IRQ top-half and by integration tests that inject
+/// synthetic scancodes to exercise the full decode pipeline.
+pub fn enqueue_raw_scancode(code: u8) {
+    let _ = KEYBOARD.raw.push(code);
+    waitqueue_adapter::wake_all_single(&RAW_WAITQUEUE);
 }
 
 /// Read a decoded character if available; returns None when the buffer is empty.
-/// Call `poll()` before this to process any pending scancodes.
 pub fn read_char() -> Option<u8> {
     KEYBOARD.buffer.pop()
 }
 
-fn handle_scancode(code: u8) {
-    if (code & 0x80) != 0 {
-        handle_break(code & 0x7f);
-    } else {
-        handle_make(code);
+/// Block the calling task until a decoded character is available.
+///
+/// Uses the scheduler adapter over the input wait queue with an emptiness
+/// check under disabled interrupts to prevent lost wakeups.  On wakeup the
+/// task re-checks the buffer; if another consumer grabbed the character first
+/// (thundering herd), it sleeps again.
+pub fn read_char_blocking() -> u8 {
+    loop {
+        if let Some(ch) = read_char() {
+            return ch;
+        }
+
+        let task_id = scheduler::current_task_id()
+            .expect("read_char_blocking called outside scheduled task");
+
+        if waitqueue_adapter::sleep_if_multi(&INPUT_WAITQUEUE, task_id, || KEYBOARD.buffer.is_empty()) {
+            scheduler::yield_now();
+        }
     }
 }
 
-fn handle_break(code: u8) {
-    let state = unsafe { KEYBOARD.state_mut() };
+/// Keyboard worker task (bottom-half): drains raw scancodes, decodes them
+/// into ASCII characters, and wakes any tasks waiting for input.
+///
+/// This task is spawned once during boot and runs for the lifetime of the
+/// kernel.
+pub extern "C" fn keyboard_worker_task() -> ! {
+    // Obtain our own task ID (the scheduler must be running at this point).
+    let task_id = loop {
+        if let Some(id) = scheduler::current_task_id() {
+            break id;
+        }
+        scheduler::yield_now();
+    };
+
+    loop {
+        // Drain all available raw scancodes.
+        process_pending_scancodes();
+
+        // Sleep until the IRQ handler enqueues the next scancode.
+        // `sleep_if` checks `is_empty()` with interrupts disabled so an IRQ
+        // that fires between the pop-loop above and this point does not cause
+        // a lost wakeup.
+        if waitqueue_adapter::sleep_if_single(&RAW_WAITQUEUE, task_id, || KEYBOARD.raw.is_empty()) {
+            scheduler::yield_now();
+        }
+    }
+}
+
+/// Execute one keyboard bottom-half iteration: drain raw scancodes, decode
+/// into characters, and wake waiting consumers when input became available.
+///
+/// Returns `true` when at least one raw scancode was processed.
+pub fn process_pending_scancodes() -> bool {
+    let mut state = KEYBOARD_STATE.lock();
+    let mut processed_any = false;
+
+    while let Some(code) = KEYBOARD.raw.pop() {
+        handle_scancode(&mut state, code);
+        processed_any = true;
+    }
+
+    if processed_any && !KEYBOARD.buffer.is_empty() {
+        waitqueue_adapter::wake_all_multi(&INPUT_WAITQUEUE);
+    }
+
+    processed_any
+}
+
+fn handle_scancode(state: &mut KeyboardState, code: u8) {
+    if (code & 0x80) != 0 {
+        handle_break(state, code & 0x7f);
+    } else {
+        handle_make(state, code);
+    }
+}
+
+fn handle_break(state: &mut KeyboardState, code: u8) {
     match code {
         0x1d => state.left_ctrl = false,
         0x2a | 0x36 => state.shift = false,
@@ -186,8 +203,7 @@ fn handle_break(code: u8) {
     }
 }
 
-fn handle_make(code: u8) {
-    let state = unsafe { KEYBOARD.state_mut() };
+fn handle_make(state: &mut KeyboardState, code: u8) {
     match code {
         0x1d => {
             state.left_ctrl = true;
@@ -236,44 +252,32 @@ fn is_alpha(code: u8) -> bool {
 
 /// Read a line into `buf`, echoing to `screen`. Returns the number of bytes written.
 /// The newline is echoed but not stored in `buf`.
+///
+/// Each character is obtained via [`read_char_blocking`], which puts the
+/// calling task to sleep until the keyboard worker has decoded input.
 pub fn read_line(screen: &mut Screen, buf: &mut [u8]) -> usize {
     let mut len = 0;
 
     loop {
-        poll();
+        let ch = read_char_blocking();
 
-        if let Some(ch) = read_char() {
-            match ch {
-                b'\r' | b'\n' => {
-                    // Echo LF; terminate input
-                    screen.print_char(b'\n');
-                    break;
-                }
-                0x08 => {
-                    // Backspace: erase last character if any.
-                    // A single print_char(0x08) suffices because the Screen
-                    // backspace handler already moves the cursor back AND
-                    // blanks the erased cell.
-                    if len > 0 {
-                        len -= 1;
-                        screen.print_char(0x08);
-                    }
-                }
-                _ => {
-                    if len < buf.len() {
-                        buf[len] = ch;
-                        len += 1;
-                        screen.print_char(ch);
-                    } else {
-                        // Optional: bell on overflow
-                        // screen.print_char(0x07);
-                    }
+        match ch {
+            b'\r' | b'\n' => {
+                screen.print_char(b'\n');
+                break;
+            }
+            0x08 => {
+                if len > 0 {
+                    len -= 1;
+                    screen.print_char(0x08);
                 }
             }
-        } else {
-            // Sleep until the next interrupt to avoid busy-waiting
-            unsafe {
-                core::arch::asm!("hlt");
+            _ => {
+                if len < buf.len() {
+                    buf[len] = ch;
+                    len += 1;
+                    screen.print_char(ch);
+                }
             }
         }
     }

@@ -40,6 +40,11 @@ fn panic(info: &PanicInfo) -> ! {
 // ============================================================================
 
 /// Test that a single page frame can be allocated
+/// Contract: pmm single allocation.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "pmm single allocation".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_pmm_single_allocation() {
     pmm::with_pmm(|pmm| {
@@ -56,6 +61,11 @@ fn test_pmm_single_allocation() {
 }
 
 /// Test that multiple page frames can be allocated consecutively
+/// Contract: pmm multiple allocations.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "pmm multiple allocations".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_pmm_multiple_allocations() {
     pmm::with_pmm(|pmm| {
@@ -85,6 +95,11 @@ fn test_pmm_multiple_allocations() {
 }
 
 /// Test that frames can be allocated and then released
+/// Contract: pmm allocation and release.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "pmm allocation and release".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_pmm_allocation_and_release() {
     pmm::with_pmm(|pmm| {
@@ -119,6 +134,11 @@ fn test_pmm_allocation_and_release() {
 }
 
 /// Test that released frames are reused by subsequent allocations
+/// Contract: pmm frame reuse after release.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "pmm frame reuse after release".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_pmm_frame_reuse_after_release() {
     pmm::with_pmm(|pmm| {
@@ -172,6 +192,11 @@ fn test_pmm_frame_reuse_after_release() {
 /// The PMM must mark [KERNEL_OFFSET, reserved_end) as used so that
 /// alloc_frame() never hands out pages occupied by the kernel, stack,
 /// or PMM metadata.
+/// Contract: pmm reserved region not allocated.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "pmm reserved region not allocated".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_pmm_reserved_region_not_allocated() {
     const KERNEL_OFFSET: u64 = 0x100000;
@@ -209,6 +234,11 @@ fn test_pmm_reserved_region_not_allocated() {
 }
 
 /// Test that physical_address() returns correct addresses
+/// Contract: pmm physical address calculation.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "pmm physical address calculation".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_pmm_physical_address_calculation() {
     pmm::with_pmm(|pmm| {

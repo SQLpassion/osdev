@@ -29,6 +29,14 @@ use drivers::keyboard;
 use drivers::screen::{Color, Screen};
 use drivers::serial;
 
+/// Kernel size stored by `KernelMain` so that the REPL task can display it
+/// in the welcome banner.  Written once before the scheduler starts, read
+/// only afterwards — no synchronization needed.
+static mut KERNEL_SIZE: u64 = 0;
+
+const PATTERN_DELAY_SPINS: usize = 500_000;
+const VGA_TEXT_COLS: usize = 80;
+
 /// Kernel entry point - called from bootloader (kaosldr_64)
 ///
 /// The function signature matches the C version:
@@ -43,6 +51,10 @@ pub extern "C" fn KernelMain(kernel_size: u64) -> ! {
     serial::init();
     debugln!("KAOS Rust Kernel starting...");
     debugln!("Kernel size: {} bytes", kernel_size);
+
+    // Store kernel size for the REPL task banner.
+    // SAFETY: Written once before any task is spawned; read-only afterwards.
+    unsafe { KERNEL_SIZE = kernel_size; }
 
     // Initialize the Physical Memory Manager
     pmm::init(true);
@@ -69,14 +81,47 @@ pub extern "C" fn KernelMain(kernel_size: u64) -> ! {
     interrupts::init_periodic_timer(250);
 
     keyboard::init();
-    interrupts::enable();
-    debugln!("Interrupts enabled");
+    debugln!("Keyboard initialized");
 
-    // Initialize the screen
+    // Initialize the scheduler and spawn the system tasks.
+    // Interrupts stay disabled until the scheduler is fully set up so the
+    // first timer tick sees a consistent state.
+    scheduler::init();
+    scheduler::spawn(keyboard::keyboard_worker_task)
+        .expect("failed to spawn keyboard worker task");
+    scheduler::spawn(repl_task)
+        .expect("failed to spawn REPL task");
+    scheduler::start();
+    debugln!("Scheduler started with keyboard worker + REPL task");
+
+    // Enable interrupts — the first timer tick will preempt into a task.
+    interrupts::enable();
+
+    // Idle loop: the CPU halts until each timer interrupt.  The scheduler
+    // selects a ready task on every tick; when all tasks are blocked the
+    // CPU stays here in low-power halt.
+    idle_loop()
+}
+
+/// Low-power idle loop entered after the scheduler is started.
+fn idle_loop() -> ! {
+    loop {
+        unsafe {
+            core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
+        }
+    }
+}
+
+/// REPL task entry point — runs as a scheduled kernel task.
+///
+/// Creates its own `Screen` instance (VGA MMIO wrapper) and enters the
+/// interactive command prompt loop.
+extern "C" fn repl_task() -> ! {
     let mut screen = Screen::new();
     screen.clear();
 
     // Print welcome message
+    let kernel_size = unsafe { KERNEL_SIZE };
     screen.set_color(Color::LightGreen);
     writeln!(screen, "========================================").unwrap();
     writeln!(screen, "    KAOS - Klaus' Operating System").unwrap();
@@ -86,7 +131,6 @@ pub extern "C" fn KernelMain(kernel_size: u64) -> ! {
     writeln!(screen, "Kernel loaded successfully!").unwrap();
     writeln!(screen, "Kernel size: {} bytes\n", kernel_size).unwrap();
 
-    // Execute the command prompt loop
     command_prompt_loop(&mut screen);
 }
 
@@ -126,11 +170,11 @@ fn execute_command(screen: &mut Screen, line: &str) {
             writeln!(screen, "  color <name>    - set color (white, cyan, green)").unwrap();
             writeln!(screen, "  apps            - list available applications").unwrap();
             writeln!(screen, "  run <app>       - run an application").unwrap();
+            writeln!(screen, "  mtdemo          - run VGA multitasking demo (press q to stop)").unwrap();
             writeln!(screen, "  meminfo         - display BIOS memory map").unwrap();
             writeln!(screen, "  pmm [n]         - run PMM self-test (default n=2048)").unwrap();
             writeln!(screen, "  vmmtest [--debug] - run VMM smoke test").unwrap();
             writeln!(screen, "  heaptest        - run heap self-test").unwrap();
-            writeln!(screen, "  rrdemo          - start kernel round-robin demo").unwrap();
             writeln!(screen, "  shutdown        - shutdown the system").unwrap();
         }
         "echo" => {
@@ -168,14 +212,29 @@ fn execute_command(screen: &mut Screen, line: &str) {
         }
         "run" => {
             if let Some(app_name) = parts.next() {
-                if !apps::run_app(app_name, screen) {
-                    writeln!(screen, "Unknown app: {}", app_name).unwrap();
-                    writeln!(screen, "Use 'apps' to list available applications.").unwrap();
+                let snapshot = screen.save();
+                match apps::spawn_app(app_name) {
+                    Ok(task_id) => {
+                        while scheduler::task_frame_ptr(task_id).is_some() {
+                            scheduler::yield_now();
+                        }
+                        screen.restore(&snapshot);
+                    }
+                    Err(apps::RunAppError::UnknownApp) => {
+                        writeln!(screen, "Unknown app: {}", app_name).unwrap();
+                        writeln!(screen, "Use 'apps' to list available applications.").unwrap();
+                    }
+                    Err(apps::RunAppError::SpawnFailed(err)) => {
+                        writeln!(screen, "Failed to launch app task: {:?}", err).unwrap();
+                    }
                 }
             } else {
                 writeln!(screen, "Usage: run <appname>").unwrap();
                 writeln!(screen, "Use 'apps' to list available applications.").unwrap();
             }
+        }
+        "mtdemo" => {
+            run_multitasking_vga_demo(screen);
         }
         "meminfo" => {
             bios::BiosInformationBlock::print_memory_map(screen);
@@ -217,13 +276,88 @@ fn execute_command(screen: &mut Screen, line: &str) {
         "heaptest" => {
             heap::run_self_test(screen);
         }
-        "rrdemo" => {
-            writeln!(screen, "Starting round-robin demo (VGA rows 17-20, press 'q' to quit)...").unwrap();
-            scheduler::start_round_robin_demo();
-            writeln!(screen, "Round-robin demo stopped. Back in REPL.").unwrap();
-        }
         _ => {
             writeln!(screen, "Unknown command: {}", cmd).unwrap();
         }
     }
+}
+
+fn run_multitasking_vga_demo(screen: &mut Screen) {
+    let task_ids = spawn_pattern_tasks();
+
+    writeln!(screen, "Multitasking demo active (rows 22-24). Press q to stop.").unwrap();
+    loop {
+        let ch = keyboard::read_char_blocking();
+        if ch == b'q' || ch == b'Q' {
+            terminate_pattern_tasks(&task_ids);
+            while !pattern_tasks_terminated(&task_ids) {
+                scheduler::yield_now();
+            }
+            writeln!(screen, "\nMultitasking demo stopped.").unwrap();
+            return;
+        }
+    }
+}
+
+fn spawn_pattern_tasks() -> [usize; 3] {
+    [
+        scheduler::spawn(vga_pattern_task_a).expect("failed to spawn VGA pattern task A"),
+        scheduler::spawn(vga_pattern_task_b).expect("failed to spawn VGA pattern task B"),
+        scheduler::spawn(vga_pattern_task_c).expect("failed to spawn VGA pattern task C"),
+    ]
+}
+
+fn pattern_tasks_terminated(task_ids: &[usize; 3]) -> bool {
+    task_ids
+        .iter()
+        .all(|task_id| scheduler::task_frame_ptr(*task_id).is_none())
+}
+
+fn terminate_pattern_tasks(task_ids: &[usize; 3]) {
+    for task_id in task_ids {
+        let _ = scheduler::terminate_task(*task_id);
+    }
+}
+
+fn draw_progress_bar(screen: &mut Screen, row: usize, color: Color, label: u8, progress: usize) {
+    let fill = progress.min(VGA_TEXT_COLS);
+    screen.set_color(color);
+    screen.set_cursor(row, 0);
+    for idx in 0..VGA_TEXT_COLS {
+        let ch = if idx < fill { b'#' } else { b'.' };
+        if idx == 0 {
+            screen.print_char(label);
+        } else {
+            screen.print_char(ch);
+        }
+    }
+}
+
+/// Generic VGA progress-bar task used to visualize task switching on live screen output.
+fn vga_pattern_task(row: usize, label: u8, color: Color, step: usize) -> ! {
+    let mut screen = Screen::new();
+    let mut progress = 0usize;
+
+    loop {
+        draw_progress_bar(&mut screen, row, color, label, progress);
+        progress = (progress + step) % (VGA_TEXT_COLS + 1);
+
+        for _ in 0..PATTERN_DELAY_SPINS {
+            core::hint::spin_loop();
+        }
+
+        scheduler::yield_now();
+    }
+}
+
+extern "C" fn vga_pattern_task_a() -> ! {
+    vga_pattern_task(22, b'A', Color::LightCyan, 1)
+}
+
+extern "C" fn vga_pattern_task_b() -> ! {
+    vga_pattern_task(23, b'B', Color::Yellow, 2)
+}
+
+extern "C" fn vga_pattern_task_c() -> ! {
+    vga_pattern_task(24, b'C', Color::Pink, 3)
 }

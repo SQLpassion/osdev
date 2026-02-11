@@ -33,6 +33,11 @@ fn panic(info: &PanicInfo) -> ! {
     kaos_kernel::testing::test_panic_handler(info)
 }
 
+/// Contract: trap frame size and offsets.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "trap frame size and offsets".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_trap_frame_size_and_offsets() {
     assert!(
@@ -65,6 +70,11 @@ fn test_trap_frame_size_and_offsets() {
     }
 }
 
+/// Contract: irq vector constants are contiguous.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "irq vector constants are contiguous".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_irq_vector_constants_are_contiguous() {
     assert!(
@@ -73,6 +83,11 @@ fn test_irq_vector_constants_are_contiguous() {
     );
 }
 
+/// Contract: exception vector constants match x86 spec.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "exception vector constants match x86 spec".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_exception_vector_constants_match_x86_spec() {
     assert!(
@@ -101,6 +116,11 @@ fn test_exception_vector_constants_match_x86_spec() {
     );
 }
 
+/// Contract: exception error code classification.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "exception error code classification".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_exception_error_code_classification() {
     assert!(
@@ -129,6 +149,11 @@ fn test_exception_error_code_classification() {
     );
 }
 
+/// Contract: pit divisor calculation.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "pit divisor calculation".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_pit_divisor_calculation() {
     assert!(interrupts::pit_divisor_for_hz(0) == 0);
