@@ -212,9 +212,21 @@ fn execute_command(screen: &mut Screen, line: &str) {
         }
         "run" => {
             if let Some(app_name) = parts.next() {
-                if !apps::run_app(app_name, screen) {
-                    writeln!(screen, "Unknown app: {}", app_name).unwrap();
-                    writeln!(screen, "Use 'apps' to list available applications.").unwrap();
+                let snapshot = screen.save();
+                match apps::spawn_app(app_name) {
+                    Ok(task_id) => {
+                        while scheduler::task_frame_ptr(task_id).is_some() {
+                            scheduler::yield_now();
+                        }
+                        screen.restore(&snapshot);
+                    }
+                    Err(apps::RunAppError::UnknownApp) => {
+                        writeln!(screen, "Unknown app: {}", app_name).unwrap();
+                        writeln!(screen, "Use 'apps' to list available applications.").unwrap();
+                    }
+                    Err(apps::RunAppError::SpawnFailed(err)) => {
+                        writeln!(screen, "Failed to launch app task: {:?}", err).unwrap();
+                    }
                 }
             } else {
                 writeln!(screen, "Usage: run <appname>").unwrap();

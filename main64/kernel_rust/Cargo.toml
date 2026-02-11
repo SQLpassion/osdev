@@ -68,3 +68,6 @@ name = "keyboard_panic_contract_test"
 
 [[test]]
 name = "page_fault_death_test"
+
+[[test]]
+name = "apps_task_test"

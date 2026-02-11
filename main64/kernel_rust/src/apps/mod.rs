@@ -1,14 +1,11 @@
 //! Pseudo-application execution framework
 //!
-//! Provides a simple way to run "applications" that are statically registered
-//! functions. The kernel saves screen state, runs the app with full-screen
-//! access, then restores the screen when the app returns.
-//!
-//! This implements the same concept as xterm's "alternate screen buffer" -
-//! apps get a clean canvas and the original screen is preserved.
+//! Applications are statically registered and run as dedicated scheduler tasks.
+//! The REPL launches an app task and waits until it exits.
 
 use crate::drivers::keyboard;
 use crate::drivers::screen::Screen;
+use crate::scheduler::{self, KernelTaskFn, SpawnError};
 use core::fmt::Write;
 
 mod counter;
@@ -18,14 +15,23 @@ mod hello;
 /// Apps receive an AppContext providing screen and keyboard access.
 pub type AppFn = fn(&mut AppContext);
 
+/// Error returned when launching an app task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunAppError {
+    /// No application with this name exists.
+    UnknownApp,
+    /// Scheduler rejected task creation.
+    SpawnFailed(SpawnError),
+}
+
 /// Static application registry entry.
 pub struct AppEntry {
     /// Command name used to invoke the app (e.g., "hello")
     pub name: &'static str,
     /// Brief description shown in app list
     pub description: &'static str,
-    /// Entry point function
-    pub func: AppFn,
+    /// Task entry point used by the scheduler.
+    pub task_entry: KernelTaskFn,
 }
 
 /// Static registry of all available applications.
@@ -34,12 +40,12 @@ static APPS: &[AppEntry] = &[
     AppEntry {
         name: "hello",
         description: "Simple hello world demo",
-        func: hello::app_main,
+        task_entry: hello_task_entry,
     },
     AppEntry {
         name: "counter",
         description: "Interactive counter demo",
-        func: counter::app_main,
+        task_entry: counter_task_entry,
     },
 ];
 
@@ -96,36 +102,33 @@ fn find_app(name: &str) -> Option<&'static AppEntry> {
     APPS.iter().find(|app| app.name.eq_ignore_ascii_case(name))
 }
 
-/// Run an application by name.
-///
-/// This function:
-/// 1. Saves the current screen state
-/// 2. Clears the screen for the app
-/// 3. Runs the app with an AppContext
-/// 4. Restores the original screen when the app returns
-///
-/// Returns true if the app was found and executed, false otherwise.
-pub fn run_app(name: &str, screen: &mut Screen) -> bool {
-    let Some(app) = find_app(name) else {
-        return false;
-    };
+/// Spawn an application as its own kernel task and return the task slot ID.
+pub fn spawn_app(name: &str) -> Result<usize, RunAppError> {
+    let app = find_app(name).ok_or(RunAppError::UnknownApp)?;
+    scheduler::spawn(app.task_entry).map_err(RunAppError::SpawnFailed)
+}
 
-    // Save current screen state (VGA buffer + cursor + colors)
-    let snapshot = screen.save();
-
-    // Clear screen for the application
+/// Shared app-task launcher: full-screen app context then task exit.
+fn run_registered_app(app_fn: AppFn) -> ! {
+    let mut screen = Screen::new();
     screen.clear();
 
-    // Create context and run the application
     {
-        let mut ctx = AppContext::new(screen);
-        (app.func)(&mut ctx);
+        let mut ctx = AppContext::new(&mut screen);
+        app_fn(&mut ctx);
     }
 
-    // Restore original screen state
-    screen.restore(&snapshot);
+    scheduler::exit_current_task();
+}
 
-    true
+/// Scheduler task entry point for the `hello` app.
+extern "C" fn hello_task_entry() -> ! {
+    run_registered_app(hello::app_main)
+}
+
+/// Scheduler task entry point for the `counter` app.
+extern "C" fn counter_task_entry() -> ! {
+    run_registered_app(counter::app_main)
 }
 
 /// List all available applications to the screen.
