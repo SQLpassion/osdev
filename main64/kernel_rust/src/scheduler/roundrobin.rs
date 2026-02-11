@@ -11,6 +11,7 @@ use core::ptr;
 
 use crate::arch::gdt;
 use crate::arch::interrupts::{self, InterruptStackFrame, SavedRegisters};
+use crate::memory::vmm;
 use crate::sync::spinlock::SpinLock;
 
 /// Entry point type for schedulable kernel tasks.
@@ -143,16 +144,56 @@ impl TaskEntry {
 
 /// Runtime metadata of the round-robin scheduler.
 struct SchedulerMetadata {
+    /// Global initialization latch set by [`init`].
+    /// Guards API usage before scheduler data structures are ready.
     initialized: bool,
+
+    /// Indicates whether timer ticks should perform scheduling decisions.
+    /// Set by [`start`], cleared on stop paths.
     started: bool,
+
+    /// Cooperative stop request flag consumed by [`on_timer_tick`].
+    /// When observed, scheduler returns to bootstrap frame and resets state.
     stop_requested: bool,
+
+    /// Last non-task interrupt frame pointer (typically bootstrap/idle context).
+    /// Used as fallback return frame when no runnable tasks exist.
     bootstrap_frame: *mut SavedRegisters,
+
+    /// Slot index of currently selected/running task, if any.
+    /// `None` when executing bootstrap/idle context.
     running_slot: Option<usize>,
+
+    /// Cursor into `run_queue` used for round-robin progression.
+    /// Points at the most recently selected queue position.
     current_queue_pos: usize,
+
+    /// Number of active entries in `run_queue` and `slots`.
     task_count: usize,
+
+    /// Compact queue of active task slot IDs in scheduling order.
+    /// Only indices `< task_count` are valid.
     run_queue: [usize; MAX_TASKS],
+
+    /// Per-slot task metadata table.
+    /// `used=false` marks free slots.
     slots: [TaskEntry; MAX_TASKS],
+
+    /// Total number of timer ticks processed while scheduler is started.
+    /// Primarily for diagnostics/tests.
     tick_count: u64,
+
+    /// Enables CR3 switching based on task type/context.
+    /// Disabled by default for compatibility with early bring-up/tests.
+    address_space_switching_enabled: bool,
+
+    /// Physical PML4 address of kernel address space.
+    /// Used when switching from user task back to kernel context.
+    kernel_cr3: u64,
+
+    /// Last CR3 value written by scheduler-managed switch path.
+    /// Avoids redundant `mov cr3` on consecutive selections in same address space.
+    active_cr3: u64,
 }
 
 impl SchedulerMetadata {
@@ -169,6 +210,9 @@ impl SchedulerMetadata {
             run_queue: [0; MAX_TASKS],
             slots: [TaskEntry::empty(); MAX_TASKS],
             tick_count: 0,
+            address_space_switching_enabled: false,
+            kernel_cr3: 0,
+            active_cr3: 0,
         }
     }
 }
@@ -504,9 +548,57 @@ pub fn is_running() -> bool {
     with_sched(|sched| sched.meta.started)
 }
 
+/// Enables per-task address-space switching.
+///
+/// `kernel_cr3` must be the physical PML4 address for kernel-mode execution.
+/// Once enabled, selecting a user task switches to that task's `cr3`; selecting
+/// a kernel task switches back to `kernel_cr3`.
+pub fn set_kernel_address_space_cr3(kernel_cr3: u64) {
+    with_sched(|sched| {
+        sched.meta.address_space_switching_enabled = true;
+        sched.meta.kernel_cr3 = kernel_cr3;
+        sched.meta.active_cr3 = kernel_cr3;
+    });
+}
+
+/// Disables per-task address-space switching.
+#[allow(dead_code)]
+pub fn disable_address_space_switching() {
+    with_sched(|sched| {
+        sched.meta.address_space_switching_enabled = false;
+        sched.meta.kernel_cr3 = 0;
+        sched.meta.active_cr3 = 0;
+    });
+}
+
 /// IRQ adapter that routes PIT ticks into the scheduler core.
 fn timer_irq_handler(_vector: u8, frame: &mut SavedRegisters) -> *mut SavedRegisters {
     on_timer_tick(frame as *mut SavedRegisters)
+}
+
+/// Switches CR3 to the selected task context when switching is enabled.
+fn apply_selected_address_space(meta: &mut SchedulerMetadata, selected_slot: usize) {
+    if !meta.address_space_switching_enabled {
+        return;
+    }
+
+    let target_cr3 = if meta.slots[selected_slot].is_user {
+        meta.slots[selected_slot].cr3
+    } else {
+        meta.kernel_cr3
+    };
+
+    if target_cr3 == 0 || meta.active_cr3 == target_cr3 {
+        return;
+    }
+
+    // SAFETY:
+    // - `target_cr3` originates from scheduler-controlled task metadata.
+    // - Caller enables switching only after VMM initialization.
+    unsafe {
+        vmm::switch_page_directory(target_cr3);
+    }
+    meta.active_cr3 = target_cr3;
 }
 
 /// Scheduler core executed on every timer IRQ.
@@ -609,6 +701,8 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
             if meta.slots[selected_slot].is_user {
                 gdt::set_kernel_rsp0(meta.slots[selected_slot].kernel_rsp_top);
             }
+            
+            apply_selected_address_space(meta, selected_slot);
             
             selected_frame
         } else if !meta.bootstrap_frame.is_null() {

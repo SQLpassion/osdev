@@ -111,6 +111,7 @@ fn test_one_user_task_is_reached_via_scheduler_irq_iretq_path() {
 
     scheduler::init();
     let cr3 = vmm::get_pml4_address();
+    scheduler::set_kernel_address_space_cr3(cr3);
     scheduler::spawn_kernel_task(observer_task).expect("observer kernel task spawn should succeed");
     scheduler::spawn_user_task(USER_CODE_VA, USER_STACK_TOP_ALIGNED, cr3)
         .expect("spawn_user should succeed");

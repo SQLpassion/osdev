@@ -92,6 +92,7 @@ pub extern "C" fn KernelMain(kernel_size: u64) -> ! {
     // Interrupts stay disabled until the scheduler is fully set up so the
     // first timer tick sees a consistent state.
     scheduler::init();
+    scheduler::set_kernel_address_space_cr3(vmm::get_pml4_address());
     scheduler::spawn_kernel_task(keyboard::keyboard_worker_task)
         .expect("failed to spawn keyboard worker task");
     scheduler::spawn_kernel_task(repl_task)

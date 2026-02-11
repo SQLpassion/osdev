@@ -58,9 +58,6 @@ name = "scheduler_rr_test"
 name = "scheduler_not_initialized_test"
 
 [[test]]
-name = "scheduler_invalid_frame_death_test"
-
-[[test]]
 name = "screen_test"
 
 [[test]]

@@ -9,6 +9,7 @@
 use core::panic::PanicInfo;
 use kaos_kernel::arch::gdt;
 use kaos_kernel::arch::interrupts::{self, SavedRegisters};
+use kaos_kernel::memory::{pmm, vmm};
 use kaos_kernel::scheduler::{self as sched, SpawnError};
 use kaos_kernel::sync::singlewaitqueue::SingleWaitQueue;
 use kaos_kernel::sync::waitqueue::WaitQueue;
@@ -19,6 +20,8 @@ use kaos_kernel::sync::waitqueue_adapter;
 pub extern "C" fn KernelMain(_kernel_size: u64) -> ! {
     kaos_kernel::drivers::serial::init();
     interrupts::init();
+    pmm::init(false);
+    vmm::init(false);
 
     test_main();
 
@@ -589,6 +592,59 @@ fn test_spawn_user_builds_ring3_iret_frame_with_configured_selectors_and_pointer
     );
 }
 
+/// Contract: scheduler switches cr3 between kernel and user tasks when enabled.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "scheduler switches cr3 between kernel and user tasks when enabled".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_scheduler_switches_cr3_between_kernel_and_user_tasks_when_enabled() {
+    sched::init();
+    let kernel_cr3 = vmm::get_pml4_address();
+    sched::set_kernel_address_space_cr3(kernel_cr3);
+
+    let kernel_task = sched::spawn_kernel_task(dummy_task_a)
+        .expect("kernel task spawn should succeed");
+    let kernel_frame = sched::task_frame_ptr(kernel_task).expect("kernel task frame should exist");
+
+    let user_cr3 = vmm::clone_kernel_pml4_for_user();
+    let user_task = sched::spawn_user_task(
+        vmm::USER_CODE_BASE,
+        vmm::USER_STACK_TOP - 16,
+        user_cr3,
+    )
+    .expect("user task spawn should succeed");
+    let user_frame = sched::task_frame_ptr(user_task).expect("user task frame should exist");
+
+    sched::start();
+
+    let mut bootstrap = SavedRegisters::default();
+    let mut current = &mut bootstrap as *mut SavedRegisters;
+
+    current = sched::on_timer_tick(current);
+    assert!(current == kernel_frame, "first tick should pick kernel task");
+    assert!(
+        vmm::get_pml4_address() == kernel_cr3,
+        "kernel task selection should keep kernel CR3 active"
+    );
+
+    current = sched::on_timer_tick(current);
+    assert!(current == user_frame, "second tick should pick user task");
+    assert!(
+        vmm::get_pml4_address() == user_cr3,
+        "user task selection should switch active CR3 to user CR3"
+    );
+
+    current = sched::on_timer_tick(current);
+    assert!(current == kernel_frame, "third tick should wrap back to kernel task");
+    assert!(
+        vmm::get_pml4_address() == kernel_cr3,
+        "switching back to kernel task should restore kernel CR3"
+    );
+
+    pmm::with_pmm(|mgr| assert!(mgr.release_pfn(user_cr3 / 4096)));
+}
+
 /// Contract: scheduler recovers when current frame slot mismatches expected slot.
 /// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
 /// When: The exact operation sequence in this function is executed against that state.
@@ -687,6 +743,46 @@ fn test_unmapped_current_frame_does_not_clobber_saved_task_context() {
     assert!(
         saved_a_after == saved_a_before,
         "unexpected current frame must not overwrite saved task context"
+    );
+}
+
+/// Contract: invalid task frame detection never writes outside task stack.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "invalid task frame detection never writes outside task stack".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_invalid_task_frame_detection_never_writes_outside_task_stack() {
+    sched::init();
+
+    let task_a = sched::spawn_kernel_task(dummy_task_a).expect("task A should spawn");
+    let _task_b = sched::spawn_kernel_task(dummy_task_b).expect("task B should spawn");
+    let frame_a_before = sched::task_frame_ptr(task_a).expect("task A frame should exist");
+
+    sched::start();
+
+    let mut bootstrap = SavedRegisters::default();
+    let bootstrap_ptr = &mut bootstrap as *mut SavedRegisters;
+
+    // Enter task A once so it becomes the current running slot.
+    let running = sched::on_timer_tick(bootstrap_ptr);
+    assert!(
+        running == frame_a_before,
+        "first tick should select task A for deterministic setup"
+    );
+
+    // Feed an obviously invalid, non-mapped frame pointer.
+    let invalid_frame = 0x1usize as *mut SavedRegisters;
+    let next = sched::on_timer_tick(invalid_frame);
+
+    let frame_a_after = sched::task_frame_ptr(task_a).expect("task A frame should still exist");
+    assert!(
+        frame_a_after == frame_a_before,
+        "invalid frame pointer must not overwrite saved task frame pointer"
+    );
+    assert!(
+        next == frame_a_before,
+        "scheduler should fall back to a known-good saved task frame"
     );
 }
 
