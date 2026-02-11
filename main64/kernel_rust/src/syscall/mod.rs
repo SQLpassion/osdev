@@ -9,14 +9,6 @@ mod types;
 
 pub mod abi;
 
-/// Compatibility path: keep `syscall::arch::syscall_raw::*` stable for existing callers.
-pub mod arch {
-    pub mod syscall_raw {
-        #[allow(unused_imports)]
-        pub use super::super::abi::{syscall0, syscall1, syscall2};
-    }
-}
-
 /// Safe user-space syscall wrappers.
 #[allow(dead_code)]
 pub mod user;

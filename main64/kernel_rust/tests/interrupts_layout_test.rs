@@ -207,7 +207,59 @@ fn test_int80_syscall_raw_wrapper_roundtrip() {
         // SAFETY:
         // - `interrupts::init()` loaded an IDT containing the `int 0x80` gate.
         // - The test executes in ring 0, so invoking software interrupt 0x80 is valid.
-        syscall::arch::syscall_raw::syscall2(SyscallId::WriteSerial as u64, 0, 0)
+        syscall::abi::syscall2(SyscallId::WriteSerial as u64, 0, 0)
     };
     assert!(ret == 0, "raw syscall2(write_serial, 0, 0) must return 0");
+}
+
+/// Contract: int 0x80 user wrapper path remains callable.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "int 0x80 user wrapper path remains callable".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_int80_syscall_user_wrapper_roundtrip() {
+    interrupts::init();
+    let ret = syscall::user::sys_write_serial(&[]);
+    assert!(ret == Ok(0), "user wrapper write_serial([]) must return Ok(0)");
+}
+
+/// Contract: user wrapper accepts a slice built from a raw pointer.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "user wrapper accepts a slice built from a raw pointer".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_int80_syscall_user_wrapper_with_raw_parts_slice() {
+    interrupts::init();
+    static BUF: [u8; 0] = [];
+    let slice = unsafe {
+        // SAFETY:
+        // - `BUF.as_ptr()` is valid for `BUF.len()` bytes.
+        core::slice::from_raw_parts(BUF.as_ptr(), BUF.len())
+    };
+    let ret = syscall::user::sys_write_serial(slice);
+    assert!(
+        ret == Ok(0),
+        "user wrapper with from_raw_parts([]) must return Ok(0)"
+    );
+}
+
+/// Contract: raw user wrapper path remains callable for pointer/len ABI.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "raw user wrapper path remains callable for pointer/len ABI".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_int80_syscall_user_raw_wrapper_roundtrip() {
+    interrupts::init();
+    let ret = unsafe {
+        // SAFETY:
+        // - Null pointer with zero length is accepted by the syscall contract.
+        syscall::user::sys_write_serial_raw(core::ptr::null(), 0)
+    };
+    assert!(
+        ret == Ok(0),
+        "user raw wrapper write_serial(ptr=null, len=0) must return Ok(0)"
+    );
 }

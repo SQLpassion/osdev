@@ -371,7 +371,8 @@ fn run_user_mode_serial_demo(screen: &mut Screen) {
 /// Ensures every page needed by `userdemo_ring3_task` exists in user space.
 ///
 /// This includes:
-/// - code pages for the demo entry and raw syscall helpers (`syscall1`/`syscall2`),
+/// - code pages for the demo entry, user syscall wrappers, ABI syscall helpers,
+///   and wrapper-side helper routines,
 /// - one user-readable message page,
 /// - one writable stack page.
 ///
@@ -396,13 +397,18 @@ fn map_userdemo_task_pages() -> Result<(), &'static str> {
     // instructions from supervisor-only pages.
     //
     // Call chain:
-    // userdemo_ring3_task -> syscall2(WriteSerial) -> syscall1(Exit) -> int 0x80.
+    // userdemo_ring3_task -> user::sys_write_serial_raw/user::sys_exit
+    // -> abi::syscall2/syscall1 -> int 0x80.
+    //
+    // Note:
+    // User wrappers include local result decoding logic and therefore must have
+    // their own code pages executable from the user alias window.
     let required_kernel_function_vas: [u64; 5] = [
         userdemo_ring3_task as *const () as usize as u64,
-        syscall::user::sys_write_serial as *const () as usize as u64,
+        syscall::user::sys_write_serial_raw as *const () as usize as u64,
         syscall::user::sys_exit as *const () as usize as u64,
-        syscall::arch::syscall_raw::syscall2 as *const () as usize as u64,
-        syscall::arch::syscall_raw::syscall1 as *const () as usize as u64,
+        syscall::abi::syscall2 as *const () as usize as u64,
+        syscall::abi::syscall1 as *const () as usize as u64,
     ];
 
     // Reserve two physical 4 KiB frames for userdemo private data pages:
@@ -473,28 +479,20 @@ fn write_userdemo_message_page() -> Result<(), &'static str> {
 
 /// Ring-3 demo entry executed via scheduler `iretq`.
 ///
-/// The body intentionally performs only two direct syscalls:
+/// The body intentionally performs only two user-wrapper calls:
 /// 1. `WriteSerial(msg_ptr, msg_len)`
 /// 2. `Exit(0)`
 ///
-/// Keeping the call graph minimal avoids additional user-alias code-page
-/// requirements from higher-level wrappers.
 extern "C" fn userdemo_ring3_task() -> ! {
     unsafe {
         // SAFETY:
-        // - Message VA/len point to a mapped user-readable buffer.
-        // - Executes two separate syscalls: WriteSerial, then Exit.
-        let _ = syscall::arch::syscall_raw::syscall2(
-            syscall::SyscallId::WriteSerial as u64,
-            USER_SERIAL_TASK_MSG_VA,
-            USER_SERIAL_TASK_MSG.len() as u64,
+        // - `USER_SERIAL_TASK_MSG_VA` points to a mapped user-readable buffer.
+        // - `USER_SERIAL_TASK_MSG.len()` bytes were copied into that page.
+        let _ = syscall::user::sys_write_serial_raw(
+            USER_SERIAL_TASK_MSG_VA as *const u8,
+            USER_SERIAL_TASK_MSG.len(),
         );
-
-        let _ = syscall::arch::syscall_raw::syscall1(syscall::SyscallId::Exit as u64, 0);
-        // If the kernel unexpectedly returns from Exit, stay local.
-        loop {
-            core::hint::spin_loop();
-        }
+        syscall::user::sys_exit(0);
     }
 }
 

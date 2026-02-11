@@ -7,12 +7,14 @@
 //!
 //! Design goals:
 //! - keep call sites simple (`Result`-based API where possible),
-//! - centralize syscall return decoding,
+//! - keep syscall return decoding explicit at wrapper boundaries,
 //! - keep unsafe and ABI details local to wrapper implementations.
 
 use core::arch::asm;
 
-use super::{abi, decode_result, SysError, SyscallId};
+use super::{
+    abi, SysError, SyscallId, SYSCALL_ERR_INVALID_ARG, SYSCALL_ERR_UNSUPPORTED,
+};
 
 /// Requests a cooperative reschedule.
 ///
@@ -26,7 +28,17 @@ pub fn sys_yield() -> Result<(), SysError> {
         abi::syscall0(SyscallId::Yield as u64)
     };
     
-    decode_result(raw_value).map(|_| ())
+    // Keep decoding local in this module:
+    // - User wrappers may execute in ring-3 via aliased code pages.
+    // - Calling an external decode helper can jump to an unmapped
+    //   higher-half kernel text page and fault in user mode.
+    // - This explicit match keeps the wrapper path self-contained.
+    match raw_value {
+        SYSCALL_ERR_UNSUPPORTED => Err(SysError::Enosys),
+        SYSCALL_ERR_INVALID_ARG => Err(SysError::Einval),
+        x if x >= SYSCALL_ERR_INVALID_ARG => Err(SysError::Unknown(x)),
+        _ => Ok(()),
+    }
 }
 
 /// Writes `buf` to the kernel debug serial output (COM1).
@@ -40,13 +52,30 @@ pub fn sys_yield() -> Result<(), SysError> {
 /// - `Err(...)` when kernel reports a syscall error.
 #[inline(always)]
 pub fn sys_write_serial(buf: &[u8]) -> Result<usize, SysError> {
+    unsafe { sys_write_serial_raw(buf.as_ptr(), buf.len()) }
+}
+
+/// Writes `len` bytes from `ptr` to the kernel debug serial output (COM1).
+///
+/// # Safety
+/// Caller must ensure that `ptr..ptr+len` is readable in the current
+/// user/kernel context expected by the syscall boundary.
+#[inline(always)]
+pub unsafe fn sys_write_serial_raw(ptr: *const u8, len: usize) -> Result<usize, SysError> {
     let raw_value = unsafe {
         // SAFETY:
-        // - Pointer/length are derived from a valid Rust slice.
-        abi::syscall2(SyscallId::WriteSerial as u64, buf.as_ptr() as u64, buf.len() as u64)
+        // - Caller guarantees `ptr`/`len` satisfy the required memory contract.
+        abi::syscall2(SyscallId::WriteSerial as u64, ptr as u64, len as u64)
     };
 
-    decode_result(raw_value).map(|written| written as usize)
+    // Keep decoding local for the same reason as `sys_yield`: avoid extra
+    // helper calls outside the user-aliased wrapper path.
+    match raw_value {
+        SYSCALL_ERR_UNSUPPORTED => Err(SysError::Enosys),
+        SYSCALL_ERR_INVALID_ARG => Err(SysError::Einval),
+        x if x >= SYSCALL_ERR_INVALID_ARG => Err(SysError::Unknown(x)),
+        written => Ok(written as usize),
+    }
 }
 
 /// Terminates the current task with `exit_code`.
