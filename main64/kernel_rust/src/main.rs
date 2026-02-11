@@ -38,6 +38,13 @@ static mut KERNEL_SIZE: u64 = 0;
 
 const PATTERN_DELAY_SPINS: usize = 500_000;
 const VGA_TEXT_COLS: usize = 80;
+const KERNEL_HIGHER_HALF_BASE: u64 = 0xFFFF_8000_0000_0000;
+const USER_SERIAL_TASK_STACK_PAGE_VA: u64 = vmm::USER_STACK_TOP - 0x1000;
+const USER_SERIAL_TASK_STACK_TOP: u64 = vmm::USER_STACK_TOP - 16;
+const USER_SERIAL_TASK_MSG_VA: u64 = vmm::USER_CODE_BASE + 0x1000;
+const USER_SERIAL_TASK_DONE_VA: u64 = USER_SERIAL_TASK_MSG_VA + 0x80;
+const USER_SERIAL_TASK_MSG: &[u8] = b"[ring3] hello from user mode via int 0x80\n";
+static mut USER_SERIAL_TASK_PAGES_MAPPED: bool = false;
 
 /// Kernel entry point - called from bootloader (kaosldr_64)
 ///
@@ -182,6 +189,7 @@ fn execute_command(screen: &mut Screen, line: &str) {
             writeln!(screen, "  pmm [n]         - run PMM self-test (default n=2048)").unwrap();
             writeln!(screen, "  vmmtest [--debug] - run VMM smoke test").unwrap();
             writeln!(screen, "  heaptest        - run heap self-test").unwrap();
+            writeln!(screen, "  userdemo        - run ring-3 serial demo task").unwrap();
             writeln!(screen, "  shutdown        - shutdown the system").unwrap();
         }
         "echo" => {
@@ -283,9 +291,156 @@ fn execute_command(screen: &mut Screen, line: &str) {
         "heaptest" => {
             heap::run_self_test(screen);
         }
+        "userdemo" => {
+            run_user_mode_serial_demo(screen);
+        }
         _ => {
             writeln!(screen, "Unknown command: {}", cmd).unwrap();
         }
+    }
+}
+
+fn run_user_mode_serial_demo(screen: &mut Screen) {
+    if let Err(msg) = ensure_user_serial_task_pages() {
+        writeln!(screen, "User demo setup failed: {}", msg).unwrap();
+        return;
+    }
+    if let Err(msg) = write_user_serial_task_image() {
+        writeln!(screen, "User demo image failed: {}", msg).unwrap();
+        return;
+    }
+
+    let entry_kernel_va = userdemo_ring3_task as *const () as usize as u64;
+    let entry_rip = match kernel_va_to_user_code_va(entry_kernel_va) {
+        Some(va) => va,
+        None => {
+            writeln!(screen, "User demo spawn failed: entry address outside user code alias window").unwrap();
+            return;
+        }
+    };
+    let cr3 = vmm::get_pml4_address();
+    let task_id = match scheduler::spawn_user_task(
+        entry_rip,
+        USER_SERIAL_TASK_STACK_TOP,
+        cr3,
+    ) {
+        Ok(task_id) => task_id,
+        Err(err) => {
+            writeln!(screen, "User demo spawn failed: {:?}", err).unwrap();
+            return;
+        }
+    };
+
+    // Wait until ring-3 task signals completion, then terminate it from kernel side.
+    while unsafe { core::ptr::read_volatile(USER_SERIAL_TASK_DONE_VA as *const u8) } == 0 {
+        scheduler::yield_now();
+    }
+    let _ = scheduler::terminate_task(task_id);
+    while scheduler::task_frame_ptr(task_id).is_some() {
+        scheduler::yield_now();
+    }
+    writeln!(screen, "User demo task finished. Check serial output.").unwrap();
+}
+
+#[inline]
+fn kernel_va_to_phys(kernel_va: u64) -> Option<u64> {
+    if kernel_va >= KERNEL_HIGHER_HALF_BASE {
+        Some(kernel_va - KERNEL_HIGHER_HALF_BASE)
+    } else {
+        None
+    }
+}
+
+#[inline]
+fn kernel_va_to_user_code_va(kernel_va: u64) -> Option<u64> {
+    syscall::user_alias_va_for_kernel(
+        vmm::USER_CODE_BASE,
+        vmm::USER_CODE_SIZE,
+        KERNEL_HIGHER_HALF_BASE,
+        kernel_va,
+    )
+}
+
+fn ensure_user_serial_task_pages() -> Result<(), &'static str> {
+    unsafe {
+        if USER_SERIAL_TASK_PAGES_MAPPED {
+            return Ok(());
+        }
+    }
+
+    let required_kernel_function_vas: [u64; 1] = [userdemo_ring3_task as *const () as usize as u64];
+    let stack_frame = pmm::with_pmm(|mgr| {
+        mgr.alloc_frame()
+            .expect("failed to allocate user serial task stack frame")
+    });
+    let msg_frame = pmm::with_pmm(|mgr| {
+        mgr.alloc_frame()
+            .expect("failed to allocate user serial task message frame")
+    });
+
+    for fn_va in required_kernel_function_vas {
+        let code_kernel_page_va = fn_va & !0xFFFu64;
+        let code_phys = kernel_va_to_phys(code_kernel_page_va)
+            .ok_or("user demo entry has non-higher-half address")?;
+        let code_user_page_va = kernel_va_to_user_code_va(code_kernel_page_va)
+            .ok_or("user demo function outside user alias window")?;
+        vmm::map_user_page(code_user_page_va, code_phys / pmm::PAGE_SIZE, false)
+            .map_err(|_| "mapping user code page failed")?;
+    }
+    vmm::map_user_page(USER_SERIAL_TASK_MSG_VA, msg_frame.pfn, true)
+        .map_err(|_| "mapping user message page failed")?;
+    vmm::map_user_page(USER_SERIAL_TASK_STACK_PAGE_VA, stack_frame.pfn, true)
+        .map_err(|_| "mapping user stack page failed")?;
+
+    unsafe {
+        USER_SERIAL_TASK_PAGES_MAPPED = true;
+    }
+    Ok(())
+}
+
+fn write_user_serial_task_image() -> Result<(), &'static str> {
+    unsafe {
+        // SAFETY:
+        // - `USER_SERIAL_TASK_MSG_VA` is mapped in
+        //   `ensure_user_serial_task_pages`.
+        // - Message length fits into one mapped 4 KiB message page.
+        core::ptr::write_bytes(USER_SERIAL_TASK_MSG_VA as *mut u8, 0, 0x1000);
+        core::ptr::write_volatile(USER_SERIAL_TASK_DONE_VA as *mut u8, 0);
+        core::ptr::copy_nonoverlapping(
+            USER_SERIAL_TASK_MSG.as_ptr(),
+            USER_SERIAL_TASK_MSG_VA as *mut u8,
+            USER_SERIAL_TASK_MSG.len(),
+        );
+    }
+    Ok(())
+}
+
+extern "C" fn userdemo_ring3_task() -> ! {
+    unsafe {
+        // SAFETY:
+        // - Runs in ring 3 after scheduler `iretq` transition.
+        // - Uses only local register/immediate instructions and `int 0x80`.
+        // - Avoids Rust-call codegen paths that rely on kernel-base relative calls.
+        core::arch::asm!(
+            // write_serial(USER_SERIAL_TASK_MSG_VA, USER_SERIAL_TASK_MSG.len())
+            "mov rax, {write_id}",
+            "mov rdi, {msg_va}",
+            "mov rsi, {msg_len}",
+            "xor rdx, rdx",
+            "xor r10, r10",
+            "int 0x80",
+            // done = 1
+            "mov rbx, {done_va}",
+            "mov byte ptr [rbx], 1",
+            "2:",
+            "pause",
+            "jmp 2b",
+            write_id = const syscall::SyscallId::WriteSerial as u64,
+            msg_va = const USER_SERIAL_TASK_MSG_VA,
+            msg_len = const USER_SERIAL_TASK_MSG.len() as u64,
+            done_va = const USER_SERIAL_TASK_DONE_VA,
+            options(noreturn)
+        );
     }
 }
 

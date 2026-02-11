@@ -7,7 +7,7 @@
 #![reexport_test_harness_main = "test_main"]
 
 use core::panic::PanicInfo;
-use kaos_kernel::syscall::{self, SyscallId};
+use kaos_kernel::syscall::{self, SysError, SyscallId};
 
 #[no_mangle]
 #[link_section = ".text.boot"]
@@ -47,6 +47,34 @@ fn test_unknown_syscall_returns_enosys() {
     assert!(ret == syscall::ERR_ENOSYS, "unknown syscall must return ENOSYS");
 }
 
+/// Contract: decode_result maps known syscall error values.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "decode_result maps known syscall error values".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_decode_result_maps_known_errors() {
+    assert!(
+        syscall::decode_result(syscall::ERR_ENOSYS) == Err(SysError::Enosys),
+        "ERR_ENOSYS must decode to SysError::Enosys"
+    );
+    assert!(
+        syscall::decode_result(syscall::ERR_EINVAL) == Err(SysError::Einval),
+        "ERR_EINVAL must decode to SysError::Einval"
+    );
+}
+
+/// Contract: decode_result keeps successful values unchanged.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "decode_result keeps successful values unchanged".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_decode_result_passes_success_values() {
+    assert!(syscall::decode_result(0) == Ok(0), "zero must remain a successful return");
+    assert!(syscall::decode_result(17) == Ok(17), "positive result must remain unchanged");
+}
+
 /// Contract: write_serial rejects null pointer when len > 0.
 /// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
 /// When: The exact operation sequence in this function is executed against that state.
@@ -70,4 +98,113 @@ fn test_write_serial_null_ptr_with_len_returns_einval() {
 fn test_write_serial_zero_len_returns_zero() {
     let ret = syscall::dispatch(SyscallId::WriteSerial as u64, 0, 0, 0, 0);
     assert!(ret == 0, "write_serial len=0 must return 0");
+}
+
+/// Contract: user serial+exit stub encoder produces expected syscall ids.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "user serial+exit stub encoder produces expected syscall ids".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_encode_user_serial_then_exit_stub_contains_syscall_ids() {
+    let mut buf = [0u8; syscall::USER_SERIAL_EXIT_STUB_MAX_LEN];
+    let len = syscall::encode_user_serial_then_exit_stub(&mut buf, 0x7000_0000_0200, 17, 9)
+        .expect("encoding with max-sized buffer must succeed");
+    assert!(len > 0, "encoded length must be non-zero");
+    assert!(
+        len <= syscall::USER_SERIAL_EXIT_STUB_MAX_LEN,
+        "encoded length must fit declared maximum"
+    );
+    assert!(buf[0] == 0x48 && buf[1] == 0xB8, "stub must start with mov rax, imm64");
+
+    let write_syscall_id = u64::from_le_bytes(
+        buf[2..10]
+            .try_into()
+            .expect("write syscall id immediate must be 8 bytes"),
+    );
+    assert!(
+        write_syscall_id == SyscallId::WriteSerial as u64,
+        "first syscall immediate must be WriteSerial id"
+    );
+
+    // Second mov rax starts after:
+    // 10 (mov rax) + 10 (mov rdi) + 10 (mov rsi) + 3 (xor r10,r10) + 2 (int 0x80) = 35
+    let second_mov_off = 35usize;
+    assert!(
+        buf[second_mov_off] == 0x48 && buf[second_mov_off + 1] == 0xB8,
+        "second syscall setup must use mov rax, imm64"
+    );
+    let exit_syscall_id = u64::from_le_bytes(
+        buf[second_mov_off + 2..second_mov_off + 10]
+            .try_into()
+            .expect("exit syscall id immediate must be 8 bytes"),
+    );
+    assert!(
+        exit_syscall_id == SyscallId::Exit as u64,
+        "second syscall immediate must be Exit id"
+    );
+}
+
+/// Contract: user serial+exit stub encoder fails on undersized buffer.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "user serial+exit stub encoder fails on undersized buffer".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_encode_user_serial_then_exit_stub_fails_on_small_buffer() {
+    let mut tiny = [0u8; 8];
+    let encoded = syscall::encode_user_serial_then_exit_stub(&mut tiny, 0x7000_0000_0200, 4, 0);
+    assert!(encoded.is_none(), "encoding must fail when buffer is too small");
+}
+
+/// Contract: user alias rip preserves 4 KiB page offset.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "user alias rip preserves 4 KiB page offset".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_user_alias_rip_preserves_page_offset() {
+    let alias = syscall::user_alias_rip(0x7000_0000_0000, 0xFFFF_8000_0012_3456);
+    assert!(
+        alias == 0x7000_0000_0456,
+        "alias rip must keep original entry offset in mapped user code page"
+    );
+}
+
+/// Contract: user alias va maps kernel higher-half offsets into user code window.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "user alias va maps kernel higher-half offsets into user code window".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_user_alias_va_for_kernel_maps_and_rejects_bounds() {
+    let mapped = syscall::user_alias_va_for_kernel(
+        0x7000_0000_0000,
+        0x20_0000,
+        0xFFFF_8000_0000_0000,
+        0xFFFF_8000_0012_3000,
+    );
+    assert!(
+        mapped == Some(0x7000_0000_0000 + 0x12_3000),
+        "kernel VA offset must map into user code window"
+    );
+
+    let below_base = syscall::user_alias_va_for_kernel(
+        0x7000_0000_0000,
+        0x20_0000,
+        0xFFFF_8000_0000_0000,
+        0x7FFF_FFFF_FFFF_F000,
+    );
+    assert!(below_base.is_none(), "kernel VA below base must be rejected");
+
+    let out_of_window = syscall::user_alias_va_for_kernel(
+        0x7000_0000_0000,
+        0x20_0000,
+        0xFFFF_8000_0000_0000,
+        0xFFFF_8000_0030_0000,
+    );
+    assert!(
+        out_of_window.is_none(),
+        "kernel VA beyond user code alias size must be rejected"
+    );
 }

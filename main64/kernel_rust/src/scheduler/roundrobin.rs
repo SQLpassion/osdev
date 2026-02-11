@@ -460,6 +460,25 @@ pub fn start() {
     });
 }
 
+/// Creates a new kernel task and appends it to the run queue.
+///
+/// Thin wrapper around the shared spawn path for kernel-mode tasks.
+pub fn spawn_kernel_task(entry: KernelTaskFn) -> Result<usize, SpawnError> {
+    spawn_internal(SpawnKind::Kernel { entry })
+}
+
+/// Creates a new user task with explicit user entry point and user stack pointer.
+///
+/// `entry_rip` and `user_rsp` are user-space virtual addresses in the task's
+/// address space identified by `cr3`.
+pub fn spawn_user_task(entry_rip: u64, user_rsp: u64, cr3: u64) -> Result<usize, SpawnError> {
+    spawn_internal(SpawnKind::User {
+        entry_rip,
+        user_rsp,
+        cr3,
+    })
+}
+
 /// Shared task creation path used by both public spawn wrappers.
 fn spawn_internal(kind: SpawnKind) -> Result<usize, SpawnError> {
     with_sched(|sched| {
@@ -509,26 +528,6 @@ fn spawn_internal(kind: SpawnKind) -> Result<usize, SpawnError> {
         sched.meta.task_count += 1;
 
         Ok(slot_idx)
-    })
-}
-
-/// Creates a new kernel task and appends it to the run queue.
-///
-/// Thin wrapper around the shared spawn path for kernel-mode tasks.
-pub fn spawn_kernel_task(entry: KernelTaskFn) -> Result<usize, SpawnError> {
-    spawn_internal(SpawnKind::Kernel { entry })
-}
-
-/// Creates a new user task with explicit user entry point and user stack pointer.
-///
-/// `entry_rip` and `user_rsp` are user-space virtual addresses in the task's
-/// address space identified by `cr3`.
-#[allow(dead_code)]
-pub fn spawn_user_task(entry_rip: u64, user_rsp: u64, cr3: u64) -> Result<usize, SpawnError> {
-    spawn_internal(SpawnKind::User {
-        entry_rip,
-        user_rsp,
-        cr3,
     })
 }
 
