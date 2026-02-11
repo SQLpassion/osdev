@@ -1,4 +1,45 @@
 //! Virtual memory manager for x86_64 4-level paging with recursive mapping.
+//!
+//! User virtual-address layout (current policy):
+//!
+//! ```text
+//! Higher addresses
+//!     ^
+//!     |
+//!     |  USER_STACK_TOP = 0x0000_7FFF_F000_0000   (exclusive upper bound)
+//!     |  +--------------------------------------+
+//!     |  |           User Stack Region          |
+//!     |  |                                      |
+//!     |  |  [USER_STACK_BASE .. USER_STACK_TOP) |
+//!     |  |  size = USER_STACK_SIZE = 1 MiB      |
+//!     |  +--------------------------------------+
+//!     |  USER_STACK_BASE = 0x0000_7FFF_EFF0_0000
+//!     |  +--------------------------------------+
+//!     |  |         Guard Page (unmapped)        |
+//!     |  | [USER_STACK_GUARD_BASE .. _END)      |
+//!     |  | size = 4 KiB                         |
+//!     |  +--------------------------------------+
+//!     |  USER_STACK_GUARD_BASE = 0x0000_7FFF_EFEF_F000
+//!     |
+//!     |                 (large unmapped gap)
+//!     |
+//!     |  USER_CODE_BASE = 0x0000_7000_0000_0000
+//!     |  +--------------------------------------+
+//!     |  |            User Code Region          |
+//!     |  | [USER_CODE_BASE .. USER_CODE_END)    |
+//!     |  | size = USER_CODE_SIZE = 2 MiB        |
+//!     |  +--------------------------------------+
+//!     |  USER_CODE_END  = 0x0000_7000_0020_0000
+//!     |
+//!     +--------------------------------------------------> virtual address space
+//! Lower addresses
+//! ```
+//!
+//! Region classification:
+//! - `[USER_CODE_BASE, USER_CODE_END)` => code (mappable)
+//! - `[USER_STACK_BASE, USER_STACK_TOP)` => stack (mappable)
+//! - `[USER_STACK_GUARD_BASE, USER_STACK_BASE)` => guard (must stay unmapped)
+//! - everything else => not a user region
 
 use core::arch::asm;
 use core::cell::UnsafeCell;
@@ -12,6 +53,25 @@ const PT_ENTRIES: usize = 512;
 const SMALL_PAGE_SIZE: u64 = 4096;
 const PAGE_MASK: u64 = !(SMALL_PAGE_SIZE - 1);
 
+/// Temporary kernel virtual address used as a one-page scratch mapping when
+/// cloning page-table roots.
+///
+/// Why this is needed:
+/// - The PMM returns a physical frame (`new_pml4_phys`) for the clone target.
+/// - To copy bytes into that frame, the kernel needs a virtual mapping to it.
+/// - `TEMP_CLONE_PML4_VA` provides exactly one reusable VA slot for that purpose.
+///
+/// Lifecycle in `clone_kernel_pml4_for_user()`:
+/// 1. map `TEMP_CLONE_PML4_VA -> new_pml4_phys`
+/// 2. copy current PML4 page bytes into that VA
+/// 3. patch recursive entry 511 in the clone
+/// 4. unmap `TEMP_CLONE_PML4_VA` again
+///
+/// The mapping is temporary and not released via PMM on unmap because the frame
+/// remains owned by the caller as the returned user PML4 root.
+#[allow(dead_code)]
+const TEMP_CLONE_PML4_VA: u64 = 0xFFFF_8000_0DEA_D000;
+
 const PML4_TABLE_ADDR: u64 = 0xFFFF_FFFF_FFFF_F000;
 const PDP_TABLE_BASE: u64 = 0xFFFF_FFFF_FFE0_0000;
 const PD_TABLE_BASE: u64 = 0xFFFF_FFFF_C000_0000;
@@ -24,6 +84,52 @@ const ENTRY_HUGE: u64 = 1 << 7;
 const ENTRY_FRAME_MASK: u64 = 0x0000_FFFF_FFFF_F000;
 
 const PF_ERR_PRESENT: u64 = 1 << 0;
+
+/// User executable base virtual address.
+#[allow(dead_code)]
+pub const USER_CODE_BASE: u64 = 0x0000_7000_0000_0000;
+
+/// User executable mapping size (2 MiB).
+#[allow(dead_code)]
+pub const USER_CODE_SIZE: u64 = 0x0020_0000;
+
+/// User executable end address (exclusive).
+#[allow(dead_code)]
+pub const USER_CODE_END: u64 = USER_CODE_BASE + USER_CODE_SIZE;
+
+/// User stack top (exclusive upper boundary).
+#[allow(dead_code)]
+pub const USER_STACK_TOP: u64 = 0x0000_7FFF_F000_0000;
+
+/// User stack size (1 MiB).
+#[allow(dead_code)]
+pub const USER_STACK_SIZE: u64 = 0x0010_0000;
+
+/// User stack start (inclusive).
+#[allow(dead_code)]
+pub const USER_STACK_BASE: u64 = USER_STACK_TOP - USER_STACK_SIZE;
+
+/// Optional guard page below the user stack.
+#[allow(dead_code)]
+pub const USER_STACK_GUARD_BASE: u64 = USER_STACK_BASE - SMALL_PAGE_SIZE;
+
+/// Optional guard page end (exclusive).
+#[allow(dead_code)]
+pub const USER_STACK_GUARD_END: u64 = USER_STACK_BASE;
+
+/// Classified user virtual address region.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum UserRegion {
+    /// Executable/text region for user program image.
+    Code,
+
+    /// User stack region (mapped pages).
+    Stack,
+
+    /// Guard page below stack (must stay unmapped).
+    Guard,
+}
 
 /// Error returned by the checked page-fault handling path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +150,18 @@ pub enum MapError {
         virtual_address: u64,
         current_pfn: u64,
         requested_pfn: u64,
+    },
+
+    /// Address is outside configured user mapping regions.
+    #[allow(dead_code)]
+    NotUserRegion {
+        virtual_address: u64,
+    },
+
+    /// Address targets the configured guard page.
+    #[allow(dead_code)]
+    UserGuardPage {
+        virtual_address: u64,
     },
 }
 
@@ -197,6 +315,24 @@ fn pt_table_addr(va: u64) -> u64 {
 #[inline]
 fn page_align_down(addr: u64) -> u64 {
     addr & PAGE_MASK
+}
+
+/// Returns the configured user region for the given page-aligned address.
+#[inline]
+#[allow(dead_code)]
+fn classify_user_region(virtual_address: u64) -> Option<UserRegion> {
+    if (USER_CODE_BASE..USER_CODE_END).contains(&virtual_address) {
+        return Some(UserRegion::Code);
+    }
+
+    if (USER_STACK_BASE..USER_STACK_TOP).contains(&virtual_address) {
+        return Some(UserRegion::Stack);
+    }
+
+    if (USER_STACK_GUARD_BASE..USER_STACK_GUARD_END).contains(&virtual_address) {
+        return Some(UserRegion::Guard);
+    }
+    None
 }
 
 /// Converts a physical byte address to a page-frame number.
@@ -480,38 +616,47 @@ pub unsafe fn switch_page_directory(pml4_phys: u64) {
 /// Builds any missing intermediate page tables (PML4/PDP/PD) for `virtual_address`.
 ///
 #[inline]
-fn populate_page_table_path(virtual_address: u64) {
+fn populate_page_table_path(virtual_address: u64, user: bool) {
     let pml4 = table_at(PML4_TABLE_ADDR);
     let pml4_idx = pml4_index(virtual_address);
     if !pml4.entries[pml4_idx].present() {
         let new_table_phys = alloc_frame_phys();
-        pml4.entries[pml4_idx].set_mapping(phys_to_pfn(new_table_phys), true, true, false);
+        pml4.entries[pml4_idx].set_mapping(phys_to_pfn(new_table_phys), true, true, user);
         invlpg(pdp_table_addr(virtual_address));
         let new_pdp = table_at(pdp_table_addr(virtual_address));
         new_pdp.zero();
         debug_alloc("PML4", pml4_idx, pml4.entries[pml4_idx].frame());
+    } else if user {
+        pml4.entries[pml4_idx].set_user(true);
+        pml4.entries[pml4_idx].set_writable(true);
     }
 
     let pdp = table_at(pdp_table_addr(virtual_address));
     let pdp_idx = pdp_index(virtual_address);
     if !pdp.entries[pdp_idx].present() {
         let new_table_phys = alloc_frame_phys();
-        pdp.entries[pdp_idx].set_mapping(phys_to_pfn(new_table_phys), true, true, false);
+        pdp.entries[pdp_idx].set_mapping(phys_to_pfn(new_table_phys), true, true, user);
         invlpg(pd_table_addr(virtual_address));
         let new_pd = table_at(pd_table_addr(virtual_address));
         new_pd.zero();
         debug_alloc("PDP", pdp_idx, pdp.entries[pdp_idx].frame());
+    } else if user {
+        pdp.entries[pdp_idx].set_user(true);
+        pdp.entries[pdp_idx].set_writable(true);
     }
 
     let pd = table_at(pd_table_addr(virtual_address));
     let pd_idx = pd_index(virtual_address);
     if !pd.entries[pd_idx].present() {
         let new_table_phys = alloc_frame_phys();
-        pd.entries[pd_idx].set_mapping(phys_to_pfn(new_table_phys), true, true, false);
+        pd.entries[pd_idx].set_mapping(phys_to_pfn(new_table_phys), true, true, user);
         invlpg(pt_table_addr(virtual_address));
         let new_pt = table_at(pt_table_addr(virtual_address));
         new_pt.zero();
         debug_alloc("PD", pd_idx, pd.entries[pd_idx].frame());
+    } else if user {
+        pd.entries[pd_idx].set_user(true);
+        pd.entries[pd_idx].set_writable(true);
     }
 }
 
@@ -593,7 +738,7 @@ pub fn try_handle_page_fault(virtual_address: u64, error_code: u64) -> Result<()
         });
     }
 
-    populate_page_table_path(virtual_address);
+    populate_page_table_path(virtual_address, false);
     let pt = table_at(pt_table_addr(virtual_address));
     let pt_idx = pt_index(virtual_address);
     if !pt.entries[pt_idx].present() {
@@ -635,7 +780,7 @@ pub fn try_map_virtual_to_physical(
     let physical_address = page_align_down(physical_address);
     let requested_pfn = phys_to_pfn(physical_address);
 
-    populate_page_table_path(virtual_address);
+    populate_page_table_path(virtual_address, false);
     let pt = table_at(pt_table_addr(virtual_address));
     let pt_idx = pt_index(virtual_address);
     if pt.entries[pt_idx].present() {
@@ -696,6 +841,133 @@ pub fn unmap_virtual_address(virtual_address: u64) {
             ));
         }
     }
+}
+
+/// Clears the given mapping without releasing the mapped PFN back to PMM.
+///
+/// Intended for temporary virtual mappings to already-owned frames.
+#[allow(dead_code)]
+fn unmap_without_release(virtual_address: u64) {
+    let virtual_address = page_align_down(virtual_address);
+    let Some(pt) = pt_for_if_present(virtual_address) else {
+        return;
+    };
+
+    let pt_idx = pt_index(virtual_address);
+
+    if pt.entries[pt_idx].present() {
+        pt.entries[pt_idx].clear();
+        invlpg(virtual_address);
+    }
+}
+
+/// Clones the active kernel PML4 into a new physical frame for a user address space.
+///
+/// The returned physical address points to a copied PML4 image with recursive
+/// mapping updated to self-reference in entry 511.
+///
+/// Detailed flow:
+/// - Allocate one new physical frame that will hold the clone root table.
+/// - Temporarily map that frame at [`TEMP_CLONE_PML4_VA`].
+/// - Copy the currently active PML4 page (`PML4_TABLE_ADDR`) byte-for-byte
+///   into the temporary mapping. This preserves kernel-half mappings.
+/// - Update entry 511 inside the clone so its recursive mapping points to the
+///   clone frame itself (not the original kernel PML4).
+/// - Remove the temporary VA mapping and return the clone frame physical address.
+///
+/// Why not write directly via physical address:
+/// - Rust code executes in virtual-address context; writing to arbitrary physical
+///   addresses requires either identity mapping assumptions or a temporary map.
+/// - Using one fixed scratch VA is explicit, deterministic, and avoids keeping
+///   permanent helper mappings around.
+///
+/// Safety/ownership note:
+/// - The returned frame remains allocated and owned by the caller.
+/// - `unmap_without_release` is used intentionally so PMM does not free it.
+#[allow(dead_code)]
+pub fn clone_kernel_pml4_for_user() -> u64 {
+    let new_pml4_phys = alloc_frame_phys();
+
+    // Reuse one temporary VA for clone operations.
+    unmap_without_release(TEMP_CLONE_PML4_VA);
+    map_virtual_to_physical(TEMP_CLONE_PML4_VA, new_pml4_phys);
+
+    unsafe {
+        // SAFETY:
+        // - Source is the current recursively mapped kernel PML4 page.
+        // - Destination is a freshly allocated page mapped at TEMP_CLONE_PML4_VA.
+        // - Regions are disjoint and exactly one page long.
+        core::ptr::copy_nonoverlapping(
+            PML4_TABLE_ADDR as *const u8,
+            TEMP_CLONE_PML4_VA as *mut u8,
+            SMALL_PAGE_SIZE as usize,
+        );
+    }
+
+    // Rebind recursive slot 511 inside the clone to point to the clone itself.
+    //
+    // Background:
+    // - In this kernel, PML4 entry 511 is used for recursive page-table mapping.
+    // - After the raw memcpy above, entry 511 in the clone still points to the
+    //   original kernel PML4 frame (copied value), which is wrong for an
+    //   independent address-space root.
+    //
+    // What these lines do:
+    // 1) Interpret the temporary clone mapping as a mutable PML4 table.
+    // 2) Overwrite entry 511 so it maps `new_pml4_phys` (the clone frame).
+    //
+    // Result:
+    // - Recursive virtual windows (PML4/PDP/PD/PT helper addresses) operate on
+    //   the cloned hierarchy once this CR3 is activated, not on the kernel root.
+    let clone_pml4 = table_at(TEMP_CLONE_PML4_VA);
+    clone_pml4.entries[511].set_mapping(phys_to_pfn(new_pml4_phys), true, true, false);
+    unmap_without_release(TEMP_CLONE_PML4_VA);
+    
+    new_pml4_phys
+}
+
+/// Maps one user virtual page to `pfn` using user-accessible permissions.
+///
+/// `virtual_address` must be within configured user code/stack regions and
+/// must not target the configured guard page.
+#[allow(dead_code)]
+pub fn map_user_page(virtual_address: u64, pfn: u64, writable: bool) -> Result<(), MapError> {
+    let virtual_address = page_align_down(virtual_address);
+
+    match classify_user_region(virtual_address) {
+        Some(UserRegion::Code) | Some(UserRegion::Stack) => {}
+        Some(UserRegion::Guard) => {
+            return Err(MapError::UserGuardPage { virtual_address });
+        }
+        None => {
+            return Err(MapError::NotUserRegion { virtual_address });
+        }
+    }
+
+    populate_page_table_path(virtual_address, true);
+    let pt = table_at(pt_table_addr(virtual_address));
+    let pt_idx = pt_index(virtual_address);
+
+    if pt.entries[pt_idx].present() {
+        let current_pfn = pt.entries[pt_idx].frame();
+
+        if current_pfn != pfn {
+            return Err(MapError::AlreadyMapped {
+                virtual_address,
+                current_pfn,
+                requested_pfn: pfn,
+            });
+        }
+
+        pt.entries[pt_idx].set_writable(writable);
+        pt.entries[pt_idx].set_user(true);
+        return Ok(());
+    }
+
+    pt.entries[pt_idx].set_mapping(pfn, true, writable, true);
+    invlpg(virtual_address);
+
+    Ok(())
 }
 
 /// Basic VMM smoke test that triggers page faults and verifies readback.

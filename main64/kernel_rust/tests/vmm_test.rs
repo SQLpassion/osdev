@@ -222,3 +222,99 @@ fn test_unmap_releases_frame_back_to_pmm() {
     );
     pmm::with_pmm(|mgr| assert!(mgr.release_pfn(reused.pfn)));
 }
+
+/// Contract: clone kernel pml4 for user returns distinct pml4 with self recursive entry.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "clone kernel pml4 for user returns distinct pml4 with self recursive entry".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_clone_kernel_pml4_for_user_returns_distinct_pml4_with_self_recursive_entry() {
+    const TEMP_CLONE_VIEW: u64 = 0xFFFF_8097_1111_0000;
+    const ENTRY_FRAME_MASK: u64 = 0x0000_FFFF_FFFF_F000;
+
+    vmm::unmap_virtual_address(TEMP_CLONE_VIEW);
+    let kernel_pml4 = vmm::get_pml4_address();
+    let clone_pml4 = vmm::clone_kernel_pml4_for_user();
+    assert!(
+        clone_pml4 != kernel_pml4,
+        "clone must allocate a distinct PML4 frame"
+    );
+
+    vmm::map_virtual_to_physical(TEMP_CLONE_VIEW, clone_pml4);
+    let recursive_entry = unsafe {
+        // SAFETY:
+        // - `TEMP_CLONE_VIEW` is mapped to the clone PML4 page.
+        // - Entry index 511 is in-bounds for one 4KiB table page.
+        core::ptr::read_volatile((TEMP_CLONE_VIEW as *const u64).add(511))
+    };
+    let recursive_phys = recursive_entry & ENTRY_FRAME_MASK;
+    assert!(
+        recursive_phys == clone_pml4,
+        "clone PML4 entry 511 must self-reference clone frame"
+    );
+
+    // Releases clone frame via standard unmap path.
+    vmm::unmap_virtual_address(TEMP_CLONE_VIEW);
+}
+
+/// Contract: map user page accepts code and stack regions.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "map user page accepts code and stack regions".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_map_user_page_accepts_code_and_stack_regions() {
+    let code_va = vmm::USER_CODE_BASE;
+    let stack_va = vmm::USER_STACK_TOP - 4096;
+
+    vmm::unmap_virtual_address(code_va);
+    vmm::unmap_virtual_address(stack_va);
+
+    let code_frame = pmm::with_pmm(|mgr| mgr.alloc_frame().expect("code frame alloc failed"));
+    let stack_frame = pmm::with_pmm(|mgr| mgr.alloc_frame().expect("stack frame alloc failed"));
+
+    vmm::map_user_page(code_va, code_frame.pfn, true)
+        .expect("code page in user region should be mappable");
+    vmm::map_user_page(stack_va, stack_frame.pfn, true)
+        .expect("stack page in user region should be mappable");
+
+    unsafe {
+        // SAFETY:
+        // - Both pages were mapped writable just above.
+        core::ptr::write_volatile(code_va as *mut u8, 0xA5);
+        core::ptr::write_volatile(stack_va as *mut u8, 0x5A);
+        assert!(core::ptr::read_volatile(code_va as *const u8) == 0xA5);
+        assert!(core::ptr::read_volatile(stack_va as *const u8) == 0x5A);
+    }
+
+    vmm::unmap_virtual_address(code_va);
+    vmm::unmap_virtual_address(stack_va);
+}
+
+/// Contract: map user page rejects guard and non user regions.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "map user page rejects guard and non user regions".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_map_user_page_rejects_guard_and_non_user_regions() {
+    let frame = pmm::with_pmm(|mgr| mgr.alloc_frame().expect("frame alloc failed"));
+
+    let guard_err = vmm::map_user_page(vmm::USER_STACK_GUARD_BASE, frame.pfn, true)
+        .expect_err("guard page mapping must be rejected");
+    assert!(
+        matches!(guard_err, vmm::MapError::UserGuardPage { .. }),
+        "guard-page mapping must return UserGuardPage error"
+    );
+
+    let outside_va = 0xFFFF_8000_0010_0000u64;
+    let outside_err = vmm::map_user_page(outside_va, frame.pfn, true)
+        .expect_err("non-user region mapping must be rejected");
+    assert!(
+        matches!(outside_err, vmm::MapError::NotUserRegion { virtual_address } if virtual_address == outside_va),
+        "non-user address must return NotUserRegion with original address"
+    );
+
+    pmm::with_pmm(|mgr| assert!(mgr.release_pfn(frame.pfn)));
+}
