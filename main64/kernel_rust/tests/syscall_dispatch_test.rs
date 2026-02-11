@@ -100,61 +100,22 @@ fn test_write_serial_zero_len_returns_zero() {
     assert!(ret == 0, "write_serial len=0 must return 0");
 }
 
-/// Contract: user serial+exit stub encoder produces expected syscall ids.
+/// Contract: write_serial returns byte count for a valid non-empty buffer.
 /// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
 /// When: The exact operation sequence in this function is executed against that state.
-/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "user serial+exit stub encoder produces expected syscall ids".
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "write_serial returns byte count for a valid non-empty buffer".
 /// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
-fn test_encode_user_serial_then_exit_stub_contains_syscall_ids() {
-    let mut buf = [0u8; syscall::USER_SERIAL_EXIT_STUB_MAX_LEN];
-    let len = syscall::encode_user_serial_then_exit_stub(&mut buf, 0x7000_0000_0200, 17, 9)
-        .expect("encoding with max-sized buffer must succeed");
-    assert!(len > 0, "encoded length must be non-zero");
-    assert!(
-        len <= syscall::USER_SERIAL_EXIT_STUB_MAX_LEN,
-        "encoded length must fit declared maximum"
+fn test_write_serial_non_empty_returns_len() {
+    static BYTES: &[u8] = b"ok";
+    let ret = syscall::dispatch(
+        SyscallId::WriteSerial as u64,
+        BYTES.as_ptr() as u64,
+        BYTES.len() as u64,
+        0,
+        0,
     );
-    assert!(buf[0] == 0x48 && buf[1] == 0xB8, "stub must start with mov rax, imm64");
-
-    let write_syscall_id = u64::from_le_bytes(
-        buf[2..10]
-            .try_into()
-            .expect("write syscall id immediate must be 8 bytes"),
-    );
-    assert!(
-        write_syscall_id == SyscallId::WriteSerial as u64,
-        "first syscall immediate must be WriteSerial id"
-    );
-
-    // Second mov rax starts after:
-    // 10 (mov rax) + 10 (mov rdi) + 10 (mov rsi) + 3 (xor r10,r10) + 2 (int 0x80) = 35
-    let second_mov_off = 35usize;
-    assert!(
-        buf[second_mov_off] == 0x48 && buf[second_mov_off + 1] == 0xB8,
-        "second syscall setup must use mov rax, imm64"
-    );
-    let exit_syscall_id = u64::from_le_bytes(
-        buf[second_mov_off + 2..second_mov_off + 10]
-            .try_into()
-            .expect("exit syscall id immediate must be 8 bytes"),
-    );
-    assert!(
-        exit_syscall_id == SyscallId::Exit as u64,
-        "second syscall immediate must be Exit id"
-    );
-}
-
-/// Contract: user serial+exit stub encoder fails on undersized buffer.
-/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
-/// When: The exact operation sequence in this function is executed against that state.
-/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "user serial+exit stub encoder fails on undersized buffer".
-/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
-#[test_case]
-fn test_encode_user_serial_then_exit_stub_fails_on_small_buffer() {
-    let mut tiny = [0u8; 8];
-    let encoded = syscall::encode_user_serial_then_exit_stub(&mut tiny, 0x7000_0000_0200, 4, 0);
-    assert!(encoded.is_none(), "encoding must fail when buffer is too small");
+    assert!(ret == BYTES.len() as u64, "write_serial must return written byte count");
 }
 
 /// Contract: user alias rip preserves 4 KiB page offset.

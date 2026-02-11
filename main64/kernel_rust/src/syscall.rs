@@ -15,21 +15,22 @@ use crate::scheduler;
 pub enum SyscallId {
     /// Cooperative reschedule request.
     Yield = 0,
+
     /// Write bytes to debug serial (COM1).
     WriteSerial = 1,
+
     /// Terminate current task.
     Exit = 2,
 }
 
 /// Unknown syscall number.
 pub const ERR_ENOSYS: u64 = u64::MAX;
+
 /// Invalid argument combination for a known syscall.
 pub const ERR_EINVAL: u64 = u64::MAX - 1;
+
 /// Successful syscall return code for void-like operations.
 pub const OK: u64 = 0;
-/// Maximum encoded length of the `write_serial -> exit` user stub.
-#[allow(dead_code)]
-pub const USER_SERIAL_EXIT_STUB_MAX_LEN: usize = 62;
 
 /// Computes the user-mode alias RIP for a kernel function page mapped at `code_page_user_va`.
 ///
@@ -234,99 +235,6 @@ pub mod user {
     }
 }
 
-#[inline]
-#[allow(dead_code)]
-fn emit_bytes(out: &mut [u8], cursor: &mut usize, bytes: &[u8]) -> bool {
-    let end = *cursor + bytes.len();
-    if end > out.len() {
-        return false;
-    }
-    out[*cursor..end].copy_from_slice(bytes);
-    *cursor = end;
-    true
-}
-
-#[inline]
-#[allow(dead_code)]
-fn emit_u64(out: &mut [u8], cursor: &mut usize, value: u64) -> bool {
-    emit_bytes(out, cursor, &value.to_le_bytes())
-}
-
-/// Encodes a tiny ring-3 stub that:
-/// 1. calls `WriteSerial(message_va, message_len)`,
-/// 2. calls `Exit(exit_code)`,
-/// 3. falls into `jmp $` as terminal safety loop.
-///
-/// Returns encoded byte length on success, otherwise `None` if `out` is too small.
-#[allow(dead_code)]
-pub fn encode_user_serial_then_exit_stub(
-    out: &mut [u8],
-    message_va: u64,
-    message_len: usize,
-    exit_code: u64,
-) -> Option<usize> {
-    let mut cursor = 0usize;
-
-    // mov rax, SyscallId::WriteSerial
-    if !emit_bytes(out, &mut cursor, &[0x48, 0xB8]) {
-        return None;
-    }
-    if !emit_u64(out, &mut cursor, SyscallId::WriteSerial as u64) {
-        return None;
-    }
-    // mov rdi, message_va
-    if !emit_bytes(out, &mut cursor, &[0x48, 0xBF]) {
-        return None;
-    }
-    if !emit_u64(out, &mut cursor, message_va) {
-        return None;
-    }
-    // mov rsi, message_len
-    if !emit_bytes(out, &mut cursor, &[0x48, 0xBE]) {
-        return None;
-    }
-    if !emit_u64(out, &mut cursor, message_len as u64) {
-        return None;
-    }
-    // xor r10, r10
-    if !emit_bytes(out, &mut cursor, &[0x4D, 0x31, 0xD2]) {
-        return None;
-    }
-    // int 0x80
-    if !emit_bytes(out, &mut cursor, &[0xCD, 0x80]) {
-        return None;
-    }
-
-    // mov rax, SyscallId::Exit
-    if !emit_bytes(out, &mut cursor, &[0x48, 0xB8]) {
-        return None;
-    }
-    if !emit_u64(out, &mut cursor, SyscallId::Exit as u64) {
-        return None;
-    }
-    // mov rdi, exit_code
-    if !emit_bytes(out, &mut cursor, &[0x48, 0xBF]) {
-        return None;
-    }
-    if !emit_u64(out, &mut cursor, exit_code) {
-        return None;
-    }
-    // xor r10, r10
-    if !emit_bytes(out, &mut cursor, &[0x4D, 0x31, 0xD2]) {
-        return None;
-    }
-    // int 0x80
-    if !emit_bytes(out, &mut cursor, &[0xCD, 0x80]) {
-        return None;
-    }
-    // jmp $
-    if !emit_bytes(out, &mut cursor, &[0xEB, 0xFE]) {
-        return None;
-    }
-
-    Some(cursor)
-}
-
 /// Resolve syscall number and dispatch to the corresponding handler.
 ///
 /// ABI contract (as set by `int 0x80` entry glue):
@@ -348,10 +256,12 @@ fn syscall_yield_impl() -> u64 {
     OK
 }
 
+/// Validates user pointer arguments and forwards payload bytes to COM1.
 fn syscall_write_serial_impl(ptr: *const u8, len: usize) -> u64 {
     if len == 0 {
         return 0;
     }
+
     if ptr.is_null() {
         return ERR_EINVAL;
     }
@@ -362,13 +272,17 @@ fn syscall_write_serial_impl(ptr: *const u8, len: usize) -> u64 {
         // - Null pointer is rejected above.
         slice::from_raw_parts(ptr, len)
     };
+
     let serial = Serial::new();
+
     for byte in bytes {
         serial.write_byte(*byte);
     }
+    
     len as u64
 }
 
+/// Terminates the currently active task via scheduler teardown path.
 fn syscall_exit_impl(_exit_code: u64) -> u64 {
     scheduler::exit_current_task()
 }

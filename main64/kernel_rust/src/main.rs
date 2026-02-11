@@ -38,12 +38,16 @@ static mut KERNEL_SIZE: u64 = 0;
 
 const PATTERN_DELAY_SPINS: usize = 500_000;
 const VGA_TEXT_COLS: usize = 80;
+/// Kernel higher-half base used to translate symbol VAs to physical offsets.
 const KERNEL_HIGHER_HALF_BASE: u64 = 0xFFFF_8000_0000_0000;
+/// One mapped user page used as initial ring-3 stack backing store.
 const USER_SERIAL_TASK_STACK_PAGE_VA: u64 = vmm::USER_STACK_TOP - 0x1000;
+/// Initial user RSP used when creating the demo task frame.
 const USER_SERIAL_TASK_STACK_TOP: u64 = vmm::USER_STACK_TOP - 16;
+/// User-mapped page that stores the serial demo message bytes.
 const USER_SERIAL_TASK_MSG_VA: u64 = vmm::USER_CODE_BASE + 0x1000;
-const USER_SERIAL_TASK_DONE_VA: u64 = USER_SERIAL_TASK_MSG_VA + 0x80;
 const USER_SERIAL_TASK_MSG: &[u8] = b"[ring3] hello from user mode via int 0x80\n";
+/// Guards one-time mapping setup for the user serial demo pages.
 static mut USER_SERIAL_TASK_PAGES_MAPPED: bool = false;
 
 /// Kernel entry point - called from bootloader (kaosldr_64)
@@ -300,16 +304,28 @@ fn execute_command(screen: &mut Screen, line: &str) {
     }
 }
 
+/// Runs a minimal ring-3 smoke test:
+/// - map required code/data/stack pages for the demo task,
+/// - spawn a user task that performs `WriteSerial` then `Exit`,
+/// - block until the task has been removed by the scheduler.
 fn run_user_mode_serial_demo(screen: &mut Screen) {
-    if let Err(msg) = ensure_user_serial_task_pages() {
+    if let Err(msg) = map_userdemo_task_pages() {
         writeln!(screen, "User demo setup failed: {}", msg).unwrap();
         return;
     }
-    if let Err(msg) = write_user_serial_task_image() {
+
+    if let Err(msg) = write_userdemo_message_page() {
         writeln!(screen, "User demo image failed: {}", msg).unwrap();
         return;
     }
 
+    // TEMPORARY BOOTSTRAP:
+    // `userdemo_ring3_task` is compiled as part of kernel text, not loaded from
+    // a user binary. Therefore we derive its kernel VA and translate it into the
+    // user-code alias window for ring-3 RIP.
+    //
+    // Once a real program loader exists, RIP must come from the loaded user
+    // executable entry point and this translation path should be removed.
     let entry_kernel_va = userdemo_ring3_task as *const () as usize as u64;
     let entry_rip = match kernel_va_to_user_code_va(entry_kernel_va) {
         Some(va) => va,
@@ -318,6 +334,19 @@ fn run_user_mode_serial_demo(screen: &mut Screen) {
             return;
         }
     };
+
+    // TEMPORARY BOOTSTRAP:
+    // We currently run userdemo in the active/shared address space and pass
+    // the current CR3 (kernel PML4 root) into `spawn_user_task`.
+    // This matches the current mapping path, where `map_userdemo_task_pages`
+    // inserts userdemo mappings into that same address space.
+    //
+    // MUST CHANGE LATER:
+    // Switch to per-task/per-process address spaces:
+    // - clone kernel PML4 for user (`clone_kernel_pml4_for_user`),
+    // - map user code/data/stack into the cloned root,
+    // - pass cloned CR3 here,
+    // - clean up cloned address space on task exit.
     let cr3 = vmm::get_pml4_address();
     let task_id = match scheduler::spawn_user_task(
         entry_rip,
@@ -331,53 +360,75 @@ fn run_user_mode_serial_demo(screen: &mut Screen) {
         }
     };
 
-    // Wait until ring-3 task signals completion, then terminate it from kernel side.
-    while unsafe { core::ptr::read_volatile(USER_SERIAL_TASK_DONE_VA as *const u8) } == 0 {
-        scheduler::yield_now();
-    }
-    let _ = scheduler::terminate_task(task_id);
+    // Wait until the user task is finished, and voluntarily yield the CPU of the REPL task
     while scheduler::task_frame_ptr(task_id).is_some() {
         scheduler::yield_now();
     }
+
     writeln!(screen, "User demo task finished. Check serial output.").unwrap();
 }
 
-#[inline]
-fn kernel_va_to_phys(kernel_va: u64) -> Option<u64> {
-    if kernel_va >= KERNEL_HIGHER_HALF_BASE {
-        Some(kernel_va - KERNEL_HIGHER_HALF_BASE)
-    } else {
-        None
-    }
-}
-
-#[inline]
-fn kernel_va_to_user_code_va(kernel_va: u64) -> Option<u64> {
-    syscall::user_alias_va_for_kernel(
-        vmm::USER_CODE_BASE,
-        vmm::USER_CODE_SIZE,
-        KERNEL_HIGHER_HALF_BASE,
-        kernel_va,
-    )
-}
-
-fn ensure_user_serial_task_pages() -> Result<(), &'static str> {
+/// Ensures every page needed by `userdemo_ring3_task` exists in user space.
+///
+/// This includes:
+/// - code pages for the demo entry and raw syscall helpers (`raw1`/`raw2`),
+/// - one user-readable message page,
+/// - one writable stack page.
+///
+/// The setup is idempotent within one kernel boot via `USER_SERIAL_TASK_PAGES_MAPPED`.
+///
+/// TEMPORARY BOOTSTRAP NOTE:
+/// The mapped code pages originate from kernel text and are only aliased into
+/// user VA so this demo can execute ring-3 before a full program loader exists.
+/// In the final architecture, user code pages are provided by the loader
+/// (e.g. ELF segments), not by kernel-text alias mappings.
+fn map_userdemo_task_pages() -> Result<(), &'static str> {
     unsafe {
         if USER_SERIAL_TASK_PAGES_MAPPED {
             return Ok(());
         }
     }
 
-    let required_kernel_function_vas: [u64; 1] = [userdemo_ring3_task as *const () as usize as u64];
+    // TEMPORARY BOOTSTRAP:
+    // Kernel virtual addresses derived from function pointers (`fn as *const ()`).
+    // For each entry we map the containing 4 KiB code page into the user-code
+    // alias window so ring-3 can execute the full call chain without fetching
+    // instructions from supervisor-only pages.
+    //
+    // Call chain:
+    // userdemo_ring3_task -> raw2(WriteSerial) -> raw1(Exit) -> int 0x80.
+    let required_kernel_function_vas: [u64; 5] = [
+        userdemo_ring3_task as *const () as usize as u64,
+        syscall::user::sys_write_serial as *const () as usize as u64,
+        syscall::user::sys_exit as *const () as usize as u64,
+        syscall::arch::syscall_raw::raw2 as *const () as usize as u64,
+        syscall::arch::syscall_raw::raw1 as *const () as usize as u64,
+    ];
+
+    // Reserve two physical 4 KiB frames for userdemo private data pages:
+    // - `stack_frame`: backing page for initial ring-3 user stack.
+    // - `msg_frame`: backing page that stores USER_SERIAL_TASK_MSG bytes.
+    //
+    // These are only frame allocations here; actual VA placement and user/rw
+    // permissions are applied later via `vmm::map_user_page`.
     let stack_frame = pmm::with_pmm(|mgr| {
         mgr.alloc_frame()
             .expect("failed to allocate user serial task stack frame")
     });
+
     let msg_frame = pmm::with_pmm(|mgr| {
         mgr.alloc_frame()
             .expect("failed to allocate user serial task message frame")
     });
 
+    // For every required function address:
+    // 1) page-align kernel VA to the containing 4 KiB code page,
+    // 2) translate that kernel page VA to physical address,
+    // 3) compute the corresponding user-code alias VA,
+    // 4) map user alias VA -> same physical code frame (read-only from user side).
+    //
+    // This gives ring-3 an executable view of the exact kernel text pages needed
+    // by the demo syscall call chain, while keeping data pages separate.
     for fn_va in required_kernel_function_vas {
         let code_kernel_page_va = fn_va & !0xFFFu64;
         let code_phys = kernel_va_to_phys(code_kernel_page_va)
@@ -387,6 +438,7 @@ fn ensure_user_serial_task_pages() -> Result<(), &'static str> {
         vmm::map_user_page(code_user_page_va, code_phys / pmm::PAGE_SIZE, false)
             .map_err(|_| "mapping user code page failed")?;
     }
+
     vmm::map_user_page(USER_SERIAL_TASK_MSG_VA, msg_frame.pfn, true)
         .map_err(|_| "mapping user message page failed")?;
     vmm::map_user_page(USER_SERIAL_TASK_STACK_PAGE_VA, stack_frame.pfn, true)
@@ -395,17 +447,21 @@ fn ensure_user_serial_task_pages() -> Result<(), &'static str> {
     unsafe {
         USER_SERIAL_TASK_PAGES_MAPPED = true;
     }
+    
     Ok(())
 }
 
-fn write_user_serial_task_image() -> Result<(), &'static str> {
+/// Writes the static serial demo payload into the user message page.
+///
+/// The page is pre-zeroed so repeated demo runs always observe deterministic
+/// memory content, independent of previous payload lengths.
+fn write_userdemo_message_page() -> Result<(), &'static str> {
     unsafe {
         // SAFETY:
         // - `USER_SERIAL_TASK_MSG_VA` is mapped in
-        //   `ensure_user_serial_task_pages`.
+        //   `map_userdemo_task_pages`.
         // - Message length fits into one mapped 4 KiB message page.
         core::ptr::write_bytes(USER_SERIAL_TASK_MSG_VA as *mut u8, 0, 0x1000);
-        core::ptr::write_volatile(USER_SERIAL_TASK_DONE_VA as *mut u8, 0);
         core::ptr::copy_nonoverlapping(
             USER_SERIAL_TASK_MSG.as_ptr(),
             USER_SERIAL_TASK_MSG_VA as *mut u8,
@@ -415,33 +471,52 @@ fn write_user_serial_task_image() -> Result<(), &'static str> {
     Ok(())
 }
 
+/// Ring-3 demo entry executed via scheduler `iretq`.
+///
+/// The body intentionally performs only two direct syscalls:
+/// 1. `WriteSerial(msg_ptr, msg_len)`
+/// 2. `Exit(0)`
+///
+/// Keeping the call graph minimal avoids additional user-alias code-page
+/// requirements from higher-level wrappers.
 extern "C" fn userdemo_ring3_task() -> ! {
     unsafe {
         // SAFETY:
-        // - Runs in ring 3 after scheduler `iretq` transition.
-        // - Uses only local register/immediate instructions and `int 0x80`.
-        // - Avoids Rust-call codegen paths that rely on kernel-base relative calls.
-        core::arch::asm!(
-            // write_serial(USER_SERIAL_TASK_MSG_VA, USER_SERIAL_TASK_MSG.len())
-            "mov rax, {write_id}",
-            "mov rdi, {msg_va}",
-            "mov rsi, {msg_len}",
-            "xor rdx, rdx",
-            "xor r10, r10",
-            "int 0x80",
-            // done = 1
-            "mov rbx, {done_va}",
-            "mov byte ptr [rbx], 1",
-            "2:",
-            "pause",
-            "jmp 2b",
-            write_id = const syscall::SyscallId::WriteSerial as u64,
-            msg_va = const USER_SERIAL_TASK_MSG_VA,
-            msg_len = const USER_SERIAL_TASK_MSG.len() as u64,
-            done_va = const USER_SERIAL_TASK_DONE_VA,
-            options(noreturn)
+        // - Message VA/len point to a mapped user-readable buffer.
+        // - Executes two separate syscalls: WriteSerial, then Exit.
+        let _ = syscall::arch::syscall_raw::raw2(
+            syscall::SyscallId::WriteSerial as u64,
+            USER_SERIAL_TASK_MSG_VA,
+            USER_SERIAL_TASK_MSG.len() as u64,
         );
+
+        let _ = syscall::arch::syscall_raw::raw1(syscall::SyscallId::Exit as u64, 0);
+        // If the kernel unexpectedly returns from Exit, stay local.
+        loop {
+            core::hint::spin_loop();
+        }
     }
+}
+
+#[inline]
+/// Converts higher-half kernel VA to physical address by removing base offset.
+fn kernel_va_to_phys(kernel_va: u64) -> Option<u64> {
+    if kernel_va >= KERNEL_HIGHER_HALF_BASE {
+        Some(kernel_va - KERNEL_HIGHER_HALF_BASE)
+    } else {
+        None
+    }
+}
+
+#[inline]
+/// Maps a kernel symbol VA into the configured user code alias window.
+fn kernel_va_to_user_code_va(kernel_va: u64) -> Option<u64> {
+    syscall::user_alias_va_for_kernel(
+        vmm::USER_CODE_BASE,
+        vmm::USER_CODE_SIZE,
+        KERNEL_HIGHER_HALF_BASE,
+        kernel_va,
+    )
 }
 
 fn run_multitasking_vga_demo(screen: &mut Screen) {
