@@ -44,7 +44,10 @@ fn test_syscall_ids_are_stable() {
 #[test_case]
 fn test_unknown_syscall_returns_enosys() {
     let ret = syscall::dispatch(0xDEAD, 1, 2, 3, 4);
-    assert!(ret == syscall::ERR_ENOSYS, "unknown syscall must return ENOSYS");
+    assert!(
+        ret == syscall::SYSCALL_ERR_UNSUPPORTED,
+        "unknown syscall must return ENOSYS"
+    );
 }
 
 /// Contract: decode_result maps known syscall error values.
@@ -55,12 +58,26 @@ fn test_unknown_syscall_returns_enosys() {
 #[test_case]
 fn test_decode_result_maps_known_errors() {
     assert!(
-        syscall::decode_result(syscall::ERR_ENOSYS) == Err(SysError::Enosys),
-        "ERR_ENOSYS must decode to SysError::Enosys"
+        syscall::decode_result(syscall::SYSCALL_ERR_UNSUPPORTED) == Err(SysError::Enosys),
+        "SYSCALL_ERR_UNSUPPORTED must decode to SysError::Enosys"
     );
     assert!(
-        syscall::decode_result(syscall::ERR_EINVAL) == Err(SysError::Einval),
-        "ERR_EINVAL must decode to SysError::Einval"
+        syscall::decode_result(syscall::SYSCALL_ERR_INVALID_ARG) == Err(SysError::Einval),
+        "SYSCALL_ERR_INVALID_ARG must decode to SysError::Einval"
+    );
+}
+
+/// Contract: decode_result keeps values below error sentinels as success.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "decode_result keeps values below error sentinels as success".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_decode_result_accepts_value_below_error_sentinels() {
+    let raw = syscall::SYSCALL_ERR_INVALID_ARG - 1;
+    assert!(
+        syscall::decode_result(raw) == Ok(raw),
+        "value below reserved error sentinels must remain a successful return"
     );
 }
 
@@ -84,7 +101,7 @@ fn test_decode_result_passes_success_values() {
 fn test_write_serial_null_ptr_with_len_returns_einval() {
     let ret = syscall::dispatch(SyscallId::WriteSerial as u64, 0, 1, 0, 0);
     assert!(
-        ret == syscall::ERR_EINVAL,
+        ret == syscall::SYSCALL_ERR_INVALID_ARG,
         "write_serial with null pointer and len>0 must return EINVAL"
     );
 }

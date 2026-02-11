@@ -371,7 +371,7 @@ fn run_user_mode_serial_demo(screen: &mut Screen) {
 /// Ensures every page needed by `userdemo_ring3_task` exists in user space.
 ///
 /// This includes:
-/// - code pages for the demo entry and raw syscall helpers (`raw1`/`raw2`),
+/// - code pages for the demo entry and raw syscall helpers (`syscall1`/`syscall2`),
 /// - one user-readable message page,
 /// - one writable stack page.
 ///
@@ -396,13 +396,13 @@ fn map_userdemo_task_pages() -> Result<(), &'static str> {
     // instructions from supervisor-only pages.
     //
     // Call chain:
-    // userdemo_ring3_task -> raw2(WriteSerial) -> raw1(Exit) -> int 0x80.
+    // userdemo_ring3_task -> syscall2(WriteSerial) -> syscall1(Exit) -> int 0x80.
     let required_kernel_function_vas: [u64; 5] = [
         userdemo_ring3_task as *const () as usize as u64,
         syscall::user::sys_write_serial as *const () as usize as u64,
         syscall::user::sys_exit as *const () as usize as u64,
-        syscall::arch::syscall_raw::raw2 as *const () as usize as u64,
-        syscall::arch::syscall_raw::raw1 as *const () as usize as u64,
+        syscall::arch::syscall_raw::syscall2 as *const () as usize as u64,
+        syscall::arch::syscall_raw::syscall1 as *const () as usize as u64,
     ];
 
     // Reserve two physical 4 KiB frames for userdemo private data pages:
@@ -484,13 +484,13 @@ extern "C" fn userdemo_ring3_task() -> ! {
         // SAFETY:
         // - Message VA/len point to a mapped user-readable buffer.
         // - Executes two separate syscalls: WriteSerial, then Exit.
-        let _ = syscall::arch::syscall_raw::raw2(
+        let _ = syscall::arch::syscall_raw::syscall2(
             syscall::SyscallId::WriteSerial as u64,
             USER_SERIAL_TASK_MSG_VA,
             USER_SERIAL_TASK_MSG.len() as u64,
         );
 
-        let _ = syscall::arch::syscall_raw::raw1(syscall::SyscallId::Exit as u64, 0);
+        let _ = syscall::arch::syscall_raw::syscall1(syscall::SyscallId::Exit as u64, 0);
         // If the kernel unexpectedly returns from Exit, stay local.
         loop {
             core::hint::spin_loop();
