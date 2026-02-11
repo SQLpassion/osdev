@@ -230,6 +230,29 @@ fn find_entry_by_frame(
     None
 }
 
+/// Returns `true` when `frame_ptr` lies within any scheduler-owned task stack.
+fn frame_within_any_task_stack(
+    stacks: &[[u8; TASK_STACK_SIZE]; MAX_TASKS],
+    frame_ptr: *const SavedRegisters,
+) -> bool {
+    if frame_ptr.is_null() {
+        return false;
+    }
+
+    let frame_start = frame_ptr as usize;
+    let frame_end = frame_start + size_of::<SavedRegisters>() + size_of::<InterruptStackFrame>();
+
+    for stack in stacks.iter() {
+        let stack_start = stack.as_ptr() as usize;
+        let stack_end = stack_start + TASK_STACK_SIZE;
+        if frame_start >= stack_start && frame_end <= stack_end {
+            return true;
+        }
+    }
+
+    false
+}
+
 /// Removes `task_id` from the run queue and clears its slot.
 ///
 /// Returns `true` when an active task was removed.
@@ -365,7 +388,7 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
         }
 
         let detected_slot = find_entry_by_frame(meta, &sched.stacks, current_frame);
-        if detected_slot.is_none() {
+        if detected_slot.is_none() && !frame_within_any_task_stack(&sched.stacks, current_frame) {
             // Always update bootstrap_frame to the latest non-task frame.
             // This is necessary because the boot stack layout may shift
             // between the initial capture (inside KernelMain) and later
@@ -456,7 +479,6 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
 /// Returns the saved frame pointer for `task_id` if that slot is active.
 ///
 /// Primarily intended for integration tests and diagnostics.
-#[allow(dead_code)]
 pub fn task_frame_ptr(task_id: usize) -> Option<*mut SavedRegisters> {
     with_sched(|sched| {
         if task_id >= MAX_TASKS || !sched.meta.slots[task_id].used {

@@ -91,7 +91,9 @@ fn test_scheduler_api_preserves_enabled_interrupt_state() {
 
     sched::init();
     let _ = sched::spawn(dummy_task_a).expect("spawn should succeed after init");
-    sched::start();
+    // Do not call `start()` here: with IRQ0 unmasked in the test environment,
+    // a hardware timer tick could immediately switch into `dummy_task_a` and
+    // never return to this test function.
 
     assert!(
         interrupts::are_enabled(),
@@ -249,6 +251,48 @@ fn test_spawning_tasks_after_scheduler_start_integrates_into_round_robin() {
 
     current = sched::on_timer_tick(current);
     assert!(current == frame_a, "round robin should wrap back to task A");
+}
+
+/// Contract: terminating running task must not overwrite bootstrap frame with stale task frame.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "terminating running task must not overwrite bootstrap frame with stale task frame".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_terminated_task_frame_does_not_replace_bootstrap_frame() {
+    sched::init();
+
+    let task_a = sched::spawn(dummy_task_a).expect("task A should spawn");
+    let task_b = sched::spawn(dummy_task_b).expect("task B should spawn");
+    let frame_b = sched::task_frame_ptr(task_b).expect("task B frame should exist");
+
+    sched::start();
+
+    let mut bootstrap = SavedRegisters::default();
+    let bootstrap_ptr = &mut bootstrap as *mut SavedRegisters;
+
+    // Capture a valid bootstrap frame first, then run task A.
+    let frame_a = sched::on_timer_tick(bootstrap_ptr);
+    assert!(
+        frame_a == sched::task_frame_ptr(task_a).expect("task A frame should exist"),
+        "first tick should select task A"
+    );
+
+    // Remove currently running task A, leaving `frame_a` as a stale pointer.
+    let removed = sched::terminate_task(task_a);
+    assert!(removed, "task A must terminate");
+
+    // Next tick with stale frame must schedule task B (not treat stale frame as bootstrap).
+    let current = sched::on_timer_tick(frame_a);
+    assert!(current == frame_b, "scheduler should continue with task B");
+
+    // If task B blocks, scheduler must return original bootstrap frame.
+    sched::block_task(task_b);
+    let next = sched::on_timer_tick(current);
+    assert!(
+        next == bootstrap_ptr,
+        "all-blocked path must return original bootstrap frame"
+    );
 }
 
 /// Contract: terminate task removes slot from round robin and allows reuse.

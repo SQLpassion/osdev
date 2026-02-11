@@ -121,16 +121,6 @@ fn run_registered_app(app_fn: AppFn) -> ! {
     scheduler::exit_current_task();
 }
 
-/// Scheduler task entry point for the `hello` app.
-extern "C" fn hello_task_entry() -> ! {
-    run_registered_app(hello::app_main)
-}
-
-/// Scheduler task entry point for the `counter` app.
-extern "C" fn counter_task_entry() -> ! {
-    run_registered_app(counter::app_main)
-}
-
 /// List all available applications to the screen.
 pub fn list_apps(screen: &mut Screen) {
     writeln!(screen, "Available applications:").unwrap();
@@ -139,4 +129,14 @@ pub fn list_apps(screen: &mut Screen) {
     }
     writeln!(screen).unwrap();
     writeln!(screen, "Use 'run <name>' to launch an application.").unwrap();
+}
+
+/// Scheduler task entry point for the `hello` app.
+extern "C" fn hello_task_entry() -> ! {
+    run_registered_app(hello::app_main)
+}
+
+/// Scheduler task entry point for the `counter` app.
+extern "C" fn counter_task_entry() -> ! {
+    run_registered_app(counter::app_main)
 }
