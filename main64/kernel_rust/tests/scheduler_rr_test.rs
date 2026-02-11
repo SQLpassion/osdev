@@ -7,6 +7,7 @@
 #![reexport_test_harness_main = "test_main"]
 
 use core::panic::PanicInfo;
+use kaos_kernel::arch::gdt;
 use kaos_kernel::arch::interrupts::{self, SavedRegisters};
 use kaos_kernel::scheduler::{self as sched, SpawnError};
 use kaos_kernel::sync::singlewaitqueue::SingleWaitQueue;
@@ -186,6 +187,43 @@ fn test_scheduler_round_robin_pointer_sequence_with_five_tasks() {
 
     current = sched::on_timer_tick(current);
     assert!(current == frame_a, "sixth timer tick should wrap to task A");
+}
+
+/// Contract: selecting user task updates tss rsp0 from task context.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "selecting user task updates tss rsp0 from task context".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_selecting_user_task_updates_tss_rsp0_from_task_context() {
+    sched::init();
+
+    let task_a = sched::spawn(dummy_task_a).expect("task A should spawn");
+    let frame_a = sched::task_frame_ptr(task_a).expect("task A frame should exist");
+    let expected_rsp0 = 0xFFFF_8000_0013_7000u64;
+
+    assert!(
+        sched::set_task_user_context(task_a, 0x0010_0000, 0x0000_7FFF_FFFF_F000, expected_rsp0),
+        "setting user context for existing task must succeed"
+    );
+    assert!(sched::is_user_task(task_a), "task A must be flagged as user task");
+    assert!(
+        sched::task_context(task_a) == Some((0x0010_0000, 0x0000_7FFF_FFFF_F000, expected_rsp0)),
+        "stored task context must match the configured values"
+    );
+
+    // Seed a different value so the test proves an update happened.
+    gdt::set_kernel_rsp0(0xFFFF_8000_0000_1000);
+
+    sched::start();
+    let mut bootstrap = SavedRegisters::default();
+    let current = sched::on_timer_tick(&mut bootstrap as *mut SavedRegisters);
+    assert!(current == frame_a, "first tick should select task A");
+
+    assert!(
+        gdt::kernel_rsp0() == expected_rsp0,
+        "selecting a user task must update TSS.RSP0 to the task's kernel stack top"
+    );
 }
 
 /// Contract: block and unblock influence next round-robin selections.

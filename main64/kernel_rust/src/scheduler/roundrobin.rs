@@ -30,6 +30,7 @@ const DEFAULT_RFLAGS: u64 = 0x202;
 pub enum SpawnError {
     /// Scheduler has not been initialized via [`init`].
     NotInitialized,
+
     /// Static task pool is full.
     CapacityExceeded,
 }
@@ -40,8 +41,10 @@ pub enum SpawnError {
 pub enum TaskState {
     /// Task is eligible for scheduling.
     Ready,
+
     /// Task is the one currently executing on the CPU.
     Running,
+
     /// Task is waiting for an external event (e.g. keyboard input).
     Blocked,
 }
@@ -49,9 +52,35 @@ pub enum TaskState {
 /// One slot in the static task table.
 #[derive(Clone, Copy)]
 struct TaskEntry {
+    /// Slot allocation flag in the static task pool.
+    /// `true` means the entry is currently owned by a live task.
     used: bool,
+
+    /// Scheduler lifecycle state used by round-robin selection.
+    /// Blocked tasks are skipped until explicitly unblocked.
     state: TaskState,
+
+    /// Pointer to the currently saved register frame for this task.
+    /// This is the resume target returned to the IRQ trampoline.
     frame_ptr: *mut SavedRegisters,
+
+    /// Task address space root (future user-mode CR3 switch support).
+    /// Kernel-only tasks currently keep this at zero.
+    #[allow(dead_code)]
+    cr3: u64,
+
+    /// User-mode stack pointer for ring-3 resume (future user-task entry).
+    /// Kernel-only tasks currently keep this at zero.
+    #[allow(dead_code)]
+    user_rsp: u64,
+
+    /// Top of this task's kernel stack, used to program `TSS.RSP0`
+    /// before resuming a user-mode task.
+    kernel_rsp_top: u64,
+
+    /// Marks whether this task should be treated as user-mode context.
+    /// When set, scheduler updates `TSS.RSP0` from `kernel_rsp_top`.
+    is_user: bool,
 }
 
 impl TaskEntry {
@@ -61,6 +90,10 @@ impl TaskEntry {
             used: false,
             state: TaskState::Ready,
             frame_ptr: ptr::null_mut(),
+            cr3: 0,
+            user_rsp: 0,
+            kernel_rsp_top: 0,
+            is_user: false,
         }
     }
 
@@ -164,7 +197,7 @@ fn build_initial_task_frame(
     stacks: &mut [[u8; TASK_STACK_SIZE]; MAX_TASKS],
     slot_idx: usize,
     entry: KernelTaskFn,
-) -> *mut SavedRegisters {
+) -> (*mut SavedRegisters, u64) {
     // SAFETY:
     // - `slot_idx` is validated by caller to be in-bounds and unique.
     // - Each slot owns a disjoint stack region in `stacks`.
@@ -206,7 +239,7 @@ fn build_initial_task_frame(
             },
         );
 
-        frame_ptr
+        (frame_ptr, stack_top as u64)
     }
 }
 
@@ -334,11 +367,15 @@ pub fn spawn(entry: KernelTaskFn) -> Result<usize, SpawnError> {
             .find(|idx| !sched.meta.slots[*idx].used)
             .ok_or(SpawnError::CapacityExceeded)?;
 
-        let frame_ptr = build_initial_task_frame(&mut sched.stacks, slot_idx, entry);
+        let (frame_ptr, kernel_rsp_top) = build_initial_task_frame(&mut sched.stacks, slot_idx, entry);
         sched.meta.slots[slot_idx] = TaskEntry {
             used: true,
             state: TaskState::Ready,
             frame_ptr,
+            cr3: 0,
+            user_rsp: 0,
+            kernel_rsp_top,
+            is_user: false,
         };
         sched.meta.run_queue[sched.meta.task_count] = slot_idx;
         sched.meta.task_count += 1;
@@ -464,6 +501,11 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
         if let Some(pos) = selected_pos {
             meta.current_queue_pos = pos;
             meta.running_slot = Some(selected_slot);
+
+            if meta.slots[selected_slot].is_user {
+                gdt::set_kernel_rsp0(meta.slots[selected_slot].kernel_rsp_top);
+            }
+            
             selected_frame
         } else if !meta.bootstrap_frame.is_null() {
             // All tasks are blocked — return to the idle loop so the CPU
@@ -530,6 +572,46 @@ pub fn unblock_task(task_id: usize) {
 /// Returns `true` if the task existed and was removed.
 pub fn terminate_task(task_id: usize) -> bool {
     with_sched(|sched| remove_task(&mut sched.meta, task_id))
+}
+
+/// Marks an existing task as user-mode task context.
+///
+/// The scheduler uses `kernel_rsp_top` to update `TSS.RSP0` before resuming
+/// this task, so future ring3->ring0 transitions enter on the task-specific
+/// kernel stack.
+#[allow(dead_code)]
+pub fn set_task_user_context(task_id: usize, cr3: u64, user_rsp: u64, kernel_rsp_top: u64) -> bool {
+    with_sched(|sched| {
+        if task_id >= MAX_TASKS || !sched.meta.slots[task_id].used {
+            return false;
+        }
+
+        let slot = &mut sched.meta.slots[task_id];
+        slot.cr3 = cr3;
+        slot.user_rsp = user_rsp;
+        slot.kernel_rsp_top = kernel_rsp_top;
+        slot.is_user = true;
+        true
+    })
+}
+
+/// Returns whether `task_id` is configured as a user-mode task.
+#[allow(dead_code)]
+pub fn is_user_task(task_id: usize) -> bool {
+    with_sched(|sched| task_id < MAX_TASKS && sched.meta.slots[task_id].used && sched.meta.slots[task_id].is_user)
+}
+
+/// Returns task context tuple `(cr3, user_rsp, kernel_rsp_top)` for `task_id`.
+#[allow(dead_code)]
+pub fn task_context(task_id: usize) -> Option<(u64, u64, u64)> {
+    with_sched(|sched| {
+        if task_id >= MAX_TASKS || !sched.meta.slots[task_id].used {
+            None
+        } else {
+            let slot = &sched.meta.slots[task_id];
+            Some((slot.cr3, slot.user_rsp, slot.kernel_rsp_top))
+        }
+    })
 }
 
 /// Terminates the currently running task and forces an immediate reschedule.

@@ -300,7 +300,6 @@ pub fn is_initialized() -> bool {
 }
 
 /// Updates `RSP0` in the loaded TSS for future ring-3 to ring-0 transitions.
-#[allow(dead_code)]
 pub fn set_kernel_rsp0(rsp0: u64) {
     // SAFETY:
     // - `STATE.tss` is the singleton active TSS for this CPU.
