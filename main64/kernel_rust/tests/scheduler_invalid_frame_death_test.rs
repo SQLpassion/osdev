@@ -52,8 +52,8 @@ extern "C" fn dummy_task_b() -> ! {
 fn test_invalid_task_frame_detection_never_writes_outside_task_stack() {
     sched::init();
 
-    let task_a = sched::spawn(dummy_task_a).expect("task A should spawn");
-    let _task_b = sched::spawn(dummy_task_b).expect("task B should spawn");
+    let task_a = sched::spawn_kernel_task(dummy_task_a).expect("task A should spawn");
+    let _task_b = sched::spawn_kernel_task(dummy_task_b).expect("task B should spawn");
     let frame_a_before = sched::task_frame_ptr(task_a).expect("task A frame should exist");
 
     sched::start();

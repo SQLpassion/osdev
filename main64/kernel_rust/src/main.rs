@@ -92,9 +92,9 @@ pub extern "C" fn KernelMain(kernel_size: u64) -> ! {
     // Interrupts stay disabled until the scheduler is fully set up so the
     // first timer tick sees a consistent state.
     scheduler::init();
-    scheduler::spawn(keyboard::keyboard_worker_task)
+    scheduler::spawn_kernel_task(keyboard::keyboard_worker_task)
         .expect("failed to spawn keyboard worker task");
-    scheduler::spawn(repl_task)
+    scheduler::spawn_kernel_task(repl_task)
         .expect("failed to spawn REPL task");
     scheduler::start();
     debugln!("Scheduler started with keyboard worker + REPL task");
@@ -306,9 +306,9 @@ fn run_multitasking_vga_demo(screen: &mut Screen) {
 
 fn spawn_pattern_tasks() -> [usize; 3] {
     [
-        scheduler::spawn(vga_pattern_task_a).expect("failed to spawn VGA pattern task A"),
-        scheduler::spawn(vga_pattern_task_b).expect("failed to spawn VGA pattern task B"),
-        scheduler::spawn(vga_pattern_task_c).expect("failed to spawn VGA pattern task C"),
+        scheduler::spawn_kernel_task(vga_pattern_task_a).expect("failed to spawn VGA pattern task A"),
+        scheduler::spawn_kernel_task(vga_pattern_task_b).expect("failed to spawn VGA pattern task B"),
+        scheduler::spawn_kernel_task(vga_pattern_task_c).expect("failed to spawn VGA pattern task C"),
     ]
 }
 

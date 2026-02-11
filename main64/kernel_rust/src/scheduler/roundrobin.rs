@@ -24,7 +24,31 @@ const TASK_STACK_SIZE: usize = 64 * 1024;
 const PAGE_SIZE: usize = 4096;
 const KERNEL_CODE_SELECTOR: u64 = gdt::KERNEL_CODE_SELECTOR as u64;
 const KERNEL_DATA_SELECTOR: u64 = gdt::KERNEL_DATA_SELECTOR as u64;
+const USER_CODE_SELECTOR: u64 = gdt::USER_CODE_SELECTOR as u64;
+const USER_DATA_SELECTOR: u64 = gdt::USER_DATA_SELECTOR as u64;
 const DEFAULT_RFLAGS: u64 = 0x202;
+
+/// Internal task-construction descriptor for the shared spawn path.
+///
+/// Public APIs `spawn_kernel_task` and `spawn_user_task` are thin wrappers
+/// that translate their parameters into one of these variants and call
+/// `spawn_internal`.
+enum SpawnKind {
+    /// Kernel-mode task entered via function pointer.
+    Kernel {
+        /// Kernel entry function (`extern "C" fn() -> !`).
+        entry: KernelTaskFn,
+    },
+    /// User-mode task entered via synthetic IRET frame.
+    User {
+        /// Initial user RIP to be placed into the IRET frame.
+        entry_rip: u64,
+        /// Initial user RSP to be placed into the IRET frame.
+        user_rsp: u64,
+        /// Address-space root (CR3 physical address) associated with task.
+        cr3: u64,
+    },
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpawnError {
@@ -190,10 +214,10 @@ extern "C" fn task_return_trap() -> ! {
     exit_current_task()
 }
 
-/// Builds the initial task context on the stack of `slot_idx`.
+/// Builds the initial kernel-task context on the stack of `slot_idx`.
 ///
 /// Returns a pointer to the saved [`SavedRegisters`] used as scheduler context.
-fn build_initial_task_frame(
+fn build_initial_kernel_task_frame(
     stacks: &mut [[u8; TASK_STACK_SIZE]; MAX_TASKS],
     slot_idx: usize,
     entry: KernelTaskFn,
@@ -236,6 +260,48 @@ fn build_initial_task_frame(
                 rflags: DEFAULT_RFLAGS,
                 rsp: entry_rsp as u64,
                 ss: KERNEL_DATA_SELECTOR,
+            },
+        );
+
+        (frame_ptr, stack_top as u64)
+    }
+}
+
+/// Builds an initial user-mode task context on the stack of `slot_idx`.
+///
+/// The saved interrupt frame is configured so that the next scheduler-selected
+/// `iretq` transitions to ring 3 at `entry_rip` with user stack `user_rsp`.
+fn build_initial_user_task_frame(
+    stacks: &mut [[u8; TASK_STACK_SIZE]; MAX_TASKS],
+    slot_idx: usize,
+    entry_rip: u64,
+    user_rsp: u64,
+) -> (*mut SavedRegisters, u64) {
+    // SAFETY:
+    // - `slot_idx` is validated by caller to be in-bounds and unique.
+    // - Each slot owns a disjoint stack region in `stacks`.
+    unsafe {
+        let stack = &mut stacks[slot_idx];
+        let stack_base = stack.as_mut_ptr() as usize;
+        let stack_top = stack_base + TASK_STACK_SIZE;
+
+        for page_off in (0..TASK_STACK_SIZE).step_by(PAGE_SIZE) {
+            ptr::write_volatile(stack.as_mut_ptr().add(page_off), 0);
+        }
+
+        let frame_addr = align_down(stack_top, 16) - size_of::<SavedRegisters>() - size_of::<InterruptStackFrame>();
+        let frame_ptr = frame_addr as *mut SavedRegisters;
+        let iret_ptr = (frame_addr + size_of::<SavedRegisters>()) as *mut InterruptStackFrame;
+
+        ptr::write(frame_ptr, SavedRegisters::default());
+        ptr::write(
+            iret_ptr,
+            InterruptStackFrame {
+                rip: entry_rip,
+                cs: USER_CODE_SELECTOR,
+                rflags: DEFAULT_RFLAGS, // IF=1 so timer preemption remains active in user mode.
+                rsp: user_rsp,
+                ss: USER_DATA_SELECTOR,
             },
         );
 
@@ -350,10 +416,8 @@ pub fn start() {
     });
 }
 
-/// Creates a new kernel task and appends it to the run queue.
-///
-/// Returns the allocated task slot index on success.
-pub fn spawn(entry: KernelTaskFn) -> Result<usize, SpawnError> {
+/// Shared task creation path used by both public spawn wrappers.
+fn spawn_internal(kind: SpawnKind) -> Result<usize, SpawnError> {
     with_sched(|sched| {
         if !sched.meta.initialized {
             return Err(SpawnError::NotInitialized);
@@ -367,20 +431,60 @@ pub fn spawn(entry: KernelTaskFn) -> Result<usize, SpawnError> {
             .find(|idx| !sched.meta.slots[*idx].used)
             .ok_or(SpawnError::CapacityExceeded)?;
 
-        let (frame_ptr, kernel_rsp_top) = build_initial_task_frame(&mut sched.stacks, slot_idx, entry);
+        let (frame_ptr, cr3, user_rsp, kernel_rsp_top, is_user) = match kind {
+            SpawnKind::Kernel { entry } => {
+                let (frame_ptr, kernel_rsp_top) =
+                    build_initial_kernel_task_frame(&mut sched.stacks, slot_idx, entry);
+                (frame_ptr, 0, 0, kernel_rsp_top, false)
+            }
+            SpawnKind::User {
+                entry_rip,
+                user_rsp,
+                cr3,
+            } => {
+                let (frame_ptr, kernel_rsp_top) = build_initial_user_task_frame(
+                    &mut sched.stacks,
+                    slot_idx,
+                    entry_rip,
+                    user_rsp,
+                );
+                (frame_ptr, cr3, user_rsp, kernel_rsp_top, true)
+            }
+        };
+
         sched.meta.slots[slot_idx] = TaskEntry {
             used: true,
             state: TaskState::Ready,
             frame_ptr,
-            cr3: 0,
-            user_rsp: 0,
+            cr3,
+            user_rsp,
             kernel_rsp_top,
-            is_user: false,
+            is_user,
         };
         sched.meta.run_queue[sched.meta.task_count] = slot_idx;
         sched.meta.task_count += 1;
 
         Ok(slot_idx)
+    })
+}
+
+/// Creates a new kernel task and appends it to the run queue.
+///
+/// Thin wrapper around the shared spawn path for kernel-mode tasks.
+pub fn spawn_kernel_task(entry: KernelTaskFn) -> Result<usize, SpawnError> {
+    spawn_internal(SpawnKind::Kernel { entry })
+}
+
+/// Creates a new user task with explicit user entry point and user stack pointer.
+///
+/// `entry_rip` and `user_rsp` are user-space virtual addresses in the task's
+/// address space identified by `cr3`.
+#[allow(dead_code)]
+pub fn spawn_user_task(entry_rip: u64, user_rsp: u64, cr3: u64) -> Result<usize, SpawnError> {
+    spawn_internal(SpawnKind::User {
+        entry_rip,
+        user_rsp,
+        cr3,
     })
 }
 
@@ -529,6 +633,24 @@ pub fn task_frame_ptr(task_id: usize) -> Option<*mut SavedRegisters> {
         } else {
             Some(sched.meta.slots[task_id].frame_ptr)
         }
+    })
+}
+
+/// Returns a copy of the initial interrupt return frame for `task_id`.
+///
+/// Intended for tests that validate kernel/user frame construction semantics.
+#[allow(dead_code)]
+pub fn task_iret_frame(task_id: usize) -> Option<InterruptStackFrame> {
+    with_sched(|sched| {
+        if task_id >= MAX_TASKS || !sched.meta.slots[task_id].used {
+            return None;
+        }
+        let frame_ptr = sched.meta.slots[task_id].frame_ptr as usize;
+        let iret_ptr = frame_ptr + size_of::<SavedRegisters>();
+        // SAFETY:
+        // - `frame_ptr` belongs to the scheduler-owned stack for this task.
+        // - `InterruptStackFrame` is written directly behind `SavedRegisters`.
+        Some(unsafe { *(iret_ptr as *const InterruptStackFrame) })
     })
 }
 

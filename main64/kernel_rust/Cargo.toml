@@ -74,3 +74,6 @@ name = "page_fault_death_test"
 
 [[test]]
 name = "apps_task_test"
+
+[[test]]
+name = "user_mode_iretq_smoke_test"

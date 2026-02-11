@@ -105,7 +105,7 @@ fn find_app(name: &str) -> Option<&'static AppEntry> {
 /// Spawn an application as its own kernel task and return the task slot ID.
 pub fn spawn_app(name: &str) -> Result<usize, RunAppError> {
     let app = find_app(name).ok_or(RunAppError::UnknownApp)?;
-    scheduler::spawn(app.task_entry).map_err(RunAppError::SpawnFailed)
+    scheduler::spawn_kernel_task(app.task_entry).map_err(RunAppError::SpawnFailed)
 }
 
 /// Shared app-task launcher: full-screen app context then task exit.

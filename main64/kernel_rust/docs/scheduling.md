@@ -318,7 +318,7 @@ A newly spawned task has never been interrupted — it has no "previous context"
 to restore.  The solution is to **construct a fake interrupt frame** on the
 task's stack that looks exactly like what the assembly stub expects.
 
-`build_initial_task_frame()` places two structures at the top of the task's
+`build_initial_kernel_task_frame()` places two structures at the top of the task's
 64 KiB stack:
 
 ```
@@ -371,7 +371,7 @@ whether the frame was created by a real interrupt or by software.
 
 ### Stack Page Pre-Touching
 
-Before building the frame, `build_initial_task_frame` writes a zero byte to
+Before building the frame, `build_initial_kernel_task_frame` writes a zero byte to
 every page of the task's stack:
 
 ```rust

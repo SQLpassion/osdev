@@ -96,7 +96,7 @@ fn test_scheduler_api_preserves_enabled_interrupt_state() {
     );
 
     sched::init();
-    let _ = sched::spawn(dummy_task_a).expect("spawn should succeed after init");
+    let _ = sched::spawn_kernel_task(dummy_task_a).expect("spawn should succeed after init");
     // Do not call `start()` here: with IRQ0 unmasked in the test environment,
     // a hardware timer tick could immediately switch into `dummy_task_a` and
     // never return to this test function.
@@ -118,9 +118,9 @@ fn test_scheduler_api_preserves_enabled_interrupt_state() {
 fn test_scheduler_round_robin_pointer_sequence() {
     sched::init();
 
-    let task_a = sched::spawn(dummy_task_a).expect("task A should spawn");
-    let task_b = sched::spawn(dummy_task_b).expect("task B should spawn");
-    let task_c = sched::spawn(dummy_task_c).expect("task C should spawn");
+    let task_a = sched::spawn_kernel_task(dummy_task_a).expect("task A should spawn");
+    let task_b = sched::spawn_kernel_task(dummy_task_b).expect("task B should spawn");
+    let task_c = sched::spawn_kernel_task(dummy_task_c).expect("task C should spawn");
 
     let frame_a = sched::task_frame_ptr(task_a).expect("task A frame should exist");
     let frame_b = sched::task_frame_ptr(task_b).expect("task B frame should exist");
@@ -153,11 +153,11 @@ fn test_scheduler_round_robin_pointer_sequence() {
 fn test_scheduler_round_robin_pointer_sequence_with_five_tasks() {
     sched::init();
 
-    let task_a = sched::spawn(dummy_task_a).expect("task A should spawn");
-    let task_b = sched::spawn(dummy_task_b).expect("task B should spawn");
-    let task_c = sched::spawn(dummy_task_c).expect("task C should spawn");
-    let task_d = sched::spawn(dummy_task_d).expect("task D should spawn");
-    let task_e = sched::spawn(dummy_task_e).expect("task E should spawn");
+    let task_a = sched::spawn_kernel_task(dummy_task_a).expect("task A should spawn");
+    let task_b = sched::spawn_kernel_task(dummy_task_b).expect("task B should spawn");
+    let task_c = sched::spawn_kernel_task(dummy_task_c).expect("task C should spawn");
+    let task_d = sched::spawn_kernel_task(dummy_task_d).expect("task D should spawn");
+    let task_e = sched::spawn_kernel_task(dummy_task_e).expect("task E should spawn");
 
     let frame_a = sched::task_frame_ptr(task_a).expect("task A frame should exist");
     let frame_b = sched::task_frame_ptr(task_b).expect("task B frame should exist");
@@ -198,7 +198,7 @@ fn test_scheduler_round_robin_pointer_sequence_with_five_tasks() {
 fn test_selecting_user_task_updates_tss_rsp0_from_task_context() {
     sched::init();
 
-    let task_a = sched::spawn(dummy_task_a).expect("task A should spawn");
+    let task_a = sched::spawn_kernel_task(dummy_task_a).expect("task A should spawn");
     let frame_a = sched::task_frame_ptr(task_a).expect("task A frame should exist");
     let expected_rsp0 = 0xFFFF_8000_0013_7000u64;
 
@@ -235,8 +235,8 @@ fn test_selecting_user_task_updates_tss_rsp0_from_task_context() {
 fn test_block_and_unblock_influence_next_round_robin_selections() {
     sched::init();
 
-    let task_a = sched::spawn(dummy_task_a).expect("task A should spawn");
-    let task_b = sched::spawn(dummy_task_b).expect("task B should spawn");
+    let task_a = sched::spawn_kernel_task(dummy_task_a).expect("task A should spawn");
+    let task_b = sched::spawn_kernel_task(dummy_task_b).expect("task B should spawn");
     let frame_a = sched::task_frame_ptr(task_a).expect("task A frame should exist");
     let frame_b = sched::task_frame_ptr(task_b).expect("task B frame should exist");
 
@@ -271,7 +271,7 @@ fn test_block_and_unblock_influence_next_round_robin_selections() {
 fn test_spawning_tasks_after_scheduler_start_integrates_into_round_robin() {
     sched::init();
 
-    let task_a = sched::spawn(dummy_task_a).expect("task A should spawn");
+    let task_a = sched::spawn_kernel_task(dummy_task_a).expect("task A should spawn");
     let frame_a = sched::task_frame_ptr(task_a).expect("task A frame should exist");
 
     sched::start();
@@ -281,8 +281,8 @@ fn test_spawning_tasks_after_scheduler_start_integrates_into_round_robin() {
     current = sched::on_timer_tick(current);
     assert!(current == frame_a, "first tick should select initial task A");
 
-    let task_b = sched::spawn(dummy_task_b).expect("task B should spawn after start");
-    let task_c = sched::spawn(dummy_task_c).expect("task C should spawn after start");
+    let task_b = sched::spawn_kernel_task(dummy_task_b).expect("task B should spawn after start");
+    let task_c = sched::spawn_kernel_task(dummy_task_c).expect("task C should spawn after start");
     let frame_b = sched::task_frame_ptr(task_b).expect("task B frame should exist");
     let frame_c = sched::task_frame_ptr(task_c).expect("task C frame should exist");
 
@@ -305,8 +305,8 @@ fn test_spawning_tasks_after_scheduler_start_integrates_into_round_robin() {
 fn test_terminated_task_frame_does_not_replace_bootstrap_frame() {
     sched::init();
 
-    let task_a = sched::spawn(dummy_task_a).expect("task A should spawn");
-    let task_b = sched::spawn(dummy_task_b).expect("task B should spawn");
+    let task_a = sched::spawn_kernel_task(dummy_task_a).expect("task A should spawn");
+    let task_b = sched::spawn_kernel_task(dummy_task_b).expect("task B should spawn");
     let frame_b = sched::task_frame_ptr(task_b).expect("task B frame should exist");
 
     sched::start();
@@ -347,9 +347,9 @@ fn test_terminated_task_frame_does_not_replace_bootstrap_frame() {
 fn test_terminate_task_removes_slot_from_round_robin_and_allows_reuse() {
     sched::init();
 
-    let task_a = sched::spawn(dummy_task_a).expect("task A should spawn");
-    let task_b = sched::spawn(dummy_task_b).expect("task B should spawn");
-    let task_c = sched::spawn(dummy_task_c).expect("task C should spawn");
+    let task_a = sched::spawn_kernel_task(dummy_task_a).expect("task A should spawn");
+    let task_b = sched::spawn_kernel_task(dummy_task_b).expect("task B should spawn");
+    let task_c = sched::spawn_kernel_task(dummy_task_c).expect("task C should spawn");
 
     let frame_a = sched::task_frame_ptr(task_a).expect("task A frame should exist");
     let frame_c = sched::task_frame_ptr(task_c).expect("task C frame should exist");
@@ -377,7 +377,7 @@ fn test_terminate_task_removes_slot_from_round_robin_and_allows_reuse() {
         "after removing task B, scheduler should continue with task C"
     );
 
-    let task_d = sched::spawn(dummy_task_d).expect("task D should spawn into freed slot capacity");
+    let task_d = sched::spawn_kernel_task(dummy_task_d).expect("task D should spawn into freed slot capacity");
     let frame_d = sched::task_frame_ptr(task_d).expect("task D frame should exist");
 
     current = sched::on_timer_tick(current);
@@ -396,8 +396,8 @@ fn test_terminate_task_removes_slot_from_round_robin_and_allows_reuse() {
 fn test_terminating_running_task_switches_to_next_runnable_task() {
     sched::init();
 
-    let task_a = sched::spawn(dummy_task_a).expect("task A should spawn");
-    let task_b = sched::spawn(dummy_task_b).expect("task B should spawn");
+    let task_a = sched::spawn_kernel_task(dummy_task_a).expect("task A should spawn");
+    let task_b = sched::spawn_kernel_task(dummy_task_b).expect("task B should spawn");
     let frame_a = sched::task_frame_ptr(task_a).expect("task A frame should exist");
     let frame_b = sched::task_frame_ptr(task_b).expect("task B frame should exist");
 
@@ -434,7 +434,7 @@ fn test_terminate_task_reports_false_for_non_existent_or_stale_task_id() {
         "terminate_task must return false for an unused slot"
     );
 
-    let task_a = sched::spawn(dummy_task_a).expect("task A should spawn");
+    let task_a = sched::spawn_kernel_task(dummy_task_a).expect("task A should spawn");
     assert!(
         sched::terminate_task(task_a),
         "first terminate should remove existing task A"
@@ -454,9 +454,9 @@ fn test_terminate_task_reports_false_for_non_existent_or_stale_task_id() {
 fn test_terminating_multiple_tasks_allows_same_count_respawn_cycle() {
     sched::init();
 
-    let task_a = sched::spawn(dummy_task_a).expect("task A should spawn");
-    let task_b = sched::spawn(dummy_task_b).expect("task B should spawn");
-    let task_c = sched::spawn(dummy_task_c).expect("task C should spawn");
+    let task_a = sched::spawn_kernel_task(dummy_task_a).expect("task A should spawn");
+    let task_b = sched::spawn_kernel_task(dummy_task_b).expect("task B should spawn");
+    let task_c = sched::spawn_kernel_task(dummy_task_c).expect("task C should spawn");
 
     assert!(sched::terminate_task(task_a), "task A should terminate");
     assert!(sched::terminate_task(task_b), "task B should terminate");
@@ -469,9 +469,9 @@ fn test_terminating_multiple_tasks_allows_same_count_respawn_cycle() {
         "all terminated tasks must be fully removed from scheduler slots"
     );
 
-    let respawn_a = sched::spawn(dummy_task_a).expect("respawn A should succeed");
-    let respawn_b = sched::spawn(dummy_task_b).expect("respawn B should succeed");
-    let respawn_c = sched::spawn(dummy_task_c).expect("respawn C should succeed");
+    let respawn_a = sched::spawn_kernel_task(dummy_task_a).expect("respawn A should succeed");
+    let respawn_b = sched::spawn_kernel_task(dummy_task_b).expect("respawn B should succeed");
+    let respawn_c = sched::spawn_kernel_task(dummy_task_c).expect("respawn C should succeed");
 
     assert!(
         sched::task_frame_ptr(respawn_a).is_some()
@@ -491,10 +491,10 @@ fn test_scheduler_capacity_limit() {
     sched::init();
 
     for _ in 0..8 {
-        sched::spawn(dummy_task_a).expect("spawn within pool capacity should succeed");
+        sched::spawn_kernel_task(dummy_task_a).expect("spawn within pool capacity should succeed");
     }
 
-    let err = sched::spawn(dummy_task_b).expect_err("spawn beyond capacity must fail");
+    let err = sched::spawn_kernel_task(dummy_task_b).expect_err("spawn beyond capacity must fail");
     assert!(
         matches!(err, SpawnError::CapacityExceeded),
         "expected CapacityExceeded when task pool is full"
@@ -510,9 +510,9 @@ fn test_scheduler_capacity_limit() {
 fn test_spawn_allocates_distinct_task_frames() {
     sched::init();
 
-    let task_a = sched::spawn(dummy_task_a).expect("task A should spawn");
-    let task_b = sched::spawn(dummy_task_b).expect("task B should spawn");
-    let task_c = sched::spawn(dummy_task_c).expect("task C should spawn");
+    let task_a = sched::spawn_kernel_task(dummy_task_a).expect("task A should spawn");
+    let task_b = sched::spawn_kernel_task(dummy_task_b).expect("task B should spawn");
+    let task_c = sched::spawn_kernel_task(dummy_task_c).expect("task C should spawn");
 
     let frame_a = sched::task_frame_ptr(task_a).expect("task A frame should exist") as usize;
     let frame_b = sched::task_frame_ptr(task_b).expect("task B frame should exist") as usize;
@@ -531,7 +531,7 @@ fn test_spawn_allocates_distinct_task_frames() {
 #[test_case]
 fn test_task_frame_iret_defaults_are_kernel_mode() {
     sched::init();
-    let task = sched::spawn(dummy_task_a).expect("task should spawn");
+    let task = sched::spawn_kernel_task(dummy_task_a).expect("task should spawn");
     let frame = sched::task_frame_ptr(task).expect("task frame should exist") as usize;
 
     let iret_ptr = frame + core::mem::size_of::<SavedRegisters>();
@@ -549,6 +549,46 @@ fn test_task_frame_iret_defaults_are_kernel_mode() {
     );
 }
 
+/// Contract: spawn user builds ring3 iret frame with configured selectors and pointers.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "spawn user builds ring3 iret frame with configured selectors and pointers".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_spawn_user_builds_ring3_iret_frame_with_configured_selectors_and_pointers() {
+    sched::init();
+    let user_entry = 0x0000_7000_0000_1000u64;
+    let user_rsp = 0x0000_7FFF_EFFF_F000u64;
+    let user_cr3 = 0x0000_0000_0040_0000u64;
+
+    let task_id = sched::spawn_user_task(user_entry, user_rsp, user_cr3)
+        .expect("user task spawn should succeed");
+
+    assert!(sched::is_user_task(task_id), "spawned task must be marked as user task");
+    let (stored_cr3, stored_user_rsp, _stored_kernel_rsp_top) = sched::task_context(task_id)
+        .expect("user context tuple must exist for spawned user task");
+    assert!(
+        stored_cr3 == user_cr3 && stored_user_rsp == user_rsp,
+        "user context should store configured CR3 and user RSP"
+    );
+
+    let iret = sched::task_iret_frame(task_id).expect("user task iret frame must exist");
+    assert!(iret.rip == user_entry, "user iret RIP must match configured entry");
+    assert!(iret.rsp == user_rsp, "user iret RSP must match configured user stack");
+    assert!(
+        iret.cs == kaos_kernel::arch::gdt::USER_CODE_SELECTOR as u64,
+        "user iret CS must use ring-3 code selector"
+    );
+    assert!(
+        iret.ss == kaos_kernel::arch::gdt::USER_DATA_SELECTOR as u64,
+        "user iret SS must use ring-3 data selector"
+    );
+    assert!(
+        (iret.rflags & (1 << 9)) != 0,
+        "user iret RFLAGS must have IF set for timer preemption"
+    );
+}
+
 /// Contract: scheduler recovers when current frame slot mismatches expected slot.
 /// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
 /// When: The exact operation sequence in this function is executed against that state.
@@ -558,9 +598,9 @@ fn test_task_frame_iret_defaults_are_kernel_mode() {
 fn test_scheduler_recovers_when_current_frame_slot_mismatches_expected_slot() {
     sched::init();
 
-    let task_a = sched::spawn(dummy_task_a).expect("task A should spawn");
-    let task_b = sched::spawn(dummy_task_b).expect("task B should spawn");
-    let task_c = sched::spawn(dummy_task_c).expect("task C should spawn");
+    let task_a = sched::spawn_kernel_task(dummy_task_a).expect("task A should spawn");
+    let task_b = sched::spawn_kernel_task(dummy_task_b).expect("task B should spawn");
+    let task_c = sched::spawn_kernel_task(dummy_task_c).expect("task C should spawn");
 
     let frame_a = sched::task_frame_ptr(task_a).expect("task A frame should exist");
     let frame_b = sched::task_frame_ptr(task_b).expect("task B frame should exist");
@@ -598,8 +638,8 @@ fn test_scheduler_recovers_when_current_frame_slot_mismatches_expected_slot() {
 fn test_scheduler_mismatch_fallback_reselects_valid_task_frame() {
     sched::init();
 
-    let task_a = sched::spawn(dummy_task_a).expect("task A should spawn");
-    let _task_b = sched::spawn(dummy_task_b).expect("task B should spawn");
+    let task_a = sched::spawn_kernel_task(dummy_task_a).expect("task A should spawn");
+    let _task_b = sched::spawn_kernel_task(dummy_task_b).expect("task B should spawn");
 
     let frame_a = sched::task_frame_ptr(task_a).expect("task A frame should exist");
 
@@ -628,8 +668,8 @@ fn test_scheduler_mismatch_fallback_reselects_valid_task_frame() {
 fn test_unmapped_current_frame_does_not_clobber_saved_task_context() {
     sched::init();
 
-    let task_a = sched::spawn(dummy_task_a).expect("task A should spawn");
-    let _task_b = sched::spawn(dummy_task_b).expect("task B should spawn");
+    let task_a = sched::spawn_kernel_task(dummy_task_a).expect("task A should spawn");
+    let _task_b = sched::spawn_kernel_task(dummy_task_b).expect("task B should spawn");
 
     sched::start();
 
@@ -659,7 +699,7 @@ fn test_unmapped_current_frame_does_not_clobber_saved_task_context() {
 fn test_request_stop_returns_to_bootstrap_frame_and_stops_scheduler() {
     sched::init();
 
-    let task_a = sched::spawn(dummy_task_a).expect("task A should spawn");
+    let task_a = sched::spawn_kernel_task(dummy_task_a).expect("task A should spawn");
     let frame_a = sched::task_frame_ptr(task_a).expect("task A frame should exist");
     sched::start();
 
@@ -681,7 +721,7 @@ fn test_request_stop_returns_to_bootstrap_frame_and_stops_scheduler() {
         "scheduler must report stopped after stop request"
     );
 
-    let new_task = sched::spawn(dummy_task_b).expect("spawn should work again after stop");
+    let new_task = sched::spawn_kernel_task(dummy_task_b).expect("spawn should work again after stop");
     let new_frame = sched::task_frame_ptr(new_task).expect("new task frame should exist");
     sched::start();
     let resumed = sched::on_timer_tick(bootstrap_ptr);
@@ -712,8 +752,8 @@ fn test_request_stop_returns_to_bootstrap_frame_and_stops_scheduler() {
 fn test_scheduler_reinit_clears_blocked_state_from_previous_run() {
     sched::init();
 
-    let task_a = sched::spawn(dummy_task_a).expect("task A should spawn");
-    let task_b = sched::spawn(dummy_task_b).expect("task B should spawn");
+    let task_a = sched::spawn_kernel_task(dummy_task_a).expect("task A should spawn");
+    let task_b = sched::spawn_kernel_task(dummy_task_b).expect("task B should spawn");
     let frame_a = sched::task_frame_ptr(task_a).expect("task A frame should exist");
     let frame_b = sched::task_frame_ptr(task_b).expect("task B frame should exist");
 
@@ -738,7 +778,7 @@ fn test_scheduler_reinit_clears_blocked_state_from_previous_run() {
     );
 
     sched::init();
-    let new_task = sched::spawn(dummy_task_a).expect("task spawn after re-init must work");
+    let new_task = sched::spawn_kernel_task(dummy_task_a).expect("task spawn after re-init must work");
     let new_frame = sched::task_frame_ptr(new_task).expect("new frame should exist");
     sched::start();
 
@@ -855,8 +895,8 @@ fn test_single_waitqueue_register_second_waiter_is_rejected() {
 fn test_waitqueue_adapter_blocks_then_wakes_task() {
     sched::init();
 
-    let task_a = sched::spawn(dummy_task_a).expect("task A should spawn");
-    let _task_b = sched::spawn(dummy_task_b).expect("task B should spawn");
+    let task_a = sched::spawn_kernel_task(dummy_task_a).expect("task A should spawn");
+    let _task_b = sched::spawn_kernel_task(dummy_task_b).expect("task B should spawn");
     let frame_a = sched::task_frame_ptr(task_a).expect("task A frame should exist");
 
     let q: WaitQueue<8> = WaitQueue::new();
