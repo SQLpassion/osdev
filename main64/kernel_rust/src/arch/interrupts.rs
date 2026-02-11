@@ -24,6 +24,7 @@ const IRQ12_PS2_MOUSE_VECTOR: u8 = IRQ_BASE + 12;
 const IRQ13_FPU_VECTOR: u8 = IRQ_BASE + 13;
 const IRQ14_PRIMARY_ATA_VECTOR: u8 = IRQ_BASE + 14;
 const IRQ15_SECONDARY_ATA_VECTOR: u8 = IRQ_BASE + 15;
+pub const SYSCALL_INT80_VECTOR: u8 = 0x80;
 pub const EXCEPTION_DIVIDE_ERROR: u8 = 0;
 pub const EXCEPTION_INVALID_OPCODE: u8 = 6;
 pub const EXCEPTION_DEVICE_NOT_AVAILABLE: u8 = 7;
@@ -118,6 +119,7 @@ extern "C" {
     fn isr8_double_fault_stub();
     fn isr13_general_protection_fault_stub();
     fn isr14_page_fault_stub();
+    fn int80_syscall_stub();
 }
 
 #[repr(C, packed)]
@@ -146,10 +148,14 @@ impl IdtEntry {
     }
 
     fn set_handler(&mut self, handler: usize) {
+        self.set_handler_with_dpl(handler, 0);
+    }
+
+    fn set_handler_with_dpl(&mut self, handler: usize, dpl: u8) {
         self.offset_low = handler as u16;
         self.selector = 0x08;
         self.ist = 0;
-        self.type_attr = IDT_PRESENT | IDT_INTERRUPT_GATE;
+        self.type_attr = IDT_PRESENT | IDT_INTERRUPT_GATE | ((dpl & 0x03) << 5);
         self.offset_mid = (handler >> 16) as u16;
         self.offset_high = (handler >> 32) as u32;
         self.zero = 0;
@@ -240,6 +246,8 @@ fn init_idt() {
         idt[EXCEPTION_GENERAL_PROTECTION as usize]
             .set_handler(isr13_general_protection_fault_stub as *const () as usize);
         idt[EXCEPTION_PAGE_FAULT as usize].set_handler(isr14_page_fault_stub as *const () as usize);
+        idt[SYSCALL_INT80_VECTOR as usize]
+            .set_handler_with_dpl(int80_syscall_stub as *const () as usize, 3);
         idt[IRQ0_PIT_TIMER_VECTOR as usize].set_handler(irq0_pit_timer_stub as *const () as usize);
         idt[IRQ1_KEYBOARD_VECTOR as usize].set_handler(irq1_keyboard_stub as *const () as usize);
         idt[IRQ2_PIC_CASCADE_VECTOR as usize].set_handler(irq2_pic_cascade_stub as *const () as usize);
@@ -527,6 +535,30 @@ pub unsafe extern "C" fn irq_rust_dispatch(vector: u8, frame: *mut SavedRegister
     };
 
     dispatch_irq(vector, frame)
+}
+
+/// Dispatch entry point for software interrupt `int 0x80`.
+///
+/// # Safety
+/// - Must be entered only from the dedicated `int80_syscall_stub`.
+/// - `frame` must point to the saved-register frame on the active kernel stack.
+#[no_mangle]
+pub unsafe extern "C" fn syscall_rust_dispatch(frame: *mut SavedRegisters) -> *mut SavedRegisters {
+    let frame = unsafe {
+        // SAFETY:
+        // - `frame` is provided by the syscall assembly stub.
+        // - It points at a live register-save area until the stub restores regs and returns via `iretq`.
+        &mut *frame
+    };
+
+    let syscall_nr = frame.rax;
+    let arg0 = frame.rdi;
+    let arg1 = frame.rsi;
+    let arg2 = frame.rdx;
+    let arg3 = frame.r10;
+    let result = crate::syscall::dispatch(syscall_nr, arg0, arg1, arg2, arg3);
+    frame.rax = result;
+    frame as *mut SavedRegisters
 }
 
 const _: () = {

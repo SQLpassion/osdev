@@ -16,6 +16,7 @@ mod logging;
 mod memory;
 mod panic;
 mod scheduler;
+mod syscall;
 mod sync;
 
 use crate::arch::interrupts;

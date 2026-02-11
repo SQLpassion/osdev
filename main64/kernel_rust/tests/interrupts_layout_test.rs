@@ -13,6 +13,7 @@ use core::mem::{size_of, MaybeUninit};
 use core::panic::PanicInfo;
 use core::ptr::addr_of;
 use kaos_kernel::arch::interrupts::{self, SavedRegisters};
+use kaos_kernel::syscall::SyscallId;
 
 /// Entry point for the interrupt-layout test kernel.
 #[no_mangle]
@@ -114,6 +115,10 @@ fn test_exception_vector_constants_match_x86_spec() {
         interrupts::EXCEPTION_PAGE_FAULT == 14,
         "page-fault vector must be 14"
     );
+    assert!(
+        interrupts::SYSCALL_INT80_VECTOR == 0x80,
+        "syscall vector must be 0x80"
+    );
 }
 
 /// Contract: exception error code classification.
@@ -161,4 +166,31 @@ fn test_pit_divisor_calculation() {
     assert!(interrupts::pit_divisor_for_hz(250) == 4772);
     assert!(interrupts::pit_divisor_for_hz(1000) == 1193);
     assert!(interrupts::pit_divisor_for_hz(2_000_000) == 1);
+}
+
+/// Contract: int 0x80 dispatches through static syscall table.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "int 0x80 dispatches through static syscall table".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_int80_syscall_dispatch_roundtrip() {
+    interrupts::init();
+    let mut ret_rax: u64 = SyscallId::WriteSerial as u64;
+    // SAFETY:
+    // - `interrupts::init()` loaded an IDT containing the `int 0x80` gate.
+    // - The test executes in ring 0, so invoking software interrupt 0x80 is valid.
+    // - Register constraints match the syscall ABI used by `syscall_rust_dispatch`.
+    unsafe {
+        core::arch::asm!(
+            "int 0x80",
+            inout("rax") ret_rax,
+            in("rdi") 0u64,
+            in("rsi") 0u64,
+            in("rdx") 0u64,
+            in("r10") 0u64,
+        );
+    }
+
+    assert!(ret_rax == 0, "write_serial(len=0) syscall must return 0");
 }

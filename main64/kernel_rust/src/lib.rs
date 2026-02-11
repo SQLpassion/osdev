@@ -16,5 +16,6 @@ pub mod drivers;
 pub mod logging;
 pub mod memory;
 pub mod scheduler;
+pub mod syscall;
 pub mod sync;
 pub mod testing;
