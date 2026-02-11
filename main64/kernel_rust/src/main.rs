@@ -20,6 +20,7 @@ mod sync;
 
 use crate::arch::interrupts;
 use crate::arch::power;
+use crate::arch::gdt;
 use crate::memory::bios;
 use crate::memory::heap;
 use crate::memory::pmm;
@@ -55,6 +56,10 @@ pub extern "C" fn KernelMain(kernel_size: u64) -> ! {
     // Store kernel size for the REPL task banner.
     // SAFETY: Written once before any task is spawned; read-only afterwards.
     unsafe { KERNEL_SIZE = kernel_size; }
+
+    // Initialize GDT/TSS so ring-3 transitions have a valid architectural base.
+    gdt::init();
+    debugln!("GDT/TSS initialized");
 
     // Initialize the Physical Memory Manager
     pmm::init(true);

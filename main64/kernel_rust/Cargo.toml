@@ -49,6 +49,9 @@ name = "spinlock_test"
 name = "interrupts_layout_test"
 
 [[test]]
+name = "gdt_layout_test"
+
+[[test]]
 name = "scheduler_rr_test"
 
 [[test]]

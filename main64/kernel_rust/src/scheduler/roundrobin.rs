@@ -9,6 +9,7 @@ use core::arch::asm;
 use core::mem::size_of;
 use core::ptr;
 
+use crate::arch::gdt;
 use crate::arch::interrupts::{self, InterruptStackFrame, SavedRegisters};
 use crate::sync::spinlock::SpinLock;
 
@@ -21,8 +22,8 @@ pub type KernelTaskFn = extern "C" fn() -> !;
 const MAX_TASKS: usize = 8;
 const TASK_STACK_SIZE: usize = 64 * 1024;
 const PAGE_SIZE: usize = 4096;
-const KERNEL_CODE_SELECTOR: u64 = 0x08;
-const KERNEL_DATA_SELECTOR: u64 = 0x10;
+const KERNEL_CODE_SELECTOR: u64 = gdt::KERNEL_CODE_SELECTOR as u64;
+const KERNEL_DATA_SELECTOR: u64 = gdt::KERNEL_DATA_SELECTOR as u64;
 const DEFAULT_RFLAGS: u64 = 0x202;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

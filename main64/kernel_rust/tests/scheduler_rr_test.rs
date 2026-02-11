@@ -83,6 +83,11 @@ fn test_start_without_tasks_does_not_enter_running_state() {
 /// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_scheduler_api_preserves_enabled_interrupt_state() {
+    // Reset scheduler state first so no previous test can leave it running
+    // while we intentionally enable hardware interrupts below.
+    interrupts::disable();
+    sched::init();
+
     interrupts::enable();
     assert!(
         interrupts::are_enabled(),
@@ -645,6 +650,18 @@ fn test_request_stop_returns_to_bootstrap_frame_and_stops_scheduler() {
     assert!(
         resumed == new_frame,
         "scheduler should be able to start again after a stop cycle"
+    );
+
+    // Cleanup to keep later tests isolated: stop scheduler again.
+    sched::request_stop();
+    let stopped_again = sched::on_timer_tick(resumed);
+    assert!(
+        stopped_again == bootstrap_ptr,
+        "cleanup stop must return to bootstrap frame"
+    );
+    assert!(
+        !sched::is_running(),
+        "scheduler must be stopped at end of test"
     );
 }
 
