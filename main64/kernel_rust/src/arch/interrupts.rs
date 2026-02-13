@@ -558,6 +558,15 @@ pub unsafe extern "C" fn syscall_rust_dispatch(frame: *mut SavedRegisters) -> *m
     let arg3 = frame.r10;
     let result = crate::syscall::dispatch(syscall_nr, arg0, arg1, arg2, arg3);
     frame.rax = result;
+
+    // Yield: drive the scheduler directly with the current frame instead
+    // of triggering a nested software interrupt via yield_now().
+    // The int80_syscall_stub restores whatever frame pointer we return here,
+    // so returning a different task's frame performs a context switch.
+    if syscall_nr == crate::syscall::SyscallId::Yield as u64 {
+        return crate::scheduler::on_timer_tick(frame as *mut SavedRegisters);
+    }
+
     frame as *mut SavedRegisters
 }
 

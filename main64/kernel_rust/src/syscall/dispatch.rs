@@ -48,10 +48,30 @@ pub fn dispatch(syscall_nr: u64, arg0: u64, arg1: u64, _arg2: u64, _arg3: u64) -
 
 /// Implements `Yield`: cooperative handoff to scheduler.
 ///
-/// Returns `SYSCALL_OK` once control resumes in this task context.
+/// This function only returns the result code — it does **not** trigger the
+/// reschedule itself.  The actual context switch is performed by the caller
+/// [`syscall_rust_dispatch`](crate::arch::interrupts::syscall_rust_dispatch),
+/// which calls [`on_timer_tick`](crate::scheduler::on_timer_tick) directly
+/// with the current interrupt frame after `dispatch` returns.
+///
+/// # Why not call `yield_now()` here?
+///
+/// `yield_now()` issues `int 32` (PIT timer vector) to enter the scheduler.
+/// When called from inside the `int 0x80` handler, this would create a
+/// **nested interrupt**: the CPU pushes a second IRET frame and a second
+/// register save onto the same kernel stack.  This has three problems:
+///
+/// 1. **Double stack consumption** — two full register saves plus two IRET
+///    frames (~320 bytes) per yield, eating into the 64 KiB task kernel stack.
+/// 2. **Unnecessary overhead** — two interrupt entry/exit round-trips instead
+///    of one.
+/// 3. **Fragility** — the scheduler sees the inner `int 32` frame rather than
+///    the original `int 0x80` frame that holds the actual user-mode context.
+///
+/// By returning `SYSCALL_OK` here and letting `syscall_rust_dispatch` feed
+/// the *original* `int 0x80` frame into `on_timer_tick`, the scheduler sees
+/// the correct user context and can switch tasks with a single `iretq`.
 fn syscall_yield_impl() -> u64 {
-    scheduler::yield_now();
-
     SYSCALL_OK
 }
 
