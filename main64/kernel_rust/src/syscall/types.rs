@@ -49,6 +49,28 @@ pub const fn user_alias_va_for_kernel(
     Some(user_code_base + offset)
 }
 
+/// Upper exclusive bound of user-accessible canonical virtual addresses.
+const USER_CANONICAL_END: u64 = 0x0000_8000_0000_0000;
+
+/// Returns `true` when `ptr..ptr+len` lies entirely within user canonical space.
+///
+/// Rejects null pointers, kernel-half addresses, and integer-overflow attempts.
+/// A zero-length buffer is always considered valid (no memory access occurs).
+pub fn is_valid_user_buffer(ptr: *const u8, len: usize) -> bool {
+    if len == 0 {
+        return true;
+    }
+    let start = ptr as u64;
+    if start == 0 {
+        return false;
+    }
+    let end = match start.checked_add(len as u64) {
+        Some(e) => e,
+        None => return false,
+    };
+    start < USER_CANONICAL_END && end <= USER_CANONICAL_END
+}
+
 /// User-facing syscall error space.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SysError {

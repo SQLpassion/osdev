@@ -7,7 +7,7 @@
 #![reexport_test_harness_main = "test_main"]
 
 use core::panic::PanicInfo;
-use kaos_kernel::syscall::{self, SysError, SyscallId};
+use kaos_kernel::syscall::{self, is_valid_user_buffer, SysError, SyscallId};
 
 #[no_mangle]
 #[link_section = ".text.boot"]
@@ -117,13 +117,13 @@ fn test_write_serial_zero_len_returns_zero() {
     assert!(ret == 0, "write_serial len=0 must return 0");
 }
 
-/// Contract: write_serial returns byte count for a valid non-empty buffer.
-/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
-/// When: The exact operation sequence in this function is executed against that state.
-/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "write_serial returns byte count for a valid non-empty buffer".
-/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+/// Contract: write_serial rejects kernel-space buffer pointer.
+/// Given: A static buffer whose address lives in the kernel higher-half.
+/// When: dispatch is called with that kernel-space pointer.
+/// Then: The call must return EINVAL because user-pointer validation
+///       rejects addresses outside user canonical space.
 #[test_case]
-fn test_write_serial_non_empty_returns_len() {
+fn test_write_serial_rejects_kernel_space_buffer() {
     static BYTES: &[u8] = b"ok";
     let ret = syscall::dispatch(
         SyscallId::WriteSerial as u64,
@@ -132,7 +132,10 @@ fn test_write_serial_non_empty_returns_len() {
         0,
         0,
     );
-    assert!(ret == BYTES.len() as u64, "write_serial must return written byte count");
+    assert!(
+        ret == syscall::SYSCALL_ERR_INVALID_ARG,
+        "write_serial with kernel-space buffer must return EINVAL"
+    );
 }
 
 /// Contract: user alias rip preserves 4 KiB page offset.
@@ -184,5 +187,84 @@ fn test_user_alias_va_for_kernel_maps_and_rejects_bounds() {
     assert!(
         out_of_window.is_none(),
         "kernel VA beyond user code alias size must be rejected"
+    );
+}
+
+// ── User-pointer validation ──────────────────────────────────────────
+
+/// Contract: kernel-half pointer is rejected by user buffer validation.
+#[test_case]
+fn test_user_buffer_rejects_kernel_pointer() {
+    let kernel_ptr = 0xFFFF_8000_0000_1000 as *const u8;
+    assert!(
+        !is_valid_user_buffer(kernel_ptr, 64),
+        "kernel-half address must be rejected"
+    );
+}
+
+/// Contract: pointer that crosses the canonical boundary is rejected.
+#[test_case]
+fn test_user_buffer_rejects_boundary_crossing() {
+    // Start just below the user canonical limit, length pushes past it.
+    let ptr = (0x0000_8000_0000_0000u64 - 16) as *const u8;
+    assert!(
+        !is_valid_user_buffer(ptr, 32),
+        "buffer crossing canonical boundary must be rejected"
+    );
+}
+
+/// Contract: arithmetic overflow in ptr+len is rejected.
+#[test_case]
+fn test_user_buffer_rejects_overflow() {
+    let ptr = (u64::MAX - 1) as *const u8;
+    assert!(
+        !is_valid_user_buffer(ptr, 5),
+        "ptr+len overflow must be rejected"
+    );
+}
+
+/// Contract: null pointer with non-zero len is rejected.
+#[test_case]
+fn test_user_buffer_rejects_null_with_len() {
+    assert!(
+        !is_valid_user_buffer(core::ptr::null(), 1),
+        "null pointer with len>0 must be rejected"
+    );
+}
+
+/// Contract: zero-length buffer is always valid.
+#[test_case]
+fn test_user_buffer_accepts_zero_len() {
+    // Even a kernel address is fine when len=0 (no access occurs).
+    let kernel_ptr = 0xFFFF_8000_0000_0000 as *const u8;
+    assert!(
+        is_valid_user_buffer(kernel_ptr, 0),
+        "zero-length buffer must always be valid"
+    );
+}
+
+/// Contract: valid user-space pointer is accepted.
+#[test_case]
+fn test_user_buffer_accepts_valid_user_pointer() {
+    let ptr = 0x0000_7000_0000_1000 as *const u8;
+    assert!(
+        is_valid_user_buffer(ptr, 256),
+        "valid user-space pointer must be accepted"
+    );
+}
+
+/// Contract: write_serial rejects kernel-half pointer via dispatch.
+#[test_case]
+fn test_write_serial_rejects_kernel_pointer() {
+    let ret = syscall::dispatch(
+        SyscallId::WriteSerial as u64,
+        0xFFFF_8000_0000_1000, // kernel address
+        8,
+        0,
+        0,
+    );
+    assert!(
+        ret == syscall::SYSCALL_ERR_INVALID_ARG,
+        "write_serial with kernel pointer must return EINVAL"
     );
 }

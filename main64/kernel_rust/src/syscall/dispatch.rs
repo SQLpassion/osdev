@@ -18,7 +18,9 @@ use core::slice;
 use crate::drivers::serial::Serial;
 use crate::scheduler;
 
-use super::{SyscallId, SYSCALL_ERR_INVALID_ARG, SYSCALL_ERR_UNSUPPORTED, SYSCALL_OK};
+use super::{
+    is_valid_user_buffer, SyscallId, SYSCALL_ERR_INVALID_ARG, SYSCALL_ERR_UNSUPPORTED, SYSCALL_OK,
+};
 
 /// Resolves syscall number and dispatches to the corresponding kernel handler.
 ///
@@ -49,7 +51,7 @@ pub fn dispatch(syscall_nr: u64, arg0: u64, arg1: u64, _arg2: u64, _arg3: u64) -
 /// Returns `SYSCALL_OK` once control resumes in this task context.
 fn syscall_yield_impl() -> u64 {
     scheduler::yield_now();
-    
+
     SYSCALL_OK
 }
 
@@ -65,14 +67,16 @@ fn syscall_write_serial_impl(ptr: *const u8, len: usize) -> u64 {
         return 0;
     }
 
-    if ptr.is_null() {
+    // Reject kernel-half addresses, null pointers, and overflow attempts.
+    // Actual page mappability is enforced by the MMU at access time.
+    if !is_valid_user_buffer(ptr, len) {
         return SYSCALL_ERR_INVALID_ARG;
     }
 
     let bytes = unsafe {
         // SAFETY:
-        // - Caller must pass a readable user buffer for `len` bytes.
-        // - Null pointer is rejected above.
+        // - `is_valid_user_buffer` above verified that `ptr..ptr+len` lies
+        //   entirely within user canonical space.
         slice::from_raw_parts(ptr, len)
     };
 
