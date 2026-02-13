@@ -154,6 +154,26 @@ fn test_exception_error_code_classification() {
     );
 }
 
+/// Contract: double-fault IDT gate uses IST1 while page fault keeps default IST0.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "double-fault IDT gate uses IST1 while page fault keeps default IST0".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_idt_ist_configuration_for_critical_faults() {
+    interrupts::init();
+    assert_eq!(
+        interrupts::idt_ist_index(interrupts::EXCEPTION_DOUBLE_FAULT),
+        1,
+        "double fault must route through IST1"
+    );
+    assert_eq!(
+        interrupts::idt_ist_index(interrupts::EXCEPTION_PAGE_FAULT),
+        0,
+        "page fault should keep default IST0 in this step"
+    );
+}
+
 /// Contract: pit divisor calculation.
 /// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
 /// When: The exact operation sequence in this function is executed against that state.

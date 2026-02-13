@@ -160,6 +160,28 @@ impl IdtEntry {
         self.offset_high = (handler >> 32) as u32;
         self.zero = 0;
     }
+
+    /// Configures an IDT gate with explicit privilege level and IST selector.
+    ///
+    /// Parameters:
+    /// - `handler`: 64-bit entry-point address of the interrupt/trap stub.
+    /// - `dpl`: Descriptor privilege level (`0..=3`); values above 3 are masked.
+    /// - `ist`: Interrupt Stack Table slot (`0..=7`).
+    ///
+    /// IST semantics in long mode:
+    /// - `ist = 0` keeps the current stack (default behavior).
+    /// - `ist = 1..=7` instructs the CPU to switch to `TSS.IST[n]` before
+    ///   pushing the interrupt frame, which is useful for critical faults
+    ///   (e.g., double fault) when the current stack may be corrupted.
+    ///
+    /// Notes:
+    /// - The IST field is 3 bits wide and is therefore masked with `0x07`.
+    /// - This function only writes the IDT descriptor; callers must ensure the
+    ///   corresponding TSS IST entry is initialized to a valid stack top.
+    fn set_handler_with_dpl_and_ist(&mut self, handler: usize, dpl: u8, ist: u8) {
+        self.set_handler_with_dpl(handler, dpl);
+        self.ist = ist & 0x07;
+    }
 }
 
 #[repr(C, packed)]
@@ -242,7 +264,9 @@ fn init_idt() {
         idt[EXCEPTION_INVALID_OPCODE as usize].set_handler(isr6_invalid_opcode_stub as *const () as usize);
         idt[EXCEPTION_DEVICE_NOT_AVAILABLE as usize]
             .set_handler(isr7_device_not_available_stub as *const () as usize);
-        idt[EXCEPTION_DOUBLE_FAULT as usize].set_handler(isr8_double_fault_stub as *const () as usize);
+        // Route double-fault onto IST1 to avoid cascading failures on a broken current stack.
+        idt[EXCEPTION_DOUBLE_FAULT as usize]
+            .set_handler_with_dpl_and_ist(isr8_double_fault_stub as *const () as usize, 0, 1);
         idt[EXCEPTION_GENERAL_PROTECTION as usize]
             .set_handler(isr13_general_protection_fault_stub as *const () as usize);
         idt[EXCEPTION_PAGE_FAULT as usize].set_handler(isr14_page_fault_stub as *const () as usize);
@@ -286,6 +310,12 @@ pub extern "C" fn page_fault_handler_rust(faulting_address: u64, error_code: u64
 /// Returns whether a CPU exception vector pushes an error code on entry.
 pub const fn exception_has_error_code(vector: u8) -> bool {
     matches!(vector, 8 | 10 | 11 | 12 | 13 | 14 | 17 | 21 | 29 | 30)
+}
+
+/// Returns the configured IST index for the IDT entry at `vector`.
+#[allow(dead_code)]
+pub fn idt_ist_index(vector: u8) -> u8 {
+    unsafe { (&*STATE.idt.get())[vector as usize].ist & 0x07 }
 }
 
 #[inline]

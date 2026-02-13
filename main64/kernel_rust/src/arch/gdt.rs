@@ -57,6 +57,7 @@ const ACCESS_TSS_AVAILABLE: u8 = 0x9;   // 64-bit available TSS system type
 // Granularity-byte upper nibble bits (G, DB, L, AVL).
 // For long-mode code segments we set L=1 and keep others 0.
 const FLAGS_LONG_MODE: u8 = 1 << 5;
+const IST_STACK_SIZE: usize = 16 * 1024;
 
 #[repr(C, packed)]
 struct DescriptorTablePointer {
@@ -132,6 +133,15 @@ unsafe impl Sync for GdtState {}
 // - Interior mutability is synchronized by boot-time sequencing.
 static STATE: GdtState = GdtState::new();
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
+
+/// 16-byte aligned backing storage for the double-fault IST stack.
+#[repr(align(16))]
+struct IstStack([u8; IST_STACK_SIZE]);
+
+// SAFETY:
+// - Single-core kernel: initialization/writes happen in controlled boot order.
+// - The stack memory is static for the entire kernel lifetime.
+static mut DOUBLE_FAULT_IST_STACK: IstStack = IstStack([0; IST_STACK_SIZE]);
 
 extern "C" {
     // Assembly helper that loads GDTR, refreshes data segments, then loads TR.
@@ -247,6 +257,11 @@ pub fn init() {
         // Later, the scheduler can update this per selected user task.
         tss.rsp0 = current_rsp;
 
+        // Route IST1 to a dedicated emergency stack used by double-fault handling.
+        // The CPU expects IST pointers to reference the top of the stack.
+        let ist1_base = core::ptr::addr_of!(DOUBLE_FAULT_IST_STACK.0) as u64;
+        tss._ist1 = ist1_base + IST_STACK_SIZE as u64;
+
         // Disable I/O bitmap by placing the map offset beyond TSS size.
         // (No per-port permission bitmap is active.)
         tss.io_map_base = size_of::<TaskStateSegment>() as u16;
@@ -315,6 +330,14 @@ pub fn kernel_rsp0() -> u64 {
     // SAFETY:
     // - Reading from the singleton TSS is safe; callers get a plain value copy.
     unsafe { (*STATE.tss.get()).rsp0 }
+}
+
+/// Returns the current IST1 pointer stored in the TSS.
+#[allow(dead_code)]
+pub fn kernel_ist1() -> u64 {
+    // SAFETY:
+    // - Reading from the singleton TSS returns a plain value copy.
+    unsafe { (*STATE.tss.get())._ist1 }
 }
 
 /// Returns a snapshot copy of the active GDT entries.

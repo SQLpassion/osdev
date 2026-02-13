@@ -92,3 +92,15 @@ fn test_set_kernel_rsp0_roundtrip() {
 
     gdt::set_kernel_rsp0(old_rsp0);
 }
+
+/// Contract: tss ist1 points to a dedicated aligned emergency stack.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "tss ist1 points to a dedicated aligned emergency stack".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_tss_ist1_is_initialized_and_aligned() {
+    let ist1 = gdt::kernel_ist1();
+    assert_ne!(ist1, 0, "TSS IST1 must be initialized");
+    assert_eq!(ist1 & 0xF, 0, "TSS IST1 must be 16-byte aligned");
+}
