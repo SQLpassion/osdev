@@ -10,7 +10,7 @@ use core::panic::PanicInfo;
 use kaos_kernel::arch::gdt;
 use kaos_kernel::arch::interrupts::{self, SavedRegisters};
 use kaos_kernel::memory::{pmm, vmm};
-use kaos_kernel::scheduler::{self as sched, SpawnError};
+use kaos_kernel::scheduler::{self as sched, SpawnError, TaskState};
 use kaos_kernel::sync::singlewaitqueue::SingleWaitQueue;
 use kaos_kernel::sync::waitqueue::WaitQueue;
 use kaos_kernel::sync::waitqueue_adapter;
@@ -982,6 +982,176 @@ fn test_single_waitqueue_register_second_waiter_is_rejected() {
     assert!(woke == 1, "wake_all must wake the originally registered waiter");
 }
 
+// ── Zombie lifecycle tests ──────────────────────────────────────────
+
+/// Contract: mark_current_as_zombie transitions running task to Zombie state.
+/// Given: A scheduler with two tasks, task A currently running.
+/// When: mark_current_as_zombie is called while task A executes.
+/// Then: task A's state becomes Zombie; it is skipped in subsequent scheduling.
+#[test_case]
+fn test_mark_current_as_zombie_sets_zombie_state() {
+    sched::init();
+
+    let task_a = sched::spawn_kernel_task(dummy_task_a).expect("task A should spawn");
+    let task_b = sched::spawn_kernel_task(dummy_task_b).expect("task B should spawn");
+    let frame_a = sched::task_frame_ptr(task_a).expect("task A frame should exist");
+    let frame_b = sched::task_frame_ptr(task_b).expect("task B frame should exist");
+
+    sched::start();
+    let mut bootstrap = SavedRegisters::default();
+    let mut current = &mut bootstrap as *mut SavedRegisters;
+
+    // Enter task A.
+    current = sched::on_timer_tick(current);
+    assert!(current == frame_a, "first tick should select task A");
+
+    // Mark task A as zombie (simulates what syscall Exit does).
+    sched::mark_current_as_zombie();
+    assert!(
+        sched::task_state(task_a) == Some(TaskState::Zombie),
+        "mark_current_as_zombie must set task state to Zombie"
+    );
+
+    // Next tick: zombie A is skipped, task B is selected.
+    current = sched::on_timer_tick(current);
+    assert!(
+        current == frame_b,
+        "zombie task must be skipped in round-robin selection"
+    );
+}
+
+/// Contract: reap_zombies reclaims zombie slots on the next scheduler tick.
+/// Given: A scheduler where task A has been marked as zombie.
+/// When: Two scheduler ticks have passed (one to leave the zombie's stack,
+///       one to trigger reaping).
+/// Then: The zombie's slot is freed and can be reused by spawn.
+#[test_case]
+fn test_reap_zombies_frees_slot_for_reuse() {
+    sched::init();
+
+    let task_a = sched::spawn_kernel_task(dummy_task_a).expect("task A should spawn");
+    let task_b = sched::spawn_kernel_task(dummy_task_b).expect("task B should spawn");
+    let frame_a = sched::task_frame_ptr(task_a).expect("task A frame should exist");
+    let frame_b = sched::task_frame_ptr(task_b).expect("task B frame should exist");
+
+    sched::start();
+    let mut bootstrap = SavedRegisters::default();
+    let mut current = &mut bootstrap as *mut SavedRegisters;
+
+    // Enter task A, then mark it as zombie.
+    current = sched::on_timer_tick(current);
+    assert!(current == frame_a, "first tick should select task A");
+    sched::mark_current_as_zombie();
+
+    // Next tick: scheduler leaves task A's stack → reap_zombies runs,
+    // freeing the slot.  Task B is selected.
+    current = sched::on_timer_tick(current);
+    assert!(current == frame_b, "second tick should select task B");
+
+    // Slot A has been reaped — task_state returns None for freed slots.
+    assert!(
+        sched::task_state(task_a).is_none(),
+        "zombie slot must be reaped and freed after scheduler tick"
+    );
+
+    // The freed slot can be reused by a new spawn.
+    let task_c = sched::spawn_kernel_task(dummy_task_c)
+        .expect("spawn into reaped slot should succeed");
+    let frame_c = sched::task_frame_ptr(task_c).expect("task C frame should exist");
+
+    // Task C participates in the next round-robin cycle.
+    current = sched::on_timer_tick(current);
+    assert!(
+        current == frame_c,
+        "newly spawned task in reaped slot should be scheduled"
+    );
+}
+
+/// Contract: zombie task is never selected even when it is the only task.
+/// Given: A single-task scheduler where that task is marked as zombie.
+/// When: on_timer_tick is called.
+/// Then: The scheduler returns the bootstrap frame (no runnable tasks).
+#[test_case]
+fn test_zombie_only_task_returns_bootstrap_frame() {
+    sched::init();
+
+    let task_a = sched::spawn_kernel_task(dummy_task_a).expect("task A should spawn");
+    let frame_a = sched::task_frame_ptr(task_a).expect("task A frame should exist");
+
+    sched::start();
+    let mut bootstrap = SavedRegisters::default();
+    let bootstrap_ptr = &mut bootstrap as *mut SavedRegisters;
+
+    // Enter task A, then mark it as zombie.
+    let current = sched::on_timer_tick(bootstrap_ptr);
+    assert!(current == frame_a, "first tick should select task A");
+    sched::mark_current_as_zombie();
+
+    // Next tick: zombie is the only task → scheduler returns bootstrap.
+    let next = sched::on_timer_tick(current);
+    assert!(
+        next == bootstrap_ptr,
+        "with only zombie tasks, scheduler must return bootstrap frame"
+    );
+}
+
+/// Contract: successive zombies are each reaped on the following tick.
+/// Given: Three tasks where A and then another task are marked as zombie
+///        on successive ticks.
+/// When: on_timer_tick is called after each zombie mark.
+/// Then: Each zombie slot is freed and the remaining task continues.
+#[test_case]
+fn test_successive_zombies_are_reaped_across_ticks() {
+    sched::init();
+
+    let task_a = sched::spawn_kernel_task(dummy_task_a).expect("task A should spawn");
+    let task_b = sched::spawn_kernel_task(dummy_task_b).expect("task B should spawn");
+    let task_c = sched::spawn_kernel_task(dummy_task_c).expect("task C should spawn");
+    let frame_a = sched::task_frame_ptr(task_a).expect("task A frame should exist");
+
+    sched::start();
+    let mut bootstrap = SavedRegisters::default();
+    let mut current = &mut bootstrap as *mut SavedRegisters;
+
+    // Tick 1: select task A, then mark it as zombie.
+    current = sched::on_timer_tick(current);
+    assert!(current == frame_a, "first tick should select task A");
+    sched::mark_current_as_zombie();
+
+    // Tick 2: reap zombie A, select the next runnable task,
+    // then mark that one as zombie too.
+    current = sched::on_timer_tick(current);
+    assert!(
+        sched::task_state(task_a).is_none(),
+        "zombie task A must be reaped after first post-zombie tick"
+    );
+    // Whatever task was selected, mark it zombie.
+    sched::mark_current_as_zombie();
+
+    // Tick 3: the second zombie is reaped, only one task remains.
+    let _current = sched::on_timer_tick(current);
+
+    // Exactly one of B or C should still be alive.
+    let b_alive = sched::task_state(task_b).is_some();
+    let c_alive = sched::task_state(task_c).is_some();
+    assert!(
+        (b_alive && !c_alive) || (!b_alive && c_alive),
+        "exactly one of task B or C must remain after two zombies are reaped"
+    );
+
+    // The surviving task must be Ready (the scheduler tracks
+    // the running task via `running_slot`, not via TaskState).
+    let survivor_state = if b_alive {
+        sched::task_state(task_b)
+    } else {
+        sched::task_state(task_c)
+    };
+    assert!(
+        survivor_state == Some(TaskState::Ready),
+        "the surviving task must be in Ready state"
+    );
+}
+
 /// Contract: waitqueue adapter blocks then wakes task.
 /// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
 /// When: The exact operation sequence in this function is executed against that state.
@@ -1014,5 +1184,60 @@ fn test_waitqueue_adapter_blocks_then_wakes_task() {
     assert!(
         second == frame_a,
         "waking waitqueue must make blocked task A runnable again"
+    );
+}
+
+// ── Exit syscall integration test ───────────────────────────────────
+
+/// Contract: Exit syscall marks running task as zombie and returns SYSCALL_OK.
+/// Given: A scheduler with a running task.
+/// When: syscall::dispatch is called with SyscallId::Exit.
+/// Then: The return value is SYSCALL_OK and the task transitions to Zombie,
+///       which prevents it from being selected in subsequent scheduler ticks.
+#[test_case]
+fn test_exit_syscall_marks_zombie_and_returns_ok() {
+    sched::init();
+
+    let task_a = sched::spawn_kernel_task(dummy_task_a).expect("task A should spawn");
+    let task_b = sched::spawn_kernel_task(dummy_task_b).expect("task B should spawn");
+    let frame_a = sched::task_frame_ptr(task_a).expect("task A frame should exist");
+    let frame_b = sched::task_frame_ptr(task_b).expect("task B frame should exist");
+
+    sched::start();
+    let mut bootstrap = SavedRegisters::default();
+    let mut current = &mut bootstrap as *mut SavedRegisters;
+
+    // Enter task A so it becomes the running task.
+    current = sched::on_timer_tick(current);
+    assert!(current == frame_a, "first tick should select task A");
+
+    // Simulate the Exit syscall via dispatch (same path as syscall_rust_dispatch).
+    let ret = kaos_kernel::syscall::dispatch(
+        kaos_kernel::syscall::SyscallId::Exit as u64,
+        0, // exit_code
+        0,
+        0,
+        0,
+    );
+    assert!(
+        ret == kaos_kernel::syscall::SYSCALL_OK,
+        "Exit syscall must return SYSCALL_OK"
+    );
+    assert!(
+        sched::task_state(task_a) == Some(TaskState::Zombie),
+        "Exit syscall must mark the current task as Zombie"
+    );
+
+    // Next tick: zombie A is skipped and reaped, task B selected.
+    current = sched::on_timer_tick(current);
+    assert!(
+        current == frame_b,
+        "after Exit syscall, zombie task must be skipped"
+    );
+
+    // Zombie slot has been reaped.
+    assert!(
+        sched::task_state(task_a).is_none(),
+        "zombie task must be reaped on subsequent tick"
     );
 }

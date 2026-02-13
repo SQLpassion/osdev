@@ -111,9 +111,15 @@ fn syscall_write_serial_impl(ptr: *const u8, len: usize) -> u64 {
 
 /// Implements `Exit(exit_code)`.
 ///
-/// The scheduler path is expected to terminate the current task and never
-/// resume it; this function therefore does not provide a meaningful success
-/// return to the exiting caller context.
+/// Marks the current task as [`Zombie`](crate::scheduler::TaskState::Zombie)
+/// and returns `SYSCALL_OK`.  The actual reschedule is driven by
+/// [`syscall_rust_dispatch`](crate::arch::interrupts::syscall_rust_dispatch),
+/// which calls [`on_timer_tick`](crate::scheduler::on_timer_tick) directly —
+/// analogous to the Yield path.
+///
+/// The zombie task will never be selected again and is reaped on the
+/// following scheduler tick once execution has moved off its kernel stack.
 fn syscall_exit_impl(_exit_code: u64) -> u64 {
-    scheduler::exit_current_task()
+    scheduler::mark_current_as_zombie();
+    SYSCALL_OK
 }

@@ -268,3 +268,4 @@ fn test_write_serial_rejects_kernel_pointer() {
         "write_serial with kernel pointer must return EINVAL"
     );
 }
+

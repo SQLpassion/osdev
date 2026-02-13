@@ -72,6 +72,20 @@ pub enum TaskState {
 
     /// Task is waiting for an external event (e.g. keyboard input).
     Blocked,
+
+    /// Task has exited but its slot and stack are still reserved.
+    ///
+    /// A zombie is never selected by the round-robin loop.  The scheduler
+    /// reaps zombie slots at the beginning of the next [`on_timer_tick`]
+    /// call, when execution is guaranteed to have moved off the zombie's
+    /// kernel stack.
+    ///
+    /// This two-phase cleanup avoids a use-after-free race: if
+    /// `exit_current_task` freed the slot immediately, a timer IRQ between
+    /// the free and the subsequent `yield_now` could allow `spawn_*` to
+    /// reuse the slot — overwriting the stack that the exiting code path
+    /// is still running on.
+    Zombie,
 }
 
 /// One slot in the static task table.
@@ -133,7 +147,8 @@ impl TaskEntry {
             return false;
         }
         let frame_start = frame_ptr as usize;
-        let frame_end = frame_start + size_of::<SavedRegisters>() + size_of::<InterruptStackFrame>();
+        let frame_end =
+            frame_start + size_of::<SavedRegisters>() + size_of::<InterruptStackFrame>();
 
         let stack = &stacks[slot_idx];
         let stack_start = stack.as_ptr() as usize;
@@ -293,7 +308,10 @@ fn build_initial_kernel_task_frame(
         // - `entry_rsp` lies within the task's private stack memory.
         // - Writing a synthetic return address ensures an accidental task return
         //   traps into scheduler-controlled termination.
-        ptr::write(entry_rsp as *mut u64, task_return_trap as *const () as usize as u64);
+        ptr::write(
+            entry_rsp as *mut u64,
+            task_return_trap as *const () as usize as u64,
+        );
 
         ptr::write(frame_ptr, SavedRegisters::default());
         ptr::write(
@@ -333,7 +351,9 @@ fn build_initial_user_task_frame(
             ptr::write_volatile(stack.as_mut_ptr().add(page_off), 0);
         }
 
-        let frame_addr = align_down(stack_top, 16) - size_of::<SavedRegisters>() - size_of::<InterruptStackFrame>();
+        let frame_addr = align_down(stack_top, 16)
+            - size_of::<SavedRegisters>()
+            - size_of::<InterruptStackFrame>();
         let frame_ptr = frame_addr as *mut SavedRegisters;
         let iret_ptr = (frame_addr + size_of::<SavedRegisters>()) as *mut InterruptStackFrame;
 
@@ -505,12 +525,8 @@ fn spawn_internal(kind: SpawnKind) -> Result<usize, SpawnError> {
                 user_rsp,
                 cr3,
             } => {
-                let (frame_ptr, kernel_rsp_top) = build_initial_user_task_frame(
-                    &mut sched.stacks,
-                    slot_idx,
-                    entry_rip,
-                    user_rsp,
-                );
+                let (frame_ptr, kernel_rsp_top) =
+                    build_initial_user_task_frame(&mut sched.stacks, slot_idx, entry_rip, user_rsp);
                 (frame_ptr, cr3, user_rsp, kernel_rsp_top, true)
             }
         };
@@ -600,6 +616,26 @@ fn apply_selected_address_space(meta: &mut SchedulerMetadata, selected_slot: usi
     meta.active_cr3 = target_cr3;
 }
 
+/// Removes all [`Zombie`](TaskState::Zombie) tasks from the run queue.
+///
+/// Called at the start of [`on_timer_tick`] — at that point execution has
+/// already moved off the zombie's kernel stack (either onto a different
+/// task's stack or onto the bootstrap stack), so freeing the slot is safe.
+fn reap_zombies(meta: &mut SchedulerMetadata) {
+    let mut i = 0;
+    while i < meta.task_count {
+        let slot = meta.run_queue[i];
+
+        if meta.slots[slot].state == TaskState::Zombie {
+            remove_task(meta, slot);
+            // `remove_task` shifts entries down; re-check the same index.
+            continue;
+        }
+
+        i += 1;
+    }
+}
+
 /// Scheduler core executed on every timer IRQ.
 ///
 /// The function saves current context (when known), selects the next runnable
@@ -611,6 +647,11 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
         if !meta.started {
             return current_frame;
         }
+
+        // Reap zombie tasks first.  At this point execution is on a
+        // different stack (bootstrap or another task), so freeing the
+        // zombie's slot and stack is safe.
+        reap_zombies(meta);
 
         if meta.task_count == 0 {
             meta.running_slot = None;
@@ -676,8 +717,10 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
             let pos = (search_start_pos + step) % meta.task_count;
             let slot = meta.run_queue[pos];
 
-            // Skip blocked tasks — they are waiting for an external event.
-            if meta.slots[slot].state == TaskState::Blocked {
+            // Skip non-runnable tasks (blocked or zombie).
+            if meta.slots[slot].state == TaskState::Blocked
+                || meta.slots[slot].state == TaskState::Zombie
+            {
                 continue;
             }
 
@@ -700,9 +743,9 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
             if meta.slots[selected_slot].is_user {
                 gdt::set_kernel_rsp0(meta.slots[selected_slot].kernel_rsp_top);
             }
-            
+
             apply_selected_address_space(meta, selected_slot);
-            
+
             selected_frame
         } else if !meta.bootstrap_frame.is_null() {
             // All tasks are blocked — return to the idle loop so the CPU
@@ -813,7 +856,9 @@ pub fn set_task_user_context(task_id: usize, cr3: u64, user_rsp: u64, kernel_rsp
 /// Returns whether `task_id` is configured as a user-mode task.
 #[allow(dead_code)]
 pub fn is_user_task(task_id: usize) -> bool {
-    with_sched(|sched| task_id < MAX_TASKS && sched.meta.slots[task_id].used && sched.meta.slots[task_id].is_user)
+    with_sched(|sched| {
+        task_id < MAX_TASKS && sched.meta.slots[task_id].used && sched.meta.slots[task_id].is_user
+    })
 }
 
 /// Returns task context tuple `(cr3, user_rsp, kernel_rsp_top)` for `task_id`.
@@ -829,12 +874,53 @@ pub fn task_context(task_id: usize) -> Option<(u64, u64, u64)> {
     })
 }
 
+/// Returns the lifecycle state of `task_id`, or `None` if the slot is unused.
+#[allow(dead_code)]
+pub fn task_state(task_id: usize) -> Option<TaskState> {
+    with_sched(|sched| {
+        if task_id >= MAX_TASKS || !sched.meta.slots[task_id].used {
+            None
+        } else {
+            Some(sched.meta.slots[task_id].state)
+        }
+    })
+}
+
+/// Marks the currently running task as [`TaskState::Zombie`].
+///
+/// The slot remains allocated (`used = true`) so no `spawn_*` call can
+/// reuse it.  The scheduler skips zombie tasks during round-robin selection
+/// and reaps them at the start of the next [`on_timer_tick`], when
+/// execution has moved to a different stack.
+///
+/// # Panics
+///
+/// Panics if called outside a scheduled task context.
+pub fn mark_current_as_zombie() {
+    with_sched(|sched| {
+        let slot = sched
+            .meta
+            .running_slot
+            .expect("mark_current_as_zombie called outside scheduled task");
+        sched.meta.slots[slot].state = TaskState::Zombie;
+    });
+}
+
 /// Terminates the currently running task and forces an immediate reschedule.
+///
+/// The task is first marked as [`Zombie`](TaskState::Zombie) so its slot
+/// and stack remain reserved.  The subsequent `yield_now` triggers a
+/// context switch; the scheduler will never select this task again and
+/// reaps the zombie slot on the following tick.
+///
+/// This two-phase approach eliminates the race window that existed when
+/// the slot was freed before `yield_now`: a timer IRQ in that gap could
+/// allow `spawn_*` to reuse the slot and overwrite the stack while the
+/// exiting code was still running on it.
 ///
 /// This function never returns.
 pub fn exit_current_task() -> ! {
-    let task_id = current_task_id().expect("exit_current_task called outside scheduled task");
-    let _ = terminate_task(task_id);
+    mark_current_as_zombie();
     yield_now();
     loop {
         core::hint::spin_loop();

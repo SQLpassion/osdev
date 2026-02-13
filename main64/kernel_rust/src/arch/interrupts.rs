@@ -559,11 +559,23 @@ pub unsafe extern "C" fn syscall_rust_dispatch(frame: *mut SavedRegisters) -> *m
     let result = crate::syscall::dispatch(syscall_nr, arg0, arg1, arg2, arg3);
     frame.rax = result;
 
-    // Yield: drive the scheduler directly with the current frame instead
-    // of triggering a nested software interrupt via yield_now().
-    // The int80_syscall_stub restores whatever frame pointer we return here,
-    // so returning a different task's frame performs a context switch.
-    if syscall_nr == crate::syscall::SyscallId::Yield as u64 {
+    // Yield and Exit both need an immediate reschedule via the scheduler.
+    //
+    // Instead of triggering a nested software interrupt (`int 32` inside
+    // `int 0x80`), we call `on_timer_tick` directly with the current
+    // interrupt frame.  The `int80_syscall_stub` restores whatever frame
+    // pointer we return here, so returning a different task's frame
+    // performs a seamless context switch with a single `iretq`.
+    //
+    // - **Yield**: the current task stays Ready and will be picked up
+    //   again in a future round-robin cycle.
+    // - **Exit**: `dispatch` has already marked the task as Zombie.
+    //   `on_timer_tick` will never select it again, and `reap_zombies`
+    //   reclaims its slot on the next scheduler tick once execution has
+    //   safely moved off its kernel stack.
+    if syscall_nr == crate::syscall::SyscallId::Yield as u64
+        || syscall_nr == crate::syscall::SyscallId::Exit as u64
+    {
         return crate::scheduler::on_timer_tick(frame as *mut SavedRegisters);
     }
 
