@@ -45,6 +45,7 @@ use core::arch::asm;
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, Ordering};
 
+use crate::arch::interrupts;
 use crate::drivers::screen::Screen;
 use crate::logging;
 use crate::memory::pmm;
@@ -597,6 +598,45 @@ pub fn init(debug_output: bool) {
 #[allow(dead_code)]
 pub fn get_pml4_address() -> u64 {
     with_vmm(|state| state.pml4_physical)
+}
+
+/// Executes `f` while `pml4_phys` is active in CR3, then restores previous state.
+///
+/// Interrupts are disabled for the whole critical section so timer preemption
+/// cannot observe a temporary address-space switch.
+#[allow(dead_code)]
+pub fn with_address_space<R>(pml4_phys: u64, f: impl FnOnce() -> R) -> R {
+    let interrupts_were_enabled = interrupts::are_enabled();
+    if interrupts_were_enabled {
+        interrupts::disable();
+    }
+
+    let previous_cr3 = read_cr3();
+    if previous_cr3 != pml4_phys {
+        // SAFETY:
+        // - `pml4_phys` is supplied by trusted kernel code that owns the target root.
+        // - Interrupts are disabled for the entire temporary switch.
+        unsafe {
+            switch_page_directory(pml4_phys);
+        }
+    }
+
+    let result = f();
+
+    if previous_cr3 != pml4_phys {
+        // SAFETY:
+        // - `previous_cr3` was read from the CPU before switching and is valid.
+        // - Restoring CR3 under disabled interrupts returns to the original context.
+        unsafe {
+            switch_page_directory(previous_cr3);
+        }
+    }
+
+    if interrupts_were_enabled {
+        interrupts::enable();
+    }
+
+    result
 }
 
 /// Switches to the provided page directory (physical PML4 address).

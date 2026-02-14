@@ -47,8 +47,6 @@ const USER_SERIAL_TASK_STACK_TOP: u64 = vmm::USER_STACK_TOP - 16;
 /// User-mapped page that stores the serial demo message bytes.
 const USER_SERIAL_TASK_MSG_VA: u64 = vmm::USER_CODE_BASE + 0x1000;
 const USER_SERIAL_TASK_MSG: &[u8] = b"[ring3] hello from user mode via int 0x80\n";
-/// Guards one-time mapping setup for the user serial demo pages.
-static mut USER_SERIAL_TASK_PAGES_MAPPED: bool = false;
 
 /// Kernel entry point - called from bootloader (kaosldr_64)
 ///
@@ -309,13 +307,23 @@ fn execute_command(screen: &mut Screen, line: &str) {
 /// - spawn a user task that performs `WriteSerial` then `Exit`,
 /// - block until the task has been removed by the scheduler.
 fn run_user_mode_serial_demo(screen: &mut Screen) {
-    if let Err(msg) = map_userdemo_task_pages() {
+    let user_cr3 = vmm::clone_kernel_pml4_for_user();
+
+    if let Err(msg) = map_userdemo_task_pages(user_cr3) {
         writeln!(screen, "User demo setup failed: {}", msg).unwrap();
+        cleanup_userdemo_task_pages(user_cr3);
+        pmm::with_pmm(|mgr| {
+            let _ = mgr.release_pfn(user_cr3 / pmm::PAGE_SIZE);
+        });
         return;
     }
 
-    if let Err(msg) = write_userdemo_message_page() {
+    if let Err(msg) = write_userdemo_message_page(user_cr3) {
         writeln!(screen, "User demo image failed: {}", msg).unwrap();
+        cleanup_userdemo_task_pages(user_cr3);
+        pmm::with_pmm(|mgr| {
+            let _ = mgr.release_pfn(user_cr3 / pmm::PAGE_SIZE);
+        });
         return;
     }
 
@@ -331,31 +339,22 @@ fn run_user_mode_serial_demo(screen: &mut Screen) {
         Some(va) => va,
         None => {
             writeln!(screen, "User demo spawn failed: entry address outside user code alias window").unwrap();
+            cleanup_userdemo_task_pages(user_cr3);
+            pmm::with_pmm(|mgr| {
+                let _ = mgr.release_pfn(user_cr3 / pmm::PAGE_SIZE);
+            });
             return;
         }
     };
 
-    // TEMPORARY BOOTSTRAP:
-    // We currently run userdemo in the active/shared address space and pass
-    // the current CR3 (kernel PML4 root) into `spawn_user_task`.
-    // This matches the current mapping path, where `map_userdemo_task_pages`
-    // inserts userdemo mappings into that same address space.
-    //
-    // MUST CHANGE LATER:
-    // Switch to per-task/per-process address spaces:
-    // - clone kernel PML4 for user (`clone_kernel_pml4_for_user`),
-    // - map user code/data/stack into the cloned root,
-    // - pass cloned CR3 here,
-    // - clean up cloned address space on task exit.
-    let cr3 = vmm::get_pml4_address();
-    let task_id = match scheduler::spawn_user_task(
-        entry_rip,
-        USER_SERIAL_TASK_STACK_TOP,
-        cr3,
-    ) {
+    let task_id = match scheduler::spawn_user_task(entry_rip, USER_SERIAL_TASK_STACK_TOP, user_cr3) {
         Ok(task_id) => task_id,
         Err(err) => {
             writeln!(screen, "User demo spawn failed: {:?}", err).unwrap();
+            cleanup_userdemo_task_pages(user_cr3);
+            pmm::with_pmm(|mgr| {
+                let _ = mgr.release_pfn(user_cr3 / pmm::PAGE_SIZE);
+            });
             return;
         }
     };
@@ -364,6 +363,11 @@ fn run_user_mode_serial_demo(screen: &mut Screen) {
     while scheduler::task_frame_ptr(task_id).is_some() {
         scheduler::yield_now();
     }
+
+    cleanup_userdemo_task_pages(user_cr3);
+    pmm::with_pmm(|mgr| {
+        let _ = mgr.release_pfn(user_cr3 / pmm::PAGE_SIZE);
+    });
 
     writeln!(screen, "User demo task finished. Check serial output.").unwrap();
 }
@@ -376,20 +380,12 @@ fn run_user_mode_serial_demo(screen: &mut Screen) {
 /// - one user-readable message page,
 /// - one writable stack page.
 ///
-/// The setup is idempotent within one kernel boot via `USER_SERIAL_TASK_PAGES_MAPPED`.
-///
 /// TEMPORARY BOOTSTRAP NOTE:
 /// The mapped code pages originate from kernel text and are only aliased into
 /// user VA so this demo can execute ring-3 before a full program loader exists.
 /// In the final architecture, user code pages are provided by the loader
 /// (e.g. ELF segments), not by kernel-text alias mappings.
-fn map_userdemo_task_pages() -> Result<(), &'static str> {
-    unsafe {
-        if USER_SERIAL_TASK_PAGES_MAPPED {
-            return Ok(());
-        }
-    }
-
+fn map_userdemo_task_pages(target_cr3: u64) -> Result<(), &'static str> {
     // TEMPORARY BOOTSTRAP:
     // Kernel virtual addresses derived from function pointers (`fn as *const ()`).
     // For each entry we map the containing 4 KiB code page into the user-code
@@ -435,46 +431,56 @@ fn map_userdemo_task_pages() -> Result<(), &'static str> {
     //
     // This gives ring-3 an executable view of the exact kernel text pages needed
     // by the demo syscall call chain, while keeping data pages separate.
-    for fn_va in required_kernel_function_vas {
-        let code_kernel_page_va = fn_va & !0xFFFu64;
-        let code_phys = kernel_va_to_phys(code_kernel_page_va)
-            .ok_or("user demo entry has non-higher-half address")?;
-        let code_user_page_va = kernel_va_to_user_code_va(code_kernel_page_va)
-            .ok_or("user demo function outside user alias window")?;
-        vmm::map_user_page(code_user_page_va, code_phys / pmm::PAGE_SIZE, false)
-            .map_err(|_| "mapping user code page failed")?;
-    }
+    vmm::with_address_space(target_cr3, || -> Result<(), &'static str> {
+        for fn_va in required_kernel_function_vas {
+            let code_kernel_page_va = fn_va & !0xFFFu64;
+            let code_phys = kernel_va_to_phys(code_kernel_page_va)
+                .ok_or("user demo entry has non-higher-half address")?;
+            let code_user_page_va = kernel_va_to_user_code_va(code_kernel_page_va)
+                .ok_or("user demo function outside user alias window")?;
+            vmm::map_user_page(code_user_page_va, code_phys / pmm::PAGE_SIZE, false)
+                .map_err(|_| "mapping user code page failed")?;
+        }
 
-    vmm::map_user_page(USER_SERIAL_TASK_MSG_VA, msg_frame.pfn, true)
-        .map_err(|_| "mapping user message page failed")?;
-    vmm::map_user_page(USER_SERIAL_TASK_STACK_PAGE_VA, stack_frame.pfn, true)
-        .map_err(|_| "mapping user stack page failed")?;
+        vmm::map_user_page(USER_SERIAL_TASK_MSG_VA, msg_frame.pfn, true)
+            .map_err(|_| "mapping user message page failed")?;
+        vmm::map_user_page(USER_SERIAL_TASK_STACK_PAGE_VA, stack_frame.pfn, true)
+            .map_err(|_| "mapping user stack page failed")?;
 
-    unsafe {
-        USER_SERIAL_TASK_PAGES_MAPPED = true;
-    }
-    
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Writes the static serial demo payload into the user message page.
 ///
 /// The page is pre-zeroed so repeated demo runs always observe deterministic
 /// memory content, independent of previous payload lengths.
-fn write_userdemo_message_page() -> Result<(), &'static str> {
-    unsafe {
-        // SAFETY:
-        // - `USER_SERIAL_TASK_MSG_VA` is mapped in
-        //   `map_userdemo_task_pages`.
-        // - Message length fits into one mapped 4 KiB message page.
-        core::ptr::write_bytes(USER_SERIAL_TASK_MSG_VA as *mut u8, 0, 0x1000);
-        core::ptr::copy_nonoverlapping(
-            USER_SERIAL_TASK_MSG.as_ptr(),
-            USER_SERIAL_TASK_MSG_VA as *mut u8,
-            USER_SERIAL_TASK_MSG.len(),
-        );
-    }
-    Ok(())
+fn write_userdemo_message_page(target_cr3: u64) -> Result<(), &'static str> {
+    vmm::with_address_space(target_cr3, || {
+        unsafe {
+            // SAFETY:
+            // - `USER_SERIAL_TASK_MSG_VA` is mapped in `map_userdemo_task_pages`.
+            // - Message length fits into one mapped 4 KiB message page.
+            core::ptr::write_bytes(USER_SERIAL_TASK_MSG_VA as *mut u8, 0, 0x1000);
+            core::ptr::copy_nonoverlapping(
+                USER_SERIAL_TASK_MSG.as_ptr(),
+                USER_SERIAL_TASK_MSG_VA as *mut u8,
+                USER_SERIAL_TASK_MSG.len(),
+            );
+        }
+        Ok(())
+    })
+}
+
+/// Releases userdemo private user pages in `target_cr3`.
+///
+/// Code alias pages are intentionally left untouched because they reference
+/// kernel text frames that are not owned by PMM.
+fn cleanup_userdemo_task_pages(target_cr3: u64) {
+    vmm::with_address_space(target_cr3, || {
+        vmm::unmap_virtual_address(USER_SERIAL_TASK_MSG_VA);
+        vmm::unmap_virtual_address(USER_SERIAL_TASK_STACK_PAGE_VA);
+    });
 }
 
 /// Ring-3 demo entry executed via scheduler `iretq`.

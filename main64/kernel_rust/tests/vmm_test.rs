@@ -258,6 +258,34 @@ fn test_clone_kernel_pml4_for_user_returns_distinct_pml4_with_self_recursive_ent
     vmm::unmap_virtual_address(TEMP_CLONE_VIEW);
 }
 
+/// Contract: with address space switches cr3 for closure and restores previous cr3.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "with address space switches cr3 for closure and restores previous cr3".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_with_address_space_switches_cr3_for_closure_and_restores_previous_cr3() {
+    let kernel_cr3 = vmm::get_pml4_address();
+    let user_cr3 = vmm::clone_kernel_pml4_for_user();
+    assert!(user_cr3 != 0, "cloned user CR3 must be non-zero");
+
+    let token = vmm::with_address_space(user_cr3, || {
+        assert!(
+            vmm::get_pml4_address() == user_cr3,
+            "closure must observe target CR3 as active address space"
+        );
+        0xC0DEu64
+    });
+    assert!(token == 0xC0DEu64, "closure return value must be propagated");
+
+    assert!(
+        vmm::get_pml4_address() == kernel_cr3,
+        "with_address_space must restore the previous CR3 after closure returns"
+    );
+
+    pmm::with_pmm(|mgr| assert!(mgr.release_pfn(user_cr3 / pmm::PAGE_SIZE)));
+}
+
 /// Contract: map user page accepts code and stack regions.
 /// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
 /// When: The exact operation sequence in this function is executed against that state.
