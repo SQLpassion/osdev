@@ -188,7 +188,7 @@
 #[allow(unused_imports)]
 use crate::drivers::screen::Screen;
 use crate::memory::bios::{self, BiosInformationBlock, BiosMemoryRegion};
-use core::cell::UnsafeCell;
+use crate::sync::spinlock::SpinLock;
 #[allow(unused_imports)]
 use core::fmt::Write;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -326,11 +326,10 @@ pub struct PmmRegion {
     bitmap_bytes: u64,
 }
 
-/// Wrapper that holds the global PMM behind an `UnsafeCell` so we avoid
-/// `static mut` (which allows aliased `&mut` references and is unsound).
+/// Wrapper that holds the global PMM behind a `SpinLock` for thread-safe access.
 /// An `AtomicBool` tracks whether `init()` has been called.
 struct GlobalPmm {
-    inner: UnsafeCell<PhysicalMemoryManager>,
+    inner: SpinLock<PhysicalMemoryManager>,
     initialized: AtomicBool,
     debug_enabled: AtomicBool,
 }
@@ -338,7 +337,7 @@ struct GlobalPmm {
 impl GlobalPmm {
     const fn new() -> Self {
         Self {
-            inner: UnsafeCell::new(PhysicalMemoryManager {
+            inner: SpinLock::new(PhysicalMemoryManager {
                 header: core::ptr::null_mut(),
             }),
             initialized: AtomicBool::new(false),
@@ -346,11 +345,6 @@ impl GlobalPmm {
         }
     }
 }
-
-// Safety: The kernel is single-threaded (no SMP) and interrupt handlers never
-// access the PMM.  The atomic flag provides correct Acquire/Release ordering
-// so that callers of `with_pmm` observe the fully-constructed state.
-unsafe impl Sync for GlobalPmm {}
 
 static PMM: GlobalPmm = GlobalPmm::new();
 
@@ -363,20 +357,25 @@ fn debug_enabled() -> bool {
 ///
 /// `debug_output` controls whether PMM allocation/free events are logged.
 pub fn init(debug_output: bool) {
-    unsafe {
-        *PMM.inner.get() = PhysicalMemoryManager::new();
+    {
+        let mut pmm = PMM.inner.lock();
+        *pmm = PhysicalMemoryManager::new();
     }
     PMM.debug_enabled.store(debug_output, Ordering::Release);
     PMM.initialized.store(true, Ordering::Release);
 }
 
 /// Executes a closure with a mutable reference to the PMM instance.
+///
+/// This function is thread-safe: it acquires a spinlock that disables
+/// interrupts while the closure executes, preventing preemption.
 pub fn with_pmm<R>(f: impl FnOnce(&mut PhysicalMemoryManager) -> R) -> R {
     debug_assert!(
         PMM.initialized.load(Ordering::Acquire),
         "PMM not initialized"
     );
-    unsafe { f(&mut *PMM.inner.get()) }
+    let mut guard = PMM.inner.lock();
+    f(&mut guard)
 }
 
 /// Physical memory manager for allocating and freeing page frames.
@@ -384,6 +383,11 @@ pub struct PhysicalMemoryManager {
     /// Pointer to the PMM layout header in physical memory
     header: *mut PmmLayoutHeader,
 }
+
+// SAFETY: PhysicalMemoryManager contains a raw pointer to static physical memory.
+// Access is synchronized via SpinLock, and the pointer is never sent across threads
+// unsafely. The PMM layout is stable after initialization.
+unsafe impl Send for PhysicalMemoryManager {}
 
 impl PhysicalMemoryManager {
     /// Returns a mutable slice over the PMM region array stored after the header.

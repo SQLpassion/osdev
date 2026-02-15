@@ -250,7 +250,7 @@ fn execute_command(line: &str) {
             power::shutdown();
         }
         "apps" => {
-            with_screen(|screen| apps::list_apps(screen));
+            with_screen(apps::list_apps);
         }
         "run" => {
             if let Some(app_name) = parts.next() {
@@ -285,7 +285,7 @@ fn execute_command(line: &str) {
             run_multitasking_vga_demo();
         }
         "meminfo" => {
-            with_screen(|screen| bios::BiosInformationBlock::print_memory_map(screen));
+            with_screen(bios::BiosInformationBlock::print_memory_map);
         }
         "pmm" => match (parts.next(), parts.next()) {
             (None, None) => with_screen(|screen| pmm::run_self_test(screen, 2048)),
@@ -316,7 +316,7 @@ fn execute_command(line: &str) {
             vmm::set_console_debug_output(console_debug);
             let ok = vmm::test_vmm();
             if console_debug {
-                with_screen(|screen| vmm::print_console_debug_output(screen));
+                with_screen(vmm::print_console_debug_output);
             }
             vmm::set_console_debug_output(false);
             if ok {
@@ -330,7 +330,7 @@ fn execute_command(line: &str) {
             }
         }
         "heaptest" => {
-            with_screen(|screen| heap::run_self_test(screen));
+            with_screen(heap::run_self_test);
         }
         "userdemo" => {
             run_user_mode_serial_demo();
