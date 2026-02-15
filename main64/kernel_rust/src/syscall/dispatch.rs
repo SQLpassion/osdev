@@ -22,6 +22,11 @@ use super::{
     is_valid_user_buffer, SyscallId, SYSCALL_ERR_INVALID_ARG, SYSCALL_ERR_UNSUPPORTED, SYSCALL_OK,
 };
 
+/// Maximum number of bytes that can be written in a single WriteSerial syscall.
+/// This limit prevents denial-of-service by bounding syscall execution time
+/// and ensures fair CPU scheduling among tasks.
+const MAX_SERIAL_WRITE_LEN: usize = 4096;
+
 /// Resolves syscall number and dispatches to the corresponding kernel handler.
 ///
 /// ABI contract (as set by `int 0x80` entry glue):
@@ -31,7 +36,7 @@ use super::{
 /// Return contract:
 /// - successful calls return syscall-specific values (`SYSCALL_OK` or positive result),
 /// - unknown syscall numbers return `SYSCALL_ERR_UNSUPPORTED`.
-pub fn dispatch(syscall_nr: u64, arg0: u64, arg1: u64, _arg2: u64, _arg3: u64) -> u64 {
+pub fn dispatch(syscall_nr: u64, arg0: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 {
     match syscall_nr {
         // NOTE:
         // `SyscallId::X as u64` is an expression, not a pattern.
@@ -41,8 +46,12 @@ pub fn dispatch(syscall_nr: u64, arg0: u64, arg1: u64, _arg2: u64, _arg3: u64) -
         x if x == SyscallId::WriteSerial as u64 => {
             syscall_write_serial_impl(arg0 as *const u8, arg1 as usize)
         }
-        x if x == SyscallId::Exit as u64 => syscall_exit_impl(arg0),
-        _ => SYSCALL_ERR_UNSUPPORTED,
+        x if x == SyscallId::Exit as u64 => syscall_exit_impl(),
+        _ => {
+            // Silence unused parameter warnings for future syscalls
+            let _ = (arg2, arg3);
+            SYSCALL_ERR_UNSUPPORTED
+        }
     }
 }
 
@@ -77,27 +86,42 @@ fn syscall_yield_impl() -> u64 {
 
 /// Implements `WriteSerial(ptr, len)`.
 ///
+/// Writes up to `MAX_SERIAL_WRITE_LEN` bytes from the user buffer to COM1.
+/// If the requested length exceeds the maximum, only the first
+/// `MAX_SERIAL_WRITE_LEN` bytes are written.
+///
 /// Behavior:
 /// - `len == 0` is treated as success and returns `0`,
 /// - null pointer with non-zero `len` returns `SYSCALL_ERR_INVALID_ARG`,
+/// - invalid user buffer returns `SYSCALL_ERR_INVALID_ARG`,
 /// - otherwise bytes are read from caller memory and written to COM1,
-///   returning number of written bytes.
+///   returning the number of bytes actually written.
+///
+/// # DoS Protection
+/// The maximum write length prevents a single syscall from monopolizing
+/// the CPU for an unbounded duration. User code must chunk large writes
+/// into multiple syscalls.
 fn syscall_write_serial_impl(ptr: *const u8, len: usize) -> u64 {
     if len == 0 {
         return 0;
     }
 
+    // Clamp to maximum to prevent denial-of-service.
+    // User code must chunk large buffers across multiple syscalls.
+    let actual_len = len.min(MAX_SERIAL_WRITE_LEN);
+
     // Reject kernel-half addresses, null pointers, and overflow attempts.
     // Actual page mappability is enforced by the MMU at access time.
-    if !is_valid_user_buffer(ptr, len) {
+    if !is_valid_user_buffer(ptr, actual_len) {
         return SYSCALL_ERR_INVALID_ARG;
     }
 
     let bytes = unsafe {
         // SAFETY:
-        // - `is_valid_user_buffer` above verified that `ptr..ptr+len` lies
+        // - `is_valid_user_buffer` above verified that `ptr..ptr+actual_len` lies
         //   entirely within user canonical space.
-        slice::from_raw_parts(ptr, len)
+        // - `actual_len` is bounded by `MAX_SERIAL_WRITE_LEN`.
+        slice::from_raw_parts(ptr, actual_len)
     };
 
     let serial = Serial::new();
@@ -106,20 +130,25 @@ fn syscall_write_serial_impl(ptr: *const u8, len: usize) -> u64 {
         serial.write_byte(*byte);
     }
 
-    len as u64
+    actual_len as u64
 }
 
-/// Implements `Exit(exit_code)`.
+/// Implements `Exit()`.
 ///
 /// Marks the current task as [`Zombie`](crate::scheduler::TaskState::Zombie)
-/// and returns `SYSCALL_OK`.  The actual reschedule is driven by
+/// and returns `SYSCALL_OK`. The actual reschedule is driven by
 /// [`syscall_rust_dispatch`](crate::arch::interrupts::syscall_rust_dispatch),
 /// which calls [`on_timer_tick`](crate::scheduler::on_timer_tick) directly —
 /// analogous to the Yield path.
 ///
 /// The zombie task will never be selected again and is reaped on the
 /// following scheduler tick once execution has moved off its kernel stack.
-fn syscall_exit_impl(_exit_code: u64) -> u64 {
+///
+/// # Exit Code
+/// This syscall does not accept an exit code parameter. If future support
+/// for process wait semantics is added, the exit code parameter can be
+/// reintroduced and stored in the task entry for retrieval by a parent task.
+fn syscall_exit_impl() -> u64 {
     scheduler::mark_current_as_zombie();
     SYSCALL_OK
 }

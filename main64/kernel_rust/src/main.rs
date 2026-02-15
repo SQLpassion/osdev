@@ -474,7 +474,7 @@ extern "C" fn userdemo_ring3_task() -> ! {
             USER_SERIAL_TASK_MSG_VA as *const u8,
             USER_SERIAL_TASK_MSG.len(),
         );
-        syscall::user::sys_exit(0);
+        syscall::user::sys_exit();
     }
 }
 

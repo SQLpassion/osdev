@@ -58,12 +58,16 @@ fn test_unknown_syscall_returns_enosys() {
 #[test_case]
 fn test_decode_result_maps_known_errors() {
     assert!(
-        syscall::decode_result(syscall::SYSCALL_ERR_UNSUPPORTED) == Err(SysError::Enosys),
-        "SYSCALL_ERR_UNSUPPORTED must decode to SysError::Enosys"
+        syscall::decode_result(syscall::SYSCALL_ERR_UNSUPPORTED) == Err(SysError::UnsupportedSyscall),
+        "SYSCALL_ERR_UNSUPPORTED must decode to SysError::UnsupportedSyscall"
     );
     assert!(
-        syscall::decode_result(syscall::SYSCALL_ERR_INVALID_ARG) == Err(SysError::Einval),
-        "SYSCALL_ERR_INVALID_ARG must decode to SysError::Einval"
+        syscall::decode_result(syscall::SYSCALL_ERR_INVALID_ARG) == Err(SysError::InvalidArgument),
+        "SYSCALL_ERR_INVALID_ARG must decode to SysError::InvalidArgument"
+    );
+    assert!(
+        syscall::decode_result(syscall::SYSCALL_ERR_IO) == Err(SysError::IoError),
+        "SYSCALL_ERR_IO must decode to SysError::IoError"
     );
 }
 
@@ -74,7 +78,7 @@ fn test_decode_result_maps_known_errors() {
 /// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_decode_result_accepts_value_below_error_sentinels() {
-    let raw = syscall::SYSCALL_ERR_INVALID_ARG - 1;
+    let raw = syscall::SYSCALL_ERR_IO - 1;
     assert!(
         syscall::decode_result(raw) == Ok(raw),
         "value below reserved error sentinels must remain a successful return"

@@ -16,6 +16,9 @@ pub const SYSCALL_ERR_UNSUPPORTED: u64 = u64::MAX;
 /// Invalid argument combination for a known syscall.
 pub const SYSCALL_ERR_INVALID_ARG: u64 = u64::MAX - 1;
 
+/// I/O error during syscall execution.
+pub const SYSCALL_ERR_IO: u64 = u64::MAX - 2;
+
 /// Successful syscall return code for void-like operations.
 pub const SYSCALL_OK: u64 = 0;
 
@@ -74,10 +77,12 @@ pub fn is_valid_user_buffer(ptr: *const u8, len: usize) -> bool {
 /// User-facing syscall error space.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SysError {
-    /// Unknown syscall number.
-    Enosys,
-    /// Invalid syscall arguments.
-    Einval,
+    /// Unknown or unsupported syscall number.
+    UnsupportedSyscall,
+    /// Invalid syscall arguments (e.g., null pointer, out-of-bounds buffer).
+    InvalidArgument,
+    /// I/O error during syscall execution.
+    IoError,
     /// Any unclassified kernel return value in the error range.
     Unknown(u64),
 }
@@ -87,9 +92,10 @@ pub enum SysError {
 #[allow(dead_code)]
 pub fn decode_result(raw: u64) -> Result<u64, SysError> {
     match raw {
-        SYSCALL_ERR_UNSUPPORTED => Err(SysError::Enosys),
-        SYSCALL_ERR_INVALID_ARG => Err(SysError::Einval),
-        x if x >= SYSCALL_ERR_INVALID_ARG => Err(SysError::Unknown(x)),
+        SYSCALL_ERR_UNSUPPORTED => Err(SysError::UnsupportedSyscall),
+        SYSCALL_ERR_INVALID_ARG => Err(SysError::InvalidArgument),
+        SYSCALL_ERR_IO => Err(SysError::IoError),
+        x if x >= SYSCALL_ERR_IO => Err(SysError::Unknown(x)),
         value => Ok(value),
     }
 }

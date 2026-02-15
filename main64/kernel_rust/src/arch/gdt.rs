@@ -28,6 +28,9 @@ const USER_CODE_INDEX: u16 = 3;
 const USER_DATA_INDEX: u16 = 4;
 const TSS_INDEX: u16 = 5;
 
+/// Requested Privilege Level (RPL) for ring 3.
+const RPL_RING3: u16 = 0x3;
+
 /// Kernel code segment selector (ring 0).
 pub const KERNEL_CODE_SELECTOR: u16 = KERNEL_CODE_INDEX << 3;
 
@@ -36,11 +39,11 @@ pub const KERNEL_DATA_SELECTOR: u16 = KERNEL_DATA_INDEX << 3;
 
 /// User code segment selector (ring 3).
 #[allow(dead_code)]
-pub const USER_CODE_SELECTOR: u16 = (USER_CODE_INDEX << 3) | 0x3;
+pub const USER_CODE_SELECTOR: u16 = (USER_CODE_INDEX << 3) | RPL_RING3;
 
 /// User data segment selector (ring 3).
 #[allow(dead_code)]
-pub const USER_DATA_SELECTOR: u16 = (USER_DATA_INDEX << 3) | 0x3;
+pub const USER_DATA_SELECTOR: u16 = (USER_DATA_INDEX << 3) | RPL_RING3;
 
 /// TSS selector.
 #[allow(dead_code)]

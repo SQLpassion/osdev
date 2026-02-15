@@ -87,8 +87,9 @@ Raw return code space:
 
 `user.rs` decodes these raw values into:
 - `Ok(value)`
-- `Err(SysError::Enosys)`
-- `Err(SysError::Einval)`
+- `Err(SysError::UnsupportedSyscall)`
+- `Err(SysError::InvalidArgument)`
+- `Err(SysError::IoError)`
 - `Err(SysError::Unknown(code))`
 
 ---
@@ -270,9 +271,10 @@ Unknown syscall number:
   - uses `abi::syscall2(WriteSerial, ptr, len)`
   - returns `Result<usize, SysError>`
 
-- `sys_exit(code) -> !`
-  - uses `abi::syscall1(Exit, code)`
+- `sys_exit() -> !`
+  - uses `abi::syscall0(Exit)`
   - expected to never return; has terminal fallback loop
+  - does not accept an exit code (no parent/child task relationship or wait mechanism)
 
 The wrapper-local decoder (`decode_syscall_result`) translates raw codes to typed errors.
 

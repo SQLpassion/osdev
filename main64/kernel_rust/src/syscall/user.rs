@@ -13,7 +13,7 @@
 use core::arch::asm;
 
 use super::{
-    abi, SysError, SyscallId, SYSCALL_ERR_INVALID_ARG, SYSCALL_ERR_UNSUPPORTED,
+    abi, SysError, SyscallId, SYSCALL_ERR_INVALID_ARG, SYSCALL_ERR_IO, SYSCALL_ERR_UNSUPPORTED,
 };
 
 /// Requests a cooperative reschedule.
@@ -34,8 +34,8 @@ pub fn sys_yield() -> Result<(), SysError> {
     //   higher-half kernel text page and fault in user mode.
     // - This explicit match keeps the wrapper path self-contained.
     match raw_value {
-        SYSCALL_ERR_UNSUPPORTED => Err(SysError::Enosys),
-        SYSCALL_ERR_INVALID_ARG => Err(SysError::Einval),
+        SYSCALL_ERR_UNSUPPORTED => Err(SysError::UnsupportedSyscall),
+        SYSCALL_ERR_INVALID_ARG => Err(SysError::InvalidArgument),
         x if x >= SYSCALL_ERR_INVALID_ARG => Err(SysError::Unknown(x)),
         _ => Ok(()),
     }
@@ -71,24 +71,31 @@ pub unsafe fn sys_write_serial_raw(ptr: *const u8, len: usize) -> Result<usize, 
     // Keep decoding local for the same reason as `sys_yield`: avoid extra
     // helper calls outside the user-aliased wrapper path.
     match raw_value {
-        SYSCALL_ERR_UNSUPPORTED => Err(SysError::Enosys),
-        SYSCALL_ERR_INVALID_ARG => Err(SysError::Einval),
-        x if x >= SYSCALL_ERR_INVALID_ARG => Err(SysError::Unknown(x)),
+        SYSCALL_ERR_UNSUPPORTED => Err(SysError::UnsupportedSyscall),
+        SYSCALL_ERR_INVALID_ARG => Err(SysError::InvalidArgument),
+        SYSCALL_ERR_IO => Err(SysError::IoError),
+        x if x >= SYSCALL_ERR_IO => Err(SysError::Unknown(x)),
         written => Ok(written as usize),
     }
 }
 
-/// Terminates the current task with `exit_code`.
+/// Terminates the current task.
 ///
 /// Expected behavior:
 /// - on a correct scheduler path, this never returns,
 /// - if it unexpectedly returns, the function enters a local terminal loop.
+///
+/// # Exit Code
+/// This syscall does not accept an exit code parameter. The kernel currently
+/// does not track exit codes since there is no parent/child task relationship
+/// or wait mechanism. If such functionality is added in the future, an exit
+/// code parameter can be reintroduced.
 #[inline(always)]
-pub fn sys_exit(exit_code: u64) -> ! {
+pub fn sys_exit() -> ! {
     let _ = unsafe {
         // SAFETY:
         // - Wrapper is intended for contexts where `int 0x80` exit syscall is available.
-        abi::syscall1(SyscallId::Exit as u64, exit_code)
+        abi::syscall0(SyscallId::Exit as u64)
     };
     unsafe {
         // SAFETY:

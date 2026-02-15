@@ -27,7 +27,20 @@ const KERNEL_CODE_SELECTOR: u64 = gdt::KERNEL_CODE_SELECTOR as u64;
 const KERNEL_DATA_SELECTOR: u64 = gdt::KERNEL_DATA_SELECTOR as u64;
 const USER_CODE_SELECTOR: u64 = gdt::USER_CODE_SELECTOR as u64;
 const USER_DATA_SELECTOR: u64 = gdt::USER_DATA_SELECTOR as u64;
-const DEFAULT_RFLAGS: u64 = 0x202;
+
+/// RFLAGS bit 9: Interrupt Enable Flag.
+/// When set, the CPU will respond to maskable hardware interrupts.
+const RFLAGS_IF: u64 = 1 << 9;
+
+/// RFLAGS bit 1: Reserved bit (always 1 in x86_64).
+/// Architectural requirement: this bit must be set in all RFLAGS values.
+const RFLAGS_RESERVED: u64 = 1 << 1;
+
+/// Default RFLAGS value for new user tasks.
+/// - IF=1: Enable timer preemption
+/// - Reserved=1: Required by architecture
+/// - IOPL=0: I/O privilege level 0 (no direct I/O port access)
+const DEFAULT_RFLAGS: u64 = RFLAGS_IF | RFLAGS_RESERVED;
 
 /// Internal task-construction descriptor for the shared spawn path.
 ///
