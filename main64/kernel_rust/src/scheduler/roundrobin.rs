@@ -134,7 +134,37 @@ struct TaskEntry {
     /// When set, scheduler updates `TSS.RSP0` from `kernel_rsp_top`.
     is_user: bool,
 
+    // TODO: FPU/SSE/AVX State Management
+    //
+    // Currently, no FPU state is preserved across context switches.
+    // If user tasks use floating-point operations, this will cause register
+    // corruption and undefined behavior.
+    //
+    // Possible solutions:
+    // 1. **Lazy FPU switching** (recommended for efficiency):
+    //    - Set CR0.TS (Task Switched) bit on every task switch
+    //    - Trap #NM (Device Not Available) on first FP instruction
+    //    - Save previous task's FPU state, restore current task's state
+    //    - Clear CR0.TS to allow FPU access
+    //    - Requires: 512-byte XSAVE area per task (aligned to 64 bytes)
+    //
+    // 2. **Eager FPU save/restore**:
+    //    - Save FPU state on every context switch using XSAVE
+    //    - Restore FPU state before resuming task using XRSTOR
+    //    - Simpler but higher overhead (512 bytes copied every switch)
+    //    - Requires: 512-byte XSAVE area per task (aligned to 64 bytes)
+    //
+    // 3. **Disable FPU in user mode**:
+    //    - Set CR0.EM (Emulation) bit to trap all FP instructions
+    //    - Generate #UD (Invalid Opcode) on FP use
+    //    - Prevents silent corruption but limits user-mode capabilities
+    //
+    // When implementing, add:
+    // - `fpu_state: Option<Box<FpuState>>` (lazily allocated)
+    // - Or: `fpu_state: [u8; 512]` (aligned, always allocated)
+    // - Or: `fpu_state_ptr: *mut FpuState` (external allocation)
 }
+
 
 impl TaskEntry {
     /// Returns an unused slot marker.

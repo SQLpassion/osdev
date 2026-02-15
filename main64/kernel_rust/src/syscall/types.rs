@@ -59,6 +59,22 @@ const USER_CANONICAL_END: u64 = 0x0000_8000_0000_0000;
 ///
 /// Rejects null pointers, kernel-half addresses, and integer-overflow attempts.
 /// A zero-length buffer is always considered valid (no memory access occurs).
+///
+/// # Alignment
+/// This function does **not** check pointer alignment. Callers must ensure proper
+/// alignment for their data types:
+/// - `u8`: 1-byte alignment (always aligned)
+/// - `u16`: 2-byte alignment
+/// - `u32`: 4-byte alignment
+/// - `u64`: 8-byte alignment
+///
+/// Misaligned accesses may cause undefined behavior or performance penalties
+/// depending on the CPU architecture.
+///
+/// # Safety
+/// A valid buffer range does not guarantee the memory is mapped or accessible.
+/// The MMU will enforce page-level permissions at access time, potentially
+/// causing a page fault if the memory is unmapped or inaccessible.
 pub fn is_valid_user_buffer(ptr: *const u8, len: usize) -> bool {
     if len == 0 {
         return true;

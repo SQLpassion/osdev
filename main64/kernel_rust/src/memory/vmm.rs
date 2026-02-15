@@ -82,6 +82,7 @@ const ENTRY_PRESENT: u64 = 1 << 0;
 const ENTRY_WRITABLE: u64 = 1 << 1;
 const ENTRY_USER: u64 = 1 << 2;
 const ENTRY_HUGE: u64 = 1 << 7;
+const ENTRY_GLOBAL: u64 = 1 << 8;
 const ENTRY_FRAME_MASK: u64 = 0x0000_FFFF_FFFF_F000;
 
 const PF_ERR_PRESENT: u64 = 1 << 0;
@@ -218,6 +219,33 @@ impl PageTableEntry {
             self.0 |= ENTRY_USER;
         } else {
             self.0 &= !ENTRY_USER;
+        }
+    }
+
+    /// Returns whether the global bit is set.
+    ///
+    /// Global pages are not flushed from the TLB on CR3 writes when CR4.PGE is enabled.
+    /// This is useful for kernel mappings that are shared across all address spaces.
+    #[inline]
+    #[allow(dead_code)]
+    fn global(self) -> bool {
+        (self.0 & ENTRY_GLOBAL) != 0
+    }
+
+    /// Sets or clears the global bit.
+    ///
+    /// Global pages persist in the TLB across CR3 switches (when CR4.PGE=1).
+    /// Typically used for kernel code/data mappings to avoid TLB flush overhead.
+    ///
+    /// # Important
+    /// The recursive PML4 entry (entry 511) should **not** be marked global,
+    /// as it must change when switching to a different address space.
+    #[inline]
+    fn set_global(&mut self, val: bool) {
+        if val {
+            self.0 |= ENTRY_GLOBAL;
+        } else {
+            self.0 &= !ENTRY_GLOBAL;
         }
     }
 
@@ -368,6 +396,29 @@ fn write_cr3(val: u64) {
 fn invlpg(addr: u64) {
     unsafe {
         asm!("invlpg [{}]", in(reg) addr, options(nostack, preserves_flags));
+    }
+}
+
+/// Enables global pages by setting CR4.PGE (Page Global Enable).
+///
+/// When CR4.PGE is set, page-table entries with the G-bit set are not
+/// flushed from the TLB on CR3 writes. This is essential for kernel
+/// performance as it avoids flushing kernel mappings on every context switch.
+///
+/// # Safety
+/// Must be called only after global-bit configuration is complete.
+/// Caller must be running in ring 0 on x86_64.
+unsafe fn enable_global_pages() {
+    const CR4_PGE: u64 = 1 << 7; // Page Global Enable bit
+
+    let mut cr4: u64;
+    unsafe {
+        // Read current CR4 value
+        asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack, preserves_flags));
+        // Set PGE bit
+        cr4 |= CR4_PGE;
+        // Write back to CR4
+        asm!("mov cr4, {}", in(reg) cr4, options(nostack, preserves_flags));
     }
 }
 
@@ -579,6 +630,8 @@ pub fn init(debug_output: bool) {
     let pt_higher_tbl_0 = table_at(pt_higher_0);
     for i in 0..PT_ENTRIES {
         pt_higher_tbl_0.entries[i].set_mapping(i as u64, true, true, false);
+        // Mark kernel pages as global to avoid TLB flush on CR3 switch
+        pt_higher_tbl_0.entries[i].set_global(true);
     }
 
     let pt_higher_tbl_1 = table_at(pt_higher_1);
@@ -586,12 +639,29 @@ pub fn init(debug_output: bool) {
         pt_higher_tbl_1
             .entries[i]
             .set_mapping((PT_ENTRIES + i) as u64, true, true, false);
+        // Mark kernel pages as global to avoid TLB flush on CR3 switch
+        pt_higher_tbl_1.entries[i].set_global(true);
     }
+
+    // Mark higher-half page-directory and page-table entries as global
+    // (but NOT the recursive PML4 entry, which must change per address space)
+    pd_higher_tbl.entries[0].set_global(true);
+    pd_higher_tbl.entries[1].set_global(true);
+    pdp_higher_tbl.entries[0].set_global(true);
+    pml4_tbl.entries[256].set_global(true);
 
     set_vmm_state_unchecked(pml4, debug_output);
     VMM.initialized.store(true, Ordering::Release);
 
     write_cr3(pml4);
+
+    // Enable global pages (CR4.PGE) to avoid flushing kernel TLB entries on CR3 switch.
+    // Global pages marked with the G-bit persist in the TLB across address space switches.
+    // SAFETY: Enabling CR4.PGE is a standard kernel optimization and safe after
+    // global-bit configuration is complete.
+    unsafe {
+        enable_global_pages();
+    }
 }
 
 /// Returns the currently active kernel PML4 physical address.
