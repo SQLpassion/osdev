@@ -38,15 +38,11 @@ const MAX_SERIAL_WRITE_LEN: usize = 4096;
 /// - unknown syscall numbers return `SYSCALL_ERR_UNSUPPORTED`.
 pub fn dispatch(syscall_nr: u64, arg0: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 {
     match syscall_nr {
-        // NOTE:
-        // `SyscallId::X as u64` is an expression, not a pattern.
-        // Rust `match` arms require patterns, so enum->u64 comparisons must be
-        // expressed via guards unless we introduce separate `const` values.
-        x if x == SyscallId::Yield as u64 => syscall_yield_impl(),
-        x if x == SyscallId::WriteSerial as u64 => {
+        SyscallId::YIELD => syscall_yield_impl(),
+        SyscallId::WRITE_SERIAL => {
             syscall_write_serial_impl(arg0 as *const u8, arg1 as usize)
         }
-        x if x == SyscallId::Exit as u64 => syscall_exit_impl(),
+        SyscallId::EXIT => syscall_exit_impl(),
         _ => {
             // Silence unused parameter warnings for future syscalls
             let _ = (arg2, arg3);

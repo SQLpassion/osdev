@@ -10,6 +10,17 @@ pub enum SyscallId {
     Exit = 2,
 }
 
+impl SyscallId {
+    /// Syscall number for Yield (cooperative reschedule).
+    pub const YIELD: u64 = Self::Yield as u64;
+
+    /// Syscall number for WriteSerial (debug output).
+    pub const WRITE_SERIAL: u64 = Self::WriteSerial as u64;
+
+    /// Syscall number for Exit (task termination).
+    pub const EXIT: u64 = Self::Exit as u64;
+}
+
 /// Unknown syscall number.
 pub const SYSCALL_ERR_UNSUPPORTED: u64 = u64::MAX;
 
