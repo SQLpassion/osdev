@@ -1,6 +1,6 @@
 //! Central kernel logging with optional in-memory capture for console dump.
 
-use core::cell::UnsafeCell;
+use crate::sync::spinlock::SpinLock;
 use core::fmt::{self, Write as _};
 
 use crate::drivers::screen::{Color, Screen};
@@ -15,14 +15,18 @@ struct LogState {
     capture_buf: [u8; CAPTURE_BUF_SIZE],
 }
 
+/// Global logger with thread-safe access via SpinLock.
+///
+/// The lock disables interrupts during log capture to prevent race conditions
+/// when multiple tasks attempt to write log messages concurrently.
 struct GlobalLogger {
-    inner: UnsafeCell<LogState>,
+    inner: SpinLock<LogState>,
 }
 
 impl GlobalLogger {
     const fn new() -> Self {
         Self {
-            inner: UnsafeCell::new(LogState {
+            inner: SpinLock::new(LogState {
                 capture_enabled: false,
                 capture_len: 0,
                 capture_overflow: false,
@@ -31,9 +35,6 @@ impl GlobalLogger {
         }
     }
 }
-
-// Safety: Kernel is effectively single-threaded (no SMP).
-unsafe impl Sync for GlobalLogger {}
 
 static LOGGER: GlobalLogger = GlobalLogger::new();
 
@@ -65,8 +66,12 @@ impl fmt::Write for BufferWriter<'_> {
     }
 }
 
+/// Executes a closure with mutable access to the logger state.
+///
+/// Thread-safe: acquires a spinlock that disables interrupts.
 fn with_logger<R>(f: impl FnOnce(&mut LogState) -> R) -> R {
-    unsafe { f(&mut *LOGGER.inner.get()) }
+    let mut guard = LOGGER.inner.lock();
+    f(&mut *guard)
 }
 
 fn capture_target_line(target: &str, args: fmt::Arguments<'_>) {

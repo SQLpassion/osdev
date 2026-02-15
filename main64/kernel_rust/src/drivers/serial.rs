@@ -117,21 +117,20 @@ impl fmt::Write for Serial {
     }
 }
 
-use core::cell::UnsafeCell;
+use crate::sync::spinlock::SpinLock;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 /// Global serial port instance for debug output
+///
+/// Uses a SpinLock for thread-safe access with interrupt disabling to prevent
+/// race conditions during preemptive multitasking.
 struct DebugSerial {
-    serial: UnsafeCell<Serial>,
+    serial: SpinLock<Serial>,
     initialized: AtomicBool,
 }
 
-// Safety: Serial port access is inherently single-threaded in our kernel
-// (no SMP support), and we use atomic flag for initialization state.
-unsafe impl Sync for DebugSerial {}
-
 static DEBUG_SERIAL: DebugSerial = DebugSerial {
-    serial: UnsafeCell::new(Serial::new()),
+    serial: SpinLock::new(Serial::new()),
     initialized: AtomicBool::new(false),
 };
 
@@ -139,22 +138,23 @@ static DEBUG_SERIAL: DebugSerial = DebugSerial {
 ///
 /// Call this early in kernel initialization to enable debug output.
 pub fn init() {
-    unsafe {
-        (*DEBUG_SERIAL.serial.get()).init();
+    {
+        let serial = DEBUG_SERIAL.serial.lock();
+        serial.init();
     }
     DEBUG_SERIAL.initialized.store(true, Ordering::Release);
 }
 
 /// Write formatted debug output to the serial port
 ///
-/// This function is used by the debug! macro.
+/// This function is used by the debug! macro. It is thread-safe: it acquires
+/// a spinlock that disables interrupts while writing to the serial port.
 #[doc(hidden)]
 pub fn _debug_print(args: fmt::Arguments) {
     use fmt::Write;
     if DEBUG_SERIAL.initialized.load(Ordering::Acquire) {
-        unsafe {
-            let _ = (*DEBUG_SERIAL.serial.get()).write_fmt(args);
-        }
+        let mut serial = DEBUG_SERIAL.serial.lock();
+        let _ = serial.write_fmt(args);
     }
 }
 

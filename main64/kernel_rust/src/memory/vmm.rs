@@ -42,7 +42,7 @@
 //! - everything else => not a user region
 
 use core::arch::asm;
-use core::cell::UnsafeCell;
+use crate::sync::spinlock::SpinLock;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::arch::interrupts;
@@ -411,8 +411,12 @@ struct VmmState {
     serial_debug_enabled: bool,
 }
 
+/// Global VMM with thread-safe access via SpinLock.
+///
+/// The lock disables interrupts during page table operations to prevent race
+/// conditions when multiple tasks attempt to map/unmap pages concurrently.
 struct GlobalVmm {
-    inner: UnsafeCell<VmmState>,
+    inner: SpinLock<VmmState>,
     initialized: AtomicBool,
 }
 
@@ -420,7 +424,7 @@ impl GlobalVmm {
     /// Creates the zero-initialized global VMM container.
     const fn new() -> Self {
         Self {
-            inner: UnsafeCell::new(VmmState {
+            inner: SpinLock::new(VmmState {
                 pml4_physical: 0,
                 serial_debug_enabled: false,
             }),
@@ -429,18 +433,20 @@ impl GlobalVmm {
     }
 }
 
-unsafe impl Sync for GlobalVmm {}
-
 static VMM: GlobalVmm = GlobalVmm::new();
 
 /// Executes a closure with mutable access to global VMM state.
+///
+/// Thread-safe: acquires a spinlock that disables interrupts during page table
+/// operations to prevent race conditions.
 #[inline]
 fn with_vmm<R>(f: impl FnOnce(&mut VmmState) -> R) -> R {
     debug_assert!(
         VMM.initialized.load(Ordering::Acquire),
         "VMM not initialized"
     );
-    unsafe { f(&mut *VMM.inner.get()) }
+    let mut guard = VMM.inner.lock();
+    f(&mut *guard)
 }
 
 /// Allocates one physical frame and returns its physical address.
@@ -505,10 +511,9 @@ fn read_virt_u8(addr: u64) -> u8 {
 
 /// Sets the initial VMM state before the initialized flag is published.
 fn set_vmm_state_unchecked(pml4_physical: u64, debug_enabled: bool) {
-    unsafe {
-        (*VMM.inner.get()).pml4_physical = pml4_physical;
-        (*VMM.inner.get()).serial_debug_enabled = debug_enabled;
-    }
+    let mut state = VMM.inner.lock();
+    state.pml4_physical = pml4_physical;
+    state.serial_debug_enabled = debug_enabled;
 }
 
 /// Returns whether VMM debug logging is enabled.
