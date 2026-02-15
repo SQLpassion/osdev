@@ -730,6 +730,94 @@ fn pt_for_if_present(virtual_address: u64) -> Option<&'static mut PageTable> {
     Some(table_at(pt_table_addr(virtual_address)))
 }
 
+/// Returns whether a page-table page contains no present entries.
+#[inline]
+fn table_is_empty(table: &PageTable) -> bool {
+    table.entries.iter().all(|entry| !entry.present())
+}
+
+/// Clears one mapped leaf page and prunes empty page-table levels for `virtual_address`.
+///
+/// This helper is used by address-space teardown paths and intentionally does
+/// not log warnings when a leaf PFN is not PMM-managed.
+///
+/// If `release_leaf_pfn` is `true`, the leaf PFN is returned to PMM.
+/// If `false`, the leaf mapping is only cleared.
+fn unmap_page_and_prune_pagetable_hierarchy(virtual_address: u64, release_leaf_pfn: bool) {
+    let virtual_address = page_align_down(virtual_address);
+
+    // Step 1: Resolve the full 4-level path for `virtual_address`.
+    // If any intermediate level is missing (or huge-mapped), there is no
+    // normal 4KiB leaf to clear and therefore nothing to prune.
+    let pml4 = table_at(PML4_TABLE_ADDR);
+    let pml4_idx = pml4_index(virtual_address);
+    let pml4e = pml4.entries[pml4_idx];
+    if !pml4e.present() || pml4e.huge() {
+        return;
+    }
+
+    let pdp = table_at(pdp_table_addr(virtual_address));
+    let pdp_idx = pdp_index(virtual_address);
+    let pdpe = pdp.entries[pdp_idx];
+    if !pdpe.present() || pdpe.huge() {
+        return;
+    }
+
+    let pd = table_at(pd_table_addr(virtual_address));
+    let pd_idx = pd_index(virtual_address);
+    let pde = pd.entries[pd_idx];
+    if !pde.present() || pde.huge() {
+        return;
+    }
+
+    let pt = table_at(pt_table_addr(virtual_address));
+    let pt_idx = pt_index(virtual_address);
+
+    // Step 2: Clear the leaf PTE.
+    // Optionally release the old leaf PFN depending on caller policy:
+    // - true  => regular owned user page, return frame to PMM
+    // - false => alias/scratch mapping, only remove mapping
+    if pt.entries[pt_idx].present() {
+        let leaf_pfn = pt.entries[pt_idx].frame();
+        pt.entries[pt_idx].clear();
+        invlpg(virtual_address);
+        if release_leaf_pfn {
+            let _ = pmm::with_pmm(|mgr| mgr.release_pfn(leaf_pfn));
+        }
+    }
+
+    // Step 3: Bottom-up pruning.
+    // Only remove a parent-table entry if the child table became empty.
+    // This guarantees we never drop shared siblings.
+
+    // 3a) PT empty? remove PD -> PT edge and release PT frame.
+    if !table_is_empty(pt) {
+        return;
+    }
+    let pt_pfn = pd.entries[pd_idx].frame();
+    pd.entries[pd_idx].clear();
+    invlpg(pt_table_addr(virtual_address));
+    let _ = pmm::with_pmm(|mgr| mgr.release_pfn(pt_pfn));
+
+    // 3b) PD empty? remove PDP -> PD edge and release PD frame.
+    if !table_is_empty(pd) {
+        return;
+    }
+    let pd_pfn = pdp.entries[pdp_idx].frame();
+    pdp.entries[pdp_idx].clear();
+    invlpg(pd_table_addr(virtual_address));
+    let _ = pmm::with_pmm(|mgr| mgr.release_pfn(pd_pfn));
+
+    // 3c) PDP empty? remove PML4 -> PDP edge and release PDP frame.
+    if !table_is_empty(pdp) {
+        return;
+    }
+    let pdp_pfn = pml4.entries[pml4_idx].frame();
+    pml4.entries[pml4_idx].clear();
+    invlpg(pdp_table_addr(virtual_address));
+    let _ = pmm::with_pmm(|mgr| mgr.release_pfn(pdp_pfn));
+}
+
 /// Handles page faults by demand-allocating page tables and target page frame.
 ///
 /// Returns `Err(PageFaultError::ProtectionFault)` for protection faults (`P=1`),
@@ -888,17 +976,9 @@ pub fn unmap_virtual_address(virtual_address: u64) {
 /// Intended for temporary virtual mappings to already-owned frames.
 #[allow(dead_code)]
 fn unmap_without_release(virtual_address: u64) {
-    let virtual_address = page_align_down(virtual_address);
-    let Some(pt) = pt_for_if_present(virtual_address) else {
-        return;
-    };
-
-    let pt_idx = pt_index(virtual_address);
-
-    if pt.entries[pt_idx].present() {
-        pt.entries[pt_idx].clear();
-        invlpg(virtual_address);
-    }
+    // Keep semantics for the mapped leaf (do not release), but prune and
+    // release now-empty table levels so temporary mapping paths do not leak.
+    unmap_page_and_prune_pagetable_hierarchy(virtual_address, false);
 }
 
 /// Clones the active kernel PML4 into a new physical frame for a user address space.
@@ -964,6 +1044,91 @@ pub fn clone_kernel_pml4_for_user() -> u64 {
     unmap_without_release(TEMP_CLONE_PML4_VA);
     
     new_pml4_phys
+}
+
+/// Destroys a user address space rooted at `pml4_phys`.
+///
+/// Teardown semantics:
+/// - unmaps user-code and user-stack ranges,
+/// - releases mapped PMM-managed leaf frames in stack range,
+/// - clears code-range leaf mappings without releasing aliased frames,
+/// - prunes and releases now-empty PT/PD/PDP pages,
+/// - releases the root PML4 frame itself.
+#[allow(dead_code)]
+pub fn destroy_user_address_space(pml4_phys: u64) {
+    let pml4_phys = page_align_down(pml4_phys);
+    if pml4_phys == 0 {
+        return;
+    }
+
+    with_address_space(pml4_phys, || {
+        let mut va = USER_CODE_BASE;
+        while va < USER_CODE_END {
+            // USER_CODE may alias kernel text frames in the current bootstrap
+            // setup; do not release code leaf PFNs here.
+            unmap_page_and_prune_pagetable_hierarchy(va, false);
+            va += SMALL_PAGE_SIZE;
+        }
+
+        let mut stack_va = USER_STACK_BASE;
+        while stack_va < USER_STACK_TOP {
+            unmap_page_and_prune_pagetable_hierarchy(stack_va, true);
+            stack_va += SMALL_PAGE_SIZE;
+        }
+    });
+
+    let released = pmm::with_pmm(|mgr| mgr.release_pfn(phys_to_pfn(pml4_phys)));
+    if !released {
+        vmm_logln(format_args!(
+            "VMM: warning: destroy_user_address_space could not release root PFN 0x{:x}",
+            phys_to_pfn(pml4_phys)
+        ));
+    }
+}
+
+/// Returns page-table PFNs `(pdp, pd, pt)` for `virtual_address` in active CR3.
+///
+/// Intended for diagnostics and integration tests.
+#[allow(dead_code)]
+pub fn debug_table_pfns_for_va(virtual_address: u64) -> Option<(u64, u64, u64)> {
+    let virtual_address = page_align_down(virtual_address);
+    let pml4 = table_at(PML4_TABLE_ADDR);
+    let pml4_idx = pml4_index(virtual_address);
+    let pml4e = pml4.entries[pml4_idx];
+    if !pml4e.present() || pml4e.huge() {
+        return None;
+    }
+
+    let pdp = table_at(pdp_table_addr(virtual_address));
+    let pdp_idx = pdp_index(virtual_address);
+    let pdpe = pdp.entries[pdp_idx];
+    if !pdpe.present() || pdpe.huge() {
+        return None;
+    }
+
+    let pd = table_at(pd_table_addr(virtual_address));
+    let pd_idx = pd_index(virtual_address);
+    let pde = pd.entries[pd_idx];
+    if !pde.present() || pde.huge() {
+        return None;
+    }
+
+    Some((pml4e.frame(), pdpe.frame(), pde.frame()))
+}
+
+/// Returns the mapped leaf PFN for `virtual_address` in active CR3.
+///
+/// Intended for diagnostics and integration tests.
+#[allow(dead_code)]
+pub fn debug_mapped_pfn_for_va(virtual_address: u64) -> Option<u64> {
+    let virtual_address = page_align_down(virtual_address);
+    let pt = pt_for_if_present(virtual_address)?;
+    let pte = pt.entries[pt_index(virtual_address)];
+    if pte.present() {
+        Some(pte.frame())
+    } else {
+        None
+    }
 }
 
 /// Maps one user virtual page to `pfn` using user-accessible permissions.

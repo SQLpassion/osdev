@@ -286,6 +286,87 @@ fn test_with_address_space_switches_cr3_for_closure_and_restores_previous_cr3() 
     pmm::with_pmm(|mgr| assert!(mgr.release_pfn(user_cr3 / pmm::PAGE_SIZE)));
 }
 
+/// Contract: destroy user address space releases user leaf and table frames.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "destroy user address space releases user leaf and table frames".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_destroy_user_address_space_releases_user_leaf_and_table_frames() {
+    const TEST_USER_VA: u64 = vmm::USER_STACK_TOP - 4096;
+
+    let user_cr3 = vmm::clone_kernel_pml4_for_user();
+    let leaf_frame = pmm::with_pmm(|mgr| mgr.alloc_frame().expect("leaf frame allocation failed"));
+
+    let (pdp_pfn, pd_pfn, pt_pfn, leaf_pfn) = vmm::with_address_space(user_cr3, || {
+        vmm::map_user_page(TEST_USER_VA, leaf_frame.pfn, true)
+            .expect("test user VA should map in cloned address space");
+
+        let (pdp, pd, pt) = vmm::debug_table_pfns_for_va(TEST_USER_VA)
+            .expect("mapped user VA must have page-table chain");
+        let mapped_leaf = vmm::debug_mapped_pfn_for_va(TEST_USER_VA)
+            .expect("mapped user VA must have a present leaf PTE");
+        (pdp, pd, pt, mapped_leaf)
+    });
+
+    assert!(
+        leaf_pfn == leaf_frame.pfn,
+        "mapped leaf PFN must match allocated data frame"
+    );
+
+    vmm::destroy_user_address_space(user_cr3);
+
+    pmm::with_pmm(|mgr| {
+        assert!(
+            !mgr.release_pfn(leaf_pfn),
+            "leaf data frame should already be free after address-space destroy"
+        );
+        assert!(
+            !mgr.release_pfn(pt_pfn),
+            "PT frame should already be free after address-space destroy"
+        );
+        assert!(
+            !mgr.release_pfn(pd_pfn),
+            "PD frame should already be free after address-space destroy"
+        );
+        assert!(
+            !mgr.release_pfn(pdp_pfn),
+            "PDP frame should already be free after address-space destroy"
+        );
+        assert!(
+            !mgr.release_pfn(user_cr3 / pmm::PAGE_SIZE),
+            "PML4 root frame should already be free after address-space destroy"
+        );
+    });
+}
+
+/// Contract: destroy user address space does not release code leaf frame.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "destroy user address space does not release code leaf frame".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_destroy_user_address_space_does_not_release_code_leaf_frame() {
+    const TEST_CODE_VA: u64 = vmm::USER_CODE_BASE;
+
+    let user_cr3 = vmm::clone_kernel_pml4_for_user();
+    let code_leaf = pmm::with_pmm(|mgr| mgr.alloc_frame().expect("code frame allocation failed"));
+
+    vmm::with_address_space(user_cr3, || {
+        vmm::map_user_page(TEST_CODE_VA, code_leaf.pfn, false)
+            .expect("test code VA should map in cloned address space");
+    });
+
+    vmm::destroy_user_address_space(user_cr3);
+
+    pmm::with_pmm(|mgr| {
+        assert!(
+            mgr.release_pfn(code_leaf.pfn),
+            "code-leaf PFN should remain allocated after destroy and require explicit release"
+        );
+    });
+}
+
 /// Contract: map user page accepts code and stack regions.
 /// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
 /// When: The exact operation sequence in this function is executed against that state.

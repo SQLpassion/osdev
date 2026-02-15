@@ -645,6 +645,56 @@ fn test_scheduler_switches_cr3_between_kernel_and_user_tasks_when_enabled() {
     pmm::with_pmm(|mgr| assert!(mgr.release_pfn(user_cr3 / 4096)));
 }
 
+/// Contract: reaping user task destroys its address space.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "reaping user task destroys its address space".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_reaping_user_task_destroys_its_address_space() {
+    sched::init();
+    let kernel_cr3 = vmm::get_pml4_address();
+    sched::set_kernel_address_space_cr3(kernel_cr3);
+
+    let user_cr3 = vmm::clone_kernel_pml4_for_user();
+    let user_task = sched::spawn_user_task(
+        vmm::USER_CODE_BASE,
+        vmm::USER_STACK_TOP - 16,
+        user_cr3,
+    )
+    .expect("user task spawn should succeed");
+
+    sched::start();
+
+    let mut bootstrap = SavedRegisters::default();
+    let mut current = &mut bootstrap as *mut SavedRegisters;
+
+    current = sched::on_timer_tick(current);
+    assert!(
+        vmm::get_pml4_address() == user_cr3,
+        "user task selection should activate its CR3"
+    );
+
+    sched::mark_current_as_zombie();
+    let _ = sched::on_timer_tick(current);
+
+    assert!(
+        sched::task_state(user_task).is_none(),
+        "zombie user task should be reaped on next tick"
+    );
+    assert!(
+        vmm::get_pml4_address() == kernel_cr3,
+        "reap path should switch back to kernel CR3 before destroying owned CR3"
+    );
+
+    pmm::with_pmm(|mgr| {
+        assert!(
+            !mgr.release_pfn(user_cr3 / pmm::PAGE_SIZE),
+            "user CR3 root must already be released by scheduler reap"
+        )
+    });
+}
+
 /// Contract: scheduler recovers when current frame slot mismatches expected slot.
 /// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
 /// When: The exact operation sequence in this function is executed against that state.

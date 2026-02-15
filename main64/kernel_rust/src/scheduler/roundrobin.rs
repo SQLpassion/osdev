@@ -120,6 +120,7 @@ struct TaskEntry {
     /// Marks whether this task should be treated as user-mode context.
     /// When set, scheduler updates `TSS.RSP0` from `kernel_rsp_top`.
     is_user: bool,
+
 }
 
 impl TaskEntry {
@@ -429,6 +430,32 @@ fn remove_task(meta: &mut SchedulerMetadata, task_id: usize) -> bool {
         return false;
     };
 
+    let mut cleanup_cr3 = if meta.slots[task_id].is_user {
+        Some(meta.slots[task_id].cr3)
+    } else {
+        None
+    };
+
+    if let Some(cr3) = cleanup_cr3 {
+        if meta.active_cr3 == cr3 {
+            if meta.kernel_cr3 != 0 && meta.kernel_cr3 != cr3 {
+                // SAFETY:
+                // - `kernel_cr3` is configured by scheduler owner via
+                //   `set_kernel_address_space_cr3`.
+                // - Switching away avoids releasing an address space that is
+                //   currently active in CR3.
+                unsafe {
+                    vmm::switch_page_directory(meta.kernel_cr3);
+                }
+                meta.active_cr3 = meta.kernel_cr3;
+            } else {
+                // Without a known-safe fallback CR3, skip teardown to avoid
+                // freeing the currently active address space.
+                cleanup_cr3 = None;
+            }
+        }
+    }
+
     for pos in removed_pos..meta.task_count - 1 {
         meta.run_queue[pos] = meta.run_queue[pos + 1];
     }
@@ -447,6 +474,10 @@ fn remove_task(meta: &mut SchedulerMetadata, task_id: usize) -> bool {
         meta.current_queue_pos -= 1;
     } else if meta.current_queue_pos >= meta.task_count {
         meta.current_queue_pos = meta.task_count - 1;
+    }
+
+    if let Some(cr3) = cleanup_cr3 {
+        vmm::destroy_user_address_space(cr3);
     }
 
     true
@@ -491,7 +522,12 @@ pub fn spawn_kernel_task(entry: KernelTaskFn) -> Result<usize, SpawnError> {
 ///
 /// `entry_rip` and `user_rsp` are user-space virtual addresses in the task's
 /// address space identified by `cr3`.
-pub fn spawn_user_task(entry_rip: u64, user_rsp: u64, cr3: u64) -> Result<usize, SpawnError> {
+#[allow(dead_code)]
+pub fn spawn_user_task(
+    entry_rip: u64,
+    user_rsp: u64,
+    cr3: u64,
+) -> Result<usize, SpawnError> {
     spawn_internal(SpawnKind::User {
         entry_rip,
         user_rsp,

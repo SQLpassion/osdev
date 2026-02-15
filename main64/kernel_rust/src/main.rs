@@ -45,7 +45,7 @@ const USER_SERIAL_TASK_STACK_PAGE_VA: u64 = vmm::USER_STACK_TOP - 0x1000;
 /// Initial user RSP used when creating the demo task frame.
 const USER_SERIAL_TASK_STACK_TOP: u64 = vmm::USER_STACK_TOP - 16;
 /// User-mapped page that stores the serial demo message bytes.
-const USER_SERIAL_TASK_MSG_VA: u64 = vmm::USER_CODE_BASE + 0x1000;
+const USER_SERIAL_TASK_MSG_VA: u64 = vmm::USER_STACK_TOP - 0x2000;
 const USER_SERIAL_TASK_MSG: &[u8] = b"[ring3] hello from user mode via int 0x80\n";
 
 /// Kernel entry point - called from bootloader (kaosldr_64)
@@ -311,19 +311,13 @@ fn run_user_mode_serial_demo(screen: &mut Screen) {
 
     if let Err(msg) = map_userdemo_task_pages(user_cr3) {
         writeln!(screen, "User demo setup failed: {}", msg).unwrap();
-        cleanup_userdemo_task_pages(user_cr3);
-        pmm::with_pmm(|mgr| {
-            let _ = mgr.release_pfn(user_cr3 / pmm::PAGE_SIZE);
-        });
+        vmm::destroy_user_address_space(user_cr3);
         return;
     }
 
     if let Err(msg) = write_userdemo_message_page(user_cr3) {
         writeln!(screen, "User demo image failed: {}", msg).unwrap();
-        cleanup_userdemo_task_pages(user_cr3);
-        pmm::with_pmm(|mgr| {
-            let _ = mgr.release_pfn(user_cr3 / pmm::PAGE_SIZE);
-        });
+        vmm::destroy_user_address_space(user_cr3);
         return;
     }
 
@@ -339,22 +333,20 @@ fn run_user_mode_serial_demo(screen: &mut Screen) {
         Some(va) => va,
         None => {
             writeln!(screen, "User demo spawn failed: entry address outside user code alias window").unwrap();
-            cleanup_userdemo_task_pages(user_cr3);
-            pmm::with_pmm(|mgr| {
-                let _ = mgr.release_pfn(user_cr3 / pmm::PAGE_SIZE);
-            });
+            vmm::destroy_user_address_space(user_cr3);
             return;
         }
     };
 
-    let task_id = match scheduler::spawn_user_task(entry_rip, USER_SERIAL_TASK_STACK_TOP, user_cr3) {
+    let task_id = match scheduler::spawn_user_task(
+        entry_rip,
+        USER_SERIAL_TASK_STACK_TOP,
+        user_cr3,
+    ) {
         Ok(task_id) => task_id,
         Err(err) => {
             writeln!(screen, "User demo spawn failed: {:?}", err).unwrap();
-            cleanup_userdemo_task_pages(user_cr3);
-            pmm::with_pmm(|mgr| {
-                let _ = mgr.release_pfn(user_cr3 / pmm::PAGE_SIZE);
-            });
+            vmm::destroy_user_address_space(user_cr3);
             return;
         }
     };
@@ -363,11 +355,6 @@ fn run_user_mode_serial_demo(screen: &mut Screen) {
     while scheduler::task_frame_ptr(task_id).is_some() {
         scheduler::yield_now();
     }
-
-    cleanup_userdemo_task_pages(user_cr3);
-    pmm::with_pmm(|mgr| {
-        let _ = mgr.release_pfn(user_cr3 / pmm::PAGE_SIZE);
-    });
 
     writeln!(screen, "User demo task finished. Check serial output.").unwrap();
 }
@@ -470,17 +457,6 @@ fn write_userdemo_message_page(target_cr3: u64) -> Result<(), &'static str> {
         }
         Ok(())
     })
-}
-
-/// Releases userdemo private user pages in `target_cr3`.
-///
-/// Code alias pages are intentionally left untouched because they reference
-/// kernel text frames that are not owned by PMM.
-fn cleanup_userdemo_task_pages(target_cr3: u64) {
-    vmm::with_address_space(target_cr3, || {
-        vmm::unmap_virtual_address(USER_SERIAL_TASK_MSG_VA);
-        vmm::unmap_virtual_address(USER_SERIAL_TASK_STACK_PAGE_VA);
-    });
 }
 
 /// Ring-3 demo entry executed via scheduler `iretq`.
