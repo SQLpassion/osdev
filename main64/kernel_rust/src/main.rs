@@ -47,6 +47,7 @@ const USER_SERIAL_TASK_STACK_TOP: u64 = vmm::USER_STACK_TOP - 16;
 /// User-mapped page that stores the serial demo message bytes.
 const USER_SERIAL_TASK_MSG_VA: u64 = vmm::USER_STACK_TOP - 0x2000;
 const USER_SERIAL_TASK_MSG: &[u8] = b"[ring3] hello from user mode via int 0x80\n";
+const USER_SERIAL_TASK_MSG_LEN: usize = USER_SERIAL_TASK_MSG.len();
 
 /// Kernel entry point - called from bootloader (kaosldr_64)
 ///
@@ -388,7 +389,7 @@ fn map_userdemo_task_pages(target_cr3: u64) -> Result<(), &'static str> {
     // their own code pages executable from the user alias window.
     let required_kernel_function_vas: [u64; 5] = [
         userdemo_ring3_task as *const () as usize as u64,
-        syscall::user::sys_write_serial_raw as *const () as usize as u64,
+        syscall::user::sys_write_serial as *const () as usize as u64,
         syscall::user::sys_exit as *const () as usize as u64,
         syscall::abi::syscall2 as *const () as usize as u64,
         syscall::abi::syscall1 as *const () as usize as u64,
@@ -452,7 +453,7 @@ fn write_userdemo_message_page(target_cr3: u64) -> Result<(), &'static str> {
             core::ptr::copy_nonoverlapping(
                 USER_SERIAL_TASK_MSG.as_ptr(),
                 USER_SERIAL_TASK_MSG_VA as *mut u8,
-                USER_SERIAL_TASK_MSG.len(),
+                USER_SERIAL_TASK_MSG_LEN,
             );
         }
         Ok(())
@@ -469,10 +470,10 @@ extern "C" fn userdemo_ring3_task() -> ! {
     unsafe {
         // SAFETY:
         // - `USER_SERIAL_TASK_MSG_VA` points to a mapped user-readable buffer.
-        // - `USER_SERIAL_TASK_MSG.len()` bytes were copied into that page.
-        let _ = syscall::user::sys_write_serial_raw(
+        // - `USER_SERIAL_TASK_MSG_LEN` bytes were copied into that page.
+        let _ = syscall::user::sys_write_serial(
             USER_SERIAL_TASK_MSG_VA as *const u8,
-            USER_SERIAL_TASK_MSG.len(),
+            USER_SERIAL_TASK_MSG_LEN,
         );
         syscall::user::sys_exit();
     }

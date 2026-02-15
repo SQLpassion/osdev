@@ -70,7 +70,6 @@ const PAGE_MASK: u64 = !(SMALL_PAGE_SIZE - 1);
 ///
 /// The mapping is temporary and not released via PMM on unmap because the frame
 /// remains owned by the caller as the returned user PML4 root.
-#[allow(dead_code)]
 const TEMP_CLONE_PML4_VA: u64 = 0xFFFF_8000_0DEA_D000;
 
 const PML4_TABLE_ADDR: u64 = 0xFFFF_FFFF_FFFF_F000;
@@ -88,40 +87,32 @@ const ENTRY_FRAME_MASK: u64 = 0x0000_FFFF_FFFF_F000;
 const PF_ERR_PRESENT: u64 = 1 << 0;
 
 /// User executable base virtual address.
-#[allow(dead_code)]
 pub const USER_CODE_BASE: u64 = 0x0000_7000_0000_0000;
 
 /// User executable mapping size (2 MiB).
-#[allow(dead_code)]
 pub const USER_CODE_SIZE: u64 = 0x0020_0000;
 
 /// User executable end address (exclusive).
-#[allow(dead_code)]
 pub const USER_CODE_END: u64 = USER_CODE_BASE + USER_CODE_SIZE;
 
 /// User stack top (exclusive upper boundary).
-#[allow(dead_code)]
 pub const USER_STACK_TOP: u64 = 0x0000_7FFF_F000_0000;
 
 /// User stack size (1 MiB).
-#[allow(dead_code)]
 pub const USER_STACK_SIZE: u64 = 0x0010_0000;
 
 /// User stack start (inclusive).
-#[allow(dead_code)]
 pub const USER_STACK_BASE: u64 = USER_STACK_TOP - USER_STACK_SIZE;
 
 /// Optional guard page below the user stack.
-#[allow(dead_code)]
 pub const USER_STACK_GUARD_BASE: u64 = USER_STACK_BASE - SMALL_PAGE_SIZE;
 
 /// Optional guard page end (exclusive).
-#[allow(dead_code)]
 pub const USER_STACK_GUARD_END: u64 = USER_STACK_BASE;
 
 /// Classified user virtual address region.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
+
 pub enum UserRegion {
     /// Executable/text region for user program image.
     Code,
@@ -155,16 +146,10 @@ pub enum MapError {
     },
 
     /// Address is outside configured user mapping regions.
-    #[allow(dead_code)]
-    NotUserRegion {
-        virtual_address: u64,
-    },
+    NotUserRegion { virtual_address: u64 },
 
     /// Address targets the configured guard page.
-    #[allow(dead_code)]
-    UserGuardPage {
-        virtual_address: u64,
-    },
+    UserGuardPage { virtual_address: u64 },
 }
 
 #[derive(Clone, Copy)]
@@ -190,7 +175,7 @@ impl PageTableEntry {
 
     /// Returns whether this entry is writable.
     #[inline]
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), allow(dead_code))]
     fn writable(self) -> bool {
         (self.0 & ENTRY_WRITABLE) != 0
     }
@@ -207,7 +192,7 @@ impl PageTableEntry {
 
     /// Returns whether this entry is user-accessible.
     #[inline]
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), allow(dead_code))]
     fn user(self) -> bool {
         (self.0 & ENTRY_USER) != 0
     }
@@ -227,7 +212,7 @@ impl PageTableEntry {
     /// Global pages are not flushed from the TLB on CR3 writes when CR4.PGE is enabled.
     /// This is useful for kernel mappings that are shared across all address spaces.
     #[inline]
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), allow(dead_code))]
     fn global(self) -> bool {
         (self.0 & ENTRY_GLOBAL) != 0
     }
@@ -348,7 +333,6 @@ fn page_align_down(addr: u64) -> u64 {
 
 /// Returns the configured user region for the given page-aligned address.
 #[inline]
-#[allow(dead_code)]
 fn classify_user_region(virtual_address: u64) -> Option<UserRegion> {
     if (USER_CODE_BASE..USER_CODE_END).contains(&virtual_address) {
         return Some(UserRegion::Code);
@@ -452,7 +436,10 @@ static VMM: GlobalVmm = GlobalVmm::new();
 /// Executes a closure with mutable access to global VMM state.
 #[inline]
 fn with_vmm<R>(f: impl FnOnce(&mut VmmState) -> R) -> R {
-    debug_assert!(VMM.initialized.load(Ordering::Acquire), "VMM not initialized");
+    debug_assert!(
+        VMM.initialized.load(Ordering::Acquire),
+        "VMM not initialized"
+    );
     unsafe { f(&mut *VMM.inner.get()) }
 }
 
@@ -530,7 +517,7 @@ fn debug_enabled() -> bool {
 }
 
 /// Enables or disables VMM debug output and returns the previous setting.
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn set_debug_output(enabled: bool) -> bool {
     with_vmm(|state| {
         let old = state.serial_debug_enabled;
@@ -558,9 +545,7 @@ fn debug_alloc(level: &str, idx: usize, pfn: u64) {
     if debug_enabled() {
         vmm_logln(format_args!(
             "VMM: allocated PFN 0x{:x} for {} entry 0x{:x}",
-            pfn,
-            level,
-            idx
+            pfn, level, idx
         ));
     }
 }
@@ -615,9 +600,7 @@ pub fn init(debug_output: bool) {
 
     let pt_identity_tbl_1 = table_at(pt_identity_1);
     for i in 0..PT_ENTRIES {
-        pt_identity_tbl_1
-            .entries[i]
-            .set_mapping((PT_ENTRIES + i) as u64, true, true, false);
+        pt_identity_tbl_1.entries[i].set_mapping((PT_ENTRIES + i) as u64, true, true, false);
     }
 
     let pdp_higher_tbl = table_at(pdp_higher);
@@ -636,9 +619,7 @@ pub fn init(debug_output: bool) {
 
     let pt_higher_tbl_1 = table_at(pt_higher_1);
     for i in 0..PT_ENTRIES {
-        pt_higher_tbl_1
-            .entries[i]
-            .set_mapping((PT_ENTRIES + i) as u64, true, true, false);
+        pt_higher_tbl_1.entries[i].set_mapping((PT_ENTRIES + i) as u64, true, true, false);
         // Mark kernel pages as global to avoid TLB flush on CR3 switch
         pt_higher_tbl_1.entries[i].set_global(true);
     }
@@ -665,7 +646,7 @@ pub fn init(debug_output: bool) {
 }
 
 /// Returns the currently active kernel PML4 physical address.
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn get_pml4_address() -> u64 {
     with_vmm(|state| state.pml4_physical)
 }
@@ -674,7 +655,7 @@ pub fn get_pml4_address() -> u64 {
 ///
 /// Interrupts are disabled for the whole critical section so timer preemption
 /// cannot observe a temporary address-space switch.
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn with_address_space<R>(pml4_phys: u64, f: impl FnOnce() -> R) -> R {
     let interrupts_were_enabled = interrupts::are_enabled();
     if interrupts_were_enabled {
@@ -715,7 +696,6 @@ pub fn with_address_space<R>(pml4_phys: u64, f: impl FnOnce() -> R) -> R {
 /// The caller must ensure `pml4_phys` points to a valid, fully initialized
 /// PML4 table in physical memory. Switching to an invalid CR3 target can
 /// immediately crash the kernel due to page faults/triple fault.
-#[allow(dead_code)]
 pub unsafe fn switch_page_directory(pml4_phys: u64) {
     write_cr3(pml4_phys);
     with_vmm(|state| {
@@ -900,10 +880,7 @@ pub fn try_handle_page_fault(virtual_address: u64, error_code: u64) -> Result<()
         let cr3 = read_cr3();
         vmm_logln(format_args!(
             "VMM: page fault raw=0x{:x} aligned=0x{:x} cr3=0x{:x} err=0x{:x}",
-            fault_address_raw,
-            virtual_address,
-            cr3,
-            error_code
+            fault_address_raw, virtual_address, cr3, error_code
         ));
         vmm_logln(format_args!(
             "VMM: indices pml4={} pdp={} pd={} pt={}",
@@ -927,8 +904,7 @@ pub fn try_handle_page_fault(virtual_address: u64, error_code: u64) -> Result<()
     if (error_code & PF_ERR_PRESENT) != 0 {
         vmm_logln(format_args!(
             "VMM: protection fault at 0x{:x} err=0x{:x} (allocation refused)",
-            fault_address_raw,
-            error_code
+            fault_address_raw, error_code
         ));
         return Err(PageFaultError::ProtectionFault {
             virtual_address: fault_address_raw,
@@ -960,8 +936,7 @@ pub fn handle_page_fault(virtual_address: u64, error_code: u64) {
     {
         panic!(
             "VMM: protection page fault at 0x{:x} err=0x{:x}",
-            virtual_address,
-            error_code
+            virtual_address, error_code
         );
     }
 }
@@ -969,7 +944,7 @@ pub fn handle_page_fault(virtual_address: u64, error_code: u64) {
 /// Maps `virtual_address` to `physical_address` with present + writable flags.
 ///
 /// Returns an error if the VA is already mapped to a different frame.
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn try_map_virtual_to_physical(
     virtual_address: u64,
     physical_address: u64,
@@ -1001,7 +976,7 @@ pub fn try_map_virtual_to_physical(
 /// Maps `virtual_address` to `physical_address` with present + writable flags.
 ///
 /// Panics if the VA is already mapped to another frame.
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn map_virtual_to_physical(virtual_address: u64, physical_address: u64) {
     if let Err(MapError::AlreadyMapped {
         virtual_address,
@@ -1011,9 +986,7 @@ pub fn map_virtual_to_physical(virtual_address: u64, physical_address: u64) {
     {
         panic!(
             "VMM: mapping conflict for VA 0x{:x}: current PFN=0x{:x}, requested PFN=0x{:x}",
-            virtual_address,
-            current_pfn,
-            requested_pfn
+            virtual_address, current_pfn, requested_pfn
         );
     }
 }
@@ -1034,8 +1007,7 @@ pub fn unmap_virtual_address(virtual_address: u64) {
         if !released {
             vmm_logln(format_args!(
                 "VMM: warning: unmapped VA 0x{:x} had non-PMM PFN 0x{:x}",
-                virtual_address,
-                old_pfn
+                virtual_address, old_pfn
             ));
         }
     }
@@ -1044,7 +1016,6 @@ pub fn unmap_virtual_address(virtual_address: u64) {
 /// Clears the given mapping without releasing the mapped PFN back to PMM.
 ///
 /// Intended for temporary virtual mappings to already-owned frames.
-#[allow(dead_code)]
 fn unmap_without_release(virtual_address: u64) {
     // Keep semantics for the mapped leaf (do not release), but prune and
     // release now-empty table levels so temporary mapping paths do not leak.
@@ -1074,7 +1045,6 @@ fn unmap_without_release(virtual_address: u64) {
 /// Safety/ownership note:
 /// - The returned frame remains allocated and owned by the caller.
 /// - `unmap_without_release` is used intentionally so PMM does not free it.
-#[allow(dead_code)]
 pub fn clone_kernel_pml4_for_user() -> u64 {
     let new_pml4_phys = alloc_frame_phys();
 
@@ -1112,7 +1082,7 @@ pub fn clone_kernel_pml4_for_user() -> u64 {
     let clone_pml4 = table_at(TEMP_CLONE_PML4_VA);
     clone_pml4.entries[511].set_mapping(phys_to_pfn(new_pml4_phys), true, true, false);
     unmap_without_release(TEMP_CLONE_PML4_VA);
-    
+
     new_pml4_phys
 }
 
@@ -1124,7 +1094,6 @@ pub fn clone_kernel_pml4_for_user() -> u64 {
 /// - clears code-range leaf mappings without releasing aliased frames,
 /// - prunes and releases now-empty PT/PD/PDP pages,
 /// - releases the root PML4 frame itself.
-#[allow(dead_code)]
 pub fn destroy_user_address_space(pml4_phys: u64) {
     let pml4_phys = page_align_down(pml4_phys);
     if pml4_phys == 0 {
@@ -1159,7 +1128,7 @@ pub fn destroy_user_address_space(pml4_phys: u64) {
 /// Returns page-table PFNs `(pdp, pd, pt)` for `virtual_address` in active CR3.
 ///
 /// Intended for diagnostics and integration tests.
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn debug_table_pfns_for_va(virtual_address: u64) -> Option<(u64, u64, u64)> {
     let virtual_address = page_align_down(virtual_address);
     let pml4 = table_at(PML4_TABLE_ADDR);
@@ -1189,7 +1158,7 @@ pub fn debug_table_pfns_for_va(virtual_address: u64) -> Option<(u64, u64, u64)> 
 /// Returns the mapped leaf PFN for `virtual_address` in active CR3.
 ///
 /// Intended for diagnostics and integration tests.
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn debug_mapped_pfn_for_va(virtual_address: u64) -> Option<u64> {
     let virtual_address = page_align_down(virtual_address);
     let pt = pt_for_if_present(virtual_address)?;
@@ -1205,7 +1174,6 @@ pub fn debug_mapped_pfn_for_va(virtual_address: u64) -> Option<u64> {
 ///
 /// `virtual_address` must be within configured user code/stack regions and
 /// must not target the configured guard page.
-#[allow(dead_code)]
 pub fn map_user_page(virtual_address: u64, pfn: u64, writable: bool) -> Result<(), MapError> {
     let virtual_address = page_align_down(virtual_address);
 
@@ -1271,9 +1239,7 @@ pub fn test_vmm() -> bool {
     } else {
         vmm_logln(format_args!(
             "VMM test: readback FAILED got [{:#x}, {:#x}, {:#x}] expected [0x41, 0x42, 0x43]",
-            v1,
-            v2,
-            v3
+            v1, v2, v3
         ));
     }
 

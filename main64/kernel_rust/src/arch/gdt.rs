@@ -38,11 +38,9 @@ pub const KERNEL_CODE_SELECTOR: u16 = KERNEL_CODE_INDEX << 3;
 pub const KERNEL_DATA_SELECTOR: u16 = KERNEL_DATA_INDEX << 3;
 
 /// User code segment selector (ring 3).
-#[allow(dead_code)]
 pub const USER_CODE_SELECTOR: u16 = (USER_CODE_INDEX << 3) | RPL_RING3;
 
 /// User data segment selector (ring 3).
-#[allow(dead_code)]
 pub const USER_DATA_SELECTOR: u16 = (USER_DATA_INDEX << 3) | RPL_RING3;
 
 /// TSS selector.
@@ -51,11 +49,11 @@ pub const TSS_SELECTOR: u16 = TSS_INDEX << 3;
 
 // x86 descriptor access-byte bits.
 const ACCESS_PRESENT: u8 = 1 << 7;
-const ACCESS_SEGMENT: u8 = 1 << 4;      // 1 = code/data segment, 0 = system segment
-const ACCESS_EXECUTABLE: u8 = 1 << 3;   // code=1, data=0
-const ACCESS_RW: u8 = 1 << 1;           // readable code / writable data
-const ACCESS_RING3: u8 = 0b11 << 5;     // DPL=3
-const ACCESS_TSS_AVAILABLE: u8 = 0x9;   // 64-bit available TSS system type
+const ACCESS_SEGMENT: u8 = 1 << 4; // 1 = code/data segment, 0 = system segment
+const ACCESS_EXECUTABLE: u8 = 1 << 3; // code=1, data=0
+const ACCESS_RW: u8 = 1 << 1; // readable code / writable data
+const ACCESS_RING3: u8 = 0b11 << 5; // DPL=3
+const ACCESS_TSS_AVAILABLE: u8 = 0x9; // 64-bit available TSS system type
 
 // Granularity-byte upper nibble bits (G, DB, L, AVL).
 // For long-mode code segments we set L=1 and keep others 0.
@@ -305,14 +303,19 @@ pub fn init() {
 
         // Load GDT + data selectors and activate TSS via LTR.
         // CS reload is still deferred to a dedicated bring-up step.
-        gdt_flush_and_reload(&ptr, KERNEL_DATA_SELECTOR, KERNEL_CODE_SELECTOR, TSS_SELECTOR);
+        gdt_flush_and_reload(
+            &ptr,
+            KERNEL_DATA_SELECTOR,
+            KERNEL_CODE_SELECTOR,
+            TSS_SELECTOR,
+        );
     }
 
     INITIALIZED.store(true, Ordering::Release);
 }
 
 /// Returns whether GDT/TSS initialization has completed.
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn is_initialized() -> bool {
     INITIALIZED.load(Ordering::Acquire)
 }
@@ -328,7 +331,7 @@ pub fn set_kernel_rsp0(rsp0: u64) {
 }
 
 /// Returns the current `RSP0` value stored in the TSS.
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn kernel_rsp0() -> u64 {
     // SAFETY:
     // - Reading from the singleton TSS is safe; callers get a plain value copy.
@@ -336,7 +339,7 @@ pub fn kernel_rsp0() -> u64 {
 }
 
 /// Returns the current IST1 pointer stored in the TSS.
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn kernel_ist1() -> u64 {
     // SAFETY:
     // - Reading from the singleton TSS returns a plain value copy.
@@ -344,7 +347,7 @@ pub fn kernel_ist1() -> u64 {
 }
 
 /// Returns a snapshot copy of the active GDT entries.
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn descriptor_snapshot() -> [u64; GDT_ENTRY_COUNT] {
     // SAFETY:
     // - Reading the table into a by-value array copy does not create aliasing issues.

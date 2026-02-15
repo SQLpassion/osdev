@@ -107,7 +107,7 @@
                │                                                     │
                │                                                     │
                └─────────────────────────────────────────────────────┘
-               
+
 
     ═══════════════════════════════════════════════════════════════════
                    PageFrame HANDLE (returned by alloc_frame)
@@ -188,9 +188,9 @@
 #[allow(unused_imports)]
 use crate::drivers::screen::Screen;
 use crate::memory::bios::{self, BiosInformationBlock, BiosMemoryRegion};
+use core::cell::UnsafeCell;
 #[allow(unused_imports)]
 use core::fmt::Write;
-use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, Ordering};
 extern "C" {
     /// Linker-defined symbol marking the end of the kernel BSS section
@@ -230,12 +230,15 @@ fn log_alloc(pfn: u64, region_index: u32) {
     if !debug_enabled() {
         return;
     }
-    crate::logging::logln("pmm", format_args!(
-        "PMM: allocated frame pfn=0x{:x} phys=0x{:x} region={}",
-        pfn,
-        pfn * PAGE_SIZE,
-        region_index
-    ));
+    crate::logging::logln(
+        "pmm",
+        format_args!(
+            "PMM: allocated frame pfn=0x{:x} phys=0x{:x} region={}",
+            pfn,
+            pfn * PAGE_SIZE,
+            region_index
+        ),
+    );
 }
 
 #[inline]
@@ -243,12 +246,15 @@ fn log_release(pfn: u64, region_index: u32) {
     if !debug_enabled() {
         return;
     }
-    crate::logging::logln("pmm", format_args!(
-        "PMM: released frame pfn=0x{:x} phys=0x{:x} region={}",
-        pfn,
-        pfn * PAGE_SIZE,
-        region_index
-    ));
+    crate::logging::logln(
+        "pmm",
+        format_args!(
+            "PMM: released frame pfn=0x{:x} phys=0x{:x} region={}",
+            pfn,
+            pfn * PAGE_SIZE,
+            region_index
+        ),
+    );
 }
 
 #[inline]
@@ -260,7 +266,7 @@ unsafe fn set_bit(idx: u64, base: *mut u64) {
 }
 
 #[inline]
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 /// Clears a single bit in the PMM bitmap.
 unsafe fn clear_bit(idx: u64, base: *mut u64) {
     let word = base.add((idx / 64) as usize);
@@ -270,27 +276,21 @@ unsafe fn clear_bit(idx: u64, base: *mut u64) {
 
 /// Represents an allocated page frame with its PFN and region info.
 /// This handle is returned by `alloc_frame`.
-#[allow(dead_code)]
 pub struct PageFrame {
     /// Page Frame Number (physical address / PAGE_SIZE)
     pub pfn: u64,
 
-    /// Internal: index of the memory region this frame belongs to
+    /// Internal: index of the memory region this frame belongs to.
+    /// Kept for future PMM diagnostics and debugging capabilities.
+    #[allow(dead_code)]
     region_index: u32,
 }
 
-#[allow(dead_code)]
 impl PageFrame {
     /// Returns the physical address of this page frame.
     #[inline]
     pub fn physical_address(&self) -> u64 {
         self.pfn * PAGE_SIZE
-    }
-
-    /// Returns the index of the region this frame belongs to.
-    #[inline]
-    pub fn region_index(&self) -> u32 {
-        self.region_index
     }
 }
 
@@ -321,7 +321,7 @@ pub struct PmmRegion {
 
     /// Physical address of the bitmap for this region
     bitmap_start: u64,
-    
+
     /// Size of the bitmap in bytes (aligned to 8)
     bitmap_bytes: u64,
 }
@@ -371,9 +371,11 @@ pub fn init(debug_output: bool) {
 }
 
 /// Executes a closure with a mutable reference to the PMM instance.
-#[allow(dead_code)]
 pub fn with_pmm<R>(f: impl FnOnce(&mut PhysicalMemoryManager) -> R) -> R {
-    debug_assert!(PMM.initialized.load(Ordering::Acquire), "PMM not initialized");
+    debug_assert!(
+        PMM.initialized.load(Ordering::Acquire),
+        "PMM not initialized"
+    );
     unsafe { f(&mut *PMM.inner.get()) }
 }
 
@@ -398,7 +400,9 @@ impl PhysicalMemoryManager {
     pub fn new() -> Self {
         let (bib, region) = unsafe {
             (
-                (bios::BIB_OFFSET as *mut BiosInformationBlock).as_mut().unwrap(),
+                (bios::BIB_OFFSET as *mut BiosInformationBlock)
+                    .as_mut()
+                    .unwrap(),
                 bios::MEMORYMAP_OFFSET as *const BiosMemoryRegion,
             )
         };
@@ -411,10 +415,10 @@ impl PhysicalMemoryManager {
         unsafe {
             (*header).region_count = 0;
             (*header).padding = 0;
-            (*header).regions_ptr = (header as *mut u8)
-                .add(core::mem::size_of::<PmmLayoutHeader>()) as *mut PmmRegion;
+            (*header).regions_ptr =
+                (header as *mut u8).add(core::mem::size_of::<PmmLayoutHeader>()) as *mut PmmRegion;
         }
-        
+
         let mut pmm = Self { header };
 
         // Count usable regions first
@@ -454,12 +458,14 @@ impl PhysicalMemoryManager {
         }
 
         // Bitmaps right after the region array.
-        let mut bitmap_base = (regions.as_ptr() as u64)
-            + (count as u64) * (core::mem::size_of::<PmmRegion>() as u64);
+        let mut bitmap_base =
+            (regions.as_ptr() as u64) + (count as u64) * (core::mem::size_of::<PmmRegion>() as u64);
 
         for r in regions.iter_mut() {
             r.bitmap_start = bitmap_base;
-            unsafe { core::ptr::write_bytes(r.bitmap_start as *mut u8, 0, r.bitmap_bytes as usize) };
+            unsafe {
+                core::ptr::write_bytes(r.bitmap_start as *mut u8, 0, r.bitmap_bytes as usize)
+            };
             bitmap_base += r.bitmap_bytes;
         }
 
@@ -531,10 +537,7 @@ impl PhysicalMemoryManager {
                         let region_index = idx as u32;
                         log_alloc(pfn, region_index);
 
-                        return Some(PageFrame {
-                            pfn,
-                            region_index,
-                        });
+                        return Some(PageFrame { pfn, region_index });
                     }
                 }
             }
@@ -581,8 +584,16 @@ impl PhysicalMemoryManager {
 /// Runs PMM runtime self-tests and prints results to the screen.
 pub fn run_self_test(screen: &mut Screen, stress_iters: u32) {
     let mut failures = 0u32;
-    crate::logging::logln("pmm", format_args!("[pmm-test] start (stress={})", stress_iters));
-    writeln!(screen, "Running PMM self-test (stress: {})...", stress_iters).unwrap();
+    crate::logging::logln(
+        "pmm",
+        format_args!("[pmm-test] start (stress={})", stress_iters),
+    );
+    writeln!(
+        screen,
+        "Running PMM self-test (stress: {})...",
+        stress_iters
+    )
+    .unwrap();
 
     with_pmm(|mgr| {
         let frame0 = match mgr.alloc_frame() {
@@ -615,12 +626,13 @@ pub fn run_self_test(screen: &mut Screen, stress_iters: u32) {
                 return;
             }
         };
-        crate::logging::logln("pmm", format_args!(
-            "[pmm-test] allocated pfns: {}, {}, {}",
-            frame0.pfn,
-            frame1.pfn,
-            frame2.pfn
-        ));
+        crate::logging::logln(
+            "pmm",
+            format_args!(
+                "[pmm-test] allocated pfns: {}, {}, {}",
+                frame0.pfn, frame1.pfn, frame2.pfn
+            ),
+        );
 
         if frame0.pfn == frame1.pfn || frame1.pfn == frame2.pfn || frame0.pfn == frame2.pfn {
             failures += 1;
@@ -637,32 +649,35 @@ pub fn run_self_test(screen: &mut Screen, stress_iters: u32) {
 
         if addr0 % PAGE_SIZE != 0 || addr1 % PAGE_SIZE != 0 || addr2 % PAGE_SIZE != 0 {
             failures += 1;
-            crate::logging::logln("pmm", format_args!(
-                "[pmm-test] FAIL alignment: {:#x}, {:#x}, {:#x}",
-                addr0,
-                addr1,
-                addr2
-            ));
+            crate::logging::logln(
+                "pmm",
+                format_args!(
+                    "[pmm-test] FAIL alignment: {:#x}, {:#x}, {:#x}",
+                    addr0, addr1, addr2
+                ),
+            );
             writeln!(screen, "  [FAIL] physical address alignment").unwrap();
         } else {
-            crate::logging::logln("pmm", format_args!(
-                "[pmm-test] OK alignment: {:#x}, {:#x}, {:#x}",
-                addr0,
-                addr1,
-                addr2
-            ));
+            crate::logging::logln(
+                "pmm",
+                format_args!(
+                    "[pmm-test] OK alignment: {:#x}, {:#x}, {:#x}",
+                    addr0, addr1, addr2
+                ),
+            );
             writeln!(screen, "  [ OK ] physical address alignment").unwrap();
         }
 
         let reserved = |addr: u64| (KERNEL_OFFSET..STACK_TOP).contains(&addr);
         if reserved(addr0) || reserved(addr1) || reserved(addr2) {
             failures += 1;
-            crate::logging::logln("pmm", format_args!(
-                "[pmm-test] FAIL reserved range hit: {:#x}, {:#x}, {:#x}",
-                addr0,
-                addr1,
-                addr2
-            ));
+            crate::logging::logln(
+                "pmm",
+                format_args!(
+                    "[pmm-test] FAIL reserved range hit: {:#x}, {:#x}, {:#x}",
+                    addr0, addr1, addr2
+                ),
+            );
             writeln!(screen, "  [FAIL] frame allocated in reserved range").unwrap();
         } else {
             crate::logging::logln("pmm", format_args!("[pmm-test] OK reserved range check"));
@@ -687,14 +702,19 @@ pub fn run_self_test(screen: &mut Screen, stress_iters: u32) {
         };
         if reused.pfn != old_mid_pfn {
             failures += 1;
-            crate::logging::logln("pmm", format_args!(
-                "[pmm-test] FAIL reuse mismatch: expected {}, got {}",
-                old_mid_pfn,
-                reused.pfn
-            ));
+            crate::logging::logln(
+                "pmm",
+                format_args!(
+                    "[pmm-test] FAIL reuse mismatch: expected {}, got {}",
+                    old_mid_pfn, reused.pfn
+                ),
+            );
             writeln!(screen, "  [FAIL] released frame was not reused first").unwrap();
         } else {
-            crate::logging::logln("pmm", format_args!("[pmm-test] OK frame reuse ({})", reused.pfn));
+            crate::logging::logln(
+                "pmm",
+                format_args!("[pmm-test] OK frame reuse ({})", reused.pfn),
+            );
             writeln!(screen, "  [ OK ] released frame is reused").unwrap();
         }
 
@@ -718,11 +738,14 @@ pub fn run_self_test(screen: &mut Screen, stress_iters: u32) {
 
             if f.physical_address() % PAGE_SIZE != 0 {
                 failures += 1;
-                crate::logging::logln("pmm", format_args!(
-                    "[pmm-test] FAIL stress alignment at iter {} addr={:#x}",
-                    i,
-                    f.physical_address()
-                ));
+                crate::logging::logln(
+                    "pmm",
+                    format_args!(
+                        "[pmm-test] FAIL stress alignment at iter {} addr={:#x}",
+                        i,
+                        f.physical_address()
+                    ),
+                );
                 writeln!(screen, "  [FAIL] stress alignment at iter {}", i).unwrap();
                 let _ = mgr.release_pfn(f.pfn);
                 break;
@@ -743,7 +766,12 @@ pub fn run_self_test(screen: &mut Screen, stress_iters: u32) {
                 "pmm",
                 format_args!("[pmm-test] OK stress {} cycles", stress_iters),
             );
-            writeln!(screen, "  [ OK ] stress {} alloc/release cycles", stress_iters).unwrap();
+            writeln!(
+                screen,
+                "  [ OK ] stress {} alloc/release cycles",
+                stress_iters
+            )
+            .unwrap();
         }
     });
 

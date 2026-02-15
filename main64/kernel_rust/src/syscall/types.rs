@@ -37,7 +37,7 @@ pub const SYSCALL_OK: u64 = 0;
 ///
 /// The returned address keeps the original 4 KiB page offset of `kernel_entry_va`.
 #[inline]
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub const fn user_alias_rip(code_page_user_va: u64, kernel_entry_va: u64) -> u64 {
     code_page_user_va + (kernel_entry_va & 0xFFF)
 }
@@ -116,7 +116,7 @@ pub enum SysError {
 
 /// Decodes a raw syscall return value into `Result`.
 #[inline]
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn decode_result(raw: u64) -> Result<u64, SysError> {
     match raw {
         SYSCALL_ERR_UNSUPPORTED => Err(SysError::UnsupportedSyscall),

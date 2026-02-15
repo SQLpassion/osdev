@@ -288,7 +288,7 @@ impl Screen {
     }
 
     /// Set cursor position (0-based)
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn set_cursor(&mut self, row: usize, col: usize) {
         self.row = row.min(self.num_rows - 1);
         self.col = col.min(self.num_cols - 1);
@@ -296,7 +296,7 @@ impl Screen {
     }
 
     /// Get cursor position (0-based)
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn get_cursor(&self) -> (usize, usize) {
         (self.row, self.col)
     }

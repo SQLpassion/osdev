@@ -21,13 +21,14 @@ use super::{
 /// This invokes syscall `Yield` and returns `Ok(())` on success.
 /// Any kernel error sentinel is translated to `SysError`.
 #[inline(always)]
+#[allow(dead_code)]
 pub fn sys_yield() -> Result<(), SysError> {
     let raw_value = unsafe {
         // SAFETY:
         // - Wrapper is intended for ring-3/ring-0 contexts where `int 0x80` is configured.
         abi::syscall0(SyscallId::Yield as u64)
     };
-    
+
     // Keep decoding local in this module:
     // - User wrappers may execute in ring-3 via aliased code pages.
     // - Calling an external decode helper can jump to an unmapped
@@ -41,27 +42,22 @@ pub fn sys_yield() -> Result<(), SysError> {
     }
 }
 
-/// Writes `buf` to the kernel debug serial output (COM1).
+/// Writes `len` bytes from `ptr` to the kernel debug serial output (COM1).
 ///
 /// ABI arguments:
-/// - `arg0` (`RDI`) = `buf.as_ptr()`
-/// - `arg1` (`RSI`) = `buf.len()`
+/// - `arg0` (`RDI`) = `ptr`
+/// - `arg1` (`RSI`) = `len`
 ///
 /// Return value:
 /// - `Ok(written)` with number of written bytes,
 /// - `Err(...)` when kernel reports a syscall error.
-#[inline(always)]
-pub fn sys_write_serial(buf: &[u8]) -> Result<usize, SysError> {
-    unsafe { sys_write_serial_raw(buf.as_ptr(), buf.len()) }
-}
-
-/// Writes `len` bytes from `ptr` to the kernel debug serial output (COM1).
 ///
 /// # Safety
 /// Caller must ensure that `ptr..ptr+len` is readable in the current
 /// user/kernel context expected by the syscall boundary.
 #[inline(always)]
-pub unsafe fn sys_write_serial_raw(ptr: *const u8, len: usize) -> Result<usize, SysError> {
+#[cfg_attr(not(test), allow(dead_code))]
+pub unsafe fn sys_write_serial(ptr: *const u8, len: usize) -> Result<usize, SysError> {
     let raw_value = unsafe {
         // SAFETY:
         // - Caller guarantees `ptr`/`len` satisfy the required memory contract.
@@ -101,11 +97,6 @@ pub fn sys_exit() -> ! {
         // SAFETY:
         // - Executed only as fallback if `sys_exit` unexpectedly returns.
         // - Keeps control in a local tight loop without calling external code.
-        asm!(
-            "2:",
-            "pause",
-            "jmp 2b",
-            options(noreturn)
-        );
+        asm!("2:", "pause", "jmp 2b", options(noreturn));
     }
 }

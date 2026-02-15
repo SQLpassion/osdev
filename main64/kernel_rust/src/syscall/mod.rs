@@ -10,7 +10,6 @@ mod types;
 pub mod abi;
 
 /// Safe user-space syscall wrappers.
-#[allow(dead_code)]
 pub mod user;
 
 #[allow(unused_imports)]

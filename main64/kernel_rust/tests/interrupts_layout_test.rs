@@ -240,7 +240,11 @@ fn test_int80_syscall_raw_wrapper_roundtrip() {
 #[test_case]
 fn test_int80_syscall_user_wrapper_roundtrip() {
     interrupts::init();
-    let ret = syscall::user::sys_write_serial(&[]);
+    let ret = unsafe {
+        // SAFETY:
+        // - Empty slice has valid pointer and zero length.
+        syscall::user::sys_write_serial([].as_ptr(), 0)
+    };
     assert!(ret == Ok(0), "user wrapper write_serial([]) must return Ok(0)");
 }
 
@@ -258,7 +262,11 @@ fn test_int80_syscall_user_wrapper_with_raw_parts_slice() {
         // - `BUF.as_ptr()` is valid for `BUF.len()` bytes.
         core::slice::from_raw_parts(BUF.as_ptr(), BUF.len())
     };
-    let ret = syscall::user::sys_write_serial(slice);
+    let ret = unsafe {
+        // SAFETY:
+        // - `slice` is a valid slice with properly aligned pointer.
+        syscall::user::sys_write_serial(slice.as_ptr(), slice.len())
+    };
     assert!(
         ret == Ok(0),
         "user wrapper with from_raw_parts([]) must return Ok(0)"
@@ -276,7 +284,7 @@ fn test_int80_syscall_user_raw_wrapper_roundtrip() {
     let ret = unsafe {
         // SAFETY:
         // - Null pointer with zero length is accepted by the syscall contract.
-        syscall::user::sys_write_serial_raw(core::ptr::null(), 0)
+        syscall::user::sys_write_serial(core::ptr::null(), 0)
     };
     assert!(
         ret == Ok(0),

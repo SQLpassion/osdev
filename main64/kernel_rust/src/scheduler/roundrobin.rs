@@ -75,12 +75,12 @@ pub enum SpawnError {
 
 /// Lifecycle state of a scheduled task.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum TaskState {
     /// Task is eligible for scheduling.
     Ready,
 
     /// Task is the one currently executing on the CPU.
+    #[allow(dead_code)]
     Running,
 
     /// Task is waiting for an external event (e.g. keyboard input).
@@ -118,12 +118,10 @@ struct TaskEntry {
 
     /// Task address space root (future user-mode CR3 switch support).
     /// Kernel-only tasks currently keep this at zero.
-    #[allow(dead_code)]
     cr3: u64,
 
     /// User-mode stack pointer for ring-3 resume (future user-task entry).
     /// Kernel-only tasks currently keep this at zero.
-    #[allow(dead_code)]
     user_rsp: u64,
 
     /// Top of this task's kernel stack, used to program `TSS.RSP0`
@@ -133,7 +131,6 @@ struct TaskEntry {
     /// Marks whether this task should be treated as user-mode context.
     /// When set, scheduler updates `TSS.RSP0` from `kernel_rsp_top`.
     is_user: bool,
-
     // TODO: FPU/SSE/AVX State Management
     //
     // Currently, no FPU state is preserved across context switches.
@@ -164,7 +161,6 @@ struct TaskEntry {
     // - Or: `fpu_state: [u8; 512]` (aligned, always allocated)
     // - Or: `fpu_state_ptr: *mut FpuState` (external allocation)
 }
-
 
 impl TaskEntry {
     /// Returns an unused slot marker.
@@ -565,12 +561,7 @@ pub fn spawn_kernel_task(entry: KernelTaskFn) -> Result<usize, SpawnError> {
 ///
 /// `entry_rip` and `user_rsp` are user-space virtual addresses in the task's
 /// address space identified by `cr3`.
-#[allow(dead_code)]
-pub fn spawn_user_task(
-    entry_rip: u64,
-    user_rsp: u64,
-    cr3: u64,
-) -> Result<usize, SpawnError> {
+pub fn spawn_user_task(entry_rip: u64, user_rsp: u64, cr3: u64) -> Result<usize, SpawnError> {
     spawn_internal(SpawnKind::User {
         entry_rip,
         user_rsp,
@@ -627,7 +618,7 @@ fn spawn_internal(kind: SpawnKind) -> Result<usize, SpawnError> {
 }
 
 /// Requests a cooperative scheduler stop on the next timer tick.
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn request_stop() {
     with_sched(|sched| {
         if sched.meta.started {
@@ -637,7 +628,7 @@ pub fn request_stop() {
 }
 
 /// Returns whether the scheduler is currently active.
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn is_running() -> bool {
     with_sched(|sched| sched.meta.started)
 }
@@ -656,7 +647,7 @@ pub fn set_kernel_address_space_cr3(kernel_cr3: u64) {
 }
 
 /// Disables per-task address-space switching.
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn disable_address_space_switching() {
     with_sched(|sched| {
         sched.meta.address_space_switching_enabled = false;
@@ -854,7 +845,7 @@ pub fn task_frame_ptr(task_id: usize) -> Option<*mut SavedRegisters> {
 /// Returns a copy of the initial interrupt return frame for `task_id`.
 ///
 /// Intended for tests that validate kernel/user frame construction semantics.
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn task_iret_frame(task_id: usize) -> Option<InterruptStackFrame> {
     with_sched(|sched| {
         if task_id >= MAX_TASKS || !sched.meta.slots[task_id].used {
@@ -916,7 +907,7 @@ pub fn terminate_task(task_id: usize) -> bool {
 /// The scheduler uses `kernel_rsp_top` to update `TSS.RSP0` before resuming
 /// this task, so future ring3->ring0 transitions enter on the task-specific
 /// kernel stack.
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn set_task_user_context(task_id: usize, cr3: u64, user_rsp: u64, kernel_rsp_top: u64) -> bool {
     with_sched(|sched| {
         if task_id >= MAX_TASKS || !sched.meta.slots[task_id].used {
@@ -933,7 +924,7 @@ pub fn set_task_user_context(task_id: usize, cr3: u64, user_rsp: u64, kernel_rsp
 }
 
 /// Returns whether `task_id` is configured as a user-mode task.
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn is_user_task(task_id: usize) -> bool {
     with_sched(|sched| {
         task_id < MAX_TASKS && sched.meta.slots[task_id].used && sched.meta.slots[task_id].is_user
@@ -941,7 +932,7 @@ pub fn is_user_task(task_id: usize) -> bool {
 }
 
 /// Returns task context tuple `(cr3, user_rsp, kernel_rsp_top)` for `task_id`.
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn task_context(task_id: usize) -> Option<(u64, u64, u64)> {
     with_sched(|sched| {
         if task_id >= MAX_TASKS || !sched.meta.slots[task_id].used {
@@ -954,7 +945,7 @@ pub fn task_context(task_id: usize) -> Option<(u64, u64, u64)> {
 }
 
 /// Returns the lifecycle state of `task_id`, or `None` if the slot is unused.
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn task_state(task_id: usize) -> Option<TaskState> {
     with_sched(|sched| {
         if task_id >= MAX_TASKS || !sched.meta.slots[task_id].used {

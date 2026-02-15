@@ -186,13 +186,13 @@ fn serial_debug_enabled() -> bool {
 }
 
 /// Returns whether heap debug output to serial is enabled.
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn debug_output_enabled() -> bool {
     serial_debug_enabled()
 }
 
 /// Enables or disables heap debug output and returns the previous setting.
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn set_debug_output(enabled: bool) -> bool {
     HEAP.serial_debug_enabled.swap(enabled, Ordering::AcqRel)
 }

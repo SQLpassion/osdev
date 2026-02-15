@@ -313,7 +313,7 @@ pub const fn exception_has_error_code(vector: u8) -> bool {
 }
 
 /// Returns the configured IST index for the IDT entry at `vector`.
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn idt_ist_index(vector: u8) -> u8 {
     unsafe { (&*STATE.idt.get())[vector as usize].ist & 0x07 }
 }
