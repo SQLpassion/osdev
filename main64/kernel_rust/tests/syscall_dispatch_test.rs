@@ -34,6 +34,16 @@ fn test_syscall_ids_are_stable() {
     assert!(SyscallId::Yield as u64 == 0, "Yield syscall id changed");
     assert!(SyscallId::WriteSerial as u64 == 1, "WriteSerial syscall id changed");
     assert!(SyscallId::Exit as u64 == 2, "Exit syscall id changed");
+    assert!(SyscallId::WriteConsole as u64 == 3, "WriteConsole syscall id changed");
+}
+
+/// Contract: public WriteConsole syscall constant matches enum discriminant.
+#[test_case]
+fn test_write_console_constant_matches_enum_id() {
+    assert!(
+        SyscallId::WRITE_CONSOLE == SyscallId::WriteConsole as u64,
+        "WRITE_CONSOLE constant must match WriteConsole enum value"
+    );
 }
 
 /// Contract: unknown syscall returns enosys.
@@ -273,3 +283,35 @@ fn test_write_serial_rejects_kernel_pointer() {
     );
 }
 
+/// Contract: write_console rejects null pointer when len > 0.
+#[test_case]
+fn test_write_console_null_ptr_with_len_returns_einval() {
+    let ret = syscall::dispatch(SyscallId::WriteConsole as u64, 0, 1, 0, 0);
+    assert!(
+        ret == syscall::SYSCALL_ERR_INVALID_ARG,
+        "write_console with null pointer and len>0 must return EINVAL"
+    );
+}
+
+/// Contract: write_console with zero length is a no-op success.
+#[test_case]
+fn test_write_console_zero_len_returns_zero() {
+    let ret = syscall::dispatch(SyscallId::WriteConsole as u64, 0, 0, 0, 0);
+    assert!(ret == 0, "write_console len=0 must return 0");
+}
+
+/// Contract: write_console rejects kernel-space buffer pointer.
+#[test_case]
+fn test_write_console_rejects_kernel_pointer() {
+    let ret = syscall::dispatch(
+        SyscallId::WriteConsole as u64,
+        0xFFFF_8000_0000_1000, // kernel address
+        8,
+        0,
+        0,
+    );
+    assert!(
+        ret == syscall::SYSCALL_ERR_INVALID_ARG,
+        "write_console with kernel pointer must return EINVAL"
+    );
+}

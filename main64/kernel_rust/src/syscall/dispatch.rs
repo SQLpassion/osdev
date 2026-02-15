@@ -15,6 +15,7 @@
 
 use core::slice;
 
+use crate::drivers::screen::with_screen;
 use crate::drivers::serial::Serial;
 use crate::scheduler;
 
@@ -26,6 +27,9 @@ use super::{
 /// This limit prevents denial-of-service by bounding syscall execution time
 /// and ensures fair CPU scheduling among tasks.
 const MAX_SERIAL_WRITE_LEN: usize = 4096;
+/// Maximum number of bytes that can be written in a single WriteConsole syscall.
+/// Same DoS/fairness rationale as `MAX_SERIAL_WRITE_LEN`.
+const MAX_CONSOLE_WRITE_LEN: usize = 4096;
 
 /// Resolves syscall number and dispatches to the corresponding kernel handler.
 ///
@@ -41,6 +45,9 @@ pub fn dispatch(syscall_nr: u64, arg0: u64, arg1: u64, arg2: u64, arg3: u64) -> 
         SyscallId::YIELD => syscall_yield_impl(),
         SyscallId::WRITE_SERIAL => {
             syscall_write_serial_impl(arg0 as *const u8, arg1 as usize)
+        }
+        SyscallId::WRITE_CONSOLE => {
+            syscall_write_console_impl(arg0 as *const u8, arg1 as usize)
         }
         SyscallId::EXIT => syscall_exit_impl(),
         _ => {
@@ -125,6 +132,43 @@ fn syscall_write_serial_impl(ptr: *const u8, len: usize) -> u64 {
     for byte in bytes {
         serial.write_byte(*byte);
     }
+
+    actual_len as u64
+}
+
+/// Implements `WriteConsole(ptr, len)`.
+///
+/// Writes up to `MAX_CONSOLE_WRITE_LEN` bytes from the user buffer to the VGA
+/// text console. Semantics mirror `WriteSerial`:
+/// - `len == 0` returns `0`,
+/// - invalid pointer/range returns `SYSCALL_ERR_INVALID_ARG`,
+/// - successful call returns number of bytes written.
+///
+/// Bytes are written as raw VGA text characters; this syscall does not enforce
+/// UTF-8 validity and is intended for simple ASCII/debug output.
+fn syscall_write_console_impl(ptr: *const u8, len: usize) -> u64 {
+    if len == 0 {
+        return 0;
+    }
+
+    let actual_len = len.min(MAX_CONSOLE_WRITE_LEN);
+    if !is_valid_user_buffer(ptr, actual_len) {
+        return SYSCALL_ERR_INVALID_ARG;
+    }
+
+    let bytes = unsafe {
+        // SAFETY:
+        // - `is_valid_user_buffer` above verified that `ptr..ptr+actual_len` lies
+        //   entirely within user canonical space.
+        // - `actual_len` is bounded by `MAX_CONSOLE_WRITE_LEN`.
+        slice::from_raw_parts(ptr, actual_len)
+    };
+
+    with_screen(|screen| {
+        for byte in bytes {
+            screen.print_char(*byte);
+        }
+    });
 
     actual_len as u64
 }

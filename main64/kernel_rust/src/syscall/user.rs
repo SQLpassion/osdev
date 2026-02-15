@@ -3,6 +3,7 @@
 //! This module provides ergonomic wrappers around the raw `int 0x80` ABI:
 //! - `sys_yield` for cooperative scheduling,
 //! - `sys_write_serial` for debug output,
+//! - `sys_write_console` for VGA text output,
 //! - `sys_exit` to terminate the current task.
 //!
 //! Design goals:
@@ -66,6 +67,37 @@ pub unsafe fn sys_write_serial(ptr: *const u8, len: usize) -> Result<usize, SysE
 
     // Keep decoding local for the same reason as `sys_yield`: avoid extra
     // helper calls outside the user-aliased wrapper path.
+    match raw_value {
+        SYSCALL_ERR_UNSUPPORTED => Err(SysError::UnsupportedSyscall),
+        SYSCALL_ERR_INVALID_ARG => Err(SysError::InvalidArgument),
+        SYSCALL_ERR_IO => Err(SysError::IoError),
+        x if x >= SYSCALL_ERR_IO => Err(SysError::Unknown(x)),
+        written => Ok(written as usize),
+    }
+}
+
+/// Writes `len` bytes from `ptr` to the VGA text console.
+///
+/// ABI arguments:
+/// - `arg0` (`RDI`) = `ptr`
+/// - `arg1` (`RSI`) = `len`
+///
+/// Return value:
+/// - `Ok(written)` with number of written bytes,
+/// - `Err(...)` when kernel reports a syscall error.
+///
+/// # Safety
+/// Caller must ensure that `ptr..ptr+len` is readable in the current
+/// user/kernel context expected by the syscall boundary.
+#[inline(always)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub unsafe fn sys_write_console(ptr: *const u8, len: usize) -> Result<usize, SysError> {
+    let raw_value = unsafe {
+        // SAFETY:
+        // - Caller guarantees `ptr`/`len` satisfy the required memory contract.
+        abi::syscall2(SyscallId::WriteConsole as u64, ptr as u64, len as u64)
+    };
+
     match raw_value {
         SYSCALL_ERR_UNSUPPORTED => Err(SysError::UnsupportedSyscall),
         SYSCALL_ERR_INVALID_ARG => Err(SysError::InvalidArgument),

@@ -5,6 +5,7 @@
 //! virtual address 0xFFFF8000000B8000 in the higher-half kernel.
 
 use crate::arch::port::PortByte;
+use core::cell::UnsafeCell;
 use core::fmt;
 use core::ptr;
 
@@ -98,9 +99,46 @@ impl Default for Screen {
     }
 }
 
+/// Wrapper around a global screen instance.
+///
+/// Mirrors the `with_pmm` access pattern: all mutable access is routed through
+/// a closure, avoiding `static mut` references in call sites.
+struct GlobalScreen {
+    inner: UnsafeCell<Screen>,
+}
+
+impl GlobalScreen {
+    const fn new() -> Self {
+        Self {
+            inner: UnsafeCell::new(Screen::new()),
+        }
+    }
+}
+
+// SAFETY:
+// - The kernel currently runs on a single CPU.
+// - Callers must use `with_screen` to access the global instance.
+unsafe impl Sync for GlobalScreen {}
+
+/// Global VGA writer shared across kernel paths.
+static GLOBAL_SCREEN: GlobalScreen = GlobalScreen::new();
+
+/// Executes `f` with mutable access to the shared global screen writer.
+///
+/// This is the screen-side equivalent of `with_pmm`: callers provide a closure
+/// and do not handle global state directly.
+pub fn with_screen<R>(f: impl FnOnce(&mut Screen) -> R) -> R {
+    unsafe {
+        // SAFETY:
+        // - Access is centralized through this function.
+        // - The kernel currently executes on a single CPU.
+        f(&mut *GLOBAL_SCREEN.inner.get())
+    }
+}
+
 impl Screen {
     /// Initialize the screen driver
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             row: 0,
             col: 0,

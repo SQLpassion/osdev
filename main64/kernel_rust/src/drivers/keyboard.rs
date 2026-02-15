@@ -3,7 +3,7 @@
 //! Handles scan code processing and stores decoded input in a ring buffer.
 
 use crate::arch::port::PortByte;
-use crate::drivers::screen::Screen;
+use crate::drivers::screen::with_screen;
 use crate::scheduler;
 use crate::sync::ringbuffer::RingBuffer;
 use crate::sync::singlewaitqueue::SingleWaitQueue;
@@ -250,12 +250,13 @@ fn is_alpha(code: u8) -> bool {
     )
 }
 
-/// Read a line into `buf`, echoing to `screen`. Returns the number of bytes written.
+/// Read a line into `buf`, echoing characters via the global screen writer.
+/// Returns the number of bytes written.
 /// The newline is echoed but not stored in `buf`.
 ///
 /// Each character is obtained via [`read_char_blocking`], which puts the
 /// calling task to sleep until the keyboard worker has decoded input.
-pub fn read_line(screen: &mut Screen, buf: &mut [u8]) -> usize {
+pub fn read_line(buf: &mut [u8]) -> usize {
     let mut len = 0;
 
     loop {
@@ -263,20 +264,20 @@ pub fn read_line(screen: &mut Screen, buf: &mut [u8]) -> usize {
 
         match ch {
             b'\r' | b'\n' => {
-                screen.print_char(b'\n');
+                with_screen(|screen| screen.print_char(b'\n'));
                 break;
             }
             0x08 => {
                 if len > 0 {
                     len -= 1;
-                    screen.print_char(0x08);
+                    with_screen(|screen| screen.print_char(0x08));
                 }
             }
             _ => {
                 if len < buf.len() {
                     buf[len] = ch;
                     len += 1;
-                    screen.print_char(ch);
+                    with_screen(|screen| screen.print_char(ch));
                 }
             }
         }

@@ -67,7 +67,7 @@ impl<'a> AppContext<'a> {
     /// The newline is echoed but not stored in the buffer.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn read_line(&mut self, buf: &mut [u8]) -> usize {
-        keyboard::read_line(self.screen, buf)
+        keyboard::read_line(buf)
     }
 
     /// Try to read a character (non-blocking).

@@ -8,6 +8,8 @@ pub enum SyscallId {
     WriteSerial = 1,
     /// Terminate current task.
     Exit = 2,
+    /// Write bytes to VGA text console.
+    WriteConsole = 3,
 }
 
 impl SyscallId {
@@ -19,6 +21,9 @@ impl SyscallId {
 
     /// Syscall number for Exit (task termination).
     pub const EXIT: u64 = Self::Exit as u64;
+
+    /// Syscall number for WriteConsole (VGA text output).
+    pub const WRITE_CONSOLE: u64 = Self::WriteConsole as u64;
 }
 
 /// Unknown syscall number.
