@@ -4,6 +4,7 @@
 //! - `sys_yield` for cooperative scheduling,
 //! - `sys_write_serial` for debug output,
 //! - `sys_write_console` for VGA text output,
+//! - `sys_getchar` for blocking keyboard input,
 //! - `sys_exit` to terminate the current task.
 //!
 //! Design goals:
@@ -104,6 +105,47 @@ pub unsafe fn sys_write_console(ptr: *const u8, len: usize) -> Result<usize, Sys
         SYSCALL_ERR_IO => Err(SysError::IoError),
         x if x >= SYSCALL_ERR_IO => Err(SysError::Unknown(x)),
         written => Ok(written as usize),
+    }
+}
+
+/// Reads a single character from the keyboard (blocking).
+///
+/// This syscall blocks the calling task until a character becomes available in
+/// the keyboard input buffer. The keyboard driver's worker task decodes raw
+/// scancodes into ASCII and wakes waiting tasks once input is ready.
+///
+/// # Blocking Behavior
+/// If no input is available, the task will be put to sleep on the keyboard
+/// wait queue and rescheduled automatically by the scheduler once the keyboard
+/// worker task has decoded new input.
+///
+/// # Return Value
+/// - `Ok(ch)` with the ASCII character code (0-255),
+/// - `Err(...)` when kernel reports a syscall error (unlikely for this syscall).
+///
+/// # Examples
+/// ```
+/// // Read a character and echo it
+/// if let Ok(ch) = sys_getchar() {
+///     // Echo the character back to console
+/// }
+/// ```
+#[inline(always)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn sys_getchar() -> Result<u8, SysError> {
+    let raw_value = unsafe {
+        // SAFETY:
+        // - Wrapper is intended for contexts where `int 0x80` is configured.
+        // - GetChar has no memory arguments, so no buffer validation needed.
+        abi::syscall0(SyscallId::GetChar as u64)
+    };
+
+    match raw_value {
+        SYSCALL_ERR_UNSUPPORTED => Err(SysError::UnsupportedSyscall),
+        SYSCALL_ERR_INVALID_ARG => Err(SysError::InvalidArgument),
+        SYSCALL_ERR_IO => Err(SysError::IoError),
+        x if x >= SYSCALL_ERR_IO => Err(SysError::Unknown(x)),
+        ch => Ok(ch as u8),
     }
 }
 

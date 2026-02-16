@@ -28,7 +28,7 @@ const INPUT_WAITERS_CAPACITY: usize = 8;
 
 /// Lower-case QWERTZ scan code map (printable ASCII only; 0 == ignored)
 const SCANCODES_LOWER: [u8; SCANCODE_TABLE_LEN] = [
-    0, 0, b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8', b'9', b'0', b's', b'=', 0x08, 0, b'q',
+    0, 0x1B, b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8', b'9', b'0', b's', b'=', 0x08, 0, b'q',
     b'w', b'e', b'r', b't', b'z', b'u', b'i', b'o', b'p', b'[', b'+', b'\n', 0, b'a', b's', b'd',
     b'f', b'g', b'h', b'j', b'k', b'l', b'{', b'~', b'<', 0, b'#', b'y', b'x', b'c', b'v', b'b',
     b'n', b'm', b',', b'.', b'-', 0, b'*', 0, b' ', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -37,7 +37,7 @@ const SCANCODES_LOWER: [u8; SCANCODE_TABLE_LEN] = [
 
 /// Upper-case QWERTZ scan code map (printable ASCII only; 0 == ignored)
 const SCANCODES_UPPER: [u8; SCANCODE_TABLE_LEN] = [
-    0, 0, b'!', b'"', b'0', b'$', b'%', b'&', b'/', b'(', b')', b'=', b'?', b'`', 0x08, 0, b'Q',
+    0, 0x1B, b'!', b'"', b'0', b'$', b'%', b'&', b'/', b'(', b')', b'=', b'?', b'`', 0x08, 0, b'Q',
     b'W', b'E', b'R', b'T', b'Z', b'U', b'I', b'O', b'P', b']', b'*', b'\n', 0, b'A', b'S', b'D',
     b'F', b'G', b'H', b'J', b'K', b'L', b'}', b'@', b'>', 0, b'\\', b'Y', b'X', b'C', b'V', b'B',
     b'N', b'M', b';', b':', b'_', 0, b'*', 0, b' ', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,

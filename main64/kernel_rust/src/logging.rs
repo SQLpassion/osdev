@@ -71,7 +71,7 @@ impl fmt::Write for BufferWriter<'_> {
 /// Thread-safe: acquires a spinlock that disables interrupts.
 fn with_logger<R>(f: impl FnOnce(&mut LogState) -> R) -> R {
     let mut guard = LOGGER.inner.lock();
-    f(&mut *guard)
+    f(&mut guard)
 }
 
 fn capture_target_line(target: &str, args: fmt::Arguments<'_>) {

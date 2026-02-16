@@ -446,7 +446,7 @@ fn with_vmm<R>(f: impl FnOnce(&mut VmmState) -> R) -> R {
         "VMM not initialized"
     );
     let mut guard = VMM.inner.lock();
-    f(&mut *guard)
+    f(&mut guard)
 }
 
 /// Allocates one physical frame and returns its physical address.

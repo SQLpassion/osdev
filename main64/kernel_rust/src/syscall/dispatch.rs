@@ -15,6 +15,7 @@
 
 use core::slice;
 
+use crate::drivers::keyboard;
 use crate::drivers::screen::with_screen;
 use crate::drivers::serial::Serial;
 use crate::scheduler;
@@ -49,10 +50,11 @@ pub fn dispatch(syscall_nr: u64, arg0: u64, arg1: u64, arg2: u64, arg3: u64) -> 
         SyscallId::WRITE_CONSOLE => {
             syscall_write_console_impl(arg0 as *const u8, arg1 as usize)
         }
+        SyscallId::GET_CHAR => syscall_getchar_impl(),
         SyscallId::EXIT => syscall_exit_impl(),
         _ => {
             // Silence unused parameter warnings for future syscalls
-            let _ = (arg2, arg3);
+            let _ = (arg0, arg1, arg2, arg3);
             SYSCALL_ERR_UNSUPPORTED
         }
     }
@@ -171,6 +173,28 @@ fn syscall_write_console_impl(ptr: *const u8, len: usize) -> u64 {
     });
 
     actual_len as u64
+}
+
+/// Implements `GetChar()`.
+///
+/// Reads a single character from the keyboard, blocking the calling task
+/// until input becomes available. This syscall mirrors the C kernel's
+/// `SYSCALL_GETCHAR` behavior.
+///
+/// The keyboard driver maintains a decoded character buffer that is populated
+/// by a dedicated keyboard worker task. When the buffer is empty, this syscall
+/// puts the calling task to sleep on the input wait queue. The keyboard worker
+/// wakes waiting tasks once it has decoded new input.
+///
+/// # Blocking Behavior
+/// This syscall **always blocks** until a character is available. The task is
+/// rescheduled by the normal scheduler flow when woken by the keyboard worker.
+///
+/// # Return Value
+/// Returns the ASCII value of the decoded character (0-255). Special keys that
+/// don't produce printable characters are filtered out by the keyboard driver.
+fn syscall_getchar_impl() -> u64 {
+    keyboard::read_char_blocking() as u64
 }
 
 /// Implements `Exit()`.

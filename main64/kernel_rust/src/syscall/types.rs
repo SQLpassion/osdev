@@ -10,6 +10,8 @@ pub enum SyscallId {
     Exit = 2,
     /// Write bytes to VGA text console.
     WriteConsole = 3,
+    /// Read a single character from keyboard (blocking).
+    GetChar = 4,
 }
 
 impl SyscallId {
@@ -24,6 +26,9 @@ impl SyscallId {
 
     /// Syscall number for WriteConsole (VGA text output).
     pub const WRITE_CONSOLE: u64 = Self::WriteConsole as u64;
+
+    /// Syscall number for GetChar (blocking keyboard input).
+    pub const GET_CHAR: u64 = Self::GetChar as u64;
 }
 
 /// Unknown syscall number.
