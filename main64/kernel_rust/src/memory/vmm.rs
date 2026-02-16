@@ -41,8 +41,8 @@
 //! - `[USER_STACK_GUARD_BASE, USER_STACK_BASE)` => guard (must stay unmapped)
 //! - everything else => not a user region
 
-use core::arch::asm;
 use crate::sync::spinlock::SpinLock;
+use core::arch::asm;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::arch::interrupts;
@@ -917,14 +917,34 @@ pub fn try_handle_page_fault(virtual_address: u64, error_code: u64) -> Result<()
         });
     }
 
-    populate_page_table_path(virtual_address, false);
+    let user_region = classify_user_region(virtual_address);
+    if matches!(user_region, Some(UserRegion::Guard)) {
+        return Err(PageFaultError::ProtectionFault {
+            virtual_address: fault_address_raw,
+            error_code,
+        });
+    }
+
+    let user_access = matches!(
+        user_region,
+        Some(UserRegion::Code) | Some(UserRegion::Stack)
+    );
+    let writable = !matches!(user_region, Some(UserRegion::Code));
+
+    populate_page_table_path(virtual_address, user_access);
     let pt = table_at(pt_table_addr(virtual_address));
     let pt_idx = pt_index(virtual_address);
     if !pt.entries[pt_idx].present() {
         let new_page_phys = alloc_frame_phys();
-        pt.entries[pt_idx].set_mapping(phys_to_pfn(new_page_phys), true, true, false);
+        // Map writable first so zero-fill is valid even when final mapping
+        // should be read-only (e.g. user code pages).
+        pt.entries[pt_idx].set_mapping(phys_to_pfn(new_page_phys), true, true, user_access);
         invlpg(virtual_address);
         zero_virt_page(virtual_address);
+        if !writable {
+            pt.entries[pt_idx].set_writable(false);
+            invlpg(virtual_address);
+        }
         debug_alloc("PT", pt_idx, pt.entries[pt_idx].frame());
     }
     Ok(())
@@ -1173,6 +1193,48 @@ pub fn debug_mapped_pfn_for_va(virtual_address: u64) -> Option<u64> {
     } else {
         None
     }
+}
+
+/// Returns mapping user/writable flags `(pml4_u, pdp_u, pd_u, pt_u, pt_w)` for `virtual_address`.
+///
+/// Intended for diagnostics and integration tests.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn debug_mapping_flags_for_va(virtual_address: u64) -> Option<(bool, bool, bool, bool, bool)> {
+    let virtual_address = page_align_down(virtual_address);
+    let pml4 = table_at(PML4_TABLE_ADDR);
+    let pml4_idx = pml4_index(virtual_address);
+    let pml4e = pml4.entries[pml4_idx];
+    if !pml4e.present() || pml4e.huge() {
+        return None;
+    }
+
+    let pdp = table_at(pdp_table_addr(virtual_address));
+    let pdp_idx = pdp_index(virtual_address);
+    let pdpe = pdp.entries[pdp_idx];
+    if !pdpe.present() || pdpe.huge() {
+        return None;
+    }
+
+    let pd = table_at(pd_table_addr(virtual_address));
+    let pd_idx = pd_index(virtual_address);
+    let pde = pd.entries[pd_idx];
+    if !pde.present() || pde.huge() {
+        return None;
+    }
+
+    let pt = table_at(pt_table_addr(virtual_address));
+    let pte = pt.entries[pt_index(virtual_address)];
+    if !pte.present() {
+        return None;
+    }
+
+    Some((
+        pml4e.user(),
+        pdpe.user(),
+        pde.user(),
+        pte.user(),
+        pte.writable(),
+    ))
 }
 
 /// Maps one user virtual page to `pfn` using user-accessible permissions.

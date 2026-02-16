@@ -62,7 +62,8 @@ fn test_yield_now_without_scheduler_init_does_not_initialize_scheduler() {
         "yield_now without init must not transition scheduler into running state"
     );
 
-    let err = sched::spawn_kernel_task(dummy_task).expect_err("scheduler should still be uninitialized");
+    let err =
+        sched::spawn_kernel_task(dummy_task).expect_err("scheduler should still be uninitialized");
     assert!(
         matches!(err, SpawnError::NotInitialized),
         "yield_now must not initialize scheduler implicitly"

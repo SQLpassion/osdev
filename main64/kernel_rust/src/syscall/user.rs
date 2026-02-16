@@ -174,3 +174,154 @@ pub fn sys_exit() -> ! {
         asm!("2:", "pause", "jmp 2b", options(noreturn));
     }
 }
+
+/// Reads a line of input into a buffer (user-space implementation).
+///
+/// This is a **user-space library function** built entirely on top of primitive
+/// syscalls (`sys_getchar` and `sys_write_console`). It demonstrates the proper
+/// separation between kernel mechanisms (syscalls) and user-space policy (line editing).
+///
+/// # Features
+/// - Reads characters one by one using `sys_getchar()`
+/// - Echoes characters to the console using `sys_write_console()`
+/// - Handles backspace (0x08) with buffer management
+/// - Stops on Enter (\\n or \\r)
+/// - Newline is echoed but NOT stored in the buffer
+///
+/// # Parameters
+/// - `buf`: Mutable buffer to store the input line
+///
+/// # Return Value
+/// - `Ok(len)`: Number of bytes written to the buffer (excluding newline)
+/// - `Err(...)`: Syscall error from `sys_getchar` or `sys_write_console`
+///
+/// # Example
+/// ```
+/// let mut buffer = [0u8; 128];
+/// match user_readline(&mut buffer) {
+///     Ok(len) => {
+///         // Process buffer[..len]
+///     }
+///     Err(e) => {
+///         // Handle error
+///     }
+/// }
+/// ```
+#[inline(always)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn user_readline(buf: &mut [u8]) -> Result<usize, SysError> {
+    let mut len = 0usize;
+
+    loop {
+        // Block until a character is available.
+        // Keep decoding local to avoid pulling additional Result<T, E> helper
+        // pages into the ring-3 alias mapping.
+        let get_char_raw = unsafe {
+            // SAFETY:
+            // - Wrapper runs only where `int 0x80` syscall entry is configured.
+            // - GetChar has no memory arguments.
+            abi::syscall0(SyscallId::GetChar as u64)
+        };
+        if get_char_raw == SYSCALL_ERR_UNSUPPORTED {
+            return Err(SysError::UnsupportedSyscall);
+        }
+        if get_char_raw == SYSCALL_ERR_INVALID_ARG {
+            return Err(SysError::InvalidArgument);
+        }
+        if get_char_raw == SYSCALL_ERR_IO {
+            return Err(SysError::IoError);
+        }
+        if get_char_raw >= SYSCALL_ERR_IO {
+            return Err(SysError::Unknown(get_char_raw));
+        }
+        let ch = get_char_raw as u8;
+
+        match ch {
+            // Enter key - finish reading
+            b'\r' | b'\n' => {
+                // Echo newline - use stack variable to avoid .rodata reference
+                let newline = b'\n';
+                let raw = unsafe {
+                    // SAFETY:
+                    // - `newline` is a valid stack byte and readable for 1 byte.
+                    abi::syscall2(
+                        SyscallId::WriteConsole as u64,
+                        (&newline as *const u8) as u64,
+                        1,
+                    )
+                };
+                if raw == SYSCALL_ERR_UNSUPPORTED {
+                    return Err(SysError::UnsupportedSyscall);
+                }
+                if raw == SYSCALL_ERR_INVALID_ARG {
+                    return Err(SysError::InvalidArgument);
+                }
+                if raw == SYSCALL_ERR_IO {
+                    return Err(SysError::IoError);
+                }
+                if raw >= SYSCALL_ERR_IO {
+                    return Err(SysError::Unknown(raw));
+                }
+                break;
+            }
+
+            // Backspace - remove last character
+            0x08 => {
+                if len > 0 {
+                    len -= 1;
+                    // Echo backspace to move cursor back - use stack variable
+                    let backspace = 0x08u8;
+                    let raw = unsafe {
+                        // SAFETY:
+                        // - `backspace` is a valid stack byte and readable for 1 byte.
+                        abi::syscall2(
+                            SyscallId::WriteConsole as u64,
+                            (&backspace as *const u8) as u64,
+                            1,
+                        )
+                    };
+                    if raw == SYSCALL_ERR_UNSUPPORTED {
+                        return Err(SysError::UnsupportedSyscall);
+                    }
+                    if raw == SYSCALL_ERR_INVALID_ARG {
+                        return Err(SysError::InvalidArgument);
+                    }
+                    if raw == SYSCALL_ERR_IO {
+                        return Err(SysError::IoError);
+                    }
+                    if raw >= SYSCALL_ERR_IO {
+                        return Err(SysError::Unknown(raw));
+                    }
+                }
+            }
+
+            // Normal character - add to buffer and echo
+            _ => {
+                if len < buf.len() {
+                    buf[len] = ch;
+                    len += 1;
+                    // Echo the character (already a stack reference)
+                    let raw = unsafe {
+                        // SAFETY:
+                        // - `ch` is a valid stack byte and readable for 1 byte.
+                        abi::syscall2(SyscallId::WriteConsole as u64, (&ch as *const u8) as u64, 1)
+                    };
+                    if raw == SYSCALL_ERR_UNSUPPORTED {
+                        return Err(SysError::UnsupportedSyscall);
+                    }
+                    if raw == SYSCALL_ERR_INVALID_ARG {
+                        return Err(SysError::InvalidArgument);
+                    }
+                    if raw == SYSCALL_ERR_IO {
+                        return Err(SysError::IoError);
+                    }
+                    if raw >= SYSCALL_ERR_IO {
+                        return Err(SysError::Unknown(raw));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(len)
+}

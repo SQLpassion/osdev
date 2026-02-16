@@ -99,13 +99,17 @@ fn test_one_user_task_is_reached_via_scheduler_irq_iretq_path() {
 
     vmm::map_user_page(USER_CODE_VA, code_frame.pfn, true).expect("map user code page failed");
     vmm::map_user_page(USER_FLAG_VA, flag_frame.pfn, true).expect("map user flag page failed");
-    vmm::map_user_page(USER_STACK_PAGE_VA, stack_frame.pfn, true).expect("map user stack page failed");
+    vmm::map_user_page(USER_STACK_PAGE_VA, stack_frame.pfn, true)
+        .expect("map user stack page failed");
 
     let user_cr3 = vmm::clone_kernel_pml4_for_user();
     vmm::with_address_space(user_cr3, || {
-        vmm::map_user_page(USER_CODE_VA, code_frame.pfn, true).expect("map user code page in clone failed");
-        vmm::map_user_page(USER_FLAG_VA, flag_frame.pfn, true).expect("map user flag page in clone failed");
-        vmm::map_user_page(USER_STACK_PAGE_VA, stack_frame.pfn, true).expect("map user stack page in clone failed");
+        vmm::map_user_page(USER_CODE_VA, code_frame.pfn, true)
+            .expect("map user code page in clone failed");
+        vmm::map_user_page(USER_FLAG_VA, flag_frame.pfn, true)
+            .expect("map user flag page in clone failed");
+        vmm::map_user_page(USER_STACK_PAGE_VA, stack_frame.pfn, true)
+            .expect("map user stack page in clone failed");
     });
 
     write_user_stub(USER_CODE_VA, USER_FLAG_VA, USER_FLAG_VALUE);

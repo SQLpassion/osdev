@@ -74,10 +74,50 @@ fn test_non_present_fault_allocates_and_maps_page() {
         let ptr = TEST_VA as *mut u8;
         core::ptr::write_volatile(ptr, 0x5A);
         let val = core::ptr::read_volatile(ptr);
-        assert!(val == 0x5A, "mapped page should be writable after non-present fault");
+        assert!(
+            val == 0x5A,
+            "mapped page should be writable after non-present fault"
+        );
     }
 
     vmm::unmap_virtual_address(TEST_VA);
+}
+
+/// Contract: user fault mappings keep user path bits set and code leaf read-only.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "user fault mappings keep user path bits set and code leaf read-only".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_user_fault_mapping_sets_user_bits_and_code_readonly_leaf() {
+    let code_va = vmm::USER_CODE_BASE + 0x0011_5000;
+    let stack_va = vmm::USER_STACK_TOP - 4096;
+
+    vmm::unmap_virtual_address(code_va);
+    vmm::unmap_virtual_address(stack_va);
+
+    // Simulate non-present user faults (`U=1`, `P=0` -> error code 0x4).
+    vmm::try_handle_page_fault(code_va, 0x4)
+        .expect("user code non-present fault should be demand-mapped");
+    vmm::try_handle_page_fault(stack_va, 0x4)
+        .expect("user stack non-present fault should be demand-mapped");
+
+    let code_flags = vmm::debug_mapping_flags_for_va(code_va)
+        .expect("code VA should have present mapping flags");
+    assert!(
+        code_flags == (true, true, true, true, false),
+        "code VA must have user path bits set and read-only leaf"
+    );
+
+    let stack_flags = vmm::debug_mapping_flags_for_va(stack_va)
+        .expect("stack VA should have present mapping flags");
+    assert!(
+        stack_flags == (true, true, true, true, true),
+        "stack VA must have user path bits set and writable leaf"
+    );
+
+    vmm::unmap_virtual_address(code_va);
+    vmm::unmap_virtual_address(stack_va);
 }
 
 /// Contract: faulted page is zero initialized.
@@ -276,7 +316,10 @@ fn test_with_address_space_switches_cr3_for_closure_and_restores_previous_cr3() 
         );
         0xC0DEu64
     });
-    assert!(token == 0xC0DEu64, "closure return value must be propagated");
+    assert!(
+        token == 0xC0DEu64,
+        "closure return value must be propagated"
+    );
 
     assert!(
         vmm::get_pml4_address() == kernel_cr3,

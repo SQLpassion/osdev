@@ -81,7 +81,10 @@ fn test_spawned_app_task_can_be_terminated_and_slot_freed() {
     sched::init();
 
     let task_id = apps::spawn_app("hello").expect("hello app should spawn");
-    assert!(sched::task_frame_ptr(task_id).is_some(), "task frame must exist");
+    assert!(
+        sched::task_frame_ptr(task_id).is_some(),
+        "task frame must exist"
+    );
 
     let removed = sched::terminate_task(task_id);
     assert!(removed, "terminate_task should remove spawned app task");

@@ -32,9 +32,15 @@ fn panic(info: &PanicInfo) -> ! {
 #[test_case]
 fn test_syscall_ids_are_stable() {
     assert!(SyscallId::Yield as u64 == 0, "Yield syscall id changed");
-    assert!(SyscallId::WriteSerial as u64 == 1, "WriteSerial syscall id changed");
+    assert!(
+        SyscallId::WriteSerial as u64 == 1,
+        "WriteSerial syscall id changed"
+    );
     assert!(SyscallId::Exit as u64 == 2, "Exit syscall id changed");
-    assert!(SyscallId::WriteConsole as u64 == 3, "WriteConsole syscall id changed");
+    assert!(
+        SyscallId::WriteConsole as u64 == 3,
+        "WriteConsole syscall id changed"
+    );
 }
 
 /// Contract: public WriteConsole syscall constant matches enum discriminant.
@@ -44,6 +50,21 @@ fn test_write_console_constant_matches_enum_id() {
         SyscallId::WRITE_CONSOLE == SyscallId::WriteConsole as u64,
         "WRITE_CONSOLE constant must match WriteConsole enum value"
     );
+}
+
+/// Contract: public GetChar syscall constant matches enum discriminant.
+#[test_case]
+fn test_get_char_constant_matches_enum_id() {
+    assert!(
+        SyscallId::GET_CHAR == SyscallId::GetChar as u64,
+        "GET_CHAR constant must match GetChar enum value"
+    );
+}
+
+/// Contract: GetChar syscall enum id remains stable.
+#[test_case]
+fn test_get_char_enum_id_is_stable() {
+    assert!(SyscallId::GetChar as u64 == 4, "GetChar syscall id changed");
 }
 
 /// Contract: unknown syscall returns enosys.
@@ -68,7 +89,8 @@ fn test_unknown_syscall_returns_enosys() {
 #[test_case]
 fn test_decode_result_maps_known_errors() {
     assert!(
-        syscall::decode_result(syscall::SYSCALL_ERR_UNSUPPORTED) == Err(SysError::UnsupportedSyscall),
+        syscall::decode_result(syscall::SYSCALL_ERR_UNSUPPORTED)
+            == Err(SysError::UnsupportedSyscall),
         "SYSCALL_ERR_UNSUPPORTED must decode to SysError::UnsupportedSyscall"
     );
     assert!(
@@ -102,8 +124,14 @@ fn test_decode_result_accepts_value_below_error_sentinels() {
 /// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_decode_result_passes_success_values() {
-    assert!(syscall::decode_result(0) == Ok(0), "zero must remain a successful return");
-    assert!(syscall::decode_result(17) == Ok(17), "positive result must remain unchanged");
+    assert!(
+        syscall::decode_result(0) == Ok(0),
+        "zero must remain a successful return"
+    );
+    assert!(
+        syscall::decode_result(17) == Ok(17),
+        "positive result must remain unchanged"
+    );
 }
 
 /// Contract: write_serial rejects null pointer when len > 0.
@@ -190,7 +218,10 @@ fn test_user_alias_va_for_kernel_maps_and_rejects_bounds() {
         0xFFFF_8000_0000_0000,
         0x7FFF_FFFF_FFFF_F000,
     );
-    assert!(below_base.is_none(), "kernel VA below base must be rejected");
+    assert!(
+        below_base.is_none(),
+        "kernel VA below base must be rejected"
+    );
 
     let out_of_window = syscall::user_alias_va_for_kernel(
         0x7000_0000_0000,

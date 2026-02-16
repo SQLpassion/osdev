@@ -44,12 +44,8 @@ const MAX_CONSOLE_WRITE_LEN: usize = 4096;
 pub fn dispatch(syscall_nr: u64, arg0: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 {
     match syscall_nr {
         SyscallId::YIELD => syscall_yield_impl(),
-        SyscallId::WRITE_SERIAL => {
-            syscall_write_serial_impl(arg0 as *const u8, arg1 as usize)
-        }
-        SyscallId::WRITE_CONSOLE => {
-            syscall_write_console_impl(arg0 as *const u8, arg1 as usize)
-        }
+        SyscallId::WRITE_SERIAL => syscall_write_serial_impl(arg0 as *const u8, arg1 as usize),
+        SyscallId::WRITE_CONSOLE => syscall_write_console_impl(arg0 as *const u8, arg1 as usize),
         SyscallId::GET_CHAR => syscall_getchar_impl(),
         SyscallId::EXIT => syscall_exit_impl(),
         _ => {

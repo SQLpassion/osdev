@@ -21,7 +21,11 @@ pub fn app_main(ctx: &mut AppContext) {
     writeln!(ctx.screen, "Hello from a pseudo-application!").unwrap();
     writeln!(ctx.screen).unwrap();
     writeln!(ctx.screen, "This app has its own screen context.").unwrap();
-    writeln!(ctx.screen, "The REPL screen was saved before this app started,").unwrap();
+    writeln!(
+        ctx.screen,
+        "The REPL screen was saved before this app started,"
+    )
+    .unwrap();
     writeln!(ctx.screen, "and will be restored when this app exits.").unwrap();
     writeln!(ctx.screen).unwrap();
 

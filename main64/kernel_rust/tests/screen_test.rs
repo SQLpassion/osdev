@@ -70,7 +70,10 @@ fn test_print_char_wrap_writes_to_last_row_after_scroll() {
     // - `cell` points to VGA text MMIO for row 24 col 0.
     // - Volatile read is required for MMIO.
     let ch = unsafe { core::ptr::read_volatile(cell as *const u8) };
-    assert!(ch == b'Y', "wrapped character should be written at last row col 0");
+    assert!(
+        ch == b'Y',
+        "wrapped character should be written at last row col 0"
+    );
 }
 
 /// Contract: print str writes contiguous progress bar pattern.
@@ -223,7 +226,10 @@ fn test_with_screen_keeps_global_cursor_between_calls() {
     with_screen(|screen| {
         let (row, col) = screen.get_cursor();
         assert!(row == 0, "row must remain on first line after one byte");
-        assert!(col == 1, "cursor must advance and persist across with_screen calls");
+        assert!(
+            col == 1,
+            "cursor must advance and persist across with_screen calls"
+        );
         screen.clear();
     });
 }

@@ -10,7 +10,7 @@ use core::arch::asm;
 #[inline(always)]
 pub unsafe fn syscall0(syscall_nr: u64) -> u64 {
     let mut ret = syscall_nr;
-    
+
     // SAFETY:
     // - Caller guarantees the current CPU mode may legally execute `int 0x80`.
     // - Register assignment follows the kernel ABI contract.
@@ -76,6 +76,6 @@ pub unsafe fn syscall2(syscall_nr: u64, arg0: u64, arg1: u64) -> u64 {
             in("r10") 0u64
         );
     }
-    
+
     ret
 }

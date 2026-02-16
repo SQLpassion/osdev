@@ -135,16 +135,28 @@ fn test_scheduler_round_robin_pointer_sequence() {
     let mut current = &mut bootstrap as *mut SavedRegisters;
 
     current = sched::on_timer_tick(current);
-    assert!(current == frame_a, "first timer tick should switch to task A");
+    assert!(
+        current == frame_a,
+        "first timer tick should switch to task A"
+    );
 
     current = sched::on_timer_tick(current);
-    assert!(current == frame_b, "second timer tick should switch to task B");
+    assert!(
+        current == frame_b,
+        "second timer tick should switch to task B"
+    );
 
     current = sched::on_timer_tick(current);
-    assert!(current == frame_c, "third timer tick should switch to task C");
+    assert!(
+        current == frame_c,
+        "third timer tick should switch to task C"
+    );
 
     current = sched::on_timer_tick(current);
-    assert!(current == frame_a, "fourth timer tick should wrap to task A");
+    assert!(
+        current == frame_a,
+        "fourth timer tick should wrap to task A"
+    );
 }
 
 /// Contract: scheduler round robin pointer sequence with five tasks.
@@ -174,19 +186,34 @@ fn test_scheduler_round_robin_pointer_sequence_with_five_tasks() {
     let mut current = &mut bootstrap as *mut SavedRegisters;
 
     current = sched::on_timer_tick(current);
-    assert!(current == frame_a, "first timer tick should switch to task A");
+    assert!(
+        current == frame_a,
+        "first timer tick should switch to task A"
+    );
 
     current = sched::on_timer_tick(current);
-    assert!(current == frame_b, "second timer tick should switch to task B");
+    assert!(
+        current == frame_b,
+        "second timer tick should switch to task B"
+    );
 
     current = sched::on_timer_tick(current);
-    assert!(current == frame_c, "third timer tick should switch to task C");
+    assert!(
+        current == frame_c,
+        "third timer tick should switch to task C"
+    );
 
     current = sched::on_timer_tick(current);
-    assert!(current == frame_d, "fourth timer tick should switch to task D");
+    assert!(
+        current == frame_d,
+        "fourth timer tick should switch to task D"
+    );
 
     current = sched::on_timer_tick(current);
-    assert!(current == frame_e, "fifth timer tick should switch to task E");
+    assert!(
+        current == frame_e,
+        "fifth timer tick should switch to task E"
+    );
 
     current = sched::on_timer_tick(current);
     assert!(current == frame_a, "sixth timer tick should wrap to task A");
@@ -209,7 +236,10 @@ fn test_selecting_user_task_updates_tss_rsp0_from_task_context() {
         sched::set_task_user_context(task_a, 0x0010_0000, 0x0000_7FFF_FFFF_F000, expected_rsp0),
         "setting user context for existing task must succeed"
     );
-    assert!(sched::is_user_task(task_a), "task A must be flagged as user task");
+    assert!(
+        sched::is_user_task(task_a),
+        "task A must be flagged as user task"
+    );
     assert!(
         sched::task_context(task_a) == Some((0x0010_0000, 0x0000_7FFF_FFFF_F000, expected_rsp0)),
         "stored task context must match the configured values"
@@ -282,7 +312,10 @@ fn test_spawning_tasks_after_scheduler_start_integrates_into_round_robin() {
     let mut current = &mut bootstrap as *mut SavedRegisters;
 
     current = sched::on_timer_tick(current);
-    assert!(current == frame_a, "first tick should select initial task A");
+    assert!(
+        current == frame_a,
+        "first tick should select initial task A"
+    );
 
     let task_b = sched::spawn_kernel_task(dummy_task_b).expect("task B should spawn after start");
     let task_c = sched::spawn_kernel_task(dummy_task_c).expect("task C should spawn after start");
@@ -290,10 +323,16 @@ fn test_spawning_tasks_after_scheduler_start_integrates_into_round_robin() {
     let frame_c = sched::task_frame_ptr(task_c).expect("task C frame should exist");
 
     current = sched::on_timer_tick(current);
-    assert!(current == frame_b, "newly spawned task B should be scheduled next");
+    assert!(
+        current == frame_b,
+        "newly spawned task B should be scheduled next"
+    );
 
     current = sched::on_timer_tick(current);
-    assert!(current == frame_c, "newly spawned task C should be scheduled next");
+    assert!(
+        current == frame_c,
+        "newly spawned task C should be scheduled next"
+    );
 
     current = sched::on_timer_tick(current);
     assert!(current == frame_a, "round robin should wrap back to task A");
@@ -380,7 +419,8 @@ fn test_terminate_task_removes_slot_from_round_robin_and_allows_reuse() {
         "after removing task B, scheduler should continue with task C"
     );
 
-    let task_d = sched::spawn_kernel_task(dummy_task_d).expect("task D should spawn into freed slot capacity");
+    let task_d = sched::spawn_kernel_task(dummy_task_d)
+        .expect("task D should spawn into freed slot capacity");
     let frame_d = sched::task_frame_ptr(task_d).expect("task D frame should exist");
 
     current = sched::on_timer_tick(current);
@@ -541,9 +581,7 @@ fn test_task_frame_iret_defaults_are_kernel_mode() {
     // SAFETY:
     // - `task_frame_ptr` points into scheduler-owned stack memory.
     // - Initial frame layout writes `InterruptStackFrame` directly behind `SavedRegisters`.
-    let iret = unsafe {
-        &*(iret_ptr as *const kaos_kernel::arch::interrupts::InterruptStackFrame)
-    };
+    let iret = unsafe { &*(iret_ptr as *const kaos_kernel::arch::interrupts::InterruptStackFrame) };
 
     assert!(iret.cs == 0x08, "initial task frame must use kernel CS");
     assert!(
@@ -567,17 +605,26 @@ fn test_spawn_user_builds_ring3_iret_frame_with_configured_selectors_and_pointer
     let task_id = sched::spawn_user_task(user_entry, user_rsp, user_cr3)
         .expect("user task spawn should succeed");
 
-    assert!(sched::is_user_task(task_id), "spawned task must be marked as user task");
-    let (stored_cr3, stored_user_rsp, _stored_kernel_rsp_top) = sched::task_context(task_id)
-        .expect("user context tuple must exist for spawned user task");
+    assert!(
+        sched::is_user_task(task_id),
+        "spawned task must be marked as user task"
+    );
+    let (stored_cr3, stored_user_rsp, _stored_kernel_rsp_top) =
+        sched::task_context(task_id).expect("user context tuple must exist for spawned user task");
     assert!(
         stored_cr3 == user_cr3 && stored_user_rsp == user_rsp,
         "user context should store configured CR3 and user RSP"
     );
 
     let iret = sched::task_iret_frame(task_id).expect("user task iret frame must exist");
-    assert!(iret.rip == user_entry, "user iret RIP must match configured entry");
-    assert!(iret.rsp == user_rsp, "user iret RSP must match configured user stack");
+    assert!(
+        iret.rip == user_entry,
+        "user iret RIP must match configured entry"
+    );
+    assert!(
+        iret.rsp == user_rsp,
+        "user iret RSP must match configured user stack"
+    );
     assert!(
         iret.cs == kaos_kernel::arch::gdt::USER_CODE_SELECTOR as u64,
         "user iret CS must use ring-3 code selector"
@@ -603,17 +650,13 @@ fn test_scheduler_switches_cr3_between_kernel_and_user_tasks_when_enabled() {
     let kernel_cr3 = vmm::get_pml4_address();
     sched::set_kernel_address_space_cr3(kernel_cr3);
 
-    let kernel_task = sched::spawn_kernel_task(dummy_task_a)
-        .expect("kernel task spawn should succeed");
+    let kernel_task =
+        sched::spawn_kernel_task(dummy_task_a).expect("kernel task spawn should succeed");
     let kernel_frame = sched::task_frame_ptr(kernel_task).expect("kernel task frame should exist");
 
     let user_cr3 = vmm::clone_kernel_pml4_for_user();
-    let user_task = sched::spawn_user_task(
-        vmm::USER_CODE_BASE,
-        vmm::USER_STACK_TOP - 16,
-        user_cr3,
-    )
-    .expect("user task spawn should succeed");
+    let user_task = sched::spawn_user_task(vmm::USER_CODE_BASE, vmm::USER_STACK_TOP - 16, user_cr3)
+        .expect("user task spawn should succeed");
     let user_frame = sched::task_frame_ptr(user_task).expect("user task frame should exist");
 
     sched::start();
@@ -622,7 +665,10 @@ fn test_scheduler_switches_cr3_between_kernel_and_user_tasks_when_enabled() {
     let mut current = &mut bootstrap as *mut SavedRegisters;
 
     current = sched::on_timer_tick(current);
-    assert!(current == kernel_frame, "first tick should pick kernel task");
+    assert!(
+        current == kernel_frame,
+        "first tick should pick kernel task"
+    );
     assert!(
         vmm::get_pml4_address() == kernel_cr3,
         "kernel task selection should keep kernel CR3 active"
@@ -636,7 +682,10 @@ fn test_scheduler_switches_cr3_between_kernel_and_user_tasks_when_enabled() {
     );
 
     current = sched::on_timer_tick(current);
-    assert!(current == kernel_frame, "third tick should wrap back to kernel task");
+    assert!(
+        current == kernel_frame,
+        "third tick should wrap back to kernel task"
+    );
     assert!(
         vmm::get_pml4_address() == kernel_cr3,
         "switching back to kernel task should restore kernel CR3"
@@ -657,12 +706,8 @@ fn test_reaping_user_task_destroys_its_address_space() {
     sched::set_kernel_address_space_cr3(kernel_cr3);
 
     let user_cr3 = vmm::clone_kernel_pml4_for_user();
-    let user_task = sched::spawn_user_task(
-        vmm::USER_CODE_BASE,
-        vmm::USER_STACK_TOP - 16,
-        user_cr3,
-    )
-    .expect("user task spawn should succeed");
+    let user_task = sched::spawn_user_task(vmm::USER_CODE_BASE, vmm::USER_STACK_TOP - 16, user_cr3)
+        .expect("user task spawn should succeed");
 
     sched::start();
 
@@ -719,7 +764,10 @@ fn test_scheduler_recovers_when_current_frame_slot_mismatches_expected_slot() {
 
     // First tick selects A.
     current = sched::on_timer_tick(current);
-    assert!(current == frame_a, "first timer tick should switch to task A");
+    assert!(
+        current == frame_a,
+        "first timer tick should switch to task A"
+    );
 
     // Feed an unexpected frame (C) where A was expected; scheduler should recover.
     current = sched::on_timer_tick(frame_c);
@@ -729,10 +777,16 @@ fn test_scheduler_recovers_when_current_frame_slot_mismatches_expected_slot() {
     );
 
     current = sched::on_timer_tick(current);
-    assert!(current == frame_b, "round robin should continue with task B");
+    assert!(
+        current == frame_b,
+        "round robin should continue with task B"
+    );
 
     current = sched::on_timer_tick(current);
-    assert!(current == frame_c, "round robin should continue with task C");
+    assert!(
+        current == frame_c,
+        "round robin should continue with task C"
+    );
 }
 
 /// Contract: scheduler mismatch fallback reselects valid task frame.
@@ -854,7 +908,10 @@ fn test_request_stop_returns_to_bootstrap_frame_and_stops_scheduler() {
 
     let running = sched::on_timer_tick(bootstrap_ptr);
     assert!(running == frame_a, "first timer tick should enter task A");
-    assert!(sched::is_running(), "scheduler should report running after start");
+    assert!(
+        sched::is_running(),
+        "scheduler should report running after start"
+    );
 
     sched::request_stop();
     let after_stop = sched::on_timer_tick(running);
@@ -867,7 +924,8 @@ fn test_request_stop_returns_to_bootstrap_frame_and_stops_scheduler() {
         "scheduler must report stopped after stop request"
     );
 
-    let new_task = sched::spawn_kernel_task(dummy_task_b).expect("spawn should work again after stop");
+    let new_task =
+        sched::spawn_kernel_task(dummy_task_b).expect("spawn should work again after stop");
     let new_frame = sched::task_frame_ptr(new_task).expect("new task frame should exist");
     sched::start();
     let resumed = sched::on_timer_tick(bootstrap_ptr);
@@ -924,7 +982,8 @@ fn test_scheduler_reinit_clears_blocked_state_from_previous_run() {
     );
 
     sched::init();
-    let new_task = sched::spawn_kernel_task(dummy_task_a).expect("task spawn after re-init must work");
+    let new_task =
+        sched::spawn_kernel_task(dummy_task_a).expect("task spawn after re-init must work");
     let new_frame = sched::task_frame_ptr(new_task).expect("new frame should exist");
     sched::start();
 
@@ -976,11 +1035,17 @@ fn test_waitqueue_wake_all_returns_all_registered_waiters_once() {
 #[test_case]
 fn test_single_waitqueue_wake_all_wakes_one_and_clears_slot() {
     let q = SingleWaitQueue::new();
-    assert!(q.register_waiter(2), "single waiter registration must succeed");
+    assert!(
+        q.register_waiter(2),
+        "single waiter registration must succeed"
+    );
 
     let mut woke = usize::MAX;
     q.wake_all(|task_id| woke = task_id);
-    assert!(woke == 2, "single wake_all should wake the registered waiter");
+    assert!(
+        woke == 2,
+        "single wake_all should wake the registered waiter"
+    );
 
     let mut woke_again = false;
     q.wake_all(|_| woke_again = true);
@@ -1029,7 +1094,10 @@ fn test_single_waitqueue_register_second_waiter_is_rejected() {
 
     let mut woke = usize::MAX;
     q.wake_all(|task_id| woke = task_id);
-    assert!(woke == 1, "wake_all must wake the originally registered waiter");
+    assert!(
+        woke == 1,
+        "wake_all must wake the originally registered waiter"
+    );
 }
 
 // ── Zombie lifecycle tests ──────────────────────────────────────────
@@ -1105,8 +1173,8 @@ fn test_reap_zombies_frees_slot_for_reuse() {
     );
 
     // The freed slot can be reused by a new spawn.
-    let task_c = sched::spawn_kernel_task(dummy_task_c)
-        .expect("spawn into reaped slot should succeed");
+    let task_c =
+        sched::spawn_kernel_task(dummy_task_c).expect("spawn into reaped slot should succeed");
     let frame_c = sched::task_frame_ptr(task_c).expect("task C frame should exist");
 
     // Task C participates in the next round-robin cycle.
@@ -1217,7 +1285,10 @@ fn test_waitqueue_adapter_blocks_then_wakes_task() {
 
     let q: WaitQueue<8> = WaitQueue::new();
     let blocked = waitqueue_adapter::sleep_if_multi(&q, task_a, || true);
-    assert!(blocked, "sleep_if_multi should block when predicate is true");
+    assert!(
+        blocked,
+        "sleep_if_multi should block when predicate is true"
+    );
 
     sched::start();
     let mut bootstrap = SavedRegisters::default();

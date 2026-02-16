@@ -65,5 +65,10 @@ fn test_trivial_assertion() {
 fn test_vga_buffer_address() {
     // Verify the VGA buffer address is correct for higher-half kernel
     const VGA_BUFFER: usize = 0xFFFF8000000B8000;
-    const { assert!(VGA_BUFFER > 0xFFFF800000000000, "VGA buffer should be in higher half") };
+    const {
+        assert!(
+            VGA_BUFFER > 0xFFFF800000000000,
+            "VGA buffer should be in higher half"
+        )
+    };
 }

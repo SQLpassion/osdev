@@ -245,7 +245,10 @@ fn test_int80_syscall_user_wrapper_roundtrip() {
         // - Empty slice has valid pointer and zero length.
         syscall::user::sys_write_serial([].as_ptr(), 0)
     };
-    assert!(ret == Ok(0), "user wrapper write_serial([]) must return Ok(0)");
+    assert!(
+        ret == Ok(0),
+        "user wrapper write_serial([]) must return Ok(0)"
+    );
 }
 
 /// Contract: user wrapper accepts a slice built from a raw pointer.

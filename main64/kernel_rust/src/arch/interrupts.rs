@@ -260,13 +260,18 @@ pub fn are_enabled() -> bool {
 fn init_idt() {
     unsafe {
         let idt = &mut *STATE.idt.get();
-        idt[EXCEPTION_DIVIDE_ERROR as usize].set_handler(isr0_divide_by_zero_stub as *const () as usize);
-        idt[EXCEPTION_INVALID_OPCODE as usize].set_handler(isr6_invalid_opcode_stub as *const () as usize);
+        idt[EXCEPTION_DIVIDE_ERROR as usize]
+            .set_handler(isr0_divide_by_zero_stub as *const () as usize);
+        idt[EXCEPTION_INVALID_OPCODE as usize]
+            .set_handler(isr6_invalid_opcode_stub as *const () as usize);
         idt[EXCEPTION_DEVICE_NOT_AVAILABLE as usize]
             .set_handler(isr7_device_not_available_stub as *const () as usize);
         // Route double-fault onto IST1 to avoid cascading failures on a broken current stack.
-        idt[EXCEPTION_DOUBLE_FAULT as usize]
-            .set_handler_with_dpl_and_ist(isr8_double_fault_stub as *const () as usize, 0, 1);
+        idt[EXCEPTION_DOUBLE_FAULT as usize].set_handler_with_dpl_and_ist(
+            isr8_double_fault_stub as *const () as usize,
+            0,
+            1,
+        );
         idt[EXCEPTION_GENERAL_PROTECTION as usize]
             .set_handler(isr13_general_protection_fault_stub as *const () as usize);
         idt[EXCEPTION_PAGE_FAULT as usize].set_handler(isr14_page_fault_stub as *const () as usize);
@@ -274,20 +279,27 @@ fn init_idt() {
             .set_handler_with_dpl(int80_syscall_stub as *const () as usize, 3);
         idt[IRQ0_PIT_TIMER_VECTOR as usize].set_handler(irq0_pit_timer_stub as *const () as usize);
         idt[IRQ1_KEYBOARD_VECTOR as usize].set_handler(irq1_keyboard_stub as *const () as usize);
-        idt[IRQ2_PIC_CASCADE_VECTOR as usize].set_handler(irq2_pic_cascade_stub as *const () as usize);
+        idt[IRQ2_PIC_CASCADE_VECTOR as usize]
+            .set_handler(irq2_pic_cascade_stub as *const () as usize);
         idt[IRQ3_COM2_VECTOR as usize].set_handler(irq3_com2_stub as *const () as usize);
         idt[IRQ4_COM1_VECTOR as usize].set_handler(irq4_com1_stub as *const () as usize);
-        idt[IRQ5_LPT2_OR_SOUND_VECTOR as usize].set_handler(irq5_lpt2_or_sound_stub as *const () as usize);
+        idt[IRQ5_LPT2_OR_SOUND_VECTOR as usize]
+            .set_handler(irq5_lpt2_or_sound_stub as *const () as usize);
         idt[IRQ6_FLOPPY_VECTOR as usize].set_handler(irq6_floppy_stub as *const () as usize);
-        idt[IRQ7_LPT1_OR_SPURIOUS_VECTOR as usize].set_handler(irq7_lpt1_or_spurious_stub as *const () as usize);
+        idt[IRQ7_LPT1_OR_SPURIOUS_VECTOR as usize]
+            .set_handler(irq7_lpt1_or_spurious_stub as *const () as usize);
         idt[IRQ8_CMOS_RTC_VECTOR as usize].set_handler(irq8_cmos_rtc_stub as *const () as usize);
-        idt[IRQ9_ACPI_OR_LEGACY_VECTOR as usize].set_handler(irq9_acpi_or_legacy_stub as *const () as usize);
+        idt[IRQ9_ACPI_OR_LEGACY_VECTOR as usize]
+            .set_handler(irq9_acpi_or_legacy_stub as *const () as usize);
         idt[IRQ10_FREE_VECTOR as usize].set_handler(irq10_free_stub as *const () as usize);
         idt[IRQ11_FREE_VECTOR as usize].set_handler(irq11_free_stub as *const () as usize);
-        idt[IRQ12_PS2_MOUSE_VECTOR as usize].set_handler(irq12_ps2_mouse_stub as *const () as usize);
+        idt[IRQ12_PS2_MOUSE_VECTOR as usize]
+            .set_handler(irq12_ps2_mouse_stub as *const () as usize);
         idt[IRQ13_FPU_VECTOR as usize].set_handler(irq13_fpu_stub as *const () as usize);
-        idt[IRQ14_PRIMARY_ATA_VECTOR as usize].set_handler(irq14_primary_ata_stub as *const () as usize);
-        idt[IRQ15_SECONDARY_ATA_VECTOR as usize].set_handler(irq15_secondary_ata_stub as *const () as usize);
+        idt[IRQ14_PRIMARY_ATA_VECTOR as usize]
+            .set_handler(irq14_primary_ata_stub as *const () as usize);
+        idt[IRQ15_SECONDARY_ATA_VECTOR as usize]
+            .set_handler(irq15_secondary_ata_stub as *const () as usize);
 
         let idt_ptr = IdtPointer {
             limit: (size_of::<IdtEntry>() * IDT_ENTRIES - 1) as u16,
@@ -379,7 +391,11 @@ fn write_exception_banner(vector: u8, error_code: u64, frame: *const SavedRegist
 ///
 /// Called from assembly stubs for faults we currently treat as unrecoverable.
 #[no_mangle]
-pub extern "C" fn exception_handler_rust(vector: u8, error_code: u64, frame: *const SavedRegisters) -> ! {
+pub extern "C" fn exception_handler_rust(
+    vector: u8,
+    error_code: u64,
+    frame: *const SavedRegisters,
+) -> ! {
     let has_error_code = exception_has_error_code(vector);
     let iret_ptr = (frame as usize)
         + size_of::<SavedRegisters>()
@@ -551,7 +567,10 @@ pub fn init_periodic_timer(hz: u32) {
 ///   re-enable interrupts until after `iretq`.
 /// - `vector` must be a valid IRQ vector number (`IRQ_BASE..IRQ_BASE + 16`).
 #[no_mangle]
-pub unsafe extern "C" fn irq_rust_dispatch(vector: u8, frame: *mut SavedRegisters) -> *mut SavedRegisters {
+pub unsafe extern "C" fn irq_rust_dispatch(
+    vector: u8,
+    frame: *mut SavedRegisters,
+) -> *mut SavedRegisters {
     if !(IRQ_BASE..IRQ_BASE + 16).contains(&vector) {
         return frame;
     }

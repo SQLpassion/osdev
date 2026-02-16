@@ -33,9 +33,9 @@ impl SingleWaitQueue {
 
     /// Clears `task_id` as current waiter.
     pub fn clear_waiter(&self, task_id: usize) {
-        let _ = self
-            .waiter
-            .compare_exchange(task_id, NO_WAITER, Ordering::AcqRel, Ordering::Acquire);
+        let _ =
+            self.waiter
+                .compare_exchange(task_id, NO_WAITER, Ordering::AcqRel, Ordering::Acquire);
     }
 
     /// Wakes the currently registered waiter (if any) and clears the slot.

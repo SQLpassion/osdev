@@ -7,9 +7,9 @@ use crate::drivers::screen::with_screen;
 use crate::scheduler;
 use crate::sync::ringbuffer::RingBuffer;
 use crate::sync::singlewaitqueue::SingleWaitQueue;
+use crate::sync::spinlock::SpinLock;
 use crate::sync::waitqueue::WaitQueue;
 use crate::sync::waitqueue_adapter;
-use crate::sync::spinlock::SpinLock;
 
 /// Keyboard controller ports
 const KYBRD_CTRL_STATS_REG: u16 = 0x64;
@@ -130,10 +130,12 @@ pub fn read_char_blocking() -> u8 {
             return ch;
         }
 
-        let task_id = scheduler::current_task_id()
-            .expect("read_char_blocking called outside scheduled task");
+        let task_id =
+            scheduler::current_task_id().expect("read_char_blocking called outside scheduled task");
 
-        if waitqueue_adapter::sleep_if_multi(&INPUT_WAITQUEUE, task_id, || KEYBOARD.buffer.is_empty()) {
+        if waitqueue_adapter::sleep_if_multi(&INPUT_WAITQUEUE, task_id, || {
+            KEYBOARD.buffer.is_empty()
+        }) {
             scheduler::yield_now();
         }
     }

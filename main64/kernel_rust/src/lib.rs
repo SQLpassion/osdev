@@ -9,13 +9,13 @@
 
 extern crate alloc;
 
+pub mod allocator;
 pub mod apps;
 pub mod arch;
-pub mod allocator;
 pub mod drivers;
 pub mod logging;
 pub mod memory;
 pub mod scheduler;
-pub mod syscall;
 pub mod sync;
+pub mod syscall;
 pub mod testing;
