@@ -14,12 +14,12 @@
 use crate::arch::port::PortByte;
 
 /// QEMU debug exit device I/O port
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 const QEMU_EXIT_PORT: u16 = 0xF4;
 
 /// Exit codes for QEMU (these get transformed by QEMU)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 #[repr(u8)]
 pub enum QemuExitCode {
     /// Success - QEMU will exit with code 33 ((0x10 << 1) | 1)
@@ -36,7 +36,7 @@ pub enum QemuExitCode {
 /// # Note
 /// This function only works when running under QEMU with the debug exit device.
 /// On real hardware, this will have no effect (or undefined behavior).
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn exit_qemu(exit_code: QemuExitCode) -> ! {
     unsafe {
         let port = PortByte::new(QEMU_EXIT_PORT);

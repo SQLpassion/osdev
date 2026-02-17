@@ -13,6 +13,7 @@ use core::mem::{size_of, MaybeUninit};
 use core::panic::PanicInfo;
 use core::ptr::addr_of;
 use kaos_kernel::arch::interrupts::{self, SavedRegisters};
+use kaos_kernel::syscall::{self, SyscallId};
 
 /// Entry point for the interrupt-layout test kernel.
 #[no_mangle]
@@ -114,6 +115,10 @@ fn test_exception_vector_constants_match_x86_spec() {
         interrupts::EXCEPTION_PAGE_FAULT == 14,
         "page-fault vector must be 14"
     );
+    assert!(
+        interrupts::SYSCALL_INT80_VECTOR == 0x80,
+        "syscall vector must be 0x80"
+    );
 }
 
 /// Contract: exception error code classification.
@@ -149,6 +154,26 @@ fn test_exception_error_code_classification() {
     );
 }
 
+/// Contract: double-fault IDT gate uses IST1 while page fault keeps default IST0.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "double-fault IDT gate uses IST1 while page fault keeps default IST0".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_idt_ist_configuration_for_critical_faults() {
+    interrupts::init();
+    assert_eq!(
+        interrupts::idt_ist_index(interrupts::EXCEPTION_DOUBLE_FAULT),
+        1,
+        "double fault must route through IST1"
+    );
+    assert_eq!(
+        interrupts::idt_ist_index(interrupts::EXCEPTION_PAGE_FAULT),
+        0,
+        "page fault should keep default IST0 in this step"
+    );
+}
+
 /// Contract: pit divisor calculation.
 /// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
 /// When: The exact operation sequence in this function is executed against that state.
@@ -161,4 +186,173 @@ fn test_pit_divisor_calculation() {
     assert!(interrupts::pit_divisor_for_hz(250) == 4772);
     assert!(interrupts::pit_divisor_for_hz(1000) == 1193);
     assert!(interrupts::pit_divisor_for_hz(2_000_000) == 1);
+}
+
+/// Contract: int 0x80 dispatches through static syscall table.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "int 0x80 dispatches through static syscall table".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_int80_syscall_dispatch_roundtrip() {
+    interrupts::init();
+    let mut ret_rax: u64 = SyscallId::WriteSerial as u64;
+    // SAFETY:
+    // - `interrupts::init()` loaded an IDT containing the `int 0x80` gate.
+    // - The test executes in ring 0, so invoking software interrupt 0x80 is valid.
+    // - Register constraints match the syscall ABI used by `syscall_rust_dispatch`.
+    unsafe {
+        core::arch::asm!(
+            "int 0x80",
+            inout("rax") ret_rax,
+            in("rdi") 0u64,
+            in("rsi") 0u64,
+            in("rdx") 0u64,
+            in("r10") 0u64,
+        );
+    }
+
+    assert!(ret_rax == 0, "write_serial(len=0) syscall must return 0");
+}
+
+/// Contract: int 0x80 raw ABI wrapper remains callable without stack promises.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "int 0x80 raw ABI wrapper remains callable without stack promises".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_int80_syscall_raw_wrapper_roundtrip() {
+    interrupts::init();
+    let ret = unsafe {
+        // SAFETY:
+        // - `interrupts::init()` loaded an IDT containing the `int 0x80` gate.
+        // - The test executes in ring 0, so invoking software interrupt 0x80 is valid.
+        syscall::abi::syscall2(SyscallId::WriteSerial as u64, 0, 0)
+    };
+    assert!(ret == 0, "raw syscall2(write_serial, 0, 0) must return 0");
+}
+
+/// Contract: int 0x80 user wrapper path remains callable.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "int 0x80 user wrapper path remains callable".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_int80_syscall_user_wrapper_roundtrip() {
+    interrupts::init();
+    let ret = unsafe {
+        // SAFETY:
+        // - Empty slice has valid pointer and zero length.
+        syscall::user::sys_write_serial([].as_ptr(), 0)
+    };
+    assert!(
+        ret == Ok(0),
+        "user wrapper write_serial([]) must return Ok(0)"
+    );
+}
+
+/// Contract: user wrapper accepts a slice built from a raw pointer.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "user wrapper accepts a slice built from a raw pointer".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_int80_syscall_user_wrapper_with_raw_parts_slice() {
+    interrupts::init();
+    static BUF: [u8; 0] = [];
+    let slice = unsafe {
+        // SAFETY:
+        // - `BUF.as_ptr()` is valid for `BUF.len()` bytes.
+        core::slice::from_raw_parts(BUF.as_ptr(), BUF.len())
+    };
+    let ret = unsafe {
+        // SAFETY:
+        // - `slice` is a valid slice with properly aligned pointer.
+        syscall::user::sys_write_serial(slice.as_ptr(), slice.len())
+    };
+    assert!(
+        ret == Ok(0),
+        "user wrapper with from_raw_parts([]) must return Ok(0)"
+    );
+}
+
+/// Contract: raw user wrapper path remains callable for pointer/len ABI.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "raw user wrapper path remains callable for pointer/len ABI".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_int80_syscall_user_raw_wrapper_roundtrip() {
+    interrupts::init();
+    let ret = unsafe {
+        // SAFETY:
+        // - Null pointer with zero length is accepted by the syscall contract.
+        syscall::user::sys_write_serial(core::ptr::null(), 0)
+    };
+    assert!(
+        ret == Ok(0),
+        "user raw wrapper write_serial(ptr=null, len=0) must return Ok(0)"
+    );
+}
+
+/// Contract: int 0x80 user cursor wrappers support roundtrip and clamping.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "int 0x80 user cursor wrappers support roundtrip and clamping".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_int80_syscall_user_cursor_wrapper_roundtrip_and_clamp() {
+    interrupts::init();
+
+    let set_ok = syscall::user::sys_set_cursor(6, 9);
+    assert!(
+        set_ok == Ok(()),
+        "sys_set_cursor(6,9) must return success via int 0x80"
+    );
+
+    let pos = syscall::user::sys_get_cursor();
+    assert!(
+        pos == Ok((6, 9)),
+        "sys_get_cursor must return the previously set position"
+    );
+
+    let set_clamp = syscall::user::sys_set_cursor(usize::MAX, usize::MAX);
+    assert!(
+        set_clamp == Ok(()),
+        "sys_set_cursor(max,max) must succeed and clamp"
+    );
+
+    let clamped = syscall::user::sys_get_cursor();
+    assert!(
+        clamped == Ok((24, 79)),
+        "sys_get_cursor must report clamped VGA bounds after max coordinates"
+    );
+}
+
+/// Contract: int 0x80 user clear-screen wrapper resets cursor to origin.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "int 0x80 user clear-screen wrapper resets cursor to origin".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_int80_syscall_user_clear_screen_wrapper_resets_cursor() {
+    interrupts::init();
+
+    let set_ok = syscall::user::sys_set_cursor(8, 21);
+    assert!(
+        set_ok == Ok(()),
+        "sys_set_cursor precondition must succeed via int 0x80"
+    );
+
+    let clear_ok = syscall::user::sys_clear_screen();
+    assert!(
+        clear_ok == Ok(()),
+        "sys_clear_screen must return success via int 0x80"
+    );
+
+    let pos = syscall::user::sys_get_cursor();
+    assert!(
+        pos == Ok((0, 0)),
+        "sys_clear_screen must reset cursor to origin"
+    );
 }

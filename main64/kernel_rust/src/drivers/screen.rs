@@ -5,6 +5,7 @@
 //! virtual address 0xFFFF8000000B8000 in the higher-half kernel.
 
 use crate::arch::port::PortByte;
+use crate::sync::spinlock::SpinLock;
 use core::fmt;
 use core::ptr;
 
@@ -98,9 +99,40 @@ impl Default for Screen {
     }
 }
 
+/// Wrapper around a global screen instance.
+///
+/// Mirrors the `with_pmm` access pattern: all mutable access is routed through
+/// a closure, avoiding `static mut` references in call sites. Uses a SpinLock
+/// for thread-safe access with interrupt disabling.
+struct GlobalScreen {
+    inner: SpinLock<Screen>,
+}
+
+impl GlobalScreen {
+    const fn new() -> Self {
+        Self {
+            inner: SpinLock::new(Screen::new()),
+        }
+    }
+}
+
+/// Global VGA writer shared across kernel paths.
+static GLOBAL_SCREEN: GlobalScreen = GlobalScreen::new();
+
+/// Executes `f` with mutable access to the shared global screen writer.
+///
+/// This is the screen-side equivalent of `with_pmm`: callers provide a closure
+/// and do not handle global state directly. This function is thread-safe: it
+/// acquires a spinlock that disables interrupts while the closure executes,
+/// preventing preemption.
+pub fn with_screen<R>(f: impl FnOnce(&mut Screen) -> R) -> R {
+    let mut guard = GLOBAL_SCREEN.inner.lock();
+    f(&mut guard)
+}
+
 impl Screen {
     /// Initialize the screen driver
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             row: 0,
             col: 0,
@@ -288,7 +320,7 @@ impl Screen {
     }
 
     /// Set cursor position (0-based)
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn set_cursor(&mut self, row: usize, col: usize) {
         self.row = row.min(self.num_rows - 1);
         self.col = col.min(self.num_cols - 1);
@@ -296,7 +328,7 @@ impl Screen {
     }
 
     /// Get cursor position (0-based)
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn get_cursor(&self) -> (usize, usize) {
         (self.row, self.col)
     }

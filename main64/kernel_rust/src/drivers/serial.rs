@@ -11,15 +11,15 @@ use core::fmt;
 const COM1_PORT: u16 = 0x3F8;
 
 /// Serial port register offsets
-const DATA_REGISTER: u16 = 0;           // Read/Write data
-const INTERRUPT_ENABLE: u16 = 1;        // Interrupt enable register
-const FIFO_CONTROL: u16 = 2;            // FIFO control register
-const LINE_CONTROL: u16 = 3;            // Line control register
-const MODEM_CONTROL: u16 = 4;           // Modem control register
-const LINE_STATUS: u16 = 5;             // Line status register
+const DATA_REGISTER: u16 = 0; // Read/Write data
+const INTERRUPT_ENABLE: u16 = 1; // Interrupt enable register
+const FIFO_CONTROL: u16 = 2; // FIFO control register
+const LINE_CONTROL: u16 = 3; // Line control register
+const MODEM_CONTROL: u16 = 4; // Modem control register
+const LINE_STATUS: u16 = 5; // Line status register
 
 /// Line status register bits
-const LINE_STATUS_THRE: u8 = 0x20;      // Transmitter holding register empty
+const LINE_STATUS_THRE: u8 = 0x20; // Transmitter holding register empty
 
 /// Serial port driver for debug output
 pub struct Serial {
@@ -61,8 +61,8 @@ impl Serial {
             // For 115200 baud: divisor = 1
             let divisor_low = PortByte::new(self.base_port + DATA_REGISTER);
             let divisor_high = PortByte::new(self.base_port + INTERRUPT_ENABLE);
-            divisor_low.write(0x01);    // Low byte of divisor
-            divisor_high.write(0x00);   // High byte of divisor
+            divisor_low.write(0x01); // Low byte of divisor
+            divisor_high.write(0x00); // High byte of divisor
 
             // Configure line: 8 bits, no parity, 1 stop bit (8N1)
             // Also clears DLAB
@@ -117,21 +117,20 @@ impl fmt::Write for Serial {
     }
 }
 
-use core::cell::UnsafeCell;
+use crate::sync::spinlock::SpinLock;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 /// Global serial port instance for debug output
+///
+/// Uses a SpinLock for thread-safe access with interrupt disabling to prevent
+/// race conditions during preemptive multitasking.
 struct DebugSerial {
-    serial: UnsafeCell<Serial>,
+    serial: SpinLock<Serial>,
     initialized: AtomicBool,
 }
 
-// Safety: Serial port access is inherently single-threaded in our kernel
-// (no SMP support), and we use atomic flag for initialization state.
-unsafe impl Sync for DebugSerial {}
-
 static DEBUG_SERIAL: DebugSerial = DebugSerial {
-    serial: UnsafeCell::new(Serial::new()),
+    serial: SpinLock::new(Serial::new()),
     initialized: AtomicBool::new(false),
 };
 
@@ -139,22 +138,23 @@ static DEBUG_SERIAL: DebugSerial = DebugSerial {
 ///
 /// Call this early in kernel initialization to enable debug output.
 pub fn init() {
-    unsafe {
-        (*DEBUG_SERIAL.serial.get()).init();
+    {
+        let serial = DEBUG_SERIAL.serial.lock();
+        serial.init();
     }
     DEBUG_SERIAL.initialized.store(true, Ordering::Release);
 }
 
 /// Write formatted debug output to the serial port
 ///
-/// This function is used by the debug! macro.
+/// This function is used by the debug! macro. It is thread-safe: it acquires
+/// a spinlock that disables interrupts while writing to the serial port.
 #[doc(hidden)]
 pub fn _debug_print(args: fmt::Arguments) {
     use fmt::Write;
     if DEBUG_SERIAL.initialized.load(Ordering::Acquire) {
-        unsafe {
-            let _ = (*DEBUG_SERIAL.serial.get()).write_fmt(args);
-        }
+        let mut serial = DEBUG_SERIAL.serial.lock();
+        let _ = serial.write_fmt(args);
     }
 }
 

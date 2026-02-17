@@ -8,16 +8,19 @@
 
 extern crate alloc;
 
+mod allocator;
 mod apps;
 mod arch;
-mod allocator;
 mod drivers;
 mod logging;
 mod memory;
 mod panic;
 mod scheduler;
 mod sync;
+mod syscall;
+mod user_tasks;
 
+use crate::arch::gdt;
 use crate::arch::interrupts;
 use crate::arch::power;
 use crate::memory::bios;
@@ -26,7 +29,7 @@ use crate::memory::pmm;
 use crate::memory::vmm;
 use core::fmt::Write;
 use drivers::keyboard;
-use drivers::screen::{Color, Screen};
+use drivers::screen::{with_screen, Color, Screen};
 use drivers::serial;
 
 /// Kernel size stored by `KernelMain` so that the REPL task can display it
@@ -36,6 +39,8 @@ static mut KERNEL_SIZE: u64 = 0;
 
 const PATTERN_DELAY_SPINS: usize = 500_000;
 const VGA_TEXT_COLS: usize = 80;
+/// Kernel higher-half base used to translate symbol VAs to physical offsets.
+const KERNEL_HIGHER_HALF_BASE: u64 = 0xFFFF_8000_0000_0000;
 
 /// Kernel entry point - called from bootloader (kaosldr_64)
 ///
@@ -54,7 +59,13 @@ pub extern "C" fn KernelMain(kernel_size: u64) -> ! {
 
     // Store kernel size for the REPL task banner.
     // SAFETY: Written once before any task is spawned; read-only afterwards.
-    unsafe { KERNEL_SIZE = kernel_size; }
+    unsafe {
+        KERNEL_SIZE = kernel_size;
+    }
+
+    // Initialize GDT/TSS so ring-3 transitions have a valid architectural base.
+    gdt::init();
+    debugln!("GDT/TSS initialized");
 
     // Initialize the Physical Memory Manager
     pmm::init(true);
@@ -87,10 +98,10 @@ pub extern "C" fn KernelMain(kernel_size: u64) -> ! {
     // Interrupts stay disabled until the scheduler is fully set up so the
     // first timer tick sees a consistent state.
     scheduler::init();
-    scheduler::spawn(keyboard::keyboard_worker_task)
+    scheduler::set_kernel_address_space_cr3(vmm::get_pml4_address());
+    scheduler::spawn_kernel_task(keyboard::keyboard_worker_task)
         .expect("failed to spawn keyboard worker task");
-    scheduler::spawn(repl_task)
-        .expect("failed to spawn REPL task");
+    scheduler::spawn_kernel_task(repl_task).expect("failed to spawn REPL task");
     scheduler::start();
     debugln!("Scheduler started with keyboard worker + REPL task");
 
@@ -114,47 +125,52 @@ fn idle_loop() -> ! {
 
 /// REPL task entry point — runs as a scheduled kernel task.
 ///
-/// Creates its own `Screen` instance (VGA MMIO wrapper) and enters the
-/// interactive command prompt loop.
+/// Uses the shared global `with_screen` writer and enters the interactive
+/// command prompt loop.
 extern "C" fn repl_task() -> ! {
-    let mut screen = Screen::new();
-    screen.clear();
+    with_screen(|screen| {
+        screen.clear();
 
-    // Print welcome message
-    let kernel_size = unsafe { KERNEL_SIZE };
-    screen.set_color(Color::LightGreen);
-    writeln!(screen, "========================================").unwrap();
-    writeln!(screen, "    KAOS - Klaus' Operating System").unwrap();
-    writeln!(screen, "         Rust Kernel v0.1.0").unwrap();
-    writeln!(screen, "========================================").unwrap();
-    screen.set_color(Color::White);
-    writeln!(screen, "Kernel loaded successfully!").unwrap();
-    writeln!(screen, "Kernel size: {} bytes\n", kernel_size).unwrap();
+        // Print welcome message
+        let kernel_size = unsafe { KERNEL_SIZE };
+        screen.set_color(Color::LightGreen);
+        writeln!(screen, "========================================").unwrap();
+        writeln!(screen, "    KAOS - Klaus' Operating System").unwrap();
+        writeln!(screen, "         Rust Kernel v0.1.0").unwrap();
+        writeln!(screen, "========================================").unwrap();
+        screen.set_color(Color::White);
+        writeln!(screen, "Kernel loaded successfully!").unwrap();
+        writeln!(screen, "Kernel size: {} bytes\n", kernel_size).unwrap();
+    });
 
-    command_prompt_loop(&mut screen);
+    command_prompt_loop();
 }
 
 /// Infinite prompt loop using read_line; echoes entered lines.
-fn command_prompt_loop(screen: &mut Screen) -> ! {
+fn command_prompt_loop() -> ! {
     loop {
-        write!(screen, "> ").unwrap();
+        with_screen(|screen| {
+            write!(screen, "> ").unwrap();
+        });
 
         let mut buf = [0u8; 128];
-        let len = keyboard::read_line(screen, &mut buf);
+        let len = keyboard::read_line(&mut buf);
 
         if let Ok(line) = core::str::from_utf8(&buf[..len]) {
-            execute_command(screen, line);
+            execute_command(line);
         } else {
-            writeln!(screen, "(invalid UTF-8)").unwrap();
+            with_screen(|screen| {
+                writeln!(screen, "(invalid UTF-8)").unwrap();
+            });
         }
     }
 }
 
 /// Execute a simple command from a line of input.
-fn execute_command(screen: &mut Screen, line: &str) {
+fn execute_command(line: &str) {
     let line = line.trim();
     if line.is_empty() {
-        screen.print_char(b'\n');
+        with_screen(|screen| screen.print_char(b'\n'));
         return;
     }
 
@@ -163,100 +179,144 @@ fn execute_command(screen: &mut Screen, line: &str) {
 
     match cmd {
         "help" => {
-            writeln!(screen, "Commands:\n").unwrap();
-            writeln!(screen, "  help            - show this help").unwrap();
-            writeln!(screen, "  echo <text>     - print text").unwrap();
-            writeln!(screen, "  cls             - clear screen").unwrap();
-            writeln!(screen, "  color <name>    - set color (white, cyan, green)").unwrap();
-            writeln!(screen, "  apps            - list available applications").unwrap();
-            writeln!(screen, "  run <app>       - run an application").unwrap();
-            writeln!(screen, "  mtdemo          - run VGA multitasking demo (press q to stop)").unwrap();
-            writeln!(screen, "  meminfo         - display BIOS memory map").unwrap();
-            writeln!(screen, "  pmm [n]         - run PMM self-test (default n=2048)").unwrap();
-            writeln!(screen, "  vmmtest [--debug] - run VMM smoke test").unwrap();
-            writeln!(screen, "  heaptest        - run heap self-test").unwrap();
-            writeln!(screen, "  shutdown        - shutdown the system").unwrap();
+            with_screen(|screen| {
+                writeln!(screen, "Commands:\n").unwrap();
+                writeln!(screen, "  help            - show this help").unwrap();
+                writeln!(screen, "  echo <text>     - print text").unwrap();
+                writeln!(screen, "  cls             - clear screen").unwrap();
+                writeln!(screen, "  color <name>    - set color (white, cyan, green)").unwrap();
+                writeln!(screen, "  apps            - list available applications").unwrap();
+                writeln!(screen, "  run <app>       - run an application").unwrap();
+                writeln!(
+                    screen,
+                    "  mtdemo          - run VGA multitasking demo (press q to stop)"
+                )
+                .unwrap();
+                writeln!(screen, "  meminfo         - display BIOS memory map").unwrap();
+                writeln!(
+                    screen,
+                    "  pmm [n]         - run PMM self-test (default n=2048)"
+                )
+                .unwrap();
+                writeln!(screen, "  vmmtest [--debug] - run VMM smoke test").unwrap();
+                writeln!(screen, "  heaptest        - run heap self-test").unwrap();
+                writeln!(screen, "  userdemo        - run ring-3 console demo task").unwrap();
+                writeln!(
+                    screen,
+                    "  echodemo        - run ring-3 echo demo (GetChar syscall)"
+                )
+                .unwrap();
+                writeln!(
+                    screen,
+                    "  readlinedemo    - run ring-3 readline demo (user_readline)"
+                )
+                .unwrap();
+                writeln!(
+                    screen,
+                    "  cursordemo      - run ring-3 cursor syscall demo (GetCursor/SetCursor)"
+                )
+                .unwrap();
+                writeln!(screen, "  shutdown        - shutdown the system").unwrap();
+            });
         }
         "echo" => {
             let rest = line[cmd.len()..].trim_start();
             if !rest.is_empty() {
-                writeln!(screen, "{}", rest).unwrap();
+                with_screen(|screen| {
+                    writeln!(screen, "{}", rest).unwrap();
+                });
             } else {
-                screen.print_char(b'\n');
+                with_screen(|screen| screen.print_char(b'\n'));
             }
         }
         "cls" | "clear" => {
-            screen.clear();
+            with_screen(|screen| screen.clear());
         }
         "color" => {
             if let Some(name) = parts.next() {
-                if name.eq_ignore_ascii_case("white") {
-                    screen.set_color(Color::White);
-                } else if name.eq_ignore_ascii_case("cyan") {
-                    screen.set_color(Color::LightCyan);
-                } else if name.eq_ignore_ascii_case("green") {
-                    screen.set_color(Color::LightGreen);
-                } else {
-                    writeln!(screen, "Unknown color: {}", name).unwrap();
-                }
+                with_screen(|screen| {
+                    if name.eq_ignore_ascii_case("white") {
+                        screen.set_color(Color::White);
+                    } else if name.eq_ignore_ascii_case("cyan") {
+                        screen.set_color(Color::LightCyan);
+                    } else if name.eq_ignore_ascii_case("green") {
+                        screen.set_color(Color::LightGreen);
+                    } else {
+                        writeln!(screen, "Unknown color: {}", name).unwrap();
+                    }
+                });
             } else {
-                writeln!(screen, "Usage: color <white|cyan|green>").unwrap();
+                with_screen(|screen| {
+                    writeln!(screen, "Usage: color <white|cyan|green>").unwrap();
+                });
             }
         }
         "shutdown" => {
-            writeln!(screen, "Shutting down...").unwrap();
+            with_screen(|screen| {
+                writeln!(screen, "Shutting down...").unwrap();
+            });
             power::shutdown();
         }
         "apps" => {
-            apps::list_apps(screen);
+            with_screen(apps::list_apps);
         }
         "run" => {
             if let Some(app_name) = parts.next() {
-                let snapshot = screen.save();
+                let snapshot = with_screen(|screen| screen.save());
                 match apps::spawn_app(app_name) {
                     Ok(task_id) => {
                         while scheduler::task_frame_ptr(task_id).is_some() {
                             scheduler::yield_now();
                         }
-                        screen.restore(&snapshot);
+                        with_screen(|screen| screen.restore(&snapshot));
                     }
                     Err(apps::RunAppError::UnknownApp) => {
-                        writeln!(screen, "Unknown app: {}", app_name).unwrap();
-                        writeln!(screen, "Use 'apps' to list available applications.").unwrap();
+                        with_screen(|screen| {
+                            writeln!(screen, "Unknown app: {}", app_name).unwrap();
+                            writeln!(screen, "Use 'apps' to list available applications.").unwrap();
+                        });
                     }
                     Err(apps::RunAppError::SpawnFailed(err)) => {
-                        writeln!(screen, "Failed to launch app task: {:?}", err).unwrap();
+                        with_screen(|screen| {
+                            writeln!(screen, "Failed to launch app task: {:?}", err).unwrap();
+                        });
                     }
                 }
             } else {
-                writeln!(screen, "Usage: run <appname>").unwrap();
-                writeln!(screen, "Use 'apps' to list available applications.").unwrap();
+                with_screen(|screen| {
+                    writeln!(screen, "Usage: run <appname>").unwrap();
+                    writeln!(screen, "Use 'apps' to list available applications.").unwrap();
+                });
             }
         }
         "mtdemo" => {
-            run_multitasking_vga_demo(screen);
+            run_multitasking_vga_demo();
         }
         "meminfo" => {
-            bios::BiosInformationBlock::print_memory_map(screen);
+            with_screen(bios::BiosInformationBlock::print_memory_map);
         }
-        "pmm" => {
-            match (parts.next(), parts.next()) {
-                (None, None) => pmm::run_self_test(screen, 2048),
-                (Some(n_str), None) => match n_str.parse::<u32>() {
-                    Ok(n) if n > 0 => pmm::run_self_test(screen, n),
-                    _ => writeln!(screen, "Usage: pmm [n]  (n must be > 0)").unwrap(),
-                },
-                _ => {
+        "pmm" => match (parts.next(), parts.next()) {
+            (None, None) => with_screen(|screen| pmm::run_self_test(screen, 2048)),
+            (Some(n_str), None) => match n_str.parse::<u32>() {
+                Ok(n) if n > 0 => with_screen(|screen| pmm::run_self_test(screen, n)),
+                _ => with_screen(|screen| {
+                    writeln!(screen, "Usage: pmm [n]  (n must be > 0)").unwrap();
+                }),
+            },
+            _ => {
+                with_screen(|screen| {
                     writeln!(screen, "Usage: pmm [n]").unwrap();
-                }
+                });
             }
-        }
+        },
         "testvmm" | "vmmtest" => {
             let console_debug = match (parts.next(), parts.next()) {
                 (None, None) => false,
                 (Some("--debug"), None) => true,
                 _ => {
-                    writeln!(screen, "Usage: vmmtest [--debug]").unwrap();
+                    with_screen(|screen| {
+                        writeln!(screen, "Usage: vmmtest [--debug]").unwrap();
+                    });
                     return;
                 }
             };
@@ -264,28 +324,73 @@ fn execute_command(screen: &mut Screen, line: &str) {
             vmm::set_console_debug_output(console_debug);
             let ok = vmm::test_vmm();
             if console_debug {
-                vmm::print_console_debug_output(screen);
+                with_screen(vmm::print_console_debug_output);
             }
             vmm::set_console_debug_output(false);
             if ok {
-                writeln!(screen, "VMM test complete (readback OK).").unwrap();
+                with_screen(|screen| {
+                    writeln!(screen, "VMM test complete (readback OK).").unwrap();
+                });
             } else {
-                writeln!(screen, "VMM test complete (readback FAILED).").unwrap();
+                with_screen(|screen| {
+                    writeln!(screen, "VMM test complete (readback FAILED).").unwrap();
+                });
             }
         }
         "heaptest" => {
-            heap::run_self_test(screen);
+            with_screen(heap::run_self_test);
+        }
+        "userdemo" => {
+            user_tasks::run_user_mode_serial_demo();
+        }
+        "echodemo" => {
+            user_tasks::run_user_mode_echo_demo();
+        }
+        "readlinedemo" => {
+            user_tasks::run_user_mode_readline_demo();
+        }
+        "cursordemo" => {
+            user_tasks::run_user_mode_cursor_demo();
         }
         _ => {
-            writeln!(screen, "Unknown command: {}", cmd).unwrap();
+            with_screen(|screen| {
+                writeln!(screen, "Unknown command: {}", cmd).unwrap();
+            });
         }
     }
 }
 
-fn run_multitasking_vga_demo(screen: &mut Screen) {
+#[inline]
+/// Converts higher-half kernel VA to physical address by removing base offset.
+fn kernel_va_to_phys(kernel_va: u64) -> Option<u64> {
+    if kernel_va >= KERNEL_HIGHER_HALF_BASE {
+        Some(kernel_va - KERNEL_HIGHER_HALF_BASE)
+    } else {
+        None
+    }
+}
+
+#[inline]
+/// Maps a kernel symbol VA into the configured user code alias window.
+fn kernel_va_to_user_code_va(kernel_va: u64) -> Option<u64> {
+    syscall::user_alias_va_for_kernel(
+        vmm::USER_CODE_BASE,
+        vmm::USER_CODE_SIZE,
+        KERNEL_HIGHER_HALF_BASE,
+        kernel_va,
+    )
+}
+
+fn run_multitasking_vga_demo() {
     let task_ids = spawn_pattern_tasks();
 
-    writeln!(screen, "Multitasking demo active (rows 22-24). Press q to stop.").unwrap();
+    with_screen(|screen| {
+        writeln!(
+            screen,
+            "Multitasking demo active (rows 22-24). Press q to stop."
+        )
+        .unwrap();
+    });
     loop {
         let ch = keyboard::read_char_blocking();
         if ch == b'q' || ch == b'Q' {
@@ -293,7 +398,9 @@ fn run_multitasking_vga_demo(screen: &mut Screen) {
             while !pattern_tasks_terminated(&task_ids) {
                 scheduler::yield_now();
             }
-            writeln!(screen, "\nMultitasking demo stopped.").unwrap();
+            with_screen(|screen| {
+                writeln!(screen, "\nMultitasking demo stopped.").unwrap();
+            });
             return;
         }
     }
@@ -301,9 +408,12 @@ fn run_multitasking_vga_demo(screen: &mut Screen) {
 
 fn spawn_pattern_tasks() -> [usize; 3] {
     [
-        scheduler::spawn(vga_pattern_task_a).expect("failed to spawn VGA pattern task A"),
-        scheduler::spawn(vga_pattern_task_b).expect("failed to spawn VGA pattern task B"),
-        scheduler::spawn(vga_pattern_task_c).expect("failed to spawn VGA pattern task C"),
+        scheduler::spawn_kernel_task(vga_pattern_task_a)
+            .expect("failed to spawn VGA pattern task A"),
+        scheduler::spawn_kernel_task(vga_pattern_task_b)
+            .expect("failed to spawn VGA pattern task B"),
+        scheduler::spawn_kernel_task(vga_pattern_task_c)
+            .expect("failed to spawn VGA pattern task C"),
     ]
 }
 

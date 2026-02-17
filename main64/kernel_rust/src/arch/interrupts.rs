@@ -24,6 +24,7 @@ const IRQ12_PS2_MOUSE_VECTOR: u8 = IRQ_BASE + 12;
 const IRQ13_FPU_VECTOR: u8 = IRQ_BASE + 13;
 const IRQ14_PRIMARY_ATA_VECTOR: u8 = IRQ_BASE + 14;
 const IRQ15_SECONDARY_ATA_VECTOR: u8 = IRQ_BASE + 15;
+pub const SYSCALL_INT80_VECTOR: u8 = 0x80;
 pub const EXCEPTION_DIVIDE_ERROR: u8 = 0;
 pub const EXCEPTION_INVALID_OPCODE: u8 = 6;
 pub const EXCEPTION_DEVICE_NOT_AVAILABLE: u8 = 7;
@@ -118,6 +119,7 @@ extern "C" {
     fn isr8_double_fault_stub();
     fn isr13_general_protection_fault_stub();
     fn isr14_page_fault_stub();
+    fn int80_syscall_stub();
 }
 
 #[repr(C, packed)]
@@ -146,13 +148,39 @@ impl IdtEntry {
     }
 
     fn set_handler(&mut self, handler: usize) {
+        self.set_handler_with_dpl(handler, 0);
+    }
+
+    fn set_handler_with_dpl(&mut self, handler: usize, dpl: u8) {
         self.offset_low = handler as u16;
         self.selector = 0x08;
         self.ist = 0;
-        self.type_attr = IDT_PRESENT | IDT_INTERRUPT_GATE;
+        self.type_attr = IDT_PRESENT | IDT_INTERRUPT_GATE | ((dpl & 0x03) << 5);
         self.offset_mid = (handler >> 16) as u16;
         self.offset_high = (handler >> 32) as u32;
         self.zero = 0;
+    }
+
+    /// Configures an IDT gate with explicit privilege level and IST selector.
+    ///
+    /// Parameters:
+    /// - `handler`: 64-bit entry-point address of the interrupt/trap stub.
+    /// - `dpl`: Descriptor privilege level (`0..=3`); values above 3 are masked.
+    /// - `ist`: Interrupt Stack Table slot (`0..=7`).
+    ///
+    /// IST semantics in long mode:
+    /// - `ist = 0` keeps the current stack (default behavior).
+    /// - `ist = 1..=7` instructs the CPU to switch to `TSS.IST[n]` before
+    ///   pushing the interrupt frame, which is useful for critical faults
+    ///   (e.g., double fault) when the current stack may be corrupted.
+    ///
+    /// Notes:
+    /// - The IST field is 3 bits wide and is therefore masked with `0x07`.
+    /// - This function only writes the IDT descriptor; callers must ensure the
+    ///   corresponding TSS IST entry is initialized to a valid stack top.
+    fn set_handler_with_dpl_and_ist(&mut self, handler: usize, dpl: u8, ist: u8) {
+        self.set_handler_with_dpl(handler, dpl);
+        self.ist = ist & 0x07;
     }
 }
 
@@ -232,30 +260,46 @@ pub fn are_enabled() -> bool {
 fn init_idt() {
     unsafe {
         let idt = &mut *STATE.idt.get();
-        idt[EXCEPTION_DIVIDE_ERROR as usize].set_handler(isr0_divide_by_zero_stub as *const () as usize);
-        idt[EXCEPTION_INVALID_OPCODE as usize].set_handler(isr6_invalid_opcode_stub as *const () as usize);
+        idt[EXCEPTION_DIVIDE_ERROR as usize]
+            .set_handler(isr0_divide_by_zero_stub as *const () as usize);
+        idt[EXCEPTION_INVALID_OPCODE as usize]
+            .set_handler(isr6_invalid_opcode_stub as *const () as usize);
         idt[EXCEPTION_DEVICE_NOT_AVAILABLE as usize]
             .set_handler(isr7_device_not_available_stub as *const () as usize);
-        idt[EXCEPTION_DOUBLE_FAULT as usize].set_handler(isr8_double_fault_stub as *const () as usize);
+        // Route double-fault onto IST1 to avoid cascading failures on a broken current stack.
+        idt[EXCEPTION_DOUBLE_FAULT as usize].set_handler_with_dpl_and_ist(
+            isr8_double_fault_stub as *const () as usize,
+            0,
+            1,
+        );
         idt[EXCEPTION_GENERAL_PROTECTION as usize]
             .set_handler(isr13_general_protection_fault_stub as *const () as usize);
         idt[EXCEPTION_PAGE_FAULT as usize].set_handler(isr14_page_fault_stub as *const () as usize);
+        idt[SYSCALL_INT80_VECTOR as usize]
+            .set_handler_with_dpl(int80_syscall_stub as *const () as usize, 3);
         idt[IRQ0_PIT_TIMER_VECTOR as usize].set_handler(irq0_pit_timer_stub as *const () as usize);
         idt[IRQ1_KEYBOARD_VECTOR as usize].set_handler(irq1_keyboard_stub as *const () as usize);
-        idt[IRQ2_PIC_CASCADE_VECTOR as usize].set_handler(irq2_pic_cascade_stub as *const () as usize);
+        idt[IRQ2_PIC_CASCADE_VECTOR as usize]
+            .set_handler(irq2_pic_cascade_stub as *const () as usize);
         idt[IRQ3_COM2_VECTOR as usize].set_handler(irq3_com2_stub as *const () as usize);
         idt[IRQ4_COM1_VECTOR as usize].set_handler(irq4_com1_stub as *const () as usize);
-        idt[IRQ5_LPT2_OR_SOUND_VECTOR as usize].set_handler(irq5_lpt2_or_sound_stub as *const () as usize);
+        idt[IRQ5_LPT2_OR_SOUND_VECTOR as usize]
+            .set_handler(irq5_lpt2_or_sound_stub as *const () as usize);
         idt[IRQ6_FLOPPY_VECTOR as usize].set_handler(irq6_floppy_stub as *const () as usize);
-        idt[IRQ7_LPT1_OR_SPURIOUS_VECTOR as usize].set_handler(irq7_lpt1_or_spurious_stub as *const () as usize);
+        idt[IRQ7_LPT1_OR_SPURIOUS_VECTOR as usize]
+            .set_handler(irq7_lpt1_or_spurious_stub as *const () as usize);
         idt[IRQ8_CMOS_RTC_VECTOR as usize].set_handler(irq8_cmos_rtc_stub as *const () as usize);
-        idt[IRQ9_ACPI_OR_LEGACY_VECTOR as usize].set_handler(irq9_acpi_or_legacy_stub as *const () as usize);
+        idt[IRQ9_ACPI_OR_LEGACY_VECTOR as usize]
+            .set_handler(irq9_acpi_or_legacy_stub as *const () as usize);
         idt[IRQ10_FREE_VECTOR as usize].set_handler(irq10_free_stub as *const () as usize);
         idt[IRQ11_FREE_VECTOR as usize].set_handler(irq11_free_stub as *const () as usize);
-        idt[IRQ12_PS2_MOUSE_VECTOR as usize].set_handler(irq12_ps2_mouse_stub as *const () as usize);
+        idt[IRQ12_PS2_MOUSE_VECTOR as usize]
+            .set_handler(irq12_ps2_mouse_stub as *const () as usize);
         idt[IRQ13_FPU_VECTOR as usize].set_handler(irq13_fpu_stub as *const () as usize);
-        idt[IRQ14_PRIMARY_ATA_VECTOR as usize].set_handler(irq14_primary_ata_stub as *const () as usize);
-        idt[IRQ15_SECONDARY_ATA_VECTOR as usize].set_handler(irq15_secondary_ata_stub as *const () as usize);
+        idt[IRQ14_PRIMARY_ATA_VECTOR as usize]
+            .set_handler(irq14_primary_ata_stub as *const () as usize);
+        idt[IRQ15_SECONDARY_ATA_VECTOR as usize]
+            .set_handler(irq15_secondary_ata_stub as *const () as usize);
 
         let idt_ptr = IdtPointer {
             limit: (size_of::<IdtEntry>() * IDT_ENTRIES - 1) as u16,
@@ -278,6 +322,12 @@ pub extern "C" fn page_fault_handler_rust(faulting_address: u64, error_code: u64
 /// Returns whether a CPU exception vector pushes an error code on entry.
 pub const fn exception_has_error_code(vector: u8) -> bool {
     matches!(vector, 8 | 10 | 11 | 12 | 13 | 14 | 17 | 21 | 29 | 30)
+}
+
+/// Returns the configured IST index for the IDT entry at `vector`.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn idt_ist_index(vector: u8) -> u8 {
+    unsafe { (&*STATE.idt.get())[vector as usize].ist & 0x07 }
 }
 
 #[inline]
@@ -341,7 +391,11 @@ fn write_exception_banner(vector: u8, error_code: u64, frame: *const SavedRegist
 ///
 /// Called from assembly stubs for faults we currently treat as unrecoverable.
 #[no_mangle]
-pub extern "C" fn exception_handler_rust(vector: u8, error_code: u64, frame: *const SavedRegisters) -> ! {
+pub extern "C" fn exception_handler_rust(
+    vector: u8,
+    error_code: u64,
+    frame: *const SavedRegisters,
+) -> ! {
     let has_error_code = exception_has_error_code(vector);
     let iret_ptr = (frame as usize)
         + size_of::<SavedRegisters>()
@@ -513,7 +567,10 @@ pub fn init_periodic_timer(hz: u32) {
 ///   re-enable interrupts until after `iretq`.
 /// - `vector` must be a valid IRQ vector number (`IRQ_BASE..IRQ_BASE + 16`).
 #[no_mangle]
-pub unsafe extern "C" fn irq_rust_dispatch(vector: u8, frame: *mut SavedRegisters) -> *mut SavedRegisters {
+pub unsafe extern "C" fn irq_rust_dispatch(
+    vector: u8,
+    frame: *mut SavedRegisters,
+) -> *mut SavedRegisters {
     if !(IRQ_BASE..IRQ_BASE + 16).contains(&vector) {
         return frame;
     }
@@ -527,6 +584,51 @@ pub unsafe extern "C" fn irq_rust_dispatch(vector: u8, frame: *mut SavedRegister
     };
 
     dispatch_irq(vector, frame)
+}
+
+/// Dispatch entry point for software interrupt `int 0x80`.
+///
+/// # Safety
+/// - Must be entered only from the dedicated `int80_syscall_stub`.
+/// - `frame` must point to the saved-register frame on the active kernel stack.
+#[no_mangle]
+pub unsafe extern "C" fn syscall_rust_dispatch(frame: *mut SavedRegisters) -> *mut SavedRegisters {
+    let frame = unsafe {
+        // SAFETY:
+        // - `frame` is provided by the syscall assembly stub.
+        // - It points at a live register-save area until the stub restores regs and returns via `iretq`.
+        &mut *frame
+    };
+
+    let syscall_nr = frame.rax;
+    let arg0 = frame.rdi;
+    let arg1 = frame.rsi;
+    let arg2 = frame.rdx;
+    let arg3 = frame.r10;
+    let result = crate::syscall::dispatch(syscall_nr, arg0, arg1, arg2, arg3);
+    frame.rax = result;
+
+    // Yield and Exit both need an immediate reschedule via the scheduler.
+    //
+    // Instead of triggering a nested software interrupt (`int 32` inside
+    // `int 0x80`), we call `on_timer_tick` directly with the current
+    // interrupt frame.  The `int80_syscall_stub` restores whatever frame
+    // pointer we return here, so returning a different task's frame
+    // performs a seamless context switch with a single `iretq`.
+    //
+    // - **Yield**: the current task stays Ready and will be picked up
+    //   again in a future round-robin cycle.
+    // - **Exit**: `dispatch` has already marked the task as Zombie.
+    //   `on_timer_tick` will never select it again, and `reap_zombies`
+    //   reclaims its slot on the next scheduler tick once execution has
+    //   safely moved off its kernel stack.
+    if syscall_nr == crate::syscall::SyscallId::Yield as u64
+        || syscall_nr == crate::syscall::SyscallId::Exit as u64
+    {
+        return crate::scheduler::on_timer_tick(frame as *mut SavedRegisters);
+    }
+
+    frame as *mut SavedRegisters
 }
 
 const _: () = {

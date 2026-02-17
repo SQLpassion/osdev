@@ -3,13 +3,13 @@
 //! Handles scan code processing and stores decoded input in a ring buffer.
 
 use crate::arch::port::PortByte;
-use crate::drivers::screen::Screen;
+use crate::drivers::screen::with_screen;
 use crate::scheduler;
 use crate::sync::ringbuffer::RingBuffer;
 use crate::sync::singlewaitqueue::SingleWaitQueue;
+use crate::sync::spinlock::SpinLock;
 use crate::sync::waitqueue::WaitQueue;
 use crate::sync::waitqueue_adapter;
-use crate::sync::spinlock::SpinLock;
 
 /// Keyboard controller ports
 const KYBRD_CTRL_STATS_REG: u16 = 0x64;
@@ -28,7 +28,7 @@ const INPUT_WAITERS_CAPACITY: usize = 8;
 
 /// Lower-case QWERTZ scan code map (printable ASCII only; 0 == ignored)
 const SCANCODES_LOWER: [u8; SCANCODE_TABLE_LEN] = [
-    0, 0, b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8', b'9', b'0', b's', b'=', 0x08, 0, b'q',
+    0, 0x1B, b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8', b'9', b'0', b's', b'=', 0x08, 0, b'q',
     b'w', b'e', b'r', b't', b'z', b'u', b'i', b'o', b'p', b'[', b'+', b'\n', 0, b'a', b's', b'd',
     b'f', b'g', b'h', b'j', b'k', b'l', b'{', b'~', b'<', 0, b'#', b'y', b'x', b'c', b'v', b'b',
     b'n', b'm', b',', b'.', b'-', 0, b'*', 0, b' ', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -37,7 +37,7 @@ const SCANCODES_LOWER: [u8; SCANCODE_TABLE_LEN] = [
 
 /// Upper-case QWERTZ scan code map (printable ASCII only; 0 == ignored)
 const SCANCODES_UPPER: [u8; SCANCODE_TABLE_LEN] = [
-    0, 0, b'!', b'"', b'0', b'$', b'%', b'&', b'/', b'(', b')', b'=', b'?', b'`', 0x08, 0, b'Q',
+    0, 0x1B, b'!', b'"', b'0', b'$', b'%', b'&', b'/', b'(', b')', b'=', b'?', b'`', 0x08, 0, b'Q',
     b'W', b'E', b'R', b'T', b'Z', b'U', b'I', b'O', b'P', b']', b'*', b'\n', 0, b'A', b'S', b'D',
     b'F', b'G', b'H', b'J', b'K', b'L', b'}', b'@', b'>', 0, b'\\', b'Y', b'X', b'C', b'V', b'B',
     b'N', b'M', b';', b':', b'_', 0, b'*', 0, b' ', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -130,10 +130,12 @@ pub fn read_char_blocking() -> u8 {
             return ch;
         }
 
-        let task_id = scheduler::current_task_id()
-            .expect("read_char_blocking called outside scheduled task");
+        let task_id =
+            scheduler::current_task_id().expect("read_char_blocking called outside scheduled task");
 
-        if waitqueue_adapter::sleep_if_multi(&INPUT_WAITQUEUE, task_id, || KEYBOARD.buffer.is_empty()) {
+        if waitqueue_adapter::sleep_if_multi(&INPUT_WAITQUEUE, task_id, || {
+            KEYBOARD.buffer.is_empty()
+        }) {
             scheduler::yield_now();
         }
     }
@@ -250,12 +252,13 @@ fn is_alpha(code: u8) -> bool {
     )
 }
 
-/// Read a line into `buf`, echoing to `screen`. Returns the number of bytes written.
+/// Read a line into `buf`, echoing characters via the global screen writer.
+/// Returns the number of bytes written.
 /// The newline is echoed but not stored in `buf`.
 ///
 /// Each character is obtained via [`read_char_blocking`], which puts the
 /// calling task to sleep until the keyboard worker has decoded input.
-pub fn read_line(screen: &mut Screen, buf: &mut [u8]) -> usize {
+pub fn read_line(buf: &mut [u8]) -> usize {
     let mut len = 0;
 
     loop {
@@ -263,20 +266,20 @@ pub fn read_line(screen: &mut Screen, buf: &mut [u8]) -> usize {
 
         match ch {
             b'\r' | b'\n' => {
-                screen.print_char(b'\n');
+                with_screen(|screen| screen.print_char(b'\n'));
                 break;
             }
             0x08 => {
                 if len > 0 {
                     len -= 1;
-                    screen.print_char(0x08);
+                    with_screen(|screen| screen.print_char(0x08));
                 }
             }
             _ => {
                 if len < buf.len() {
                     buf[len] = ch;
                     len += 1;
-                    screen.print_char(ch);
+                    with_screen(|screen| screen.print_char(ch));
                 }
             }
         }

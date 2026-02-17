@@ -7,7 +7,7 @@
 #![reexport_test_harness_main = "test_main"]
 
 use core::panic::PanicInfo;
-use kaos_kernel::drivers::screen::Screen;
+use kaos_kernel::drivers::screen::{with_screen, Screen};
 
 const VGA_BUFFER: usize = 0xFFFF8000000B8000;
 const VGA_COLS: usize = 80;
@@ -70,7 +70,10 @@ fn test_print_char_wrap_writes_to_last_row_after_scroll() {
     // - `cell` points to VGA text MMIO for row 24 col 0.
     // - Volatile read is required for MMIO.
     let ch = unsafe { core::ptr::read_volatile(cell as *const u8) };
-    assert!(ch == b'Y', "wrapped character should be written at last row col 0");
+    assert!(
+        ch == b'Y',
+        "wrapped character should be written at last row col 0"
+    );
 }
 
 /// Contract: print str writes contiguous progress bar pattern.
@@ -209,4 +212,24 @@ fn test_full_width_row_rewrite_updates_visible_progress_content() {
             "rewritten VGA row must match the latest progress pattern"
         );
     }
+}
+
+/// Contract: with_screen reuses the global screen cursor state across calls.
+#[test_case]
+fn test_with_screen_keeps_global_cursor_between_calls() {
+    with_screen(|screen| {
+        screen.clear();
+        screen.set_cursor(0, 0);
+        screen.print_char(b'A');
+    });
+
+    with_screen(|screen| {
+        let (row, col) = screen.get_cursor();
+        assert!(row == 0, "row must remain on first line after one byte");
+        assert!(
+            col == 1,
+            "cursor must advance and persist across with_screen calls"
+        );
+        screen.clear();
+    });
 }

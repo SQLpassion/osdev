@@ -15,7 +15,9 @@ fn align_up(addr: usize, align: usize) -> Option<usize> {
 
 #[inline]
 fn aligned_backref_slot(aligned_ptr: *mut u8) -> *mut *mut u8 {
-    aligned_ptr.wrapping_sub(size_of::<*mut u8>()).cast::<*mut u8>()
+    aligned_ptr
+        .wrapping_sub(size_of::<*mut u8>())
+        .cast::<*mut u8>()
 }
 
 // SAFETY:

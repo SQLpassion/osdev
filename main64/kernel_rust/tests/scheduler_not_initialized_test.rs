@@ -41,7 +41,7 @@ extern "C" fn dummy_task() -> ! {
 /// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_spawn_fails_with_not_initialized() {
-    let err = sched::spawn(dummy_task).expect_err("spawn before init must fail");
+    let err = sched::spawn_kernel_task(dummy_task).expect_err("spawn before init must fail");
     assert!(
         matches!(err, SpawnError::NotInitialized),
         "expected NotInitialized when spawning before scheduler init"
@@ -62,7 +62,8 @@ fn test_yield_now_without_scheduler_init_does_not_initialize_scheduler() {
         "yield_now without init must not transition scheduler into running state"
     );
 
-    let err = sched::spawn(dummy_task).expect_err("scheduler should still be uninitialized");
+    let err =
+        sched::spawn_kernel_task(dummy_task).expect_err("scheduler should still be uninitialized");
     assert!(
         matches!(err, SpawnError::NotInitialized),
         "yield_now must not initialize scheduler implicitly"

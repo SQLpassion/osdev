@@ -4,8 +4,8 @@
 //! PM control ports. On real hardware a proper ACPI parser is needed to
 //! locate PM1 control blocks and SLP_TYP. If this path fails, we halt.
 
-use core::arch::asm;
 use crate::arch::port::PortWord;
+use core::arch::asm;
 
 /// Attempt to power off. Works on QEMU/Bochs; halts otherwise.
 pub fn shutdown() -> ! {

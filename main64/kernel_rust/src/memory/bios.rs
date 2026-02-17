@@ -36,7 +36,7 @@ pub struct BiosInformationBlock {
     pub max_memory: i64,
 
     /// Total number of available page frames
-    pub available_page_frames: i64
+    pub available_page_frames: i64,
 }
 
 #[repr(C)]
@@ -90,7 +90,10 @@ impl BiosInformationBlock {
             write!(screen, "0x{:010x}", current_region.start).unwrap();
 
             // End address (use wrapping arithmetic to avoid overflow)
-            let end_addr = current_region.start.wrapping_add(current_region.size).wrapping_sub(1);
+            let end_addr = current_region
+                .start
+                .wrapping_add(current_region.size)
+                .wrapping_sub(1);
             write!(screen, " - 0x{:010x}", end_addr).unwrap();
 
             // Size in hex

@@ -65,14 +65,14 @@ impl<'a> AppContext<'a> {
     /// Read a line of input (blocking), echoing characters to screen.
     /// Returns the number of bytes written to the buffer.
     /// The newline is echoed but not stored in the buffer.
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn read_line(&mut self, buf: &mut [u8]) -> usize {
-        keyboard::read_line(self.screen, buf)
+        keyboard::read_line(buf)
     }
 
     /// Try to read a character (non-blocking).
     /// Returns None if no input is available.
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn try_read_char(&mut self) -> Option<u8> {
         keyboard::read_char()
     }
@@ -105,7 +105,7 @@ fn find_app(name: &str) -> Option<&'static AppEntry> {
 /// Spawn an application as its own kernel task and return the task slot ID.
 pub fn spawn_app(name: &str) -> Result<usize, RunAppError> {
     let app = find_app(name).ok_or(RunAppError::UnknownApp)?;
-    scheduler::spawn(app.task_entry).map_err(RunAppError::SpawnFailed)
+    scheduler::spawn_kernel_task(app.task_entry).map_err(RunAppError::SpawnFailed)
 }
 
 /// Shared app-task launcher: full-screen app context then task exit.

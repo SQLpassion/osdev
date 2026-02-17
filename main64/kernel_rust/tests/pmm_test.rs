@@ -81,7 +81,10 @@ fn test_pmm_multiple_allocations() {
         // Verify all frames have unique PFNs
         for i in 0..5 {
             for j in (i + 1)..5 {
-                assert!(pfns[i] != pfns[j], "Each allocated frame should have a unique PFN");
+                assert!(
+                    pfns[i] != pfns[j],
+                    "Each allocated frame should have a unique PFN"
+                );
             }
         }
 

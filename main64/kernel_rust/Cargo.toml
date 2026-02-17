@@ -49,13 +49,13 @@ name = "spinlock_test"
 name = "interrupts_layout_test"
 
 [[test]]
+name = "gdt_layout_test"
+
+[[test]]
 name = "scheduler_rr_test"
 
 [[test]]
 name = "scheduler_not_initialized_test"
-
-[[test]]
-name = "scheduler_invalid_frame_death_test"
 
 [[test]]
 name = "screen_test"
@@ -71,3 +71,9 @@ name = "page_fault_death_test"
 
 [[test]]
 name = "apps_task_test"
+
+[[test]]
+name = "user_mode_iretq_smoke_test"
+
+[[test]]
+name = "syscall_dispatch_test"
