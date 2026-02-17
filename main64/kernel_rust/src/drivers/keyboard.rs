@@ -74,6 +74,15 @@ impl Keyboard {
     }
 }
 
+// Static assert: `Keyboard` must be `Sync` because it is used as a `static`.
+// All fields use lock-free atomics internally (`RingBuffer` is `Sync`).
+// If a non-`Sync` field is added in the future, this line will produce a
+// compile error rather than silently introducing unsoundness.
+const _: () = {
+    const fn assert_sync<T: Sync>() {}
+    assert_sync::<Keyboard>();
+};
+
 static KEYBOARD: Keyboard = Keyboard::new();
 static KEYBOARD_STATE: SpinLock<KeyboardState> = SpinLock::new(KeyboardState::new());
 
