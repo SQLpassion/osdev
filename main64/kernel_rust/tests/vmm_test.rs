@@ -410,6 +410,33 @@ fn test_destroy_user_address_space_does_not_release_code_leaf_frame() {
     });
 }
 
+/// Contract: destroy user address space with owned-code policy releases code leaf frame.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "destroy user address space with owned-code policy releases code leaf frame".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_destroy_user_address_space_with_options_releases_code_leaf_frame() {
+    const TEST_CODE_VA: u64 = vmm::USER_CODE_BASE;
+
+    let user_cr3 = vmm::clone_kernel_pml4_for_user();
+    let code_leaf = pmm::with_pmm(|mgr| mgr.alloc_frame().expect("code frame allocation failed"));
+
+    vmm::with_address_space(user_cr3, || {
+        vmm::map_user_page(TEST_CODE_VA, code_leaf.pfn, false)
+            .expect("test code VA should map in cloned address space");
+    });
+
+    vmm::destroy_user_address_space_with_options(user_cr3, true);
+
+    pmm::with_pmm(|mgr| {
+        assert!(
+            !mgr.release_pfn(code_leaf.pfn),
+            "owned-code policy must release code-leaf PFN during address-space destroy"
+        );
+    });
+}
+
 /// Contract: map user page accepts code and stack regions.
 /// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
 /// When: The exact operation sequence in this function is executed against that state.

@@ -81,6 +81,8 @@ pub fn map_program_image_into_user_address_space(image: &[u8]) -> ExecResult<Loa
     let code_page_count = page_count_for_len(image.len());
     let mut code_pfns = Vec::with_capacity(code_page_count);
     let mut stack_pfn = None::<u64>;
+    let mut mapped_code_pages = 0usize;
+    let mut stack_mapped = false;
 
     // Transaction-style setup:
     // - success returns a fully initialized descriptor
@@ -102,11 +104,19 @@ pub fn map_program_image_into_user_address_space(image: &[u8]) -> ExecResult<Loa
             for (idx, pfn) in code_pfns.iter().copied().enumerate() {
                 let page_va = USER_PROGRAM_ENTRY_RIP + idx as u64 * pmm::PAGE_SIZE;
                 vmm::map_user_page(page_va, pfn, true).map_err(|_| ExecError::MappingFailed)?;
+
+                // Track which code pages are already mapped into this CR3.
+                // Rollback uses this count to release only never-mapped PFNs explicitly.
+                mapped_code_pages += 1;
             }
 
             // Keep one writable bootstrap stack page at top-of-stack region.
             vmm::map_user_page(USER_STACK_BOOTSTRAP_PAGE_VA, stack_pfn, true)
                 .map_err(|_| ExecError::MappingFailed)?;
+
+            // Mark stack bootstrap page as mapped so rollback knows whether PMM
+            // release is handled by VMM teardown or needs explicit release.
+            stack_mapped = true;
 
             if code_page_count > 0 {
                 let mapped_code_bytes = code_page_count * PAGE_SIZE_BYTES;
@@ -153,8 +163,14 @@ pub fn map_program_image_into_user_address_space(image: &[u8]) -> ExecResult<Loa
     })();
 
     if result.is_err() {
-        // Roll back both page-table changes and reserved physical frames.
-        cleanup_failed_program_mapping(user_cr3, &code_pfns, stack_pfn);
+        // Roll back page-table state and release still-unmapped physical frames.
+        cleanup_failed_program_mapping(
+            user_cr3,
+            &code_pfns,
+            stack_pfn,
+            mapped_code_pages,
+            stack_mapped,
+        );
     }
 
     result
@@ -202,18 +218,33 @@ fn alloc_frame_pfn() -> ExecResult<u64> {
 
 /// Best-effort rollback for partially created user mappings.
 ///
-/// This releases page-table state via VMM teardown and then returns explicitly
-/// tracked frames to PMM when still reserved.
-fn cleanup_failed_program_mapping(user_cr3: u64, code_pfns: &[u64], stack_pfn: Option<u64>) {
-    vmm::destroy_user_address_space(user_cr3);
+/// Uses the same explicit owned-code teardown policy as normal process exit and
+/// then releases only frames that were allocated but never mapped.
+fn cleanup_failed_program_mapping(
+    user_cr3: u64,
+    code_pfns: &[u64],
+    stack_pfn: Option<u64>,
+    mapped_code_pages: usize,
+    stack_mapped: bool,
+) {
+    // Teardown mapped ranges with owned-code policy:
+    // - mapped code PFNs are released (owned image contract),
+    // - mapped stack PFNs are released (always process-owned),
+    // - page-table hierarchy + CR3 root are released.
+    vmm::destroy_user_address_space_with_options(user_cr3, true);
 
     pmm::with_pmm(|mgr| {
-        for pfn in code_pfns.iter().copied() {
+        // Any frames beyond `mapped_code_pages` were never inserted into page
+        // tables and therefore are not covered by VMM teardown.
+        for pfn in code_pfns.iter().copied().skip(mapped_code_pages) {
             let _ = mgr.release_pfn(pfn);
         }
 
-        if let Some(pfn) = stack_pfn {
-            let _ = mgr.release_pfn(pfn);
+        // Apply the same rule to the optional bootstrap stack frame.
+        if !stack_mapped {
+            if let Some(pfn) = stack_pfn {
+                let _ = mgr.release_pfn(pfn);
+            }
         }
     });
 }
