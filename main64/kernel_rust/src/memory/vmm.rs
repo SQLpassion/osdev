@@ -1433,6 +1433,14 @@ pub fn map_user_page(virtual_address: u64, pfn: u64, writable: bool) -> Result<(
         // Keep `present` + physical frame, update only user/writable flags.
         pt.entries[pt_idx].set_writable(writable);
         pt.entries[pt_idx].set_user(true);
+
+        // A permission change (e.g. writable → read-only) is not visible to
+        // the processor until the stale TLB entry for this VA is evicted.
+        // Without invalidation the CPU may keep using the old cached translation
+        // with the previous writable bit, allowing user code to modify pages
+        // that should be read-only.
+        invlpg(virtual_address);
+
         return Ok(());
     }
 
