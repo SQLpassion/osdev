@@ -557,9 +557,29 @@ fn remove_task(meta: &mut SchedulerMetadata, task_id: usize) -> bool {
                 }
                 meta.active_cr3 = meta.kernel_cr3;
             } else {
-                // Without a known-safe fallback CR3, skip teardown to avoid
-                // freeing the currently active address space.
-                // Slot/stack cleanup still proceeds so scheduler state stays consistent.
+                // This branch indicates a scheduler bug:
+                // - kernel_cr3 == 0: set_kernel_address_space_cr3() was never called
+                //   while a user task with its own CR3 was already running.
+                // - kernel_cr3 == cr3: a user task was spawned with the kernel CR3,
+                //   which violates the address-space isolation invariant.
+                //
+                // In either case there is no safe CR3 to switch to before teardown.
+                // Destroying the user address space while it is the active CR3 would
+                // release the PML4 frame and leave the CPU pointing at freed memory,
+                // causing an immediate triple fault. Skipping cleanup leaks the
+                // address space, but avoids a harder crash.
+                //
+                // Slot and stack cleanup still proceed below so scheduler state
+                // does not become permanently inconsistent.
+                debug_assert!(
+                    false,
+                    "remove_task: cannot tear down user CR3 {:#x} — \
+                     no safe kernel CR3 available (kernel_cr3={:#x}). \
+                     Ensure set_kernel_address_space_cr3() is called before \
+                     spawning user tasks.",
+                    cr3,
+                    meta.kernel_cr3,
+                );
                 cleanup = None;
             }
         }
