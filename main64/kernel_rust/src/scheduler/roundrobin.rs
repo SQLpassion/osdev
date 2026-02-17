@@ -1167,6 +1167,45 @@ pub fn terminate_task(task_id: usize) -> bool {
     with_sched(|meta| remove_task(meta, task_id))
 }
 
+/// Waits cooperatively until `task_id` is no longer present in the scheduler.
+///
+/// This is intended for foreground command flows (for example REPL `exec`)
+/// that need to block the caller until a spawned task has terminated.
+///
+/// Behavior:
+/// - if `task_id` is already absent, this returns immediately,
+/// - otherwise this repeatedly yields so normal scheduler ticks can progress.
+pub fn wait_for_task_exit(task_id: usize) {
+    wait_for_task_exit_with(
+        task_id,
+        |id| task_frame_ptr(id).is_some(),
+        || yield_now(),
+    );
+}
+
+/// Generic wait helper behind [`wait_for_task_exit`].
+///
+/// `is_task_alive` must report whether `task_id` is still present.
+/// `yield_once` must provide one cooperative scheduling opportunity.
+///
+/// Primarily exposed to keep the wait-loop contract directly testable without
+/// requiring real interrupt-driven context switches in tests.
+pub fn wait_for_task_exit_with<FAlive, FYield>(
+    task_id: usize,
+    mut is_task_alive: FAlive,
+    mut yield_once: FYield,
+) where
+    FAlive: FnMut(usize) -> bool,
+    FYield: FnMut(),
+{
+    // Foreground wait policy:
+    // - poll liveness,
+    // - yield between polls so the target task can run and eventually exit.
+    while is_task_alive(task_id) {
+        yield_once();
+    }
+}
+
 /// Marks an existing task as user-mode task context.
 ///
 /// The scheduler uses `kernel_rsp_top` to update `TSS.RSP0` before resuming

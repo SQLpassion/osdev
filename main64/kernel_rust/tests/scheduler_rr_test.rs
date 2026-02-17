@@ -1309,6 +1309,66 @@ fn test_waitqueue_adapter_blocks_then_wakes_task() {
     );
 }
 
+/// Contract: foreground wait helper keeps yielding while task is reported alive.
+/// Given: A deterministic liveness source and a deterministic yield hook.
+/// When: `wait_for_task_exit_with` is executed with those hooks.
+/// Then: It must poll the configured task id until liveness flips to false and
+///       invoke the yield hook once per alive iteration.
+/// Failure Impact: Indicates a regression in foreground-exec waiting semantics.
+#[test_case]
+fn test_wait_for_task_exit_with_polls_until_liveness_turns_false() {
+    let expected_task_id = 7usize;
+    let mut remaining_alive_polls = 3usize;
+    let mut yield_calls = 0usize;
+
+    sched::wait_for_task_exit_with(
+        expected_task_id,
+        |observed_task_id| {
+            assert!(
+                observed_task_id == expected_task_id,
+                "wait helper must poll the originally requested task id"
+            );
+
+            if remaining_alive_polls > 0 {
+                remaining_alive_polls -= 1;
+                true
+            } else {
+                false
+            }
+        },
+        || {
+            yield_calls += 1;
+        },
+    );
+
+    assert!(
+        remaining_alive_polls == 0,
+        "wait helper must continue polling until liveness is reported as false"
+    );
+    assert!(
+        yield_calls == 3,
+        "wait helper must yield once per alive iteration"
+    );
+}
+
+/// Contract: foreground wait returns immediately for absent tasks.
+/// Given: A liveness hook that reports "already absent" on first poll.
+/// When: `wait_for_task_exit_with` is called for that task id.
+/// Then: It must return without requiring cooperative yields.
+/// Failure Impact: Indicates a regression in no-op foreground wait semantics.
+#[test_case]
+fn test_wait_for_task_exit_returns_immediately_for_absent_task() {
+    let mut yield_calls = 0usize;
+    sched::wait_for_task_exit_with(usize::MAX, |_task_id| false, || {
+        yield_calls += 1;
+    });
+
+    assert!(
+        yield_calls == 0,
+        "wait helper must not yield when task is already absent"
+    );
+}
+
 // ── Exit syscall integration test ───────────────────────────────────
 
 /// Contract: Exit syscall marks running task as zombie and returns SYSCALL_OK.

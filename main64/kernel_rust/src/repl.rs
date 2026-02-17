@@ -171,7 +171,7 @@ fn execute_command(line: &str) {
                 writeln!(screen, "  cat <file>      - print FAT12 file content (8.3 name)").unwrap();
                 writeln!(
                     screen,
-                    "  exec <file>     - load FAT12 user program and spawn ring-3 task"
+                    "  exec <file>     - run FAT12 user program in foreground"
                 )
                 .unwrap();
                 writeln!(screen, "  shutdown        - shutdown the system").unwrap();
@@ -297,9 +297,17 @@ fn execute_command(line: &str) {
         },
         "exec" => match (parts.next(), parts.next()) {
             (Some(file_name), None) => match process::exec_from_fat12(file_name) {
-                Ok(task_id) => with_screen(|screen| {
-                    writeln!(screen, "exec started '{}' as task {}", file_name, task_id).unwrap();
-                }),
+                Ok(task_id) => {
+                    with_screen(|screen| {
+                        writeln!(screen, "exec started '{}' as task {}", file_name, task_id)
+                            .unwrap();
+                    });
+
+                    // Foreground exec policy:
+                    // - keep REPL in this command handler until the spawned task exits,
+                    // - yield cooperatively so scheduler can run the user task.
+                    scheduler::wait_for_task_exit(task_id);
+                }
                 Err(err) => with_screen(|screen| {
                     writeln!(screen, "exec failed for '{}': {:?}", file_name, err).unwrap();
                 }),
