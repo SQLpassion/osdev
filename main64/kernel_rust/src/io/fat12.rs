@@ -40,6 +40,15 @@ const FAT12_EOF_MIN: u16 = 0x0FF8;
 const FAT12_MAX_CLUSTER_ID: usize = 0x1000;
 const FAT12_MIN_DATA_CLUSTER: u16 = 2;
 
+/// Maximum file size in bytes that will be accepted from FAT12 directory entries.
+///
+/// This limit protects against corrupted directory entries with unreasonably
+/// large file_size fields that could cause heap exhaustion via Vec::with_capacity().
+///
+/// Set to 2 MiB, which is larger than the entire 1.44 MiB floppy capacity, but
+/// small enough to prevent DoS attacks via memory exhaustion.
+const MAX_FILE_SIZE: usize = 2 * 1024 * 1024;
+
 /// FAT12-specific errors returned by directory parsing and file-content reads.
 ///
 /// This enum separates low-level ATA failures from higher-level filesystem
@@ -402,6 +411,11 @@ fn read_file_from_entry(file_meta: FileEntryMeta, fat: &[u8]) -> Result<Vec<u8>,
     // Zero-length files are valid and do not require FAT traversal.
     if file_size == 0 {
         return Ok(Vec::new());
+    }
+
+    // Reject unreasonably large file sizes that could cause heap exhaustion.
+    if file_size > MAX_FILE_SIZE {
+        return Err(Fat12Error::CorruptDirectoryEntry);
     }
 
     if file_meta.first_cluster < FAT12_MIN_DATA_CLUSTER {
