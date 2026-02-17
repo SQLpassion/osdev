@@ -44,6 +44,10 @@ fn test_syscall_ids_are_stable() {
     assert!(SyscallId::GetChar as u64 == 4, "GetChar syscall id changed");
     assert!(SyscallId::GetCursor as u64 == 5, "GetCursor syscall id changed");
     assert!(SyscallId::SetCursor as u64 == 6, "SetCursor syscall id changed");
+    assert!(
+        SyscallId::ClearScreen as u64 == 7,
+        "ClearScreen syscall id changed"
+    );
 }
 
 /// Contract: public WriteConsole syscall constant matches enum discriminant.
@@ -82,6 +86,15 @@ fn test_set_cursor_constant_matches_enum_id() {
     );
 }
 
+/// Contract: public ClearScreen syscall constant matches enum discriminant.
+#[test_case]
+fn test_clear_screen_constant_matches_enum_id() {
+    assert!(
+        SyscallId::CLEAR_SCREEN == SyscallId::ClearScreen as u64,
+        "CLEAR_SCREEN constant must match ClearScreen enum value"
+    );
+}
+
 /// Contract: GetChar syscall enum id remains stable.
 #[test_case]
 fn test_get_char_enum_id_is_stable() {
@@ -98,6 +111,15 @@ fn test_get_cursor_enum_id_is_stable() {
 #[test_case]
 fn test_set_cursor_enum_id_is_stable() {
     assert!(SyscallId::SetCursor as u64 == 6, "SetCursor syscall id changed");
+}
+
+/// Contract: ClearScreen syscall enum id remains stable.
+#[test_case]
+fn test_clear_screen_enum_id_is_stable() {
+    assert!(
+        SyscallId::ClearScreen as u64 == 7,
+        "ClearScreen syscall id changed"
+    );
 }
 
 /// Contract: unknown syscall returns enosys.
@@ -410,4 +432,20 @@ fn test_set_cursor_clamps_to_screen_bounds() {
     let col = (packed & 0xFFFF_FFFF) as usize;
     assert!(row == 24, "row must clamp to last VGA row");
     assert!(col == 79, "col must clamp to last VGA column");
+}
+
+/// Contract: clear_screen resets cursor to origin and returns success.
+#[test_case]
+fn test_clear_screen_resets_cursor_to_origin() {
+    let set_ret = syscall::dispatch(SyscallId::SetCursor as u64, 12, 34, 0, 0);
+    assert!(set_ret == 0, "set_cursor precondition must succeed");
+
+    let clear_ret = syscall::dispatch(SyscallId::ClearScreen as u64, 0, 0, 0, 0);
+    assert!(clear_ret == 0, "clear_screen must return success");
+
+    let packed = syscall::dispatch(SyscallId::GetCursor as u64, 0, 0, 0, 0);
+    let row = (packed >> 32) as usize;
+    let col = (packed & 0xFFFF_FFFF) as usize;
+    assert!(row == 0, "clear_screen must reset row to 0");
+    assert!(col == 0, "clear_screen must reset col to 0");
 }

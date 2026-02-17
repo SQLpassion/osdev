@@ -4,6 +4,7 @@
 //! - exercise `SetCursor`/`GetCursor` through the real user-mode `int 0x80` path,
 //! - validate expected cursor behavior (roundtrip, clamping, newline transition),
 //! - print explicit PASS/FAIL markers to VGA so behavior is visible without debugger.
+//! - start with a clean screen and terminate only after ESC key press.
 //!
 //! Execution model:
 //! 1. Clone kernel page tables into a dedicated user CR3.
@@ -46,6 +47,8 @@ const CURSOR_MSG_FAIL_NL: &[u8] = b"[FAIL] newline cursor transition\n";
 const CURSOR_MSG_SUMMARY_OK: &[u8] = b"[ring3] Cursor demo complete: PASS\n";
 const CURSOR_MSG_SUMMARY_FAIL: &[u8] = b"[ring3] Cursor demo complete: FAIL\n";
 const CURSOR_MSG_ERR: &[u8] = b"[ring3] Cursor syscall failed\n";
+const CURSOR_MSG_WAIT_ESC: &[u8] = b"[ring3] Press ESC to clear screen and exit cursor demo\n";
+const CURSOR_MSG_EXIT: &[u8] = b"[ring3] ESC pressed. Screen cleared. Exiting cursor demo.\n";
 const CURSOR_MSG_NL_ONLY: &[u8] = b"\n";
 
 // Compact string table layout inside USER_CURSOR_TASK_DATA_VA page.
@@ -64,7 +67,9 @@ const CURSOR_MSG_SUMMARY_OK_OFFSET: usize = CURSOR_MSG_FAIL_NL_OFFSET + CURSOR_M
 const CURSOR_MSG_SUMMARY_FAIL_OFFSET: usize =
     CURSOR_MSG_SUMMARY_OK_OFFSET + CURSOR_MSG_SUMMARY_OK.len();
 const CURSOR_MSG_ERR_OFFSET: usize = CURSOR_MSG_SUMMARY_FAIL_OFFSET + CURSOR_MSG_SUMMARY_FAIL.len();
-const CURSOR_MSG_NL_ONLY_OFFSET: usize = CURSOR_MSG_ERR_OFFSET + CURSOR_MSG_ERR.len();
+const CURSOR_MSG_WAIT_ESC_OFFSET: usize = CURSOR_MSG_ERR_OFFSET + CURSOR_MSG_ERR.len();
+const CURSOR_MSG_EXIT_OFFSET: usize = CURSOR_MSG_WAIT_ESC_OFFSET + CURSOR_MSG_WAIT_ESC.len();
+const CURSOR_MSG_NL_ONLY_OFFSET: usize = CURSOR_MSG_EXIT_OFFSET + CURSOR_MSG_EXIT.len();
 
 /// Launches the ring-3 cursor demo task and blocks until completion.
 ///
@@ -130,10 +135,12 @@ pub(crate) fn run_user_mode_cursor_demo() {
 /// - one writable user stack page,
 /// - one readonly user data page (populated after mapping).
 fn map_cursor_task_pages(target_cr3: u64) -> Result<(), &'static str> {
-    let required_kernel_function_vas: [u64; 8] = [
+    let required_kernel_function_vas: [u64; 10] = [
         cursor_ring3_task as *const () as usize as u64,
         syscall::user::sys_get_cursor as *const () as usize as u64,
         syscall::user::sys_set_cursor as *const () as usize as u64,
+        syscall::user::sys_clear_screen as *const () as usize as u64,
+        syscall::user::sys_getchar as *const () as usize as u64,
         syscall::user::sys_write_console as *const () as usize as u64,
         syscall::user::sys_exit as *const () as usize as u64,
         syscall::abi::syscall0 as *const () as usize as u64,
@@ -262,6 +269,16 @@ fn write_cursor_data_page(target_cr3: u64) -> Result<(), &'static str> {
                 base.add(CURSOR_MSG_ERR_OFFSET),
                 CURSOR_MSG_ERR.len(),
             );
+            core::ptr::copy_nonoverlapping(
+                CURSOR_MSG_WAIT_ESC.as_ptr(),
+                base.add(CURSOR_MSG_WAIT_ESC_OFFSET),
+                CURSOR_MSG_WAIT_ESC.len(),
+            );
+            core::ptr::copy_nonoverlapping(
+                CURSOR_MSG_EXIT.as_ptr(),
+                base.add(CURSOR_MSG_EXIT_OFFSET),
+                CURSOR_MSG_EXIT.len(),
+            );
 
             core::ptr::copy_nonoverlapping(
                 CURSOR_MSG_NL_ONLY.as_ptr(),
@@ -277,9 +294,11 @@ fn write_cursor_data_page(target_cr3: u64) -> Result<(), &'static str> {
 /// Ring-3 demo task entry.
 ///
 /// Test sequence:
+/// 0. `ClearScreen()` to guarantee deterministic visual output.
 /// 1. `SetCursor(3,5)` then `GetCursor()` => expect `(3,5)` (roundtrip).
 /// 2. `SetCursor(usize::MAX, usize::MAX)` => expect clamp to `(24,79)`.
 /// 3. `SetCursor(10,0)`, print newline, then `GetCursor()` => expect `(11,0)`.
+/// 4. Wait for ESC key; on ESC clear screen again and print exit message.
 ///
 /// Output:
 /// - emits PASS/FAIL line per check,
@@ -287,6 +306,13 @@ fn write_cursor_data_page(target_cr3: u64) -> Result<(), &'static str> {
 /// - always exits via `sys_exit`.
 extern "C" fn cursor_ring3_task() -> ! {
     let mut failures = 0usize;
+
+    match syscall::user::sys_clear_screen() {
+        Ok(()) => {}
+        Err(_) => {
+            failures += 1;
+        }
+    }
 
     // SAFETY:
     // - `USER_CURSOR_TASK_DATA_VA` points to a mapped read-only user data page.
@@ -406,6 +432,29 @@ extern "C" fn cursor_ring3_task() -> ! {
             let ptr = (USER_CURSOR_TASK_DATA_VA + CURSOR_MSG_ERR_OFFSET as u64) as *const u8;
             let _ = syscall::user::sys_write_console(ptr, CURSOR_MSG_ERR.len());
         }
+    }
+
+    // SAFETY:
+    // - Data page is mapped user-readable; offset/len are in-bounds constants.
+    unsafe {
+        let ptr = (USER_CURSOR_TASK_DATA_VA + CURSOR_MSG_WAIT_ESC_OFFSET as u64) as *const u8;
+        let _ = syscall::user::sys_write_console(ptr, CURSOR_MSG_WAIT_ESC.len());
+    }
+
+    loop {
+        match syscall::user::sys_getchar() {
+            Ok(0x1B) => break,
+            Ok(_) => {}
+            Err(_) => {}
+        }
+    }
+
+    let _ = syscall::user::sys_clear_screen();
+    // SAFETY:
+    // - Data page is mapped user-readable; offset/len are in-bounds constants.
+    unsafe {
+        let ptr = (USER_CURSOR_TASK_DATA_VA + CURSOR_MSG_EXIT_OFFSET as u64) as *const u8;
+        let _ = syscall::user::sys_write_console(ptr, CURSOR_MSG_EXIT.len());
     }
 
     syscall::user::sys_exit();

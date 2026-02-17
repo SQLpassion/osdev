@@ -49,6 +49,7 @@ pub fn dispatch(syscall_nr: u64, arg0: u64, arg1: u64, arg2: u64, arg3: u64) -> 
         SyscallId::GET_CHAR => syscall_getchar_impl(),
         SyscallId::GET_CURSOR => syscall_get_cursor_impl(),
         SyscallId::SET_CURSOR => syscall_set_cursor_impl(arg0 as usize, arg1 as usize),
+        SyscallId::CLEAR_SCREEN => syscall_clear_screen_impl(),
         SyscallId::EXIT => syscall_exit_impl(),
         _ => {
             // Silence unused parameter warnings for future syscalls
@@ -214,6 +215,16 @@ fn syscall_get_cursor_impl() -> u64 {
 fn syscall_set_cursor_impl(row: usize, col: usize) -> u64 {
     with_screen(|screen| {
         screen.set_cursor(row, col);
+    });
+    SYSCALL_OK
+}
+
+/// Implements `ClearScreen()`.
+///
+/// Clears the entire VGA text buffer and resets the cursor position to `(0, 0)`.
+fn syscall_clear_screen_impl() -> u64 {
+    with_screen(|screen| {
+        screen.clear();
     });
     SYSCALL_OK
 }

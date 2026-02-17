@@ -191,6 +191,26 @@ pub fn sys_set_cursor(row: usize, col: usize) -> Result<(), SysError> {
     }
 }
 
+/// Clears the VGA text screen and resets cursor to `(0, 0)`.
+#[inline(always)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn sys_clear_screen() -> Result<(), SysError> {
+    let raw_value = unsafe {
+        // SAFETY:
+        // - Wrapper is intended for contexts where `int 0x80` is configured.
+        // - ClearScreen takes no memory arguments.
+        abi::syscall0(SyscallId::ClearScreen as u64)
+    };
+
+    match raw_value {
+        SYSCALL_ERR_UNSUPPORTED => Err(SysError::UnsupportedSyscall),
+        SYSCALL_ERR_INVALID_ARG => Err(SysError::InvalidArgument),
+        SYSCALL_ERR_IO => Err(SysError::IoError),
+        x if x >= SYSCALL_ERR_IO => Err(SysError::Unknown(x)),
+        _ => Ok(()),
+    }
+}
+
 /// Terminates the current task.
 ///
 /// Expected behavior:

@@ -328,3 +328,31 @@ fn test_int80_syscall_user_cursor_wrapper_roundtrip_and_clamp() {
         "sys_get_cursor must report clamped VGA bounds after max coordinates"
     );
 }
+
+/// Contract: int 0x80 user clear-screen wrapper resets cursor to origin.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "int 0x80 user clear-screen wrapper resets cursor to origin".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_int80_syscall_user_clear_screen_wrapper_resets_cursor() {
+    interrupts::init();
+
+    let set_ok = syscall::user::sys_set_cursor(8, 21);
+    assert!(
+        set_ok == Ok(()),
+        "sys_set_cursor precondition must succeed via int 0x80"
+    );
+
+    let clear_ok = syscall::user::sys_clear_screen();
+    assert!(
+        clear_ok == Ok(()),
+        "sys_clear_screen must return success via int 0x80"
+    );
+
+    let pos = syscall::user::sys_get_cursor();
+    assert!(
+        pos == Ok((0, 0)),
+        "sys_clear_screen must reset cursor to origin"
+    );
+}

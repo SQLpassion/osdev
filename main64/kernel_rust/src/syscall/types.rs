@@ -16,6 +16,8 @@ pub enum SyscallId {
     GetCursor = 5,
     /// Set VGA cursor position (`arg0=row`, `arg1=col`).
     SetCursor = 6,
+    /// Clear VGA text screen and reset cursor to origin.
+    ClearScreen = 7,
 }
 
 impl SyscallId {
@@ -39,6 +41,9 @@ impl SyscallId {
 
     /// Syscall number for SetCursor.
     pub const SET_CURSOR: u64 = Self::SetCursor as u64;
+
+    /// Syscall number for ClearScreen.
+    pub const CLEAR_SCREEN: u64 = Self::ClearScreen as u64;
 }
 
 /// Unknown syscall number.
