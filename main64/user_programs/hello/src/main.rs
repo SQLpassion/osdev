@@ -4,7 +4,7 @@
 #[path = "../../common/syscall.rs"]
 mod syscall;
 
-const HELLO_MSG: &[u8] = b"[ring3] HELLO.BIN launched\n";
+const HELLO_MSG: &[u8] = b"HELLO.BIN launched as a [ring3] task\n";
 
 #[no_mangle]
 pub extern "C" fn _start() -> ! {

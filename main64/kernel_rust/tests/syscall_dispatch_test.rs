@@ -50,6 +50,47 @@ fn test_syscall_ids_are_stable() {
     );
 }
 
+/// Contract: syscall number-to-name mapping for dispatcher logs stays stable.
+#[test_case]
+fn test_syscall_name_mapping_for_logging_is_stable() {
+    assert!(
+        syscall::syscall_name_for_number(SyscallId::Yield as u64) == "Yield",
+        "Yield mapping must stay stable for syscall trace output"
+    );
+    assert!(
+        syscall::syscall_name_for_number(SyscallId::WriteSerial as u64) == "WriteSerial",
+        "WriteSerial mapping must stay stable for syscall trace output"
+    );
+    assert!(
+        syscall::syscall_name_for_number(SyscallId::Exit as u64) == "Exit",
+        "Exit mapping must stay stable for syscall trace output"
+    );
+    assert!(
+        syscall::syscall_name_for_number(SyscallId::WriteConsole as u64) == "WriteConsole",
+        "WriteConsole mapping must stay stable for syscall trace output"
+    );
+    assert!(
+        syscall::syscall_name_for_number(SyscallId::GetChar as u64) == "GetChar",
+        "GetChar mapping must stay stable for syscall trace output"
+    );
+    assert!(
+        syscall::syscall_name_for_number(SyscallId::GetCursor as u64) == "GetCursor",
+        "GetCursor mapping must stay stable for syscall trace output"
+    );
+    assert!(
+        syscall::syscall_name_for_number(SyscallId::SetCursor as u64) == "SetCursor",
+        "SetCursor mapping must stay stable for syscall trace output"
+    );
+    assert!(
+        syscall::syscall_name_for_number(SyscallId::ClearScreen as u64) == "ClearScreen",
+        "ClearScreen mapping must stay stable for syscall trace output"
+    );
+    assert!(
+        syscall::syscall_name_for_number(0xDEAD) == "Unknown",
+        "unknown syscall mapping must stay stable for syscall trace output"
+    );
+}
+
 /// Contract: public WriteConsole syscall constant matches enum discriminant.
 #[test_case]
 fn test_write_console_constant_matches_enum_id() {

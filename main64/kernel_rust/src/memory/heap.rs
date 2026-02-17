@@ -212,7 +212,7 @@ pub fn malloc(size: usize) -> *mut u8 {
         logging::logln_with_options(
             "heap",
             format_args!(
-                "[heap] alloc failed (overflow) requested={}",
+                "[HEAP] alloc failed (overflow) requested={}",
                 requested_size
             ),
             serial_debug_enabled(),
@@ -247,7 +247,7 @@ pub fn malloc(size: usize) -> *mut u8 {
                 logging::logln_with_options(
                     "heap",
                     format_args!(
-                        "[heap] alloc ptr={:#x} requested={} block={}",
+                        "[HEAP] alloc ptr={:#x} requested={} block={}",
                         ptr as usize, requested_size, size
                     ),
                     serial_debug_enabled(),
@@ -260,7 +260,7 @@ pub fn malloc(size: usize) -> *mut u8 {
                 logging::logln_with_options(
                     "heap",
                     format_args!(
-                        "[heap] alloc failed (grow) requested={} block={}",
+                        "[HEAP] alloc failed (grow) requested={} block={}",
                         requested_size, size
                     ),
                     serial_debug_enabled(),
@@ -316,7 +316,7 @@ pub fn free(ptr: *mut u8) {
         FreeResult::Freed { block_size } => {
             logging::logln_with_options(
                 "heap",
-                format_args!("[heap] free ptr={:#x} block={}", ptr as usize, block_size),
+                format_args!("[HEAP] free ptr={:#x} block={}", ptr as usize, block_size),
                 serial_debug_enabled(),
                 true,
             );
@@ -325,7 +325,7 @@ pub fn free(ptr: *mut u8) {
             logging::logln_with_options(
                 "heap",
                 format_args!(
-                    "[heap] free rejected ptr={:#x} reason={}",
+                    "[HEAP] free rejected ptr={:#x} reason={}",
                     ptr as usize, reason
                 ),
                 serial_debug_enabled(),
@@ -541,14 +541,14 @@ pub fn run_self_test(screen: &mut Screen) {
     let mut failures = 0u32;
     logging::logln_with_options(
         "heap",
-        format_args!("[heap-test] start"),
+        format_args!("[HEAP-TEST] start"),
         serial_debug_enabled(),
         true,
     );
     if is_initialized() {
         logging::logln_with_options(
             "heap",
-            format_args!("[heap-test] reinitializing heap"),
+            format_args!("[HEAP-TEST] reinitializing heap"),
             serial_debug_enabled(),
             true,
         );
@@ -567,7 +567,7 @@ pub fn run_self_test(screen: &mut Screen) {
         writeln!(screen, "  [ OK ] initial allocation layout").unwrap();
         logging::logln_with_options(
             "heap",
-            format_args!("[heap-test] OK initial layout"),
+            format_args!("[HEAP-TEST] OK initial layout"),
             serial_debug_enabled(),
             true,
         );
@@ -577,7 +577,7 @@ pub fn run_self_test(screen: &mut Screen) {
         logging::logln_with_options(
             "heap",
             format_args!(
-                "[heap-test] FAIL initial layout: ({},{}), ({},{}), ({},{})",
+                "[HEAP-TEST] FAIL initial layout: ({},{}), ({},{}), ({},{})",
                 size1, in_use1, size2, in_use2, size3, in_use3
             ),
             serial_debug_enabled(),
@@ -592,7 +592,7 @@ pub fn run_self_test(screen: &mut Screen) {
         writeln!(screen, "  [ OK ] free first block").unwrap();
         logging::logln_with_options(
             "heap",
-            format_args!("[heap-test] OK free first block"),
+            format_args!("[HEAP-TEST] OK free first block"),
             serial_debug_enabled(),
             true,
         );
@@ -602,7 +602,7 @@ pub fn run_self_test(screen: &mut Screen) {
         logging::logln_with_options(
             "heap",
             format_args!(
-                "[heap-test] FAIL free first block: ({},{}), ({},{})",
+                "[HEAP-TEST] FAIL free first block: ({},{}), ({},{})",
                 size1, in_use1, size2, in_use2
             ),
             serial_debug_enabled(),
@@ -617,7 +617,7 @@ pub fn run_self_test(screen: &mut Screen) {
         writeln!(screen, "  [ OK ] split after 50-byte alloc").unwrap();
         logging::logln_with_options(
             "heap",
-            format_args!("[heap-test] OK split after 50-byte alloc"),
+            format_args!("[HEAP-TEST] OK split after 50-byte alloc"),
             serial_debug_enabled(),
             true,
         );
@@ -627,7 +627,7 @@ pub fn run_self_test(screen: &mut Screen) {
         logging::logln_with_options(
             "heap",
             format_args!(
-                "[heap-test] FAIL split after 50-byte alloc: ({},{}), ({},{})",
+                "[HEAP-TEST] FAIL split after 50-byte alloc: ({},{}), ({},{})",
                 size1, in_use1, size2, in_use2
             ),
             serial_debug_enabled(),
@@ -641,7 +641,7 @@ pub fn run_self_test(screen: &mut Screen) {
         writeln!(screen, "  [ OK ] allocate 40-byte block").unwrap();
         logging::logln_with_options(
             "heap",
-            format_args!("[heap-test] OK allocate 40-byte block"),
+            format_args!("[HEAP-TEST] OK allocate 40-byte block"),
             serial_debug_enabled(),
             true,
         );
@@ -651,7 +651,7 @@ pub fn run_self_test(screen: &mut Screen) {
         logging::logln_with_options(
             "heap",
             format_args!(
-                "[heap-test] FAIL allocate 40-byte block: ({},{})",
+                "[HEAP-TEST] FAIL allocate 40-byte block: ({},{})",
                 size2, in_use2
             ),
             serial_debug_enabled(),
@@ -668,7 +668,7 @@ pub fn run_self_test(screen: &mut Screen) {
         writeln!(screen, "  [ OK ] merge after frees").unwrap();
         logging::logln_with_options(
             "heap",
-            format_args!("[heap-test] OK merge after frees"),
+            format_args!("[HEAP-TEST] OK merge after frees"),
             serial_debug_enabled(),
             true,
         );
@@ -678,7 +678,7 @@ pub fn run_self_test(screen: &mut Screen) {
         logging::logln_with_options(
             "heap",
             format_args!(
-                "[heap-test] FAIL merge after frees: ({},{})",
+                "[HEAP-TEST] FAIL merge after frees: ({},{})",
                 size1, in_use1
             ),
             serial_debug_enabled(),
@@ -694,7 +694,7 @@ pub fn run_self_test(screen: &mut Screen) {
         writeln!(screen, "  [ OK ] rust alloc (Vec) on heap").unwrap();
         logging::logln_with_options(
             "heap",
-            format_args!("[heap-test] OK rust alloc (Vec)"),
+            format_args!("[HEAP-TEST] OK rust alloc (Vec)"),
             serial_debug_enabled(),
             true,
         );
@@ -704,7 +704,7 @@ pub fn run_self_test(screen: &mut Screen) {
         logging::logln_with_options(
             "heap",
             format_args!(
-                "[heap-test] FAIL rust alloc (Vec): len={}, first={}, last={}",
+                "[HEAP-TEST] FAIL rust alloc (Vec): len={}, first={}, last={}",
                 values.len(),
                 values.first().copied().unwrap_or(0),
                 values.last().copied().unwrap_or(0)
@@ -718,7 +718,7 @@ pub fn run_self_test(screen: &mut Screen) {
         writeln!(screen, "Heap self-test complete (OK).").unwrap();
         logging::logln_with_options(
             "heap",
-            format_args!("[heap-test] done (ok)"),
+            format_args!("[HEAP-TEST] done (ok)"),
             serial_debug_enabled(),
             true,
         );
@@ -726,7 +726,7 @@ pub fn run_self_test(screen: &mut Screen) {
         writeln!(screen, "Heap self-test complete ({} failures).", failures).unwrap();
         logging::logln_with_options(
             "heap",
-            format_args!("[heap-test] done (failures={})", failures),
+            format_args!("[HEAP-TEST] done (failures={})", failures),
             serial_debug_enabled(),
             true,
         );

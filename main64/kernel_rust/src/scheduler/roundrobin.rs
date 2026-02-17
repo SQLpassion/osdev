@@ -1176,11 +1176,7 @@ pub fn terminate_task(task_id: usize) -> bool {
 /// - if `task_id` is already absent, this returns immediately,
 /// - otherwise this repeatedly yields so normal scheduler ticks can progress.
 pub fn wait_for_task_exit(task_id: usize) {
-    wait_for_task_exit_with(
-        task_id,
-        |id| task_frame_ptr(id).is_some(),
-        || yield_now(),
-    );
+    wait_for_task_exit_with(task_id, |id| task_frame_ptr(id).is_some(), yield_now);
 }
 
 /// Generic wait helper behind [`wait_for_task_exit`].

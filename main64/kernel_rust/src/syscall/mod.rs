@@ -13,7 +13,7 @@ pub mod abi;
 pub mod user;
 
 #[allow(unused_imports)]
-pub use dispatch::dispatch;
+pub use dispatch::{dispatch, syscall_name_for_number};
 
 #[allow(unused_imports)]
 pub use types::{
