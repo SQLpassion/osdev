@@ -140,24 +140,35 @@ pub fn map_program_image_into_user_address_space(image: &[u8]) -> ExecResult<Loa
                 let mapped_code_bytes = code_page_count * PAGE_SIZE_BYTES;
 
                 // SAFETY:
-                // - Code-page mappings above ensure `[USER_PROGRAM_ENTRY_RIP, +mapped_code_bytes)`
-                //   is writable in the currently active address space.
-                // - Zeroing removes stale frame content before exposing bytes to user mode.
-                unsafe {
-                    core::ptr::write_bytes(USER_PROGRAM_ENTRY_RIP as *mut u8, 0, mapped_code_bytes);
-                }
-
-                // SAFETY:
                 // - Source slice `image` is valid for `image.len()` bytes.
                 // - Destination starts at `USER_PROGRAM_ENTRY_RIP` and remains writable
                 //   for at least `image.len()` bytes in current CR3.
-                // - Source and destination do not overlap.
+                // - Source and destination do not overlap (kernel image vs. user VA range).
                 unsafe {
                     core::ptr::copy_nonoverlapping(
                         image.as_ptr(),
                         USER_PROGRAM_ENTRY_RIP as *mut u8,
                         image.len(),
                     );
+                }
+
+                // Zero only the tail beyond the image to clear stale frame content.
+                // The image bytes copied above already overwrite the leading portion,
+                // so zeroing those bytes again would be redundant work.
+                //
+                // SAFETY:
+                // - Code-page mappings above ensure `[USER_PROGRAM_ENTRY_RIP, +mapped_code_bytes)`
+                //   is writable in the currently active address space.
+                // - `image.len() <= mapped_code_bytes` is guaranteed by `page_count_for_len`.
+                let tail_len = mapped_code_bytes - image.len();
+                if tail_len > 0 {
+                    unsafe {
+                        core::ptr::write_bytes(
+                            (USER_PROGRAM_ENTRY_RIP as usize + image.len()) as *mut u8,
+                            0,
+                            tail_len,
+                        );
+                    }
                 }
 
                 // Phase 2: tighten permissions after copy (code should be read-only).
