@@ -6,14 +6,25 @@
 #![test_runner(kaos_kernel::testing::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
+extern crate alloc;
+
+use alloc::vec::Vec;
 use core::panic::PanicInfo;
-use kaos_kernel::memory::vmm;
+use kaos_kernel::arch::{gdt, interrupts};
+use kaos_kernel::memory::{heap, pmm, vmm};
 use kaos_kernel::process;
 
 #[no_mangle]
 #[link_section = ".text.boot"]
 pub extern "C" fn KernelMain(_kernel_size: u64) -> ! {
     kaos_kernel::drivers::serial::init();
+    gdt::init();
+    pmm::init(false);
+    interrupts::init();
+    vmm::init(false);
+    heap::init(false);
+    kaos_kernel::drivers::ata::init();
+    kaos_kernel::io::fat12::init();
     test_main();
     loop {
         core::hint::spin_loop();
@@ -166,4 +177,89 @@ fn test_validate_program_image_len_enforces_upper_bound() {
         ),
         "oversized image must be rejected by loader size validator"
     );
+}
+
+/// Contract: image mapper creates dedicated user mappings and copies bytes.
+#[test_case]
+fn test_map_program_image_into_user_address_space_maps_copy_and_permissions() {
+    let image = process::load_program_image("hello.bin")
+        .expect("hello.bin must be loadable before map/copy integration step");
+    let loaded = process::map_program_image_into_user_address_space(&image)
+        .expect("valid user image must map/copy into fresh user CR3");
+
+    assert!(loaded.cr3 != 0, "mapped program must return non-zero CR3");
+    assert!(
+        loaded.entry_rip == process::USER_PROGRAM_ENTRY_RIP,
+        "mapped program entry rip must match process contract"
+    );
+    assert!(
+        loaded.user_rsp == process::USER_PROGRAM_INITIAL_RSP,
+        "mapped program rsp must match process contract"
+    );
+    assert!(
+        loaded.image_len == image.len(),
+        "mapped program descriptor must preserve source image length"
+    );
+
+    let code_page_count = if loaded.image_len == 0 {
+        0
+    } else {
+        (loaded.image_len + pmm::PAGE_SIZE as usize - 1) / pmm::PAGE_SIZE as usize
+    };
+
+    let mut code_pfns = Vec::with_capacity(code_page_count);
+    let mut stack_pfn = 0u64;
+    vmm::with_address_space(loaded.cr3, || {
+        for idx in 0..code_page_count {
+            let code_page_va = process::USER_PROGRAM_ENTRY_RIP + idx as u64 * pmm::PAGE_SIZE;
+            let code_flags = vmm::debug_mapping_flags_for_va(code_page_va)
+                .expect("mapped code page must expose mapping flags");
+            assert!(
+                code_flags == (true, true, true, true, false),
+                "code page must be user-accessible and read-only after copy"
+            );
+
+            let mapped_pfn = vmm::debug_mapped_pfn_for_va(code_page_va)
+                .expect("mapped code page must expose leaf PFN");
+            code_pfns.push(mapped_pfn);
+        }
+
+        let stack_page_va = vmm::USER_STACK_TOP - pmm::PAGE_SIZE;
+        let stack_flags = vmm::debug_mapping_flags_for_va(stack_page_va)
+            .expect("mapped bootstrap stack page must expose mapping flags");
+        assert!(
+            stack_flags == (true, true, true, true, true),
+            "bootstrap stack page must be user-accessible and writable"
+        );
+        stack_pfn = vmm::debug_mapped_pfn_for_va(stack_page_va)
+            .expect("mapped bootstrap stack page must expose leaf PFN");
+
+        // SAFETY:
+        // - Loader mapped code pages in this address space and copied `image` bytes.
+        // - Reading `image.len()` bytes from `USER_PROGRAM_ENTRY_RIP` is valid.
+        unsafe {
+            let code_base = process::USER_PROGRAM_ENTRY_RIP as *const u8;
+            for (idx, expected) in image.iter().enumerate() {
+                let actual = core::ptr::read_volatile(code_base.add(idx));
+                assert!(
+                    actual == *expected,
+                    "mapped image byte mismatch at offset {}: expected 0x{:02x}, got 0x{:02x}",
+                    idx,
+                    *expected,
+                    actual
+                );
+            }
+        }
+    });
+
+    vmm::destroy_user_address_space(loaded.cr3);
+
+    // Release code PFNs explicitly because current VMM teardown keeps USER_CODE
+    // leaf PFNs reserved to support temporary kernel-text alias mappings.
+    pmm::with_pmm(|mgr| {
+        for pfn in code_pfns {
+            let _ = mgr.release_pfn(pfn);
+        }
+        let _ = mgr.release_pfn(stack_pfn);
+    });
 }

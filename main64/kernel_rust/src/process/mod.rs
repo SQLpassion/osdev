@@ -1,7 +1,7 @@
 //! Process loading/execution contracts.
 //!
-//! Phase 2 adds a FAT12-backed loader that reads and validates flat user
-//! binaries. Address-space mapping and runtime spawn logic remain follow-up work.
+//! Phase 3 adds user-address-space image mapping/copy for flat binaries.
+//! Runtime spawn logic remains follow-up work.
 
 mod loader;
 mod types;
@@ -13,4 +13,7 @@ pub use types::{
 };
 
 #[allow(unused_imports)]
-pub use loader::{load_program_image, validate_program_image_len};
+pub use loader::{
+    load_program_image, load_program_into_user_address_space,
+    map_program_image_into_user_address_space, validate_program_image_len,
+};
