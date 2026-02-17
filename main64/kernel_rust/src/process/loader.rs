@@ -103,7 +103,16 @@ pub fn map_program_image_into_user_address_space(image: &[u8]) -> ExecResult<Loa
             // Phase 1: map code pages writable to allow zero-fill + image copy.
             for (idx, pfn) in code_pfns.iter().copied().enumerate() {
                 let page_va = USER_PROGRAM_ENTRY_RIP + idx as u64 * pmm::PAGE_SIZE;
-                vmm::map_user_page(page_va, pfn, true).map_err(|_| ExecError::MappingFailed)?;
+                vmm::map_user_page(page_va, pfn, true).map_err(|e| {
+                    crate::logging::logln(
+                        "loader",
+                        format_args!(
+                            "LOADER: map_user_page(code page {}, va={:#x}, pfn={:#x}, writable=true) failed: {:?}",
+                            idx, page_va, pfn, e
+                        ),
+                    );
+                    ExecError::MappingFailed
+                })?;
 
                 // Track which code pages are already mapped into this CR3.
                 // Rollback uses this count to release only never-mapped PFNs explicitly.
@@ -112,7 +121,16 @@ pub fn map_program_image_into_user_address_space(image: &[u8]) -> ExecResult<Loa
 
             // Keep one writable bootstrap stack page at top-of-stack region.
             vmm::map_user_page(USER_STACK_BOOTSTRAP_PAGE_VA, stack_pfn, true)
-                .map_err(|_| ExecError::MappingFailed)?;
+                .map_err(|e| {
+                    crate::logging::logln(
+                        "loader",
+                        format_args!(
+                            "LOADER: map_user_page(stack, va={:#x}, pfn={:#x}, writable=true) failed: {:?}",
+                            USER_STACK_BOOTSTRAP_PAGE_VA, stack_pfn, e
+                        ),
+                    );
+                    ExecError::MappingFailed
+                })?;
 
             // Mark stack bootstrap page as mapped so rollback knows whether PMM
             // release is handled by VMM teardown or needs explicit release.
@@ -145,8 +163,16 @@ pub fn map_program_image_into_user_address_space(image: &[u8]) -> ExecResult<Loa
                 // Phase 2: tighten permissions after copy (code should be read-only).
                 for (idx, pfn) in code_pfns.iter().copied().enumerate() {
                     let page_va = USER_PROGRAM_ENTRY_RIP + idx as u64 * pmm::PAGE_SIZE;
-                    vmm::map_user_page(page_va, pfn, false)
-                        .map_err(|_| ExecError::MappingFailed)?;
+                    vmm::map_user_page(page_va, pfn, false).map_err(|e| {
+                        crate::logging::logln(
+                            "loader",
+                            format_args!(
+                                "LOADER: map_user_page(code page {}, va={:#x}, pfn={:#x}, writable=false) failed: {:?}",
+                                idx, page_va, pfn, e
+                            ),
+                        );
+                        ExecError::MappingFailed
+                    })?;
                 }
             }
 
@@ -273,7 +299,14 @@ fn cleanup_failed_program_mapping(
 fn spawn_loaded_program(loaded: LoadedProgram) -> ExecResult<usize> {
     match scheduler::spawn_user_task_owning_code(loaded.entry_rip, loaded.user_rsp, loaded.cr3) {
         Ok(task_id) => Ok(task_id),
-        Err(_) => {
+        Err(e) => {
+            crate::logging::logln(
+                "loader",
+                format_args!(
+                    "LOADER: spawn_user_task_owning_code(rip={:#x}, rsp={:#x}, cr3={:#x}) failed: {:?}",
+                    loaded.entry_rip, loaded.user_rsp, loaded.cr3, e
+                ),
+            );
             vmm::destroy_user_address_space_with_options(loaded.cr3, true);
             Err(ExecError::SpawnFailed)
         }
