@@ -10,7 +10,6 @@
 extern crate alloc;
 
 pub mod allocator;
-pub mod apps;
 pub mod arch;
 pub mod drivers;
 pub mod logging;

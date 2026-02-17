@@ -9,7 +9,6 @@
 extern crate alloc;
 
 mod allocator;
-mod apps;
 mod arch;
 mod drivers;
 mod logging;
@@ -146,6 +145,39 @@ extern "C" fn repl_task() -> ! {
     command_prompt_loop();
 }
 
+/// Read a line into `buf`, echoing characters to the screen.
+/// Returns the number of bytes written.
+/// The newline is echoed but not stored in `buf`.
+fn read_line(buf: &mut [u8]) -> usize {
+    let mut len = 0;
+
+    loop {
+        let ch = keyboard::read_char_blocking();
+
+        match ch {
+            b'\r' | b'\n' => {
+                with_screen(|screen| screen.print_char(b'\n'));
+                break;
+            }
+            0x08 => {
+                if len > 0 {
+                    len -= 1;
+                    with_screen(|screen| screen.print_char(0x08));
+                }
+            }
+            _ => {
+                if len < buf.len() {
+                    buf[len] = ch;
+                    len += 1;
+                    with_screen(|screen| screen.print_char(ch));
+                }
+            }
+        }
+    }
+
+    len
+}
+
 /// Infinite prompt loop using read_line; echoes entered lines.
 fn command_prompt_loop() -> ! {
     loop {
@@ -154,7 +186,7 @@ fn command_prompt_loop() -> ! {
         });
 
         let mut buf = [0u8; 128];
-        let len = keyboard::read_line(&mut buf);
+        let len = read_line(&mut buf);
 
         if let Ok(line) = core::str::from_utf8(&buf[..len]) {
             execute_command(line);
@@ -185,8 +217,6 @@ fn execute_command(line: &str) {
                 writeln!(screen, "  echo <text>     - print text").unwrap();
                 writeln!(screen, "  cls             - clear screen").unwrap();
                 writeln!(screen, "  color <name>    - set color (white, cyan, green)").unwrap();
-                writeln!(screen, "  apps            - list available applications").unwrap();
-                writeln!(screen, "  run <app>       - run an application").unwrap();
                 writeln!(
                     screen,
                     "  mtdemo          - run VGA multitasking demo (press q to stop)"
@@ -256,38 +286,6 @@ fn execute_command(line: &str) {
                 writeln!(screen, "Shutting down...").unwrap();
             });
             power::shutdown();
-        }
-        "apps" => {
-            with_screen(apps::list_apps);
-        }
-        "run" => {
-            if let Some(app_name) = parts.next() {
-                let snapshot = with_screen(|screen| screen.save());
-                match apps::spawn_app(app_name) {
-                    Ok(task_id) => {
-                        while scheduler::task_frame_ptr(task_id).is_some() {
-                            scheduler::yield_now();
-                        }
-                        with_screen(|screen| screen.restore(&snapshot));
-                    }
-                    Err(apps::RunAppError::UnknownApp) => {
-                        with_screen(|screen| {
-                            writeln!(screen, "Unknown app: {}", app_name).unwrap();
-                            writeln!(screen, "Use 'apps' to list available applications.").unwrap();
-                        });
-                    }
-                    Err(apps::RunAppError::SpawnFailed(err)) => {
-                        with_screen(|screen| {
-                            writeln!(screen, "Failed to launch app task: {:?}", err).unwrap();
-                        });
-                    }
-                }
-            } else {
-                with_screen(|screen| {
-                    writeln!(screen, "Usage: run <appname>").unwrap();
-                    writeln!(screen, "Use 'apps' to list available applications.").unwrap();
-                });
-            }
         }
         "mtdemo" => {
             run_multitasking_vga_demo();
