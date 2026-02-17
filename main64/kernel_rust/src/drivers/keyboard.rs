@@ -173,11 +173,16 @@ pub extern "C" fn keyboard_worker_task() -> ! {
 ///
 /// Returns `true` when at least one raw scancode was processed.
 pub fn process_pending_scancodes() -> bool {
-    let mut state = KEYBOARD_STATE.lock();
     let mut processed_any = false;
 
     while let Some(code) = KEYBOARD.raw.pop() {
+        let mut state = KEYBOARD_STATE.lock();
         handle_scancode(&mut state, code);
+
+        // Lock is released here at end of each iteration, keeping the
+        // interrupt-disabled window short.
+        drop(state);
+
         processed_any = true;
     }
 
