@@ -10,6 +10,7 @@ use core::panic::PanicInfo;
 use kaos_kernel::io::fat12::{
     normalize_8_3_name, parse_root_directory, read_file, Fat12Error, RootDirectoryRecord,
 };
+use kaos_kernel::process;
 
 const ROOT_DIR_BYTES: usize = 224 * 32;
 const ENTRY_SIZE: usize = 32;
@@ -193,4 +194,20 @@ fn test_read_file_uppercase_name_returns_same_bytes() {
             actual[idx]
         );
     }
+}
+
+/// Contract: bundled user program binary can be read from FAT12 image.
+#[test_case]
+fn test_read_file_hello_bin_present_and_within_user_image_limit() {
+    kaos_kernel::drivers::ata::init();
+
+    let actual = read_file("hello.bin").expect("hello.bin must be readable from FAT12 image");
+    assert!(
+        !actual.is_empty(),
+        "hello.bin must contain executable bytes in FAT12 image"
+    );
+    assert!(
+        actual.len() <= process::USER_PROGRAM_MAX_IMAGE_SIZE,
+        "hello.bin size must fit configured user executable window"
+    );
 }

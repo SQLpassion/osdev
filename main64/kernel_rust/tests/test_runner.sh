@@ -57,6 +57,18 @@ if [ ! -f "$MAIN64_DIR/boot/bootsector.bin" ] || \
     exit 1
 fi
 
+# Ensure user-mode binaries exist for FAT12 integration tests.
+USER_PROGRAM_BIN="$MAIN64_DIR/user_programs/hello/hello.bin"
+if [ ! -f "$USER_PROGRAM_BIN" ]; then
+    echo "  -> User program binary missing. Building user-mode programs..."
+    "$MAIN64_DIR/build_user_programs.sh" debug
+fi
+
+if [ ! -f "$USER_PROGRAM_BIN" ]; then
+    echo "Error: User program binary not found after build: $USER_PROGRAM_BIN"
+    exit 1
+fi
+
 # Create test disk image in main64 directory
 TEST_IMG="$MAIN64_DIR/kaos64_test.img"
 
@@ -69,6 +81,7 @@ docker run --rm -v "$MAIN64_DIR":/src sqlpassion/kaos-buildenv /bin/sh -c "
     fat_imgen -m -f kaos64_test.img -i kaosldr_64/kldr64.bin
     fat_imgen -m -f kaos64_test.img -i SFile.txt
     fat_imgen -m -f kaos64_test.img -i BigFile.txt
+    fat_imgen -m -f kaos64_test.img -i user_programs/hello/hello.bin -n HELLO.BIN
     fat_imgen -m -f kaos64_test.img -i test_kernel.bin -n kernel.bin
 " 2>/dev/null
 
