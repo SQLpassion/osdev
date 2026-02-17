@@ -108,3 +108,62 @@ fn test_exec_error_variant_distinction() {
         "same exec failure cause must compare equal"
     );
 }
+
+/// Contract: FAT12 loader returns the bundled user program and validates size bounds.
+#[test_case]
+fn test_load_program_image_reads_hello_bin() {
+    kaos_kernel::drivers::ata::init();
+
+    let image = process::load_program_image("hello.bin")
+        .expect("hello.bin must be loadable via process FAT12 loader");
+    assert!(
+        !image.is_empty(),
+        "loaded user image must contain bytes"
+    );
+    assert!(
+        image.len() <= process::USER_PROGRAM_MAX_IMAGE_SIZE,
+        "loaded user image must fit configured executable mapping window"
+    );
+}
+
+/// Contract: loader maps FAT12 invalid-name failures to `ExecError::InvalidName`.
+#[test_case]
+fn test_load_program_image_maps_invalid_name_error() {
+    let result = process::load_program_image("invalid.name.txt");
+    assert!(
+        matches!(result, Err(process::ExecError::InvalidName)),
+        "invalid FAT short name must map to ExecError::InvalidName"
+    );
+}
+
+/// Contract: loader maps FAT12 missing-file failures to `ExecError::NotFound`.
+#[test_case]
+fn test_load_program_image_maps_not_found_error() {
+    kaos_kernel::drivers::ata::init();
+
+    let result = process::load_program_image("missing.bin");
+    assert!(
+        matches!(result, Err(process::ExecError::NotFound)),
+        "missing FAT12 entry must map to ExecError::NotFound"
+    );
+}
+
+/// Contract: explicit image-length validator enforces user code window upper bound.
+#[test_case]
+fn test_validate_program_image_len_enforces_upper_bound() {
+    assert!(
+        process::validate_program_image_len(0).is_ok(),
+        "zero-length image must be accepted by loader size validator"
+    );
+    assert!(
+        process::validate_program_image_len(process::USER_PROGRAM_MAX_IMAGE_SIZE).is_ok(),
+        "exact limit image must be accepted by loader size validator"
+    );
+    assert!(
+        matches!(
+            process::validate_program_image_len(process::USER_PROGRAM_MAX_IMAGE_SIZE + 1),
+            Err(process::ExecError::FileTooLarge)
+        ),
+        "oversized image must be rejected by loader size validator"
+    );
+}
