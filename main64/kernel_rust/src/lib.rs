@@ -12,6 +12,7 @@ extern crate alloc;
 pub mod allocator;
 pub mod arch;
 pub mod drivers;
+pub mod io;
 pub mod logging;
 pub mod memory;
 pub mod scheduler;

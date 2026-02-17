@@ -61,6 +61,8 @@ fat_imgen -c -s boot/bootsector.bin -f kaos64_rust.img
 fat_imgen -m -f kaos64_rust.img -i kaosldr_16/kldr16.bin
 fat_imgen -m -f kaos64_rust.img -i kaosldr_64/kldr64.bin
 fat_imgen -m -f kaos64_rust.img -i kernel_rust/target/x86_64-unknown-none/debug/kernel.bin
+fat_imgen -m -f kaos64_rust.img -i SFile.txt
+fat_imgen -m -f kaos64_rust.img -i BigFile.txt
 
 echo ""
 echo "  -> Disk image created successfully!"

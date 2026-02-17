@@ -67,6 +67,8 @@ docker run --rm -v "$MAIN64_DIR":/src sqlpassion/kaos-buildenv /bin/sh -c "
     fat_imgen -c -s boot/bootsector.bin -f kaos64_test.img
     fat_imgen -m -f kaos64_test.img -i kaosldr_16/kldr16.bin
     fat_imgen -m -f kaos64_test.img -i kaosldr_64/kldr64.bin
+    fat_imgen -m -f kaos64_test.img -i SFile.txt
+    fat_imgen -m -f kaos64_test.img -i BigFile.txt
     fat_imgen -m -f kaos64_test.img -i test_kernel.bin -n kernel.bin
 " 2>/dev/null
 

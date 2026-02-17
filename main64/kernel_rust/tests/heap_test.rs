@@ -53,7 +53,7 @@ fn test_heap_alloc_free_round_trip() {
     let ptr = heap::malloc(16);
     assert!(!ptr.is_null(), "malloc should return non-null pointer");
     assert!(
-        (ptr as usize) % 8 == 0,
+        (ptr as usize).is_multiple_of(8),
         "heap allocation should be 8-byte aligned"
     );
 
@@ -137,9 +137,18 @@ fn test_heap_alignment_for_small_allocs() {
         !ptr1.is_null() && !ptr2.is_null() && !ptr3.is_null(),
         "allocations should succeed"
     );
-    assert!((ptr1 as usize) % 8 == 0, "ptr1 should be 8-byte aligned");
-    assert!((ptr2 as usize) % 8 == 0, "ptr2 should be 8-byte aligned");
-    assert!((ptr3 as usize) % 8 == 0, "ptr3 should be 8-byte aligned");
+    assert!(
+        (ptr1 as usize).is_multiple_of(8),
+        "ptr1 should be 8-byte aligned"
+    );
+    assert!(
+        (ptr2 as usize).is_multiple_of(8),
+        "ptr2 should be 8-byte aligned"
+    );
+    assert!(
+        (ptr3 as usize).is_multiple_of(8),
+        "ptr3 should be 8-byte aligned"
+    );
 
     heap::free(ptr1);
     heap::free(ptr2);
@@ -160,7 +169,7 @@ fn test_heap_large_allocation_requires_growth() {
         "large allocation should succeed after heap growth"
     );
     assert!(
-        (ptr as usize) % 8 == 0,
+        (ptr as usize).is_multiple_of(8),
         "large allocation should be 8-byte aligned"
     );
 
@@ -190,7 +199,7 @@ fn test_heap_large_allocation_requires_multiple_growth_steps() {
         "large allocation should succeed after multiple heap growth steps"
     );
     assert!(
-        (ptr as usize) % 8 == 0,
+        (ptr as usize).is_multiple_of(8),
         "large allocation should be 8-byte aligned"
     );
 
@@ -408,7 +417,7 @@ fn test_global_allocator_supports_overaligned_layout() {
     let ptr = unsafe { GLOBAL_ALLOCATOR.alloc(layout) };
     assert!(!ptr.is_null(), "over-aligned allocation should succeed");
     assert!(
-        (ptr as usize) % 64 == 0,
+        (ptr as usize).is_multiple_of(64),
         "over-aligned allocation should satisfy requested alignment"
     );
 
