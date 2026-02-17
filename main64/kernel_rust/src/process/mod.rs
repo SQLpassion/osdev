@@ -1,7 +1,6 @@
 //! Process loading/execution contracts.
 //!
-//! Phase 3 adds user-address-space image mapping/copy for flat binaries.
-//! Runtime spawn logic remains follow-up work.
+//! Phase 5 adds end-to-end FAT12 exec wiring through scheduler user-task spawn.
 
 mod loader;
 mod types;
@@ -14,6 +13,6 @@ pub use types::{
 
 #[allow(unused_imports)]
 pub use loader::{
-    load_program_image, load_program_into_user_address_space,
+    exec_from_fat12, load_program_image, load_program_into_user_address_space,
     map_program_image_into_user_address_space, validate_program_image_len,
 };

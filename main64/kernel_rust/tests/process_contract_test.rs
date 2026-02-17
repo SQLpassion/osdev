@@ -13,6 +13,7 @@ use core::panic::PanicInfo;
 use kaos_kernel::arch::{gdt, interrupts};
 use kaos_kernel::memory::{heap, pmm, vmm};
 use kaos_kernel::process;
+use kaos_kernel::scheduler;
 
 #[no_mangle]
 #[link_section = ".text.boot"]
@@ -262,4 +263,92 @@ fn test_map_program_image_into_user_address_space_maps_copy_and_permissions() {
         }
         let _ = mgr.release_pfn(stack_pfn);
     });
+}
+
+extern "C" fn parked_kernel_task() -> ! {
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+/// Contract: `exec_from_fat12` maps image and spawns a scheduler user task.
+#[test_case]
+fn test_exec_from_fat12_spawns_user_task() {
+    scheduler::init();
+    scheduler::set_kernel_address_space_cr3(vmm::get_pml4_address());
+
+    let task_id =
+        process::exec_from_fat12("hello.bin").expect("hello.bin exec path must spawn user task");
+
+    assert!(
+        scheduler::is_user_task(task_id),
+        "exec_from_fat12 must create a user-mode scheduler entry"
+    );
+
+    let (task_cr3, user_rsp, _kernel_rsp_top) = scheduler::task_context(task_id)
+        .expect("spawned user task must expose scheduler context tuple");
+    assert!(task_cr3 != 0, "spawned user task CR3 must be non-zero");
+    assert!(
+        user_rsp == process::USER_PROGRAM_INITIAL_RSP,
+        "spawned user task must preserve configured initial user RSP"
+    );
+
+    let iret_frame = scheduler::task_iret_frame(task_id)
+        .expect("spawned user task must expose initial iret frame");
+    assert!(
+        iret_frame.rip == process::USER_PROGRAM_ENTRY_RIP,
+        "spawned user task RIP must point to configured user entry base"
+    );
+    assert!(
+        iret_frame.rsp == process::USER_PROGRAM_INITIAL_RSP,
+        "spawned user task IRET rsp must match process user rsp contract"
+    );
+
+    assert!(
+        scheduler::terminate_task(task_id),
+        "spawned user task must be terminatable for test cleanup"
+    );
+}
+
+/// Contract: `exec_from_fat12` maps scheduler spawn errors to `ExecError::SpawnFailed`.
+#[test_case]
+fn test_exec_from_fat12_maps_spawn_failure_to_spawn_failed() {
+    scheduler::init();
+    scheduler::set_kernel_address_space_cr3(vmm::get_pml4_address());
+
+    let mut filler_task_ids = Vec::new();
+    loop {
+        match scheduler::spawn_kernel_task(parked_kernel_task) {
+            Ok(task_id) => filler_task_ids.push(task_id),
+            Err(_) => break,
+        }
+    }
+
+    assert!(
+        !filler_task_ids.is_empty(),
+        "test precondition: scheduler must accept at least one filler task before capacity is hit"
+    );
+
+    let result = process::exec_from_fat12("hello.bin");
+    assert!(
+        matches!(result, Err(process::ExecError::SpawnFailed)),
+        "scheduler-capacity spawn failure must map to ExecError::SpawnFailed"
+    );
+
+    for task_id in filler_task_ids {
+        assert!(
+            scheduler::terminate_task(task_id),
+            "filler task must be terminatable for test cleanup"
+        );
+    }
+}
+
+/// Contract: `exec_from_fat12` maps invalid FAT12 short names to `ExecError::InvalidName`.
+#[test_case]
+fn test_exec_from_fat12_maps_invalid_name_error() {
+    let result = process::exec_from_fat12("invalid.name.txt");
+    assert!(
+        matches!(result, Err(process::ExecError::InvalidName)),
+        "invalid 8.3 input must fail early with ExecError::InvalidName"
+    );
 }

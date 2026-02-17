@@ -59,10 +59,13 @@ pub type ExecResult<T> = Result<T, ExecError>;
 pub struct LoadedProgram {
     /// Address-space root (physical PML4 address) for this process.
     pub cr3: u64,
+
     /// Initial ring-3 instruction pointer.
     pub entry_rip: u64,
+
     /// Initial ring-3 stack pointer.
     pub user_rsp: u64,
+
     /// Loaded executable image length in bytes.
     pub image_len: usize,
 }

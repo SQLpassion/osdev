@@ -4,6 +4,7 @@ use alloc::vec::Vec;
 
 use crate::io::fat12::{self, Fat12Error};
 use crate::memory::{pmm, vmm};
+use crate::scheduler;
 
 use super::types::{
     image_fits_user_code, ExecError, ExecResult, LoadedProgram, USER_PROGRAM_ENTRY_RIP,
@@ -43,6 +44,20 @@ pub fn load_program_image(file_name_8_3: &str) -> ExecResult<Vec<u8>> {
 pub fn load_program_into_user_address_space(file_name_8_3: &str) -> ExecResult<LoadedProgram> {
     let image = load_program_image(file_name_8_3)?;
     map_program_image_into_user_address_space(&image)
+}
+
+/// End-to-end process exec path for FAT12-backed flat user binaries.
+///
+/// Flow:
+/// 1. read + validate image from FAT12
+/// 2. map/copy image into a fresh user address space
+/// 3. spawn scheduler user task from the prepared descriptor
+///
+/// On spawn failure, any newly created user address space is destroyed to avoid
+/// leaking process-owned mappings and frames.
+pub fn exec_from_fat12(file_name_8_3: &str) -> ExecResult<usize> {
+    let loaded = load_program_into_user_address_space(file_name_8_3)?;
+    spawn_loaded_program(loaded)
 }
 
 /// Maps a validated flat image into a fresh user address space and copies bytes.
@@ -205,4 +220,19 @@ fn cleanup_failed_program_mapping(user_cr3: u64, code_pfns: &[u64], stack_pfn: O
             let _ = mgr.release_pfn(pfn);
         }
     });
+}
+
+/// Spawns a scheduler user task from an already prepared loaded-program descriptor.
+///
+/// Ownership contract:
+/// - on success, scheduler owns `loaded.cr3` lifecycle via task teardown
+/// - on failure, this function destroys `loaded.cr3` immediately
+fn spawn_loaded_program(loaded: LoadedProgram) -> ExecResult<usize> {
+    match scheduler::spawn_user_task(loaded.entry_rip, loaded.user_rsp, loaded.cr3) {
+        Ok(task_id) => Ok(task_id),
+        Err(_) => {
+            vmm::destroy_user_address_space(loaded.cr3);
+            Err(ExecError::SpawnFailed)
+        }
+    }
 }

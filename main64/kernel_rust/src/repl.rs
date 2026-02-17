@@ -12,6 +12,7 @@ use crate::memory::bios;
 use crate::memory::heap;
 use crate::memory::pmm;
 use crate::memory::vmm;
+use crate::process;
 use crate::scheduler;
 use crate::user_tasks;
 use core::fmt::Write;
@@ -168,6 +169,11 @@ fn execute_command(line: &str) {
                 .unwrap();
                 writeln!(screen, "  dir             - list FAT12 root directory").unwrap();
                 writeln!(screen, "  cat <file>      - print FAT12 file content (8.3 name)").unwrap();
+                writeln!(
+                    screen,
+                    "  exec <file>     - load FAT12 user program and spawn ring-3 task"
+                )
+                .unwrap();
                 writeln!(screen, "  shutdown        - shutdown the system").unwrap();
             });
         }
@@ -287,6 +293,19 @@ fn execute_command(line: &str) {
             },
             _ => with_screen(|screen| {
                 writeln!(screen, "Usage: cat <8.3-file>").unwrap();
+            }),
+        },
+        "exec" => match (parts.next(), parts.next()) {
+            (Some(file_name), None) => match process::exec_from_fat12(file_name) {
+                Ok(task_id) => with_screen(|screen| {
+                    writeln!(screen, "exec started '{}' as task {}", file_name, task_id).unwrap();
+                }),
+                Err(err) => with_screen(|screen| {
+                    writeln!(screen, "exec failed for '{}': {:?}", file_name, err).unwrap();
+                }),
+            },
+            _ => with_screen(|screen| {
+                writeln!(screen, "Usage: exec <8.3-file>").unwrap();
             }),
         },
         _ => {
