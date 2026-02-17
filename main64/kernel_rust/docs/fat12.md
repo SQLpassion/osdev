@@ -1,10 +1,10 @@
 # FAT12 in This Kernel: Deep Technical Implementation Guide
 
-This document explains the current FAT12 implementation in the Rust kernel at a level that is useful both for onboarding and for maintenance. The goal is that a reader who starts with no FAT12 background can understand the format, the design choices in this codebase, and the exact runtime behavior of the `dir` command.
+This document explains the current FAT12 implementation in the Rust kernel at a level that is useful both for onboarding and for maintenance. The goal is that a reader who starts with no FAT12 background can understand the format, the design choices in this codebase, and the exact runtime behavior of both `dir` (root listing) and `read_file` (content read by 8.3 name).
 
 The implementation described here is currently located in `src/io/fat12.rs`, is initialized from `src/main.rs`, is user-facing through the REPL command path in `src/repl.rs`, and is validated by parser-focused integration tests in `tests/fat12_test.rs`.
 
-The scope of the current implementation is intentionally narrow: it reads and parses the FAT12 root directory and prints the entries. It does not yet follow FAT chains to read file data, does not reconstruct long file names, and does not implement write operations. This constrained scope is deliberate, because it keeps the first implementation reviewable and makes correctness issues easier to isolate.
+The current implementation now covers two read-only operations: listing root-directory entries and reading file content through FAT12 cluster-chain traversal. It still does not reconstruct long file names and does not implement write operations. This constrained scope is deliberate, because it keeps the code reviewable while already exercising the core FAT12 lookup and chain-follow logic.
 
 ---
 
@@ -54,13 +54,15 @@ At the shell level, the feature is exposed by the REPL command `dir` in `src/rep
 
 ## 3) Module structure and separation of concerns
 
-The FAT12 module is divided into three logical stages, and this separation is one of the most important design decisions in the file.
+The FAT12 module is divided into logical stages, and this separation is one of the most important design decisions in the file.
 
 The first stage is the disk read stage (`read_root_directory_from_disk`). It only knows how to fetch the fixed 14-sector root-directory window using ATA and return it as bytes. It does not parse entries and does not know anything about names or attributes.
 
 The second stage is the parser (`parse_root_directory`). It consumes a byte slice, walks it in 32-byte entry units, classifies each entry according to FAT12 semantics, and emits normalized records. The parser is independent of VGA output and independent of ATA, which is why it is easy to test with synthetic buffers.
 
-The third stage is presentation (`print_root_directory`). It calls the reader, invokes the parser with a callback, formats each parsed record for the screen, and prints the summary line. In other words, it is strictly orchestration and display.
+The third stage is file lookup + content read (`normalize_8_3_name`, `find_file_in_root_directory`, `read_fat_from_disk`, `fat12_next_cluster`, `read_file_from_entry`, `read_file`). This path resolves a short filename to a directory entry, validates attributes, reads FAT#1, follows the cluster chain, and returns exact file-size bytes.
+
+The fourth stage is presentation (`print_root_directory`). It calls the reader, invokes the parser with a callback, formats each parsed record for the screen, and prints the summary line. In other words, it is strictly orchestration and display.
 
 This split prevents the usual coupling problems (I/O mixed with parsing mixed with formatting) and gives you a clean extension path for future operations.
 
@@ -70,19 +72,25 @@ This split prevents the usual coupling problems (I/O mixed with parsing mixed wi
 
 This section maps the design to concrete implementation details, so you can read the source top-to-bottom and understand why each symbol exists.
 
-At the top of `fat12.rs`, the geometry constants define the exact disk layout assumptions for the current implementation. They are intentionally hardcoded today (`512`, `2`, `9`, `1`, `224`) because the current feature is fixed to the known floppy image profile. These constants are used immediately to derive `ROOT_DIRECTORY_LBA` and `ROOT_DIRECTORY_SECTORS`, which in turn drive the ATA read call in `read_root_directory_from_disk()`.
+At the top of `fat12.rs`, the geometry constants define the exact disk layout assumptions for the current implementation. They are intentionally hardcoded today (`512`, `2`, `9`, `1`, `224`) because the current feature is fixed to the known floppy image profile. These constants are used to derive `ROOT_DIRECTORY_LBA`, `ROOT_DIRECTORY_SECTORS`, `FAT1_LBA`, and `DATA_AREA_START_LBA`, which are the basis for both directory scanning and content reads.
 
 The next block defines entry-local layout constants: `DIRECTORY_ENTRY_SIZE`, `ATTR_OFFSET`, `FIRST_CLUSTER_OFFSET`, and `FILE_SIZE_OFFSET`. The key design point is that the parser never depends on an implicit packed-struct memory layout. Instead, it addresses explicit offsets in a 32-byte array. This keeps the parser predictable and reviewable.
 
 `RootDirectoryRecord` is the normalized parser output type. It is what higher layers consume, and therefore it is intentionally small: rendered short name plus length, start cluster, and size. `EntryState` is an internal parsing state machine with exactly three states (`End`, `Skip`, `Active`), which mirrors FAT12 root directory semantics.
 
+`Fat12Error` defines the public error model for content reads. It wraps ATA driver errors and adds filesystem-level errors such as invalid short names, not found, directory-vs-file mismatches, and FAT-chain corruption cases.
+
 `RawRootDirectoryEntry` is the raw on-disk view and acts as a tiny parsing boundary object. It has two methods. `state()` decides whether to stop parsing, skip, or decode. `parse_record()` decodes bytes into a `RootDirectoryRecord`. Keeping those two methods together makes it obvious which raw bytes participate in classification and which in field extraction.
 
 `init()` is currently intentionally empty. That may look unusual at first, but it is a conscious lifecycle API decision: the module still exposes an initialization hook for boot sequencing while staying cache-free. So all state is read from disk at use time, not retained globally.
 
-`read_root_directory_from_disk()` allocates one buffer sized to `ROOT_DIRECTORY_SECTORS * BYTES_PER_SECTOR` and then calls `drivers::ata::read_sectors(&mut buffer, ROOT_DIRECTORY_LBA, ROOT_DIRECTORY_SECTORS)`. This function is the only place that knows where the root directory lives on disk.
+`read_root_directory_from_disk()` allocates one buffer sized to `ROOT_DIRECTORY_SECTORS * BYTES_PER_SECTOR` and then calls `drivers::ata::read_sectors(&mut buffer, ROOT_DIRECTORY_LBA, ROOT_DIRECTORY_SECTORS)`. `read_fat_from_disk()` performs the same pattern for FAT#1 (`SECTORS_PER_FAT` sectors at `FAT1_LBA`).
 
 `parse_root_directory()` is the core engine. It computes `entry_count = min(ROOT_DIRECTORY_ENTRIES, buffer.len() / 32)` so malformed or short buffers cannot overrun parsing. It then iterates slot-by-slot, copies each slot into `RawRootDirectoryEntry`, classifies, decodes active entries, invokes the callback, and updates totals. The callback model is important because it decouples parsing from output policy and keeps the function easy to reuse for future APIs.
+
+The `read_file()` path starts with `normalize_8_3_name()`, which validates and uppercases user input into the canonical FAT short-name format (`[u8; 11]`, space padded). `find_file_in_root_directory()` then searches active entries by raw short name and returns `FileEntryMeta` (attributes, first cluster, size). The function rejects directories (`ATTR_DIRECTORY`) before data reads.
+
+`read_file_from_entry()` performs the cluster-chain traversal. It validates the initial cluster, translates cluster IDs to LBAs via `cluster_to_lba()`, reads each sector, appends only as many bytes as still needed to satisfy the exact file size, and resolves the next cluster through `fat12_next_cluster()`. Corruption defenses include invalid cluster IDs, reserved/bad cluster values, premature EOF markers, and a `visited` bitmap to detect cycles.
 
 Finally, `print_root_directory()` orchestrates the user-visible listing. It reads fresh bytes from disk, parses them, prints each emitted record using the screen driver, and then prints the aggregate summary line. In other words, it is intentionally thin glue around `read_root_directory_from_disk()` plus `parse_root_directory()`.
 
@@ -189,7 +197,7 @@ Step 3: lowercase for display policy
 
 ---
 
-## 8) FAT12 12-bit FAT entry encoding (next-step background)
+## 8) FAT12 12-bit FAT entry encoding (used by `read_file`)
 
 The current code only lists root directory entries and does not yet walk cluster chains, but understanding FAT12 allocation entries is essential for the next phase. FAT12 uses 12-bit entries, which means two cluster entries are packed into three bytes.
 
@@ -235,7 +243,7 @@ Cluster n (odd) uses:
   full next byte        -> bits 4..11
 ```
 
-This is exactly the part that will be needed once `read_file()`/cluster-chain traversal is introduced.
+This is exactly the logic implemented by `fat12_next_cluster()` in the current code.
 
 ---
 
@@ -261,7 +269,19 @@ The output shape mirrors the prior C implementation closely enough for operator 
 
 ---
 
-## 11) Why the implementation is intentionally cache-free
+## 11) I/O and data path for `read_file`
+
+The content-read path starts with a user-supplied 8.3 name (for example `SFILE.TXT`). `normalize_8_3_name()` converts this into FAT short-name layout (`SFILE   TXT`) and rejects invalid forms up front. This guarantees that root-directory matching is a bytewise comparison against the on-disk short-name fields without extra heuristics.
+
+After normalization, `read_file()` reads the root directory and resolves metadata via `find_file_in_root_directory()`. If the entry is missing, `NotFound` is returned. If the entry is a directory, `IsDirectory` is returned. Otherwise, the code reads FAT#1 and enters chain traversal.
+
+The traversal loop in `read_file_from_entry()` reads exactly one cluster-sector at a time for this geometry and appends only the needed suffix of that sector to the output buffer, so the final vector length is exactly `file_size`. If the FAT chain ends too early (`EOF` before enough bytes) the function returns `UnexpectedEof`. If the chain is structurally invalid (bad cluster, reserved values, out-of-range offsets, loop), it returns `CorruptFatChain`.
+
+In short, the implementation treats FAT as authoritative for continuation but treats directory `file_size` as authoritative for output length.
+
+---
+
+## 12) Why the implementation is intentionally cache-free
 
 Earlier revisions experimented with storing root-directory bytes in a global cache. The current implementation deliberately removed that cache. For this stage of the project, cache-free behavior is simpler and more robust: every `dir` command reads current disk state, there is no stale metadata risk, and there is no synchronization policy to define for future write operations.
 
@@ -269,7 +289,7 @@ The performance trade-off is negligible in this context, because reading 14 sect
 
 ---
 
-## 12) Safety posture and `unsafe` surface
+## 13) Safety posture and `unsafe` surface
 
 The FAT12 path here is intentionally conservative. Parsing is done from explicit byte slices and offsets rather than by reinterpreting arbitrary memory as packed structs. This avoids common alignment and aliasing hazards and keeps assumptions visible in the code.
 
@@ -277,25 +297,27 @@ Another consequence of the cache-free design is that the FAT12 module no longer 
 
 ---
 
-## 13) Test strategy and covered contracts
+## 14) Test strategy and covered contracts
 
 `tests/fat12_test.rs` focuses on parser contracts using handcrafted in-memory root directory buffers. This gives deterministic coverage of the logic that matters most for correctness while avoiding dependency on mutable disk state.
 
 The tests verify that deleted, LFN, and volume-label entries are excluded; that parsing stops at the first `0x00` marker; and that 8.3 names are rendered in lowercase `name.ext` form while preserving size and first-cluster values.
 
+The new `read_file` support is covered at contract level by input-normalization tests. `test_normalize_8_3_name_returns_expected_short_name` verifies canonical FAT short-name formatting (`README  TXT`), and `test_read_file_rejects_invalid_short_name` ensures invalid multi-dot input is rejected before any disk access.
+
 These tests match the module architecture: because parsing is isolated from I/O and printing, correctness can be validated with pure data inputs.
 
 ---
 
-## 14) Current limitations and extension path
+## 15) Current limitations and extension path
 
-The implementation currently treats FAT12 root-directory listing as a bounded, read-only feature. It does not yet use the FAT table to follow cluster chains, does not parse BPB geometry dynamically, and does not expose long filenames or recursive directory traversal.
+The implementation now supports root listing and content read for short-name files. It still does not parse BPB geometry dynamically, does not expose long filenames, does not implement recursive subdirectory traversal, and does not support write/update/delete operations.
 
-The next technically coherent steps are to add attribute-aware presentation (for example marking directories), then dynamic geometry extraction from BPB, and only then content access through FAT12 cluster-chain decoding. Write support should come after read paths are stable, because write support introduces consistency rules between FAT, directory entries, and any future cache layer.
+The next technically coherent steps are to add attribute-aware presentation (for example marking directories), then dynamic geometry extraction from BPB, followed by subdirectory traversal and LFN reconstruction on top of the existing content-read path. Write support should come after read paths are stable, because write support introduces consistency rules between FAT, directory entries, and any future cache layer.
 
 ---
 
-## 15) End-to-end trace: from REPL command to bytes on screen
+## 16) End-to-end trace: from REPL command to bytes on screen
 
 When a user types `dir`, REPL command dispatch in `src/repl.rs` calls `fat12::print_root_directory()`. That function reads root-directory sectors from disk, parses 32-byte entries in order, ignores entries that are semantically not listable, decodes active 8.3 entries into `RootDirectoryRecord`, and writes formatted lines to VGA through the screen driver. Finally it prints aggregate totals.
 

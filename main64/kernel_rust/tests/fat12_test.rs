@@ -7,10 +7,13 @@
 #![reexport_test_harness_main = "test_main"]
 
 use core::panic::PanicInfo;
-use kaos_kernel::io::fat12::{parse_root_directory, RootDirectoryRecord};
+use kaos_kernel::io::fat12::{
+    normalize_8_3_name, parse_root_directory, read_file, Fat12Error, RootDirectoryRecord,
+};
 
 const ROOT_DIR_BYTES: usize = 224 * 32;
 const ENTRY_SIZE: usize = 32;
+const EXPECTED_SFILE_BYTES: &[u8] = include_bytes!("../../SFile.txt");
 
 #[no_mangle]
 #[link_section = ".text.boot"]
@@ -122,4 +125,72 @@ fn test_parser_formats_short_name_lowercase() {
         record.first_cluster == 7,
         "first cluster must match source entry"
     );
+}
+
+/// Contract: 8.3 normalization returns uppercased, space-padded FAT short name.
+#[test_case]
+fn test_normalize_8_3_name_returns_expected_short_name() {
+    let normalized = normalize_8_3_name("readme.txt").expect("8.3 name must normalize");
+    assert!(
+        normalized == *b"README  TXT",
+        "normalized FAT short name must be uppercase and space-padded"
+    );
+}
+
+/// Contract: read_file rejects invalid short-name inputs before touching disk.
+#[test_case]
+fn test_read_file_rejects_invalid_short_name() {
+    let result = read_file("invalid.name.txt");
+    assert!(
+        matches!(result, Err(Fat12Error::InvalidFileName)),
+        "read_file must reject invalid 8.3 names"
+    );
+}
+
+/// Contract: `read_file("sfile.txt")` returns exactly the on-disk file bytes.
+#[test_case]
+fn test_read_file_sfile_returns_exact_bytes() {
+    kaos_kernel::drivers::ata::init();
+
+    let actual = read_file("sfile.txt").expect("sfile.txt must be readable from FAT12 image");
+    assert!(
+        actual.len() == EXPECTED_SFILE_BYTES.len(),
+        "read_file length mismatch: expected {} bytes, got {}",
+        EXPECTED_SFILE_BYTES.len(),
+        actual.len()
+    );
+
+    for idx in 0..EXPECTED_SFILE_BYTES.len() {
+        assert!(
+            actual[idx] == EXPECTED_SFILE_BYTES[idx],
+            "byte mismatch at offset {}: expected 0x{:02x}, got 0x{:02x}",
+            idx,
+            EXPECTED_SFILE_BYTES[idx],
+            actual[idx]
+        );
+    }
+}
+
+/// Contract: FAT short-name lookup is case-insensitive for user input.
+#[test_case]
+fn test_read_file_uppercase_name_returns_same_bytes() {
+    kaos_kernel::drivers::ata::init();
+
+    let actual = read_file("SFILE.TXT").expect("SFILE.TXT must be readable from FAT12 image");
+    assert!(
+        actual.len() == EXPECTED_SFILE_BYTES.len(),
+        "read_file length mismatch: expected {} bytes, got {}",
+        EXPECTED_SFILE_BYTES.len(),
+        actual.len()
+    );
+
+    for idx in 0..EXPECTED_SFILE_BYTES.len() {
+        assert!(
+            actual[idx] == EXPECTED_SFILE_BYTES[idx],
+            "byte mismatch at offset {}: expected 0x{:02x}, got 0x{:02x}",
+            idx,
+            EXPECTED_SFILE_BYTES[idx],
+            actual[idx]
+        );
+    }
 }

@@ -167,6 +167,7 @@ fn execute_command(line: &str) {
                 )
                 .unwrap();
                 writeln!(screen, "  dir             - list FAT12 root directory").unwrap();
+                writeln!(screen, "  cat <file>      - print FAT12 file content (8.3 name)").unwrap();
                 writeln!(screen, "  shutdown        - shutdown the system").unwrap();
             });
         }
@@ -277,6 +278,17 @@ fn execute_command(line: &str) {
         "dir" => {
             fat12::print_root_directory();
         }
+        "cat" => match (parts.next(), parts.next()) {
+            (Some(file_name), None) => match fat12::read_file(file_name) {
+                Ok(content) => print_fat12_file_content(&content),
+                Err(err) => with_screen(|screen| {
+                    writeln!(screen, "cat failed for '{}': {:?}", file_name, err).unwrap();
+                }),
+            },
+            _ => with_screen(|screen| {
+                writeln!(screen, "Usage: cat <8.3-file>").unwrap();
+            }),
+        },
         _ => {
             with_screen(|screen| {
                 writeln!(screen, "Unknown command: {}", cmd).unwrap();
@@ -402,6 +414,35 @@ fn run_ata_interactive_roundtrip() {
     }
 
     print_ata_payload_from_sector(&read_back, "Disk read-back");
+}
+
+fn print_fat12_file_content(content: &[u8]) {
+    if content.is_empty() {
+        with_screen(|screen| {
+            writeln!(screen, "(empty file)").unwrap();
+        });
+        return;
+    }
+
+    if let Ok(text) = core::str::from_utf8(content) {
+        with_screen(|screen| {
+            writeln!(screen, "{}", text).unwrap();
+        });
+        return;
+    }
+
+    with_screen(|screen| {
+        writeln!(screen, "(non-UTF8 content, showing hex)").unwrap();
+
+        for (idx, byte) in content.iter().enumerate() {
+            if idx > 0 && idx % 16 == 0 {
+                screen.print_char(b'\n');
+            }
+            write!(screen, "{:02x} ", byte).unwrap();
+        }
+
+        screen.print_char(b'\n');
+    });
 }
 
 fn print_ata_payload_from_sector(sector: &[u8; ATA_SECTOR_SIZE], label: &str) {
