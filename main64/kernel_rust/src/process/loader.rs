@@ -212,8 +212,24 @@ const fn page_count_for_len(image_len: usize) -> usize {
 /// Allocates one physical frame and returns its PFN.
 ///
 /// Allocation failure is reported as `ExecError::MappingFailed`.
+///
+/// The PMM only manages regions at or above 1 MiB (`KERNEL_OFFSET`), so PFN 0
+/// (physical address 0x0000, IVT/BIOS data area) is structurally unreachable.
+/// The assertion below makes any violation of that invariant visible immediately.
 fn alloc_frame_pfn() -> ExecResult<u64> {
-    pmm::with_pmm(|mgr| mgr.alloc_frame().map(|frame| frame.pfn)).ok_or(ExecError::MappingFailed)
+    let pfn = pmm::with_pmm(|mgr| mgr.alloc_frame().map(|frame| frame.pfn))
+        .ok_or(ExecError::MappingFailed)?;
+
+    // PFN 0 maps to physical address 0x0 (IVT/BIOS Data Area). Mapping user
+    // pages there would corrupt low memory and be a security vulnerability.
+    // This should never trigger given the PMM's region filter, but guard
+    // against future PMM changes that might break the invariant.
+    debug_assert!(pfn != 0, "PMM returned PFN 0 (reserved low memory)");
+    if pfn == 0 {
+        return Err(ExecError::MappingFailed);
+    }
+
+    Ok(pfn)
 }
 
 /// Best-effort rollback for partially created user mappings.
