@@ -13,7 +13,7 @@
 use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicBool, Ordering};
 use kaos_kernel::arch::{gdt, interrupts};
-use kaos_kernel::memory::{pmm, vmm};
+use kaos_kernel::memory::{heap, pmm, vmm};
 use kaos_kernel::scheduler;
 
 const USER_CODE_VA: u64 = vmm::USER_CODE_BASE;
@@ -31,6 +31,7 @@ pub extern "C" fn KernelMain(_kernel_size: u64) -> ! {
     pmm::init(false);
     interrupts::init();
     vmm::init(false);
+    heap::init(false);
 
     test_main();
 

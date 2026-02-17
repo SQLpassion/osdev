@@ -9,7 +9,7 @@
 use core::panic::PanicInfo;
 use kaos_kernel::arch::gdt;
 use kaos_kernel::arch::interrupts::{self, SavedRegisters};
-use kaos_kernel::memory::{pmm, vmm};
+use kaos_kernel::memory::{heap, pmm, vmm};
 use kaos_kernel::scheduler::{self as sched, SpawnError, TaskState};
 use kaos_kernel::sync::singlewaitqueue::SingleWaitQueue;
 use kaos_kernel::sync::waitqueue::WaitQueue;
@@ -22,6 +22,7 @@ pub extern "C" fn KernelMain(_kernel_size: u64) -> ! {
     interrupts::init();
     pmm::init(false);
     vmm::init(false);
+    heap::init(false);
 
     test_main();
 
