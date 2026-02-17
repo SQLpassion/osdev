@@ -66,9 +66,20 @@ pub fn exec_from_fat12(file_name_8_3: &str) -> ExecResult<usize> {
 /// - code pages start at [`USER_PROGRAM_ENTRY_RIP`] and are finalized read-only
 /// - one bootstrap stack page is mapped at the top of user stack as writable
 /// - returned descriptor contains CR3/RIP/RSP + image length for follow-up spawn
+///
+/// # Preconditions
+/// - `image` must be non-empty and satisfy `image_fits_user_code(image.len())`.
+///   The normal entry point `load_program_image()` enforces this via
+///   `validate_program_image_len()` before calling this function.
 pub fn map_program_image_into_user_address_space(image: &[u8]) -> ExecResult<LoadedProgram> {
-    // Validate early so no PMM/VMM state is touched for oversized images.
-    validate_program_image_len(image.len())?;
+    // Debug-only guard: the validated public entry point load_program_image()
+    // already rejects empty and oversized images before reaching this function.
+    // The assert catches direct callers that bypass that validation.
+    debug_assert!(
+        !image.is_empty() && image_fits_user_code(image.len()),
+        "map_program_image_into_user_address_space: precondition violated (image_len={})",
+        image.len(),
+    );
 
     // Each process gets its own CR3 root cloned from the current kernel baseline.
     let user_cr3 = vmm::clone_kernel_pml4_for_user();
@@ -213,13 +224,18 @@ pub fn map_program_image_into_user_address_space(image: &[u8]) -> ExecResult<Loa
     result
 }
 
-/// Validates that a program image length fits inside the user executable window.
+/// Validates that a program image length is non-empty and fits inside the user
+/// executable window.
+///
+/// A zero-length image is rejected because there is no code to execute.
+/// An image exceeding [`USER_PROGRAM_MAX_IMAGE_SIZE`] is rejected because it
+/// would overflow the fixed user code region.
 #[inline]
 pub const fn validate_program_image_len(image_len: usize) -> ExecResult<()> {
-    if image_fits_user_code(image_len) {
-        Ok(())
-    } else {
+    if image_len == 0 || !image_fits_user_code(image_len) {
         Err(ExecError::FileTooLarge)
+    } else {
+        Ok(())
     }
 }
 

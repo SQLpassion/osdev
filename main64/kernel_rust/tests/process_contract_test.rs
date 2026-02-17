@@ -160,12 +160,20 @@ fn test_load_program_image_maps_not_found_error() {
     );
 }
 
-/// Contract: explicit image-length validator enforces user code window upper bound.
+/// Contract: explicit image-length validator enforces non-empty lower bound and
+/// user code window upper bound.
 #[test_case]
 fn test_validate_program_image_len_enforces_upper_bound() {
     assert!(
-        process::validate_program_image_len(0).is_ok(),
-        "zero-length image must be accepted by loader size validator"
+        matches!(
+            process::validate_program_image_len(0),
+            Err(process::ExecError::FileTooLarge)
+        ),
+        "zero-length image must be rejected by loader size validator"
+    );
+    assert!(
+        process::validate_program_image_len(1).is_ok(),
+        "single-byte image must be accepted by loader size validator"
     );
     assert!(
         process::validate_program_image_len(process::USER_PROGRAM_MAX_IMAGE_SIZE).is_ok(),
