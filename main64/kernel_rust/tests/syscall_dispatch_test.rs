@@ -189,6 +189,36 @@ fn test_decode_result_passes_success_values() {
     );
 }
 
+/// Contract: echo input normalization maps carriage return to newline.
+#[test_case]
+fn test_echo_input_normalization_maps_cr_to_lf() {
+    let normalized = syscall::user::normalize_echo_input_byte(b'\r');
+    assert!(
+        normalized == b'\n',
+        "carriage return must normalize to newline for one-shot echo"
+    );
+}
+
+/// Contract: echo input normalization keeps newline unchanged.
+#[test_case]
+fn test_echo_input_normalization_keeps_lf() {
+    let normalized = syscall::user::normalize_echo_input_byte(b'\n');
+    assert!(
+        normalized == b'\n',
+        "newline must remain unchanged during echo normalization"
+    );
+}
+
+/// Contract: echo input normalization preserves regular characters.
+#[test_case]
+fn test_echo_input_normalization_preserves_regular_bytes() {
+    let normalized = syscall::user::normalize_echo_input_byte(b'A');
+    assert!(
+        normalized == b'A',
+        "non-control bytes must remain unchanged during echo normalization"
+    );
+}
+
 /// Contract: write_serial rejects null pointer when len > 0.
 /// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
 /// When: The exact operation sequence in this function is executed against that state.

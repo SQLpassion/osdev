@@ -18,6 +18,22 @@ use super::{
     abi, SysError, SyscallId, SYSCALL_ERR_INVALID_ARG, SYSCALL_ERR_IO, SYSCALL_ERR_UNSUPPORTED,
 };
 
+/// Normalizes a raw input byte for one-shot console echo.
+///
+/// The keyboard path may deliver carriage return (`'\r'`) for Enter.
+/// VGA-style line handling in this kernel is newline-centric (`'\n'`),
+/// so Enter is normalized to a single newline byte to avoid double
+/// line transitions in user-space echo loops.
+#[inline(always)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub const fn normalize_echo_input_byte(ch: u8) -> u8 {
+    if ch == b'\r' {
+        b'\n'
+    } else {
+        ch
+    }
+}
+
 /// Requests a cooperative reschedule.
 ///
 /// This invokes syscall `Yield` and returns `Ok(())` on success.

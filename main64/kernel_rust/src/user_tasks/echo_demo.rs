@@ -9,6 +9,12 @@ use core::fmt::Write;
 const USER_ECHO_TASK_STACK_PAGE_VA: u64 = vmm::USER_STACK_TOP - 0x1000;
 const USER_ECHO_TASK_STACK_TOP: u64 = vmm::USER_STACK_TOP - 16;
 const USER_ECHO_TASK_DATA_VA: u64 = vmm::USER_STACK_TOP - 0x2000;
+const USER_ECHO_WELCOME_MSG: &[u8] = b"[ring3] Echo task running. Type characters (ESC=exit)\n";
+const USER_ECHO_ERR_MSG: &[u8] = b"[ring3] GetChar failed!\n";
+const USER_ECHO_EXIT_MSG: &[u8] = b"\n[ring3] ESC pressed. Exiting echo demo...\n";
+const USER_ECHO_WELCOME_OFFSET: usize = 0;
+const USER_ECHO_ERR_OFFSET: usize = USER_ECHO_WELCOME_OFFSET + USER_ECHO_WELCOME_MSG.len();
+const USER_ECHO_EXIT_OFFSET: usize = USER_ECHO_ERR_OFFSET + USER_ECHO_ERR_MSG.len();
 
 /// Runs a ring-3 echo demo:
 /// - map required code/data/stack pages for the echo task,
@@ -74,10 +80,11 @@ fn map_echo_task_pages(target_cr3: u64) -> Result<(), &'static str> {
     // Map required kernel functions into user-code alias window.
     // Include syscall0, syscall1, and syscall2 to cover all potential ABI paths
     // that the compiler might generate for error handling and Result unwrapping.
-    let required_kernel_function_vas: [u64; 7] = [
+    let required_kernel_function_vas: [u64; 8] = [
         echo_ring3_task as *const () as usize as u64,
         syscall::user::sys_getchar as *const () as usize as u64,
         syscall::user::sys_write_console as *const () as usize as u64,
+        syscall::user::normalize_echo_input_byte as *const () as usize as u64,
         syscall::user::sys_exit as *const () as usize as u64,
         syscall::abi::syscall0 as *const () as usize as u64,
         syscall::abi::syscall1 as *const () as usize as u64,
@@ -140,11 +147,6 @@ fn map_echo_task_pages(target_cr3: u64) -> Result<(), &'static str> {
 
 /// Writes string constants into the user data page.
 fn write_echo_data_page(target_cr3: u64) -> Result<(), &'static str> {
-    const WELCOME_MSG: &[u8] = b"[ring3] Echo task running. Type characters (ESC=exit)\n";
-    const ERR_MSG: &[u8] = b"[ring3] GetChar failed!\n";
-    const EXIT_MSG: &[u8] = b"\n[ring3] ESC pressed. Exiting echo demo...\n";
-    const NL: &[u8] = b"\n";
-
     vmm::with_address_space(target_cr3, || {
         // SAFETY: USER_ECHO_TASK_DATA_VA is mapped in map_echo_task_pages.
         unsafe {
@@ -153,24 +155,32 @@ fn write_echo_data_page(target_cr3: u64) -> Result<(), &'static str> {
             // Clear the page first.
             core::ptr::write_bytes(base, 0, 0x1000);
 
-            // Layout: WELCOME_MSG, ERR_MSG, EXIT_MSG, NL.
+            // Layout: WELCOME_MSG, ERR_MSG, EXIT_MSG.
             let mut offset = 0usize;
 
             core::ptr::copy_nonoverlapping(
-                WELCOME_MSG.as_ptr(),
+                USER_ECHO_WELCOME_MSG.as_ptr(),
                 base.add(offset),
-                WELCOME_MSG.len(),
+                USER_ECHO_WELCOME_MSG.len(),
             );
-            offset += WELCOME_MSG.len();
 
-            core::ptr::copy_nonoverlapping(ERR_MSG.as_ptr(), base.add(offset), ERR_MSG.len());
-            offset += ERR_MSG.len();
+            offset += USER_ECHO_WELCOME_MSG.len();
 
-            core::ptr::copy_nonoverlapping(EXIT_MSG.as_ptr(), base.add(offset), EXIT_MSG.len());
-            offset += EXIT_MSG.len();
+            core::ptr::copy_nonoverlapping(
+                USER_ECHO_ERR_MSG.as_ptr(),
+                base.add(offset),
+                USER_ECHO_ERR_MSG.len(),
+            );
 
-            core::ptr::copy_nonoverlapping(NL.as_ptr(), base.add(offset), NL.len());
+            offset += USER_ECHO_ERR_MSG.len();
+
+            core::ptr::copy_nonoverlapping(
+                USER_ECHO_EXIT_MSG.as_ptr(),
+                base.add(offset),
+                USER_ECHO_EXIT_MSG.len(),
+            );
         }
+
         Ok(())
     })
 }
@@ -180,19 +190,11 @@ fn write_echo_data_page(target_cr3: u64) -> Result<(), &'static str> {
 /// Demonstrates the GetChar syscall by reading characters in a loop
 /// and echoing them back via WriteConsole.
 extern "C" fn echo_ring3_task() -> ! {
-    // String constants are stored in the mapped data page.
-    const WELCOME_LEN: usize = 54; // Length of welcome message.
-    const ERR_OFFSET: usize = WELCOME_LEN;
-    const ERR_LEN: usize = 24;
-    const EXIT_OFFSET: usize = ERR_OFFSET + ERR_LEN;
-    const EXIT_LEN: usize = 44;
-    const NL_OFFSET: usize = EXIT_OFFSET + EXIT_LEN;
-
     // Print welcome message.
     // SAFETY: USER_ECHO_TASK_DATA_VA points to the initialized readonly data page.
     unsafe {
-        let welcome_ptr = USER_ECHO_TASK_DATA_VA as *const u8;
-        let _ = syscall::user::sys_write_console(welcome_ptr, WELCOME_LEN);
+        let welcome_ptr = (USER_ECHO_TASK_DATA_VA + USER_ECHO_WELCOME_OFFSET as u64) as *const u8;
+        let _ = syscall::user::sys_write_console(welcome_ptr, USER_ECHO_WELCOME_MSG.len());
     }
 
     loop {
@@ -202,8 +204,9 @@ extern "C" fn echo_ring3_task() -> ! {
             Err(_) => {
                 // SAFETY: ERR segment is inside the initialized data page.
                 unsafe {
-                    let err_ptr = (USER_ECHO_TASK_DATA_VA + ERR_OFFSET as u64) as *const u8;
-                    let _ = syscall::user::sys_write_console(err_ptr, ERR_LEN);
+                    let err_ptr =
+                        (USER_ECHO_TASK_DATA_VA + USER_ECHO_ERR_OFFSET as u64) as *const u8;
+                    let _ = syscall::user::sys_write_console(err_ptr, USER_ECHO_ERR_MSG.len());
                 }
 
                 syscall::user::sys_exit();
@@ -214,26 +217,21 @@ extern "C" fn echo_ring3_task() -> ! {
         if ch == 0x1B {
             // SAFETY: EXIT segment is inside the initialized data page.
             unsafe {
-                let exit_ptr = (USER_ECHO_TASK_DATA_VA + EXIT_OFFSET as u64) as *const u8;
-                let _ = syscall::user::sys_write_console(exit_ptr, EXIT_LEN);
+                let exit_ptr = (USER_ECHO_TASK_DATA_VA + USER_ECHO_EXIT_OFFSET as u64) as *const u8;
+                let _ = syscall::user::sys_write_console(exit_ptr, USER_ECHO_EXIT_MSG.len());
             }
 
             syscall::user::sys_exit();
         }
 
-        // Echo the character back.
-        // SAFETY: `&ch` is valid for one byte for the duration of the syscall.
-        unsafe {
-            let _ = syscall::user::sys_write_console(&ch as *const u8, 1);
-        }
+        // Echo exactly one normalized byte per input char:
+        // - '\r' is normalized to '\n'
+        // - all other bytes are emitted unchanged
+        let echo_ch = syscall::user::normalize_echo_input_byte(ch);
 
-        // Handle newline.
-        if ch == b'\n' || ch == b'\r' {
-            // SAFETY: NL byte is inside the initialized data page.
-            unsafe {
-                let nl_ptr = (USER_ECHO_TASK_DATA_VA + NL_OFFSET as u64) as *const u8;
-                let _ = syscall::user::sys_write_console(nl_ptr, 1);
-            }
+        // SAFETY: `&echo_ch` is valid for one byte for the duration of the syscall.
+        unsafe {
+            let _ = syscall::user::sys_write_console(&echo_ch as *const u8, 1);
         }
     }
 }
