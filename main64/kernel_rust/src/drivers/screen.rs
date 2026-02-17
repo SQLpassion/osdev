@@ -168,6 +168,7 @@ impl Screen {
             b'\n' => {
                 self.row += 1;
                 self.col = 0;
+                self.scroll();
             }
             b'\r' => {
                 self.col = 0;
@@ -179,6 +180,7 @@ impl Screen {
                     self.col = 0;
                     self.row += 1;
                 }
+                self.scroll();
             }
             0x08 => {
                 // Backspace
@@ -191,13 +193,11 @@ impl Screen {
                     return;
                 }
 
-                {
-                    let blank = VgaChar {
-                        character: b' ',
-                        attribute: self.attribute(),
-                    };
-                    self.write_vga(self.row, self.col, blank);
-                }
+                let blank = VgaChar {
+                    character: b' ',
+                    attribute: self.attribute(),
+                };
+                self.write_vga(self.row, self.col, blank);
             }
             _ => {
                 if self.col >= self.num_cols {
@@ -221,8 +221,6 @@ impl Screen {
                 self.col += 1;
             }
         }
-
-        self.scroll();
     }
 
     /// Print a single character and update the hardware cursor.
