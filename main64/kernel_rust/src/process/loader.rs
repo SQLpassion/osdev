@@ -13,7 +13,23 @@ use super::types::{
 
 /// Page size used for program-image pagination and copy window sizing.
 const PAGE_SIZE_BYTES: usize = pmm::PAGE_SIZE as usize;
-/// Bootstrap stack page mapped at the top of the user stack region.
+
+/// Virtual address of the single stack page mapped when a user process starts.
+///
+/// Layout of the user stack region (high → low):
+/// ```text
+/// USER_STACK_TOP              = 0x0000_7FFF_F000_0000  (exclusive upper bound)
+/// USER_STACK_BOOTSTRAP_PAGE_VA= 0x0000_7FFF_EFFF_F000  ← this page (4 KiB)
+///     ...                                               (unmapped; grows on demand)
+/// USER_STACK_BASE             = 0x0000_7FFF_EFF0_0000  (1 MiB stack region start)
+/// USER_STACK_GUARD_BASE       = 0x0000_7FFF_EFEF_F000  (4 KiB guard page)
+/// ```
+///
+/// The initial RSP is set to `USER_STACK_TOP - 16` (16-byte ABI alignment).
+/// The first user push/call therefore lands inside this page, so mapping exactly
+/// one page here is sufficient to let the program start without an immediate
+/// page fault.  Additional stack pages are faulted in on demand as RSP grows
+/// downward — not yet implemented; this single page is all that exists today.
 const USER_STACK_BOOTSTRAP_PAGE_VA: u64 = vmm::USER_STACK_TOP - pmm::PAGE_SIZE;
 
 /// Loads a flat user program from FAT12 and validates its image length.

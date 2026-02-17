@@ -1249,9 +1249,31 @@ pub fn destroy_user_address_space(pml4_phys: u64) {
 
 /// Destroys a user address space rooted at `pml4_phys` with explicit code-page policy.
 ///
-/// `release_user_code_pfns`:
+/// ## What this function does
+/// 1. Temporarily activates `pml4_phys` as the current CR3 (via [`with_address_space`])
+///    so that recursive page-table walk addresses resolve against the correct hierarchy.
+/// 2. Unmaps every page in `[USER_CODE_BASE, USER_CODE_END)` and
+///    `[USER_STACK_BASE, USER_STACK_TOP)`, pruning now-empty PT/PD/PDP frames as it
+///    goes.
+/// 3. Releases the root PML4 frame back to the PMM.
+/// 4. Restores the previous CR3 before returning.
+///
+/// ## What this function does NOT do
+/// - It does not touch any kernel-half mappings (PML4 entries 256 and above). Those
+///   are shared with every other address space and must remain intact.
+/// - It does not handle regions outside `USER_CODE` and `USER_STACK`; any other
+///   user mappings that exist would be silently leaked.
+///
+/// ## Caller constraints
+/// - Must NOT be called with `pml4_phys` equal to the kernel CR3 that has no
+///   corresponding user address space — doing so would unmap the user windows
+///   inside the kernel page tables, corrupting all future user tasks.
+/// - Interrupts are disabled for the duration of the CR3 switch (handled internally
+///   by [`with_address_space`]).
+///
+/// ## `release_user_code_pfns` policy
 /// - `false`: clear user-code mappings but keep mapped code PFNs reserved
-///   (safe for temporary user aliases of kernel text pages),
+///   (safe for temporary user aliases of kernel text pages).
 /// - `true`: release user-code PFNs back to PMM (required for loader-owned images).
 pub fn destroy_user_address_space_with_options(pml4_phys: u64, release_user_code_pfns: bool) {
     // Always operate on a canonical page-aligned root frame.

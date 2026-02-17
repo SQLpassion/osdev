@@ -331,6 +331,21 @@ fn is_valid_short_name_char(b: u8) -> bool {
 ///
 /// The function scans fixed 32-byte entries and stops at FAT end marker `0x00`.
 /// Deleted, LFN helper and volume-label entries are skipped via `state()`.
+///
+/// # Arguments
+/// - `root_directory`: raw sector data read from LBA 19 (14 contiguous sectors,
+///   7168 bytes total). The buffer may be shorter; only complete 32-byte slots
+///   are examined.
+/// - `normalized_name`: space-padded, uppercased 11-byte FAT short name
+///   (8 bytes base + 3 bytes extension, no dot separator) as produced by
+///   [`normalize_8_3_name`].
+///
+/// # Returns
+/// - `Ok(FileEntryMeta)` — entry found; caller can inspect `attributes` to
+///   distinguish regular files from directories.
+/// - `Err(Fat12Error::NotFound)` — no active entry with a matching short name.
+/// - `Err(Fat12Error::CorruptDirectoryEntry)` — a matching entry was found but
+///   its metadata is structurally invalid (e.g. start cluster in reserved range).
 fn find_file_in_root_directory(
     root_directory: &[u8],
     normalized_name: &[u8; 11],
