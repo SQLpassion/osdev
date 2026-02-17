@@ -78,8 +78,10 @@ fn test_trap_frame_size_and_offsets() {
 /// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_irq_vector_constants_are_contiguous() {
+    let irq0 = core::hint::black_box(interrupts::IRQ0_PIT_TIMER_VECTOR);
+    let irq1 = core::hint::black_box(interrupts::IRQ1_KEYBOARD_VECTOR);
     assert!(
-        interrupts::IRQ1_KEYBOARD_VECTOR == interrupts::IRQ0_PIT_TIMER_VECTOR + 1,
+        irq1 == irq0 + 1,
         "IRQ1 vector must follow IRQ0 vector"
     );
 }
@@ -91,34 +93,27 @@ fn test_irq_vector_constants_are_contiguous() {
 /// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_exception_vector_constants_match_x86_spec() {
+    let divide_error = core::hint::black_box(interrupts::EXCEPTION_DIVIDE_ERROR);
+    let invalid_opcode = core::hint::black_box(interrupts::EXCEPTION_INVALID_OPCODE);
+    let device_not_available = core::hint::black_box(interrupts::EXCEPTION_DEVICE_NOT_AVAILABLE);
+    let double_fault = core::hint::black_box(interrupts::EXCEPTION_DOUBLE_FAULT);
+    let general_protection = core::hint::black_box(interrupts::EXCEPTION_GENERAL_PROTECTION);
+    let page_fault = core::hint::black_box(interrupts::EXCEPTION_PAGE_FAULT);
+    let syscall_vector = core::hint::black_box(interrupts::SYSCALL_INT80_VECTOR);
+
+    assert!(divide_error == 0, "divide error vector must be 0");
+    assert!(invalid_opcode == 6, "invalid opcode vector must be 6");
     assert!(
-        interrupts::EXCEPTION_DIVIDE_ERROR == 0,
-        "divide error vector must be 0"
-    );
-    assert!(
-        interrupts::EXCEPTION_INVALID_OPCODE == 6,
-        "invalid opcode vector must be 6"
-    );
-    assert!(
-        interrupts::EXCEPTION_DEVICE_NOT_AVAILABLE == 7,
+        device_not_available == 7,
         "device-not-available vector must be 7"
     );
+    assert!(double_fault == 8, "double-fault vector must be 8");
     assert!(
-        interrupts::EXCEPTION_DOUBLE_FAULT == 8,
-        "double-fault vector must be 8"
-    );
-    assert!(
-        interrupts::EXCEPTION_GENERAL_PROTECTION == 13,
+        general_protection == 13,
         "general-protection vector must be 13"
     );
-    assert!(
-        interrupts::EXCEPTION_PAGE_FAULT == 14,
-        "page-fault vector must be 14"
-    );
-    assert!(
-        interrupts::SYSCALL_INT80_VECTOR == 0x80,
-        "syscall vector must be 0x80"
-    );
+    assert!(page_fault == 14, "page-fault vector must be 14");
+    assert!(syscall_vector == 0x80, "syscall vector must be 0x80");
 }
 
 /// Contract: exception error code classification.

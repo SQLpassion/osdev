@@ -213,19 +213,19 @@ fn test_pmm_reserved_region_not_allocated() {
         let mut frames = [0u64; NUM_FRAMES];
         let mut count = 0;
 
-        for i in 0..NUM_FRAMES {
+        for frame_slot in frames.iter_mut().take(NUM_FRAMES) {
             let frame = pmm.alloc_frame().expect("Allocation should succeed");
             let addr = frame.physical_address();
 
             assert!(
-                addr >= STACK_TOP || addr < KERNEL_OFFSET,
+                !(KERNEL_OFFSET..STACK_TOP).contains(&addr),
                 "Frame physical address 0x{:x} falls inside reserved region [0x{:x}, 0x{:x})",
                 addr,
                 KERNEL_OFFSET,
                 STACK_TOP,
             );
 
-            frames[i] = frame.pfn;
+            *frame_slot = frame.pfn;
             count += 1;
 
             // Return the frame immediately so we don't exhaust memory

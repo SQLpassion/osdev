@@ -7,7 +7,7 @@
 use crate::drivers;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::fmt::Write;
+use core::fmt::{Display, Formatter, Write};
 
 // FAT12 disk geometry constants for a 1.44 MB floppy layout.
 const BYTES_PER_SECTOR: usize = 512;
@@ -66,6 +66,20 @@ impl From<drivers::ata::AtaError> for Fat12Error {
     fn from(value: drivers::ata::AtaError) -> Self {
         // Preserve original transport-layer failure while adapting to FAT12 API.
         Self::Ata(value)
+    }
+}
+
+impl Display for Fat12Error {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Ata(err) => write!(f, "ATA error: {:?}", err),
+            Self::InvalidFileName => f.write_str("invalid FAT 8.3 file name"),
+            Self::NotFound => f.write_str("file not found in FAT12 root directory"),
+            Self::IsDirectory => f.write_str("entry is a directory, not a regular file"),
+            Self::CorruptDirectoryEntry => f.write_str("corrupt FAT12 directory entry"),
+            Self::CorruptFatChain => f.write_str("corrupt FAT12 cluster chain"),
+            Self::UnexpectedEof => f.write_str("unexpected FAT12 EOF before file size completed"),
+        }
     }
 }
 
@@ -522,7 +536,7 @@ pub fn print_root_directory() {
         Err(err) => {
             // Surface media/I/O problems directly on screen for operator feedback.
             drivers::screen::with_screen(|screen| {
-                let _ = write!(screen, "FAT12 read error: {:?}\n", err);
+                let _ = writeln!(screen, "FAT12 read error: {}", err);
             });
             return;
         }

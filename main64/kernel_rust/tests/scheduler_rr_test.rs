@@ -876,7 +876,7 @@ fn test_invalid_task_frame_detection_never_writes_outside_task_stack() {
     );
 
     // Feed an obviously invalid, non-mapped frame pointer.
-    let invalid_frame = 0x1usize as *mut SavedRegisters;
+    let invalid_frame = core::ptr::dangling_mut::<SavedRegisters>();
     let next = sched::on_timer_tick(invalid_frame);
 
     let frame_a_after = sched::task_frame_ptr(task_a).expect("task A frame should still exist");

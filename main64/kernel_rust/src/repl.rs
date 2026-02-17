@@ -282,7 +282,7 @@ fn execute_command(line: &str) {
             (Some(file_name), None) => match fat12::read_file(file_name) {
                 Ok(content) => print_fat12_file_content(&content),
                 Err(err) => with_screen(|screen| {
-                    writeln!(screen, "cat failed for '{}': {:?}", file_name, err).unwrap();
+                    writeln!(screen, "cat failed for '{}': {}", file_name, err).unwrap();
                 }),
             },
             _ => with_screen(|screen| {
