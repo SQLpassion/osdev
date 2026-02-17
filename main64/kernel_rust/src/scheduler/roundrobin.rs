@@ -589,12 +589,31 @@ fn remove_task(meta: &mut SchedulerMetadata, task_id: usize) -> bool {
     // This keeps the stack range visible to `frame_within_any_task_stack`
     // until the next timer tick, preventing stale task frames from being
     // mistaken for bootstrap frames.
-    if !meta.slots[task_id].stack_base.is_null() && meta.pending_free_count < MAX_TASKS {
-        meta.pending_free_stacks[meta.pending_free_count] = (
-            meta.slots[task_id].stack_base,
-            meta.slots[task_id].stack_size,
+    //
+    // `pending_free_count >= MAX_TASKS` is structurally unreachable:
+    // the array holds MAX_TASKS entries, at most MAX_TASKS tasks can exist,
+    // and the list is drained to zero on every timer tick. A full list
+    // therefore always indicates a bug elsewhere in the scheduler.
+    //
+    // Immediate stack freeing is NOT a safe fallback here: `terminate_task`
+    // can be called while the caller is still executing on the target task's
+    // stack. Freeing it immediately would leave the CPU on a freed allocation.
+    // The debug_assert makes the bug visible in debug builds; in release builds
+    // the guard prevents an out-of-bounds write at the cost of a stack leak.
+    if !meta.slots[task_id].stack_base.is_null() {
+        debug_assert!(
+            meta.pending_free_count < MAX_TASKS,
+            "pending_free_stacks full ({} entries) — 64 KiB stack leak for task {}",
+            meta.pending_free_count,
+            task_id,
         );
-        meta.pending_free_count += 1;
+        if meta.pending_free_count < MAX_TASKS {
+            meta.pending_free_stacks[meta.pending_free_count] = (
+                meta.slots[task_id].stack_base,
+                meta.slots[task_id].stack_size,
+            );
+            meta.pending_free_count += 1;
+        }
     }
 
     // Step 4: compact the run queue by shifting all entries after `removed_pos`.
