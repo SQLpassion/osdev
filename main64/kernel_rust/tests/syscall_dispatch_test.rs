@@ -41,6 +41,9 @@ fn test_syscall_ids_are_stable() {
         SyscallId::WriteConsole as u64 == 3,
         "WriteConsole syscall id changed"
     );
+    assert!(SyscallId::GetChar as u64 == 4, "GetChar syscall id changed");
+    assert!(SyscallId::GetCursor as u64 == 5, "GetCursor syscall id changed");
+    assert!(SyscallId::SetCursor as u64 == 6, "SetCursor syscall id changed");
 }
 
 /// Contract: public WriteConsole syscall constant matches enum discriminant.
@@ -61,10 +64,40 @@ fn test_get_char_constant_matches_enum_id() {
     );
 }
 
+/// Contract: public GetCursor syscall constant matches enum discriminant.
+#[test_case]
+fn test_get_cursor_constant_matches_enum_id() {
+    assert!(
+        SyscallId::GET_CURSOR == SyscallId::GetCursor as u64,
+        "GET_CURSOR constant must match GetCursor enum value"
+    );
+}
+
+/// Contract: public SetCursor syscall constant matches enum discriminant.
+#[test_case]
+fn test_set_cursor_constant_matches_enum_id() {
+    assert!(
+        SyscallId::SET_CURSOR == SyscallId::SetCursor as u64,
+        "SET_CURSOR constant must match SetCursor enum value"
+    );
+}
+
 /// Contract: GetChar syscall enum id remains stable.
 #[test_case]
 fn test_get_char_enum_id_is_stable() {
     assert!(SyscallId::GetChar as u64 == 4, "GetChar syscall id changed");
+}
+
+/// Contract: GetCursor syscall enum id remains stable.
+#[test_case]
+fn test_get_cursor_enum_id_is_stable() {
+    assert!(SyscallId::GetCursor as u64 == 5, "GetCursor syscall id changed");
+}
+
+/// Contract: SetCursor syscall enum id remains stable.
+#[test_case]
+fn test_set_cursor_enum_id_is_stable() {
+    assert!(SyscallId::SetCursor as u64 == 6, "SetCursor syscall id changed");
 }
 
 /// Contract: unknown syscall returns enosys.
@@ -345,4 +378,36 @@ fn test_write_console_rejects_kernel_pointer() {
         ret == syscall::SYSCALL_ERR_INVALID_ARG,
         "write_console with kernel pointer must return EINVAL"
     );
+}
+
+/// Contract: set_cursor + get_cursor roundtrip returns the requested position.
+#[test_case]
+fn test_set_cursor_then_get_cursor_roundtrip() {
+    let ret = syscall::dispatch(SyscallId::SetCursor as u64, 7, 13, 0, 0);
+    assert!(ret == 0, "set_cursor must return success");
+
+    let packed = syscall::dispatch(SyscallId::GetCursor as u64, 0, 0, 0, 0);
+    let row = (packed >> 32) as usize;
+    let col = (packed & 0xFFFF_FFFF) as usize;
+    assert!(row == 7, "get_cursor row must match previously set row");
+    assert!(col == 13, "get_cursor col must match previously set col");
+}
+
+/// Contract: set_cursor clamps out-of-range coordinates to screen bounds.
+#[test_case]
+fn test_set_cursor_clamps_to_screen_bounds() {
+    let ret = syscall::dispatch(
+        SyscallId::SetCursor as u64,
+        usize::MAX as u64,
+        usize::MAX as u64,
+        0,
+        0,
+    );
+    assert!(ret == 0, "set_cursor must return success when clamping");
+
+    let packed = syscall::dispatch(SyscallId::GetCursor as u64, 0, 0, 0, 0);
+    let row = (packed >> 32) as usize;
+    let col = (packed & 0xFFFF_FFFF) as usize;
+    assert!(row == 24, "row must clamp to last VGA row");
+    assert!(col == 79, "col must clamp to last VGA column");
 }

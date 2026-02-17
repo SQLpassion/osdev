@@ -47,6 +47,8 @@ pub fn dispatch(syscall_nr: u64, arg0: u64, arg1: u64, arg2: u64, arg3: u64) -> 
         SyscallId::WRITE_SERIAL => syscall_write_serial_impl(arg0 as *const u8, arg1 as usize),
         SyscallId::WRITE_CONSOLE => syscall_write_console_impl(arg0 as *const u8, arg1 as usize),
         SyscallId::GET_CHAR => syscall_getchar_impl(),
+        SyscallId::GET_CURSOR => syscall_get_cursor_impl(),
+        SyscallId::SET_CURSOR => syscall_set_cursor_impl(arg0 as usize, arg1 as usize),
         SyscallId::EXIT => syscall_exit_impl(),
         _ => {
             // Silence unused parameter warnings for future syscalls
@@ -191,6 +193,29 @@ fn syscall_write_console_impl(ptr: *const u8, len: usize) -> u64 {
 /// don't produce printable characters are filtered out by the keyboard driver.
 fn syscall_getchar_impl() -> u64 {
     keyboard::read_char_blocking() as u64
+}
+
+/// Implements `GetCursor()`.
+///
+/// Returns the current VGA cursor as a packed 64-bit value:
+/// - upper 32 bits: `row`
+/// - lower 32 bits: `col`
+fn syscall_get_cursor_impl() -> u64 {
+    with_screen(|screen| {
+        let (row, col) = screen.get_cursor();
+        ((row as u64) << 32) | (col as u64)
+    })
+}
+
+/// Implements `SetCursor(row, col)`.
+///
+/// Sets the VGA cursor position. Values outside the current screen bounds are
+/// clamped by the screen driver.
+fn syscall_set_cursor_impl(row: usize, col: usize) -> u64 {
+    with_screen(|screen| {
+        screen.set_cursor(row, col);
+    });
+    SYSCALL_OK
 }
 
 /// Implements `Exit()`.

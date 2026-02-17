@@ -149,6 +149,48 @@ pub fn sys_getchar() -> Result<u8, SysError> {
     }
 }
 
+/// Returns the current VGA cursor position as `(row, col)`.
+#[inline(always)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn sys_get_cursor() -> Result<(usize, usize), SysError> {
+    let raw_value = unsafe {
+        // SAFETY:
+        // - Wrapper is intended for contexts where `int 0x80` is configured.
+        // - GetCursor has no memory arguments.
+        abi::syscall0(SyscallId::GetCursor as u64)
+    };
+
+    match raw_value {
+        SYSCALL_ERR_UNSUPPORTED => Err(SysError::UnsupportedSyscall),
+        SYSCALL_ERR_INVALID_ARG => Err(SysError::InvalidArgument),
+        SYSCALL_ERR_IO => Err(SysError::IoError),
+        x if x >= SYSCALL_ERR_IO => Err(SysError::Unknown(x)),
+        packed => Ok(((packed >> 32) as usize, (packed & 0xFFFF_FFFF) as usize)),
+    }
+}
+
+/// Sets the VGA cursor position.
+///
+/// Values outside bounds are clamped by the kernel screen driver.
+#[inline(always)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn sys_set_cursor(row: usize, col: usize) -> Result<(), SysError> {
+    let raw_value = unsafe {
+        // SAFETY:
+        // - Wrapper is intended for contexts where `int 0x80` is configured.
+        // - SetCursor takes plain integer arguments only.
+        abi::syscall2(SyscallId::SetCursor as u64, row as u64, col as u64)
+    };
+
+    match raw_value {
+        SYSCALL_ERR_UNSUPPORTED => Err(SysError::UnsupportedSyscall),
+        SYSCALL_ERR_INVALID_ARG => Err(SysError::InvalidArgument),
+        SYSCALL_ERR_IO => Err(SysError::IoError),
+        x if x >= SYSCALL_ERR_IO => Err(SysError::Unknown(x)),
+        _ => Ok(()),
+    }
+}
+
 /// Terminates the current task.
 ///
 /// Expected behavior:

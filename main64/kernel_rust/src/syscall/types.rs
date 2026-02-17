@@ -12,6 +12,10 @@ pub enum SyscallId {
     WriteConsole = 3,
     /// Read a single character from keyboard (blocking).
     GetChar = 4,
+    /// Get current VGA cursor position (packed as `row<<32 | col`).
+    GetCursor = 5,
+    /// Set VGA cursor position (`arg0=row`, `arg1=col`).
+    SetCursor = 6,
 }
 
 impl SyscallId {
@@ -29,6 +33,12 @@ impl SyscallId {
 
     /// Syscall number for GetChar (blocking keyboard input).
     pub const GET_CHAR: u64 = Self::GetChar as u64;
+
+    /// Syscall number for GetCursor.
+    pub const GET_CURSOR: u64 = Self::GetCursor as u64;
+
+    /// Syscall number for SetCursor.
+    pub const SET_CURSOR: u64 = Self::SetCursor as u64;
 }
 
 /// Unknown syscall number.
