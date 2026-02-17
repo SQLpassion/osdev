@@ -67,6 +67,12 @@ name = "keyboard_e2e_test"
 name = "keyboard_panic_contract_test"
 
 [[test]]
+name = "ata_test"
+
+[[test]]
+name = "ata_panic_contract_test"
+
+[[test]]
 name = "page_fault_death_test"
 
 [[test]]

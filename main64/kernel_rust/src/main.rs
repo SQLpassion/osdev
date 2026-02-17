@@ -69,6 +69,10 @@ pub extern "C" fn KernelMain(kernel_size: u64) -> ! {
     heap::init(true);
     debugln!("Heap Manager initialized");
 
+    // Initialize the ATA PIO driver
+    drivers::ata::init();
+    debugln!("ATA PIO driver initialized");
+
     // Initialize interrupt handling and the keyboard ring buffer.
     interrupts::register_irq_handler(interrupts::IRQ1_KEYBOARD_VECTOR, |_, frame| {
         keyboard::handle_irq();

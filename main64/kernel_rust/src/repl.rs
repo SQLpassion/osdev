@@ -4,6 +4,7 @@
 //! debugging, self-tests, and launching user-mode demos.
 
 use crate::arch::power;
+use crate::drivers::ata;
 use crate::drivers::keyboard;
 use crate::drivers::screen::{with_screen, Color, Screen};
 use crate::memory::bios;
@@ -16,6 +17,9 @@ use core::fmt::Write;
 
 const PATTERN_DELAY_SPINS: usize = 500_000;
 const VGA_TEXT_COLS: usize = 80;
+const ATA_TEST_LBA: u32 = 2048;
+const ATA_SECTOR_SIZE: usize = 512;
+const ATA_TEST_MAX_INPUT: usize = ATA_SECTOR_SIZE - 2;
 
 /// Kernel size stored by `KernelMain` so that the REPL task can display it
 /// in the welcome banner.  Written once before the scheduler starts, read
@@ -156,6 +160,11 @@ fn execute_command(line: &str) {
                     "  cursordemo      - run ring-3 cursor syscall demo (GetCursor/SetCursor)"
                 )
                 .unwrap();
+                writeln!(
+                    screen,
+                    "  atatest         - read keyboard line, write/read ATA sector, print result"
+                )
+                .unwrap();
                 writeln!(screen, "  shutdown        - shutdown the system").unwrap();
             });
         }
@@ -260,6 +269,9 @@ fn execute_command(line: &str) {
         "cursordemo" => {
             user_tasks::run_user_mode_cursor_demo();
         }
+        "atatest" => {
+            run_ata_interactive_roundtrip();
+        }
         _ => {
             with_screen(|screen| {
                 writeln!(screen, "Unknown command: {}", cmd).unwrap();
@@ -328,6 +340,88 @@ fn draw_progress_bar(screen: &mut Screen, row: usize, color: Color, label: u8, p
             screen.print_char(ch);
         }
     }
+}
+
+fn run_ata_interactive_roundtrip() {
+    let mut existing = [0u8; ATA_SECTOR_SIZE];
+    match ata::read_sectors(&mut existing, ATA_TEST_LBA, 1) {
+        Ok(()) => {
+            with_screen(|screen| {
+                writeln!(screen, "Previous disk content:").unwrap();
+            });
+            print_ata_payload_from_sector(&existing, "Disk previous read-back");
+        }
+        Err(err) => {
+            with_screen(|screen| {
+                writeln!(screen, "ATA initial read failed: {:?}", err).unwrap();
+            });
+        }
+    }
+
+    with_screen(|screen| {
+        writeln!(
+            screen,
+            "ATA interactive test (LBA {}). Press ENTER to write your input data to disk:",
+            ATA_TEST_LBA
+        )
+        .unwrap();
+    });
+
+    let mut input = [0u8; ATA_TEST_MAX_INPUT];
+    let input_len = read_line(&mut input);
+
+    let mut sector = [0u8; ATA_SECTOR_SIZE];
+    sector[0] = (input_len & 0xFF) as u8;
+    sector[1] = ((input_len >> 8) & 0xFF) as u8;
+    sector[2..2 + input_len].copy_from_slice(&input[..input_len]);
+
+    match ata::write_sectors(&sector, ATA_TEST_LBA, 1) {
+        Ok(()) => {}
+        Err(err) => {
+            with_screen(|screen| {
+                writeln!(screen, "ATA write failed: {:?}", err).unwrap();
+            });
+            return;
+        }
+    }
+
+    let mut read_back = [0u8; ATA_SECTOR_SIZE];
+    match ata::read_sectors(&mut read_back, ATA_TEST_LBA, 1) {
+        Ok(()) => {}
+        Err(err) => {
+            with_screen(|screen| {
+                writeln!(screen, "ATA read failed: {:?}", err).unwrap();
+            });
+            return;
+        }
+    }
+
+    print_ata_payload_from_sector(&read_back, "Disk read-back");
+}
+
+fn print_ata_payload_from_sector(sector: &[u8; ATA_SECTOR_SIZE], label: &str) {
+    let read_len = ((sector[1] as usize) << 8) | (sector[0] as usize);
+    if read_len > ATA_TEST_MAX_INPUT {
+        with_screen(|screen| {
+            writeln!(
+                screen,
+                "{} invalid payload length: {} (max {})",
+                label, read_len, ATA_TEST_MAX_INPUT
+            )
+            .unwrap();
+        });
+        return;
+    }
+
+    let payload = &sector[2..2 + read_len];
+    with_screen(|screen| match core::str::from_utf8(payload) {
+        Ok(text) => {
+            writeln!(screen, "{}: {}", label, text).unwrap();
+        }
+        Err(_) => {
+            writeln!(screen, "{} contains non-UTF8 bytes.", label).unwrap();
+        }
+    });
 }
 
 /// Generic VGA progress-bar task used to visualize task switching on live screen output.
