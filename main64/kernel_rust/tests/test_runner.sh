@@ -53,7 +53,7 @@ if [ ! -f "$MAIN64_DIR/boot/bootsector.bin" ] || \
    [ ! -f "$MAIN64_DIR/kaosldr_16/kldr16.bin" ] || \
    [ ! -f "$MAIN64_DIR/kaosldr_64/kldr64.bin" ]; then
     echo "  -> Bootloader files not found. Building bootloaders..."
-    echo "     Please run build_rust.sh first to create bootloader files."
+    echo "     Please run build_kernel_debug.sh first to create bootloader files."
     exit 1
 fi
 

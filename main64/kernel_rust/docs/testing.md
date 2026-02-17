@@ -494,7 +494,7 @@ cargo test --test basic_boot --no-run
 - **QEMU** — `qemu-system-x86_64` must be in `$PATH`
 - **Bootloader binaries** — `boot/bootsector.bin`, `kaosldr_16/kldr16.bin`, and
   `kaosldr_64/kldr64.bin` must exist in the `main64/` directory. Build them first with
-  `build_rust.sh`
+  `build_kernel_debug.sh`
 - **`timeout` command** (optional) — GNU coreutils `timeout` (Linux) or `gtimeout`
   (macOS, via `brew install coreutils`). If not available, tests run without a timeout
   guard
