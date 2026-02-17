@@ -166,6 +166,7 @@ impl PageTableEntry {
     /// Sets or clears the present bit.
     #[inline]
     fn set_present(&mut self, val: bool) {
+        // Toggle only the present bit and keep all other fields intact.
         if val {
             self.0 |= ENTRY_PRESENT;
         } else {
@@ -183,6 +184,7 @@ impl PageTableEntry {
     /// Sets or clears the writable bit.
     #[inline]
     fn set_writable(&mut self, val: bool) {
+        // Toggle only the writable bit and keep all other fields intact.
         if val {
             self.0 |= ENTRY_WRITABLE;
         } else {
@@ -200,6 +202,7 @@ impl PageTableEntry {
     /// Sets or clears the user-accessible bit.
     #[inline]
     fn set_user(&mut self, val: bool) {
+        // Toggle only the user-accessible bit and keep all other fields intact.
         if val {
             self.0 |= ENTRY_USER;
         } else {
@@ -227,6 +230,7 @@ impl PageTableEntry {
     /// as it must change when switching to a different address space.
     #[inline]
     fn set_global(&mut self, val: bool) {
+        // Toggle only the global bit and keep all other fields intact.
         if val {
             self.0 |= ENTRY_GLOBAL;
         } else {
@@ -277,6 +281,7 @@ impl PageTable {
     /// Clears all page-table entries.
     #[inline]
     fn zero(&mut self) {
+        // Reset every entry to "not present".
         for entry in self.entries.iter_mut() {
             entry.clear();
         }
@@ -334,17 +339,21 @@ fn page_align_down(addr: u64) -> u64 {
 /// Returns the configured user region for the given page-aligned address.
 #[inline]
 fn classify_user_region(virtual_address: u64) -> Option<UserRegion> {
+    // Code window has priority when the address is inside executable range.
     if (USER_CODE_BASE..USER_CODE_END).contains(&virtual_address) {
         return Some(UserRegion::Code);
     }
 
+    // Stack window represents the regular writable user stack.
     if (USER_STACK_BASE..USER_STACK_TOP).contains(&virtual_address) {
         return Some(UserRegion::Stack);
     }
 
+    // Guard window must stay unmapped to detect stack overflows.
     if (USER_STACK_GUARD_BASE..USER_STACK_GUARD_END).contains(&virtual_address) {
         return Some(UserRegion::Guard);
     }
+    // Any other VA is outside supported user ranges.
     None
 }
 
@@ -359,6 +368,9 @@ fn phys_to_pfn(addr: u64) -> u64 {
 /// Caller contract: must run in ring 0 on x86_64.
 fn read_cr3() -> u64 {
     let val: u64;
+    // SAFETY:
+    // - Reading CR3 is privileged and valid in ring 0.
+    // - Does not dereference memory.
     unsafe {
         asm!("mov {}, cr3", out(reg) val, options(nomem, nostack, preserves_flags));
     }
@@ -369,6 +381,9 @@ fn read_cr3() -> u64 {
 ///
 /// Caller contract: `val` must point to a valid PML4 frame.
 fn write_cr3(val: u64) {
+    // SAFETY:
+    // - Caller guarantees `val` points to a valid PML4 root frame.
+    // - Executed only in ring 0.
     unsafe {
         asm!("mov cr3, {}", in(reg) val, options(nostack, preserves_flags));
     }
@@ -378,6 +393,9 @@ fn write_cr3(val: u64) {
 ///
 /// Caller contract: must run in ring 0 on x86_64.
 fn invlpg(addr: u64) {
+    // SAFETY:
+    // - `invlpg` is privileged and valid in ring 0.
+    // - Operand is treated as an address tag for TLB invalidation.
     unsafe {
         asm!("invlpg [{}]", in(reg) addr, options(nostack, preserves_flags));
     }
@@ -441,10 +459,12 @@ static VMM: GlobalVmm = GlobalVmm::new();
 /// operations to prevent race conditions.
 #[inline]
 fn with_vmm<R>(f: impl FnOnce(&mut VmmState) -> R) -> R {
+    // Catch accidental use before `init()` in debug/test configurations.
     debug_assert!(
         VMM.initialized.load(Ordering::Acquire),
         "VMM not initialized"
     );
+    // Serialize access to shared VMM state.
     let mut guard = VMM.inner.lock();
     f(&mut guard)
 }
@@ -464,6 +484,9 @@ fn alloc_frame_phys() -> u64 {
 /// Caller contract: `addr` must point to a valid, mapped page-table page.
 #[inline]
 fn table_at(addr: u64) -> &'static mut PageTable {
+    // SAFETY:
+    // - Caller guarantees `addr` points to a mapped page table page.
+    // - Returned reference is used under page-table ownership conventions.
     unsafe { &mut *(addr as *mut PageTable) }
 }
 
@@ -472,6 +495,9 @@ fn table_at(addr: u64) -> &'static mut PageTable {
 /// Caller contract: `addr` must be writable and page-aligned physical memory.
 #[inline]
 fn zero_phys_page(addr: u64) {
+    // SAFETY:
+    // - Caller guarantees `addr` is writable and page-aligned.
+    // - Writes exactly one 4 KiB page.
     unsafe {
         core::ptr::write_bytes(addr as *mut u8, 0, SMALL_PAGE_SIZE as usize);
     }
@@ -480,6 +506,9 @@ fn zero_phys_page(addr: u64) {
 /// Zeros one already-mapped 4 KiB virtual page.
 #[inline]
 fn zero_virt_page(addr: u64) {
+    // SAFETY:
+    // - Caller guarantees `addr` points to a currently mapped writable page.
+    // - Writes exactly one 4 KiB page.
     unsafe {
         core::ptr::write_bytes(addr as *mut u8, 0, SMALL_PAGE_SIZE as usize);
     }
@@ -498,6 +527,9 @@ fn serial_debug_enabled() -> bool {
 /// Writes one byte to a mapped virtual address with volatile semantics.
 #[inline]
 fn write_virt_u8(addr: u64, value: u8) {
+    // SAFETY:
+    // - Caller guarantees `addr` is mapped and writable.
+    // - Volatile write is used for deterministic test/probe behavior.
     unsafe {
         core::ptr::write_volatile(addr as *mut u8, value);
     }
@@ -506,11 +538,15 @@ fn write_virt_u8(addr: u64, value: u8) {
 /// Reads one byte from a mapped virtual address with volatile semantics.
 #[inline]
 fn read_virt_u8(addr: u64) -> u8 {
+    // SAFETY:
+    // - Caller guarantees `addr` is mapped and readable.
+    // - Volatile read is used for deterministic test/probe behavior.
     unsafe { core::ptr::read_volatile(addr as *const u8) }
 }
 
 /// Sets the initial VMM state before the initialized flag is published.
 fn set_vmm_state_unchecked(pml4_physical: u64, debug_enabled: bool) {
+    // Initialization-only write path before `initialized=true` is published.
     let mut state = VMM.inner.lock();
     state.pml4_physical = pml4_physical;
     state.serial_debug_enabled = debug_enabled;
@@ -525,6 +561,7 @@ fn debug_enabled() -> bool {
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn set_debug_output(enabled: bool) -> bool {
     with_vmm(|state| {
+        // Return previous state so callers can restore debug level later.
         let old = state.serial_debug_enabled;
         state.serial_debug_enabled = enabled;
         old
@@ -540,6 +577,7 @@ pub fn set_console_debug_output(enabled: bool) {
 
 /// Writes captured VMM debug output to the screen.
 pub fn print_console_debug_output(screen: &mut Screen) {
+    // Filter captured logs to high-signal page-fault traces for REPL output.
     logging::print_captured_target(screen, "vmm", |line| {
         line.starts_with("VMM: page fault raw=") || line.starts_with("VMM: indices pml4=")
     });
@@ -547,6 +585,7 @@ pub fn print_console_debug_output(screen: &mut Screen) {
 
 /// Emits a structured allocation trace line when debug logging is enabled.
 fn debug_alloc(level: &str, idx: usize, pfn: u64) {
+    // Emit allocation traces only when debugging is enabled.
     if debug_enabled() {
         vmm_logln(format_args!(
             "VMM: allocated PFN 0x{:x} for {} entry 0x{:x}",
@@ -562,6 +601,7 @@ fn debug_alloc(level: &str, idx: usize, pfn: u64) {
 /// - higher-half mapping for 0xFFFF_8000_0000_0000..+4MB
 /// - recursive mapping at PML4[511]
 pub fn init(debug_output: bool) {
+    // Step 1: allocate all paging-structure frames required for bootstrap layout.
     let pml4 = alloc_frame_phys();
     let pdp_higher = alloc_frame_phys();
     let pd_higher = alloc_frame_phys();
@@ -572,6 +612,7 @@ pub fn init(debug_output: bool) {
     let pt_identity_0 = alloc_frame_phys();
     let pt_identity_1 = alloc_frame_phys();
 
+    // Step 2: clear all fresh table pages before inserting entries.
     for addr in [
         pml4,
         pdp_higher,
@@ -586,11 +627,16 @@ pub fn init(debug_output: bool) {
         zero_phys_page(addr);
     }
 
+    // Step 3: wire top-level roots:
+    // - slot 0   -> identity map subtree
+    // - slot 256 -> higher-half kernel subtree
+    // - slot 511 -> recursive self-map
     let pml4_tbl = table_at(pml4);
     pml4_tbl.entries[0].set_mapping(phys_to_pfn(pdp_identity), true, true, false);
     pml4_tbl.entries[256].set_mapping(phys_to_pfn(pdp_higher), true, true, false);
     pml4_tbl.entries[511].set_mapping(phys_to_pfn(pml4), true, true, false);
 
+    // Build identity mapping subtree for first 4 MiB.
     let pdp_identity_tbl = table_at(pdp_identity);
     pdp_identity_tbl.entries[0].set_mapping(phys_to_pfn(pd_identity), true, true, false);
 
@@ -599,15 +645,20 @@ pub fn init(debug_output: bool) {
     pd_identity_tbl.entries[1].set_mapping(phys_to_pfn(pt_identity_1), true, true, false);
 
     let pt_identity_tbl_0 = table_at(pt_identity_0);
+
+    // Identity-map physical 0..2 MiB.
     for i in 0..PT_ENTRIES {
         pt_identity_tbl_0.entries[i].set_mapping(i as u64, true, true, false);
     }
 
     let pt_identity_tbl_1 = table_at(pt_identity_1);
+
+    // Identity-map physical 2..4 MiB.
     for i in 0..PT_ENTRIES {
         pt_identity_tbl_1.entries[i].set_mapping((PT_ENTRIES + i) as u64, true, true, false);
     }
 
+    // Build higher-half mapping subtree that mirrors same physical 0..4 MiB.
     let pdp_higher_tbl = table_at(pdp_higher);
     pdp_higher_tbl.entries[0].set_mapping(phys_to_pfn(pd_higher), true, true, false);
 
@@ -616,15 +667,21 @@ pub fn init(debug_output: bool) {
     pd_higher_tbl.entries[1].set_mapping(phys_to_pfn(pt_higher_1), true, true, false);
 
     let pt_higher_tbl_0 = table_at(pt_higher_0);
+
+    // Map first 2 MiB into higher-half window and mark as global.
     for i in 0..PT_ENTRIES {
         pt_higher_tbl_0.entries[i].set_mapping(i as u64, true, true, false);
+
         // Mark kernel pages as global to avoid TLB flush on CR3 switch
         pt_higher_tbl_0.entries[i].set_global(true);
     }
 
     let pt_higher_tbl_1 = table_at(pt_higher_1);
+
+    // Map second 2 MiB into higher-half window and mark as global.
     for i in 0..PT_ENTRIES {
         pt_higher_tbl_1.entries[i].set_mapping((PT_ENTRIES + i) as u64, true, true, false);
+
         // Mark kernel pages as global to avoid TLB flush on CR3 switch
         pt_higher_tbl_1.entries[i].set_global(true);
     }
@@ -636,9 +693,11 @@ pub fn init(debug_output: bool) {
     pdp_higher_tbl.entries[0].set_global(true);
     pml4_tbl.entries[256].set_global(true);
 
+    // Step 4: publish VMM state and mark it initialized for runtime APIs.
     set_vmm_state_unchecked(pml4, debug_output);
     VMM.initialized.store(true, Ordering::Release);
 
+    // Step 5: activate the new bootstrap root.
     write_cr3(pml4);
 
     // Enable global pages (CR4.PGE) to avoid flushing kernel TLB entries on CR3 switch.
@@ -662,12 +721,16 @@ pub fn get_pml4_address() -> u64 {
 /// cannot observe a temporary address-space switch.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn with_address_space<R>(pml4_phys: u64, f: impl FnOnce() -> R) -> R {
+    // Preserve interrupt state and block preemption during temporary CR3 switch.
     let interrupts_were_enabled = interrupts::are_enabled();
     if interrupts_were_enabled {
         interrupts::disable();
     }
 
+    // Capture current root so we can restore it unconditionally.
     let previous_cr3 = read_cr3();
+
+    // Switch only when target differs from current root.
     if previous_cr3 != pml4_phys {
         // SAFETY:
         // - `pml4_phys` is supplied by trusted kernel code that owns the target root.
@@ -677,8 +740,10 @@ pub fn with_address_space<R>(pml4_phys: u64, f: impl FnOnce() -> R) -> R {
         }
     }
 
+    // Execute caller work while target address space is active.
     let result = f();
 
+    // Restore original CR3 before leaving critical section.
     if previous_cr3 != pml4_phys {
         // SAFETY:
         // - `previous_cr3` was read from the CPU before switching and is valid.
@@ -688,6 +753,7 @@ pub fn with_address_space<R>(pml4_phys: u64, f: impl FnOnce() -> R) -> R {
         }
     }
 
+    // Restore interrupt enable state to exactly what caller had.
     if interrupts_were_enabled {
         interrupts::enable();
     }
@@ -702,7 +768,10 @@ pub fn with_address_space<R>(pml4_phys: u64, f: impl FnOnce() -> R) -> R {
 /// PML4 table in physical memory. Switching to an invalid CR3 target can
 /// immediately crash the kernel due to page faults/triple fault.
 pub unsafe fn switch_page_directory(pml4_phys: u64) {
+    // CPU state update.
     write_cr3(pml4_phys);
+
+    // Mirror the active root in software state for diagnostics/helpers.
     with_vmm(|state| {
         state.pml4_physical = pml4_phys;
     });
@@ -712,9 +781,12 @@ pub unsafe fn switch_page_directory(pml4_phys: u64) {
 ///
 #[inline]
 fn populate_page_table_path(virtual_address: u64, user: bool) {
+    // Level 1: PML4 entry.
     let pml4 = table_at(PML4_TABLE_ADDR);
     let pml4_idx = pml4_index(virtual_address);
+
     if !pml4.entries[pml4_idx].present() {
+        // Allocate and zero a fresh PDP table.
         let new_table_phys = alloc_frame_phys();
         pml4.entries[pml4_idx].set_mapping(phys_to_pfn(new_table_phys), true, true, user);
         invlpg(pdp_table_addr(virtual_address));
@@ -722,13 +794,17 @@ fn populate_page_table_path(virtual_address: u64, user: bool) {
         new_pdp.zero();
         debug_alloc("PML4", pml4_idx, pml4.entries[pml4_idx].frame());
     } else if user {
+        // Existing path: elevate permissions for user mapping requests.
         pml4.entries[pml4_idx].set_user(true);
         pml4.entries[pml4_idx].set_writable(true);
     }
 
+    // Level 2: PDP entry.
     let pdp = table_at(pdp_table_addr(virtual_address));
     let pdp_idx = pdp_index(virtual_address);
+
     if !pdp.entries[pdp_idx].present() {
+        // Allocate and zero a fresh PD table.
         let new_table_phys = alloc_frame_phys();
         pdp.entries[pdp_idx].set_mapping(phys_to_pfn(new_table_phys), true, true, user);
         invlpg(pd_table_addr(virtual_address));
@@ -736,13 +812,17 @@ fn populate_page_table_path(virtual_address: u64, user: bool) {
         new_pd.zero();
         debug_alloc("PDP", pdp_idx, pdp.entries[pdp_idx].frame());
     } else if user {
+        // Existing path: elevate permissions for user mapping requests.
         pdp.entries[pdp_idx].set_user(true);
         pdp.entries[pdp_idx].set_writable(true);
     }
 
+    // Level 3: PD entry.
     let pd = table_at(pd_table_addr(virtual_address));
     let pd_idx = pd_index(virtual_address);
+
     if !pd.entries[pd_idx].present() {
+        // Allocate and zero a fresh PT table.
         let new_table_phys = alloc_frame_phys();
         pd.entries[pd_idx].set_mapping(phys_to_pfn(new_table_phys), true, true, user);
         invlpg(pt_table_addr(virtual_address));
@@ -750,6 +830,7 @@ fn populate_page_table_path(virtual_address: u64, user: bool) {
         new_pt.zero();
         debug_alloc("PD", pd_idx, pd.entries[pd_idx].frame());
     } else if user {
+        // Existing path: elevate permissions for user mapping requests.
         pd.entries[pd_idx].set_user(true);
         pd.entries[pd_idx].set_writable(true);
     }
@@ -761,27 +842,34 @@ fn populate_page_table_path(virtual_address: u64, user: bool) {
 ///
 #[inline]
 fn pt_for_if_present(virtual_address: u64) -> Option<&'static mut PageTable> {
+    // Resolve PML4 level and reject missing/huge entries.
     let pml4 = table_at(PML4_TABLE_ADDR);
     let pml4_idx = pml4_index(virtual_address);
     let pml4e = pml4.entries[pml4_idx];
+
     if !pml4e.present() || pml4e.huge() {
         return None;
     }
 
+    // Resolve PDP level and reject missing/huge entries.
     let pdp = table_at(pdp_table_addr(virtual_address));
     let pdp_idx = pdp_index(virtual_address);
     let pdpe = pdp.entries[pdp_idx];
+
     if !pdpe.present() || pdpe.huge() {
         return None;
     }
 
+    // Resolve PD level and reject missing/huge entries.
     let pd = table_at(pd_table_addr(virtual_address));
     let pd_idx = pd_index(virtual_address);
     let pde = pd.entries[pd_idx];
+
     if !pde.present() || pde.huge() {
         return None;
     }
 
+    // All intermediate levels are present => return leaf PT table.
     Some(table_at(pt_table_addr(virtual_address)))
 }
 
@@ -807,6 +895,7 @@ fn unmap_page_and_prune_pagetable_hierarchy(virtual_address: u64, release_leaf_p
     let pml4 = table_at(PML4_TABLE_ADDR);
     let pml4_idx = pml4_index(virtual_address);
     let pml4e = pml4.entries[pml4_idx];
+
     if !pml4e.present() || pml4e.huge() {
         return;
     }
@@ -814,6 +903,7 @@ fn unmap_page_and_prune_pagetable_hierarchy(virtual_address: u64, release_leaf_p
     let pdp = table_at(pdp_table_addr(virtual_address));
     let pdp_idx = pdp_index(virtual_address);
     let pdpe = pdp.entries[pdp_idx];
+
     if !pdpe.present() || pdpe.huge() {
         return;
     }
@@ -821,6 +911,7 @@ fn unmap_page_and_prune_pagetable_hierarchy(virtual_address: u64, release_leaf_p
     let pd = table_at(pd_table_addr(virtual_address));
     let pd_idx = pd_index(virtual_address);
     let pde = pd.entries[pd_idx];
+
     if !pde.present() || pde.huge() {
         return;
     }
@@ -849,6 +940,7 @@ fn unmap_page_and_prune_pagetable_hierarchy(virtual_address: u64, release_leaf_p
     if !table_is_empty(pt) {
         return;
     }
+
     let pt_pfn = pd.entries[pd_idx].frame();
     pd.entries[pd_idx].clear();
     invlpg(pt_table_addr(virtual_address));
@@ -858,6 +950,7 @@ fn unmap_page_and_prune_pagetable_hierarchy(virtual_address: u64, release_leaf_p
     if !table_is_empty(pd) {
         return;
     }
+
     let pd_pfn = pdp.entries[pdp_idx].frame();
     pdp.entries[pdp_idx].clear();
     invlpg(pd_table_addr(virtual_address));
@@ -867,6 +960,7 @@ fn unmap_page_and_prune_pagetable_hierarchy(virtual_address: u64, release_leaf_p
     if !table_is_empty(pdp) {
         return;
     }
+
     let pdp_pfn = pml4.entries[pml4_idx].frame();
     pml4.entries[pml4_idx].clear();
     invlpg(pdp_table_addr(virtual_address));
@@ -878,15 +972,19 @@ fn unmap_page_and_prune_pagetable_hierarchy(virtual_address: u64, release_leaf_p
 /// Returns `Err(PageFaultError::ProtectionFault)` for protection faults (`P=1`),
 /// and `Ok(())` for handled non-present faults.
 pub fn try_handle_page_fault(virtual_address: u64, error_code: u64) -> Result<(), PageFaultError> {
+    // Keep both raw and page-aligned addresses for diagnostics and mapping.
     let fault_address_raw = virtual_address;
     let virtual_address = page_align_down(fault_address_raw);
 
+    // Optional structured debug trace for fault triage.
     if debug_enabled() {
         let cr3 = read_cr3();
+
         vmm_logln(format_args!(
             "VMM: page fault raw=0x{:x} aligned=0x{:x} cr3=0x{:x} err=0x{:x}",
             fault_address_raw, virtual_address, cr3, error_code
         ));
+
         vmm_logln(format_args!(
             "VMM: indices pml4={} pdp={} pd={} pt={}",
             pml4_index(virtual_address),
@@ -894,6 +992,7 @@ pub fn try_handle_page_fault(virtual_address: u64, error_code: u64) -> Result<()
             pd_index(virtual_address),
             pt_index(virtual_address)
         ));
+
         vmm_logln(format_args!(
             "VMM: err bits p={} w={} u={} rsv={} ifetch={}",
             (error_code & (1 << 0)) != 0,
@@ -918,6 +1017,7 @@ pub fn try_handle_page_fault(virtual_address: u64, error_code: u64) -> Result<()
     }
 
     let user_region = classify_user_region(virtual_address);
+    // Guard page faults are always treated as protection violations.
     if matches!(user_region, Some(UserRegion::Guard)) {
         return Err(PageFaultError::ProtectionFault {
             virtual_address: fault_address_raw,
@@ -929,24 +1029,32 @@ pub fn try_handle_page_fault(virtual_address: u64, error_code: u64) -> Result<()
         user_region,
         Some(UserRegion::Code) | Some(UserRegion::Stack)
     );
-    let writable = !matches!(user_region, Some(UserRegion::Code));
 
+    // User code pages default to read-only; everything else can start writable.
+    let writable = !matches!(user_region, Some(UserRegion::Code));
     populate_page_table_path(virtual_address, user_access);
     let pt = table_at(pt_table_addr(virtual_address));
     let pt_idx = pt_index(virtual_address);
+
+    // Allocate a leaf page only when page is currently non-present.
     if !pt.entries[pt_idx].present() {
         let new_page_phys = alloc_frame_phys();
+
         // Map writable first so zero-fill is valid even when final mapping
         // should be read-only (e.g. user code pages).
         pt.entries[pt_idx].set_mapping(phys_to_pfn(new_page_phys), true, true, user_access);
         invlpg(virtual_address);
         zero_virt_page(virtual_address);
+
         if !writable {
+            // Tighten final permissions for code pages after zero-fill.
             pt.entries[pt_idx].set_writable(false);
             invlpg(virtual_address);
         }
+
         debug_alloc("PT", pt_idx, pt.entries[pt_idx].frame());
     }
+
     Ok(())
 }
 
@@ -954,6 +1062,7 @@ pub fn try_handle_page_fault(virtual_address: u64, error_code: u64) -> Result<()
 ///
 /// This wrapper preserves the existing behavior: protection faults are fatal.
 pub fn handle_page_fault(virtual_address: u64, error_code: u64) {
+    // Production path keeps historical behavior: protection faults are fatal.
     if let Err(PageFaultError::ProtectionFault {
         virtual_address,
         error_code,
@@ -974,13 +1083,17 @@ pub fn try_map_virtual_to_physical(
     virtual_address: u64,
     physical_address: u64,
 ) -> Result<(), MapError> {
+    // Normalize both addresses to page granularity.
     let virtual_address = page_align_down(virtual_address);
     let physical_address = page_align_down(physical_address);
     let requested_pfn = phys_to_pfn(physical_address);
 
+    // Ensure intermediate levels exist for the target VA.
     populate_page_table_path(virtual_address, false);
     let pt = table_at(pt_table_addr(virtual_address));
     let pt_idx = pt_index(virtual_address);
+
+    // Existing mapping path: only accept if PFN matches requested PFN.
     if pt.entries[pt_idx].present() {
         let current_pfn = pt.entries[pt_idx].frame();
         if current_pfn != requested_pfn {
@@ -990,8 +1103,11 @@ pub fn try_map_virtual_to_physical(
                 requested_pfn,
             });
         }
+
         return Ok(());
     }
+
+    // Fresh mapping path.
     pt.entries[pt_idx].set_mapping(requested_pfn, true, true, false);
     invlpg(virtual_address);
     debug_alloc("PT", pt_idx, pt.entries[pt_idx].frame());
@@ -1003,6 +1119,7 @@ pub fn try_map_virtual_to_physical(
 /// Panics if the VA is already mapped to another frame.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn map_virtual_to_physical(virtual_address: u64, physical_address: u64) {
+    // Thin wrapper: convert mapping conflicts into a hard panic.
     if let Err(MapError::AlreadyMapped {
         virtual_address,
         current_pfn,
@@ -1018,18 +1135,24 @@ pub fn map_virtual_to_physical(virtual_address: u64, physical_address: u64) {
 
 /// Unmaps the given virtual address and invalidates the corresponding TLB entry.
 pub fn unmap_virtual_address(virtual_address: u64) {
+    // Operate on page boundary regardless of caller offset.
     let virtual_address = page_align_down(virtual_address);
 
+    // If the hierarchy does not exist, unmap is already satisfied.
     let Some(pt) = pt_for_if_present(virtual_address) else {
         return;
     };
+
     let pt_idx = pt_index(virtual_address);
     if pt.entries[pt_idx].present() {
+        // Remove leaf mapping and invalidate stale translation.
         let old_pfn = pt.entries[pt_idx].frame();
         pt.entries[pt_idx].clear();
         invlpg(virtual_address);
+        // Return physical frame ownership to PMM when possible.
         let released = pmm::with_pmm(|mgr| mgr.release_pfn(old_pfn));
         if !released {
+            // Best-effort warning for non-PMM-managed mappings.
             vmm_logln(format_args!(
                 "VMM: warning: unmapped VA 0x{:x} had non-PMM PFN 0x{:x}",
                 virtual_address, old_pfn
@@ -1116,24 +1239,41 @@ pub fn clone_kernel_pml4_for_user() -> u64 {
 /// Teardown semantics:
 /// - unmaps user-code and user-stack ranges,
 /// - releases mapped PMM-managed leaf frames in stack range,
-/// - clears code-range leaf mappings without releasing aliased frames,
+/// - keeps code-range leaf PFNs reserved (alias-safe default),
 /// - prunes and releases now-empty PT/PD/PDP pages,
 /// - releases the root PML4 frame itself.
 pub fn destroy_user_address_space(pml4_phys: u64) {
+    // Keep legacy default: do not release USER_CODE PFNs (alias-safe mode).
+    destroy_user_address_space_with_options(pml4_phys, false);
+}
+
+/// Destroys a user address space rooted at `pml4_phys` with explicit code-page policy.
+///
+/// `release_user_code_pfns`:
+/// - `false`: clear user-code mappings but keep mapped code PFNs reserved
+///   (safe for temporary user aliases of kernel text pages),
+/// - `true`: release user-code PFNs back to PMM (required for loader-owned images).
+pub fn destroy_user_address_space_with_options(pml4_phys: u64, release_user_code_pfns: bool) {
+    // Always operate on a canonical page-aligned root frame.
     let pml4_phys = page_align_down(pml4_phys);
+
+    // A zero root is treated as "no address space" and is therefore a no-op.
     if pml4_phys == 0 {
         return;
     }
 
+    // Teardown must run while the target CR3 is active so recursive-table
+    // helper addresses resolve to the correct hierarchy.
     with_address_space(pml4_phys, || {
+        // Drop USER_CODE mappings page-by-page.
+        // Caller controls whether mapped code PFNs are returned to PMM.
         let mut va = USER_CODE_BASE;
         while va < USER_CODE_END {
-            // USER_CODE may alias kernel text frames in the current bootstrap
-            // setup; do not release code leaf PFNs here.
-            unmap_page_and_prune_pagetable_hierarchy(va, false);
+            unmap_page_and_prune_pagetable_hierarchy(va, release_user_code_pfns);
             va += SMALL_PAGE_SIZE;
         }
 
+        // USER_STACK pages are always process-owned; release leaf PFNs.
         let mut stack_va = USER_STACK_BASE;
         while stack_va < USER_STACK_TOP {
             unmap_page_and_prune_pagetable_hierarchy(stack_va, true);
@@ -1141,8 +1281,12 @@ pub fn destroy_user_address_space(pml4_phys: u64) {
         }
     });
 
+    // Finally release the root PML4 frame itself after its hierarchy has been pruned.
     let released = pmm::with_pmm(|mgr| mgr.release_pfn(phys_to_pfn(pml4_phys)));
+
     if !released {
+        // Best-effort diagnostics: teardown already cleared mappings, but PMM
+        // ownership metadata was not in the expected state for this root PFN.
         vmm_logln(format_args!(
             "VMM: warning: destroy_user_address_space could not release root PFN 0x{:x}",
             phys_to_pfn(pml4_phys)
@@ -1155,10 +1299,12 @@ pub fn destroy_user_address_space(pml4_phys: u64) {
 /// Intended for diagnostics and integration tests.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn debug_table_pfns_for_va(virtual_address: u64) -> Option<(u64, u64, u64)> {
+    // Diagnostics always inspect page-aligned address.
     let virtual_address = page_align_down(virtual_address);
     let pml4 = table_at(PML4_TABLE_ADDR);
     let pml4_idx = pml4_index(virtual_address);
     let pml4e = pml4.entries[pml4_idx];
+
     if !pml4e.present() || pml4e.huge() {
         return None;
     }
@@ -1166,6 +1312,7 @@ pub fn debug_table_pfns_for_va(virtual_address: u64) -> Option<(u64, u64, u64)> 
     let pdp = table_at(pdp_table_addr(virtual_address));
     let pdp_idx = pdp_index(virtual_address);
     let pdpe = pdp.entries[pdp_idx];
+
     if !pdpe.present() || pdpe.huge() {
         return None;
     }
@@ -1173,10 +1320,12 @@ pub fn debug_table_pfns_for_va(virtual_address: u64) -> Option<(u64, u64, u64)> 
     let pd = table_at(pd_table_addr(virtual_address));
     let pd_idx = pd_index(virtual_address);
     let pde = pd.entries[pd_idx];
+
     if !pde.present() || pde.huge() {
         return None;
     }
 
+    // Return intermediate table frame numbers for caller-side inspection.
     Some((pml4e.frame(), pdpe.frame(), pde.frame()))
 }
 
@@ -1185,9 +1334,12 @@ pub fn debug_table_pfns_for_va(virtual_address: u64) -> Option<(u64, u64, u64)> 
 /// Intended for diagnostics and integration tests.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn debug_mapped_pfn_for_va(virtual_address: u64) -> Option<u64> {
+    // Diagnostics always inspect page-aligned address.
     let virtual_address = page_align_down(virtual_address);
     let pt = pt_for_if_present(virtual_address)?;
     let pte = pt.entries[pt_index(virtual_address)];
+
+    // Return leaf PFN only when mapping is currently present.
     if pte.present() {
         Some(pte.frame())
     } else {
@@ -1200,6 +1352,7 @@ pub fn debug_mapped_pfn_for_va(virtual_address: u64) -> Option<u64> {
 /// Intended for diagnostics and integration tests.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn debug_mapping_flags_for_va(virtual_address: u64) -> Option<(bool, bool, bool, bool, bool)> {
+    // Diagnostics always inspect page-aligned address.
     let virtual_address = page_align_down(virtual_address);
     let pml4 = table_at(PML4_TABLE_ADDR);
     let pml4_idx = pml4_index(virtual_address);
@@ -1228,6 +1381,7 @@ pub fn debug_mapping_flags_for_va(virtual_address: u64) -> Option<(bool, bool, b
         return None;
     }
 
+    // Return "user" propagation across all levels plus leaf writability.
     Some((
         pml4e.user(),
         pdpe.user(),
@@ -1242,8 +1396,12 @@ pub fn debug_mapping_flags_for_va(virtual_address: u64) -> Option<(bool, bool, b
 /// `virtual_address` must be within configured user code/stack regions and
 /// must not target the configured guard page.
 pub fn map_user_page(virtual_address: u64, pfn: u64, writable: bool) -> Result<(), MapError> {
+    // Normalize to 4 KiB page granularity; callers may pass any address
+    // within the target page.
     let virtual_address = page_align_down(virtual_address);
 
+    // Enforce user-window policy before touching page tables.
+    // Only USER_CODE and USER_STACK are valid targets.
     match classify_user_region(virtual_address) {
         Some(UserRegion::Code) | Some(UserRegion::Stack) => {}
         Some(UserRegion::Guard) => {
@@ -1254,10 +1412,13 @@ pub fn map_user_page(virtual_address: u64, pfn: u64, writable: bool) -> Result<(
         }
     }
 
+    // Ensure all intermediate levels exist and are marked user-accessible.
     populate_page_table_path(virtual_address, true);
     let pt = table_at(pt_table_addr(virtual_address));
     let pt_idx = pt_index(virtual_address);
 
+    // Existing mapping: allow idempotent "same PFN, permission update".
+    // Reject remap attempts to a different PFN to avoid silent alias changes.
     if pt.entries[pt_idx].present() {
         let current_pfn = pt.entries[pt_idx].frame();
 
@@ -1269,12 +1430,16 @@ pub fn map_user_page(virtual_address: u64, pfn: u64, writable: bool) -> Result<(
             });
         }
 
+        // Keep `present` + physical frame, update only user/writable flags.
         pt.entries[pt_idx].set_writable(writable);
         pt.entries[pt_idx].set_user(true);
         return Ok(());
     }
 
+    // Fresh mapping path for previously non-present leaf.
     pt.entries[pt_idx].set_mapping(pfn, true, writable, true);
+
+    // Invalidate stale translation for this VA in current TLB context.
     invlpg(virtual_address);
 
     Ok(())
@@ -1282,6 +1447,7 @@ pub fn map_user_page(virtual_address: u64, pfn: u64, writable: bool) -> Result<(
 
 /// Basic VMM smoke test that triggers page faults and verifies readback.
 pub fn test_vmm() -> bool {
+    // Step 1: force demand-mapping by writing to three sparse addresses.
     vmm_logln(format_args!("VMM test: start"));
     const TEST_ADDR1: u64 = 0xFFFF_8009_4F62_D000;
     const TEST_ADDR2: u64 = 0xFFFF_8034_C232_C000;
@@ -1295,6 +1461,7 @@ pub fn test_vmm() -> bool {
     vmm_logln(format_args!("VMM test: write to 0x{:x}", TEST_ADDR3));
     write_virt_u8(TEST_ADDR3, b'C');
 
+    // Step 2: read back and validate data integrity.
     vmm_logln(format_args!("VMM test: readback and verify"));
     let v1 = read_virt_u8(TEST_ADDR1);
     let v2 = read_virt_u8(TEST_ADDR2);

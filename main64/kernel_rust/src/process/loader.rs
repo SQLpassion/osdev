@@ -190,11 +190,7 @@ fn map_fat12_error(error: Fat12Error) -> ExecError {
 /// Uses ceil-division and returns `0` for an empty image.
 #[inline]
 const fn page_count_for_len(image_len: usize) -> usize {
-    if image_len == 0 {
-        0
-    } else {
-        (image_len + PAGE_SIZE_BYTES - 1) / PAGE_SIZE_BYTES
-    }
+    image_len.div_ceil(PAGE_SIZE_BYTES)
 }
 
 /// Allocates one physical frame and returns its PFN.
@@ -228,10 +224,10 @@ fn cleanup_failed_program_mapping(user_cr3: u64, code_pfns: &[u64], stack_pfn: O
 /// - on success, scheduler owns `loaded.cr3` lifecycle via task teardown
 /// - on failure, this function destroys `loaded.cr3` immediately
 fn spawn_loaded_program(loaded: LoadedProgram) -> ExecResult<usize> {
-    match scheduler::spawn_user_task(loaded.entry_rip, loaded.user_rsp, loaded.cr3) {
+    match scheduler::spawn_user_task_owning_code(loaded.entry_rip, loaded.user_rsp, loaded.cr3) {
         Ok(task_id) => Ok(task_id),
         Err(_) => {
-            vmm::destroy_user_address_space(loaded.cr3);
+            vmm::destroy_user_address_space_with_options(loaded.cr3, true);
             Err(ExecError::SpawnFailed)
         }
     }

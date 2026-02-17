@@ -64,6 +64,11 @@ enum SpawnKind {
         user_rsp: u64,
         /// Address-space root (CR3 physical address) associated with task.
         cr3: u64,
+        /// Whether user-code PFNs should be released on task teardown.
+        ///
+        /// `false` is used for temporary user aliases of kernel code pages.
+        /// `true` is used for loader-owned binaries with dedicated code PFNs.
+        release_user_code_pfns: bool,
     },
 }
 
@@ -138,6 +143,12 @@ struct TaskEntry {
     /// When set, scheduler updates `TSS.RSP0` from `kernel_rsp_top`.
     is_user: bool,
 
+    /// Code-page teardown policy for user tasks.
+    ///
+    /// `true` means user-code leaf PFNs are returned to PMM when the task CR3
+    /// is destroyed. `false` keeps code PFNs reserved (alias-safe).
+    release_user_code_pfns: bool,
+
     /// Base address of this task's heap-allocated kernel stack.
     stack_base: *mut u8,
 
@@ -185,6 +196,7 @@ impl TaskEntry {
             user_rsp: 0,
             kernel_rsp_top: 0,
             is_user: false,
+            release_user_code_pfns: false,
             stack_base: ptr::null_mut(),
             stack_size: 0,
         }
@@ -471,10 +483,7 @@ fn find_entry_by_frame(
 
 /// Returns `true` when `frame_ptr` lies within any scheduler-owned task stack,
 /// including stacks from recently terminated tasks that are pending deallocation.
-fn frame_within_any_task_stack(
-    meta: &SchedulerMetadata,
-    frame_ptr: *const SavedRegisters,
-) -> bool {
+fn frame_within_any_task_stack(meta: &SchedulerMetadata, frame_ptr: *const SavedRegisters) -> bool {
     if frame_ptr.is_null() {
         return false;
     }
@@ -511,23 +520,33 @@ fn frame_within_any_task_stack(
 ///
 /// Returns `true` when an active task was removed.
 fn remove_task(meta: &mut SchedulerMetadata, task_id: usize) -> bool {
+    // Step 1: reject invalid or already-free task IDs.
     if task_id >= MAX_TASKS || !meta.slots[task_id].used {
         return false;
     }
 
+    // Step 2: locate the task inside the compact run queue.
+    // If it is not present, scheduler metadata is inconsistent for this ID.
     let Some(removed_pos) = (0..meta.task_count).find(|pos| meta.run_queue[*pos] == task_id) else {
         return false;
     };
 
-    let mut cleanup_cr3 = if meta.slots[task_id].is_user {
-        Some(meta.slots[task_id].cr3)
+    // Step 3: precompute address-space teardown intent.
+    // Kernel tasks carry no user CR3, so no address-space cleanup is needed.
+    let mut cleanup = if meta.slots[task_id].is_user {
+        Some((
+            meta.slots[task_id].cr3,
+            meta.slots[task_id].release_user_code_pfns,
+        ))
     } else {
         None
     };
 
-    if let Some(cr3) = cleanup_cr3 {
+    if let Some((cr3, _)) = cleanup {
         if meta.active_cr3 == cr3 {
             if meta.kernel_cr3 != 0 && meta.kernel_cr3 != cr3 {
+                // Before destroying a user address space, ensure we are not
+                // still executing with that CR3 active on this CPU.
                 // SAFETY:
                 // - `kernel_cr3` is configured by scheduler owner via
                 //   `set_kernel_address_space_cr3`.
@@ -540,7 +559,8 @@ fn remove_task(meta: &mut SchedulerMetadata, task_id: usize) -> bool {
             } else {
                 // Without a known-safe fallback CR3, skip teardown to avoid
                 // freeing the currently active address space.
-                cleanup_cr3 = None;
+                // Slot/stack cleanup still proceeds so scheduler state stays consistent.
+                cleanup = None;
             }
         }
     }
@@ -550,23 +570,33 @@ fn remove_task(meta: &mut SchedulerMetadata, task_id: usize) -> bool {
     // until the next timer tick, preventing stale task frames from being
     // mistaken for bootstrap frames.
     if !meta.slots[task_id].stack_base.is_null() && meta.pending_free_count < MAX_TASKS {
-        meta.pending_free_stacks[meta.pending_free_count] =
-            (meta.slots[task_id].stack_base, meta.slots[task_id].stack_size);
+        meta.pending_free_stacks[meta.pending_free_count] = (
+            meta.slots[task_id].stack_base,
+            meta.slots[task_id].stack_size,
+        );
         meta.pending_free_count += 1;
     }
 
+    // Step 4: compact the run queue by shifting all entries after `removed_pos`.
     for pos in removed_pos..meta.task_count - 1 {
         meta.run_queue[pos] = meta.run_queue[pos + 1];
     }
+
     meta.run_queue[meta.task_count - 1] = 0;
     meta.task_count -= 1;
 
+    // If the removed slot was marked as currently running, clear the marker.
     if meta.running_slot == Some(task_id) {
         meta.running_slot = None;
     }
 
+    // Clear the slot after we copied all required metadata out of it.
     meta.slots[task_id] = TaskEntry::empty();
 
+    // Step 5: keep round-robin cursor valid after compaction.
+    // - queue empty: reset to 0
+    // - removed before cursor: shift cursor one step left
+    // - cursor now out-of-range: clamp to last remaining entry
     if meta.task_count == 0 {
         meta.current_queue_pos = 0;
     } else if removed_pos < meta.current_queue_pos {
@@ -575,8 +605,9 @@ fn remove_task(meta: &mut SchedulerMetadata, task_id: usize) -> bool {
         meta.current_queue_pos = meta.task_count - 1;
     }
 
-    if let Some(cr3) = cleanup_cr3 {
-        vmm::destroy_user_address_space(cr3);
+    // Final step: release user address-space resources if cleanup is safe.
+    if let Some((cr3, release_user_code_pfns)) = cleanup {
+        vmm::destroy_user_address_space_with_options(cr3, release_user_code_pfns);
     }
 
     true
@@ -652,6 +683,24 @@ pub fn spawn_user_task(entry_rip: u64, user_rsp: u64, cr3: u64) -> Result<usize,
         entry_rip,
         user_rsp,
         cr3,
+        release_user_code_pfns: false,
+    })
+}
+
+/// Creates a new user task that owns dedicated user-code pages.
+///
+/// Use this for loader-backed binaries that were copied into private PMM
+/// frames. On task teardown these code PFNs are released.
+pub fn spawn_user_task_owning_code(
+    entry_rip: u64,
+    user_rsp: u64,
+    cr3: u64,
+) -> Result<usize, SpawnError> {
+    spawn_internal(SpawnKind::User {
+        entry_rip,
+        user_rsp,
+        cr3,
+        release_user_code_pfns: true,
     })
 }
 
@@ -694,24 +743,29 @@ fn spawn_internal(kind: SpawnKind) -> Result<usize, SpawnError> {
             .find(|idx| !meta.slots[*idx].used)
             .ok_or(SpawnError::CapacityExceeded)?;
 
-        let (frame_ptr, cr3, user_rsp, kernel_rsp_top, is_user) = match kind {
+        let (frame_ptr, cr3, user_rsp, kernel_rsp_top, is_user, release_user_code_pfns) = match kind
+        {
             SpawnKind::Kernel { entry } => {
                 let (frame_ptr, kernel_rsp_top) =
                     build_initial_kernel_task_frame(stack_ptr, TASK_STACK_SIZE, entry);
-                (frame_ptr, 0, 0, kernel_rsp_top, false)
+                (frame_ptr, 0, 0, kernel_rsp_top, false, false)
             }
             SpawnKind::User {
                 entry_rip,
                 user_rsp,
                 cr3,
+                release_user_code_pfns,
             } => {
-                let (frame_ptr, kernel_rsp_top) = build_initial_user_task_frame(
-                    stack_ptr,
-                    TASK_STACK_SIZE,
-                    entry_rip,
+                let (frame_ptr, kernel_rsp_top) =
+                    build_initial_user_task_frame(stack_ptr, TASK_STACK_SIZE, entry_rip, user_rsp);
+                (
+                    frame_ptr,
+                    cr3,
                     user_rsp,
-                );
-                (frame_ptr, cr3, user_rsp, kernel_rsp_top, true)
+                    kernel_rsp_top,
+                    true,
+                    release_user_code_pfns,
+                )
             }
         };
 
@@ -723,6 +777,7 @@ fn spawn_internal(kind: SpawnKind) -> Result<usize, SpawnError> {
             user_rsp,
             kernel_rsp_top,
             is_user,
+            release_user_code_pfns,
             stack_base: stack_ptr,
             stack_size: TASK_STACK_SIZE,
         };
@@ -905,12 +960,15 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
         if meta.stop_requested {
             // Collect all remaining task stacks for deferred freeing.
             for slot_idx in 0..MAX_TASKS {
-                if meta.slots[slot_idx].used && !meta.slots[slot_idx].stack_base.is_null() {
-                    if free_count < MAX_TASKS {
-                        stacks_to_free[free_count] =
-                            (meta.slots[slot_idx].stack_base, meta.slots[slot_idx].stack_size);
-                        free_count += 1;
-                    }
+                if meta.slots[slot_idx].used
+                    && !meta.slots[slot_idx].stack_base.is_null()
+                    && free_count < MAX_TASKS
+                {
+                    stacks_to_free[free_count] = (
+                        meta.slots[slot_idx].stack_base,
+                        meta.slots[slot_idx].stack_size,
+                    );
+                    free_count += 1;
                 }
             }
             // Also collect any zombie stacks that were just reaped.

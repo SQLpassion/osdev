@@ -310,6 +310,34 @@ fn test_exec_from_fat12_spawns_user_task() {
     );
 }
 
+/// Contract: terminating an exec-loaded task releases loader-owned code PFNs.
+#[test_case]
+fn test_exec_from_fat12_terminate_releases_loader_code_pfn() {
+    scheduler::init();
+    scheduler::set_kernel_address_space_cr3(vmm::get_pml4_address());
+
+    let task_id =
+        process::exec_from_fat12("hello.bin").expect("hello.bin exec path must spawn user task");
+    let (task_cr3, _, _) = scheduler::task_context(task_id)
+        .expect("spawned user task must expose scheduler context tuple");
+
+    let code_pfn = vmm::with_address_space(task_cr3, || {
+        vmm::debug_mapped_pfn_for_va(process::USER_PROGRAM_ENTRY_RIP)
+            .expect("exec-loaded task must map first user code page")
+    });
+
+    assert!(
+        scheduler::terminate_task(task_id),
+        "spawned user task must be terminatable for test cleanup"
+    );
+
+    let released_again = pmm::with_pmm(|mgr| mgr.release_pfn(code_pfn));
+    assert!(
+        !released_again,
+        "loader-owned code PFN must already be released during task teardown"
+    );
+}
+
 /// Contract: `exec_from_fat12` maps scheduler spawn errors to `ExecError::SpawnFailed`.
 #[test_case]
 fn test_exec_from_fat12_maps_spawn_failure_to_spawn_failed() {
