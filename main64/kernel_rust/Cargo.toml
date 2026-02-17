@@ -73,6 +73,9 @@ name = "ata_test"
 name = "ata_panic_contract_test"
 
 [[test]]
+name = "fat12_test"
+
+[[test]]
 name = "page_fault_death_test"
 
 [[test]]

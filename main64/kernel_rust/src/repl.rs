@@ -7,6 +7,7 @@ use crate::arch::power;
 use crate::drivers::ata;
 use crate::drivers::keyboard;
 use crate::drivers::screen::{with_screen, Color, Screen};
+use crate::io::fat12;
 use crate::memory::bios;
 use crate::memory::heap;
 use crate::memory::pmm;
@@ -165,6 +166,7 @@ fn execute_command(line: &str) {
                     "  atatest         - read keyboard line, write/read ATA sector, print result"
                 )
                 .unwrap();
+                writeln!(screen, "  dir             - list FAT12 root directory").unwrap();
                 writeln!(screen, "  shutdown        - shutdown the system").unwrap();
             });
         }
@@ -271,6 +273,9 @@ fn execute_command(line: &str) {
         }
         "atatest" => {
             run_ata_interactive_roundtrip();
+        }
+        "dir" => {
+            fat12::print_root_directory();
         }
         _ => {
             with_screen(|screen| {

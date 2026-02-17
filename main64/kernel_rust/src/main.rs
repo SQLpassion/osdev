@@ -11,6 +11,7 @@ extern crate alloc;
 mod allocator;
 mod arch;
 mod drivers;
+mod io;
 mod logging;
 mod memory;
 mod panic;
@@ -72,6 +73,10 @@ pub extern "C" fn KernelMain(kernel_size: u64) -> ! {
     // Initialize the ATA PIO driver
     drivers::ata::init();
     debugln!("ATA PIO driver initialized");
+
+    // Initialize the FAT12 file system (loads root directory from disk)
+    io::fat12::init();
+    debugln!("FAT12 file system initialized");
 
     // Initialize interrupt handling and the keyboard ring buffer.
     interrupts::register_irq_handler(interrupts::IRQ1_KEYBOARD_VECTOR, |_, frame| {
