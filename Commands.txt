@@ -82,14 +82,18 @@
 # Git Commands
 ###############
 
+# Create a new feature branch
+git switch -c feature/myfeaturebranch
+git push -u origin feature/myfeaturebranch
+
 # Merge feature branch into main:
 git checkout main
-git merge --no-ff MyFeatureBranch
+git merge --no-ff feature/myfeaturebranch
 git push origin main
 
 # Delete branch locally and remote:
-git branch -d MyFeatureBranch
-git push origin --delete MyFeatureBranch
+git branch -d feature/myfeaturebranch
+git push origin --delete feature/myfeaturebranch
 
 # Tag the current state, and push it to the remote repository
 git tag MyTagName main
