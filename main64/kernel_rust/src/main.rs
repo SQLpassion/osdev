@@ -32,6 +32,23 @@ use drivers::serial;
 /// Kernel higher-half base used to translate symbol VAs to physical offsets.
 const KERNEL_HIGHER_HALF_BASE: u64 = 0xFFFF_8000_0000_0000;
 
+/// Zeroes the BSS section using linker-provided boundaries.
+///
+/// Physical hardware does not guarantee zeroed RAM, so every static variable
+/// initialised to zero (spinlocks, atomics, arrays, …) would contain garbage
+/// without this step. QEMU happens to zero memory, hiding the problem.
+#[inline(always)]
+unsafe fn zero_bss() {
+    extern "C" {
+        static __bss_start: u8;
+        static __bss_end: u8;
+    }
+    let start = &__bss_start as *const u8 as *mut u8;
+    let end = &__bss_end as *const u8;
+    let len = end as usize - start as usize;
+    core::ptr::write_bytes(start, 0, len);
+}
+
 /// Kernel entry point - called from bootloader (kaosldr_64)
 ///
 /// The function signature matches the C version:
@@ -42,6 +59,10 @@ const KERNEL_HIGHER_HALF_BASE: u64 = 0xFFFF_8000_0000_0000;
 #[no_mangle]
 #[link_section = ".text.boot"]
 pub extern "C" fn KernelMain(kernel_size: u64) -> ! {
+    // Zero BSS before touching any static variable — physical hardware
+    // does not guarantee zeroed RAM (QEMU does, hiding this bug).
+    unsafe { zero_bss(); }
+
     // Initialize debug serial output first for early debugging
     serial::init();
     debugln!("KAOS Rust Kernel starting...");
