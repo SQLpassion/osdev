@@ -437,6 +437,47 @@ fn test_destroy_user_address_space_with_options_releases_code_leaf_frame() {
     });
 }
 
+/// Contract: destroy user address space with page counts tears down only mapped code/stack pages.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "destroy user address space with page counts tears down only mapped code/stack pages".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_destroy_user_address_space_with_page_counts_releases_mapped_code_and_stack_leaf_frames() {
+    let code_va = vmm::USER_CODE_BASE;
+    let stack_va = vmm::USER_STACK_TOP - 4096;
+
+    let user_cr3 = vmm::clone_kernel_pml4_for_user();
+    let code_leaf = pmm::with_pmm(|mgr| mgr.alloc_frame().expect("code frame allocation failed"));
+    let stack_leaf = pmm::with_pmm(|mgr| mgr.alloc_frame().expect("stack frame allocation failed"));
+
+    vmm::with_address_space(user_cr3, || {
+        vmm::map_user_page(code_va, code_leaf.pfn, false)
+            .expect("code page should map in cloned address space");
+        vmm::map_user_page(stack_va, stack_leaf.pfn, true)
+            .expect("stack page should map in cloned address space");
+    });
+
+    // Exactly one mapped code page at USER_CODE_BASE and one mapped stack page
+    // at USER_STACK_TOP-4KiB should be torn down.
+    vmm::destroy_user_address_space_with_page_counts(user_cr3, true, 1, 1);
+
+    pmm::with_pmm(|mgr| {
+        assert!(
+            !mgr.release_pfn(code_leaf.pfn),
+            "count-based destroy must release mapped code leaf PFN"
+        );
+        assert!(
+            !mgr.release_pfn(stack_leaf.pfn),
+            "count-based destroy must release mapped stack leaf PFN"
+        );
+        assert!(
+            !mgr.release_pfn(user_cr3 / pmm::PAGE_SIZE),
+            "count-based destroy must release user CR3 root PFN"
+        );
+    });
+}
+
 /// Contract: map user page accepts code and stack regions.
 /// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
 /// When: The exact operation sequence in this function is executed against that state.

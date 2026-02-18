@@ -330,11 +330,17 @@ fn cleanup_failed_program_mapping(
     mapped_code_pages: usize,
     stack_mapped: bool,
 ) {
-    // Teardown mapped ranges with owned-code policy:
-    // - mapped code PFNs are released (owned image contract),
-    // - mapped stack PFNs are released (always process-owned),
-    // - page-table hierarchy + CR3 root are released.
-    vmm::destroy_user_address_space_with_options(user_cr3, true);
+    // Teardown only the mapped ranges with owned-code policy:
+    // - `mapped_code_pages` tracks successful code-leaf mappings,
+    // - stack teardown only runs when bootstrap page mapping succeeded,
+    // - page-table hierarchy + CR3 root are released afterwards by VMM.
+    let stack_pages_mapped = if stack_mapped { 1 } else { 0 };
+    vmm::destroy_user_address_space_with_page_counts(
+        user_cr3,
+        true,
+        mapped_code_pages,
+        stack_pages_mapped,
+    );
 
     pmm::with_pmm(|mgr| {
         // Any frames beyond `mapped_code_pages` were never inserted into page
@@ -368,7 +374,14 @@ fn spawn_loaded_program(loaded: LoadedProgram) -> ExecResult<usize> {
                     loaded.entry_rip, loaded.user_rsp, loaded.cr3, e
                 ),
             );
-            vmm::destroy_user_address_space_with_options(loaded.cr3, true);
+            // Spawn failed before task activation, so only loader-mapped pages
+            // exist (code prefix + single bootstrap stack page).
+            vmm::destroy_user_address_space_with_page_counts(
+                loaded.cr3,
+                true,
+                page_count_for_len(loaded.image_len),
+                1,
+            );
             Err(ExecError::SpawnFailed)
         }
     }

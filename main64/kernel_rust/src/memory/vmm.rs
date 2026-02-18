@@ -1104,7 +1104,7 @@ pub fn try_handle_page_fault(virtual_address: u64, error_code: u64) -> Result<()
     let writable = !matches!(user_region, Some(UserRegion::Code));
     let no_execute = matches!(user_region, Some(UserRegion::Stack));
     // Step 1: ensure the page-table path exists; propagate OOM instead of panicking.
-    if let Err(_) = populate_page_table_path(virtual_address, user_access) {
+    if populate_page_table_path(virtual_address, user_access).is_err() {
         return Err(PageFaultError::OutOfMemory {
             virtual_address: fault_address_raw,
             error_code,
@@ -1401,6 +1401,30 @@ pub fn destroy_user_address_space(pml4_phys: u64) {
 ///   (safe for temporary user aliases of kernel text pages).
 /// - `true`: release user-code PFNs back to PMM (required for loader-owned images).
 pub fn destroy_user_address_space_with_options(pml4_phys: u64, release_user_code_pfns: bool) {
+    // Default behavior: tear down full configured user code + stack windows.
+    destroy_user_address_space_with_page_counts(
+        pml4_phys,
+        release_user_code_pfns,
+        (USER_CODE_SIZE / SMALL_PAGE_SIZE) as usize,
+        (USER_STACK_SIZE / SMALL_PAGE_SIZE) as usize,
+    );
+}
+
+/// Destroys a user address space with explicit mapped-page counts.
+///
+/// This variant is intended for callers that know exactly how many pages were
+/// mapped and can therefore avoid scanning full user regions.
+///
+/// `stack_page_count_from_top` is interpreted as a contiguous window growing
+/// downward from [`USER_STACK_TOP`], matching how user stacks are allocated.
+///
+/// Count values are clamped to configured region capacities.
+pub fn destroy_user_address_space_with_page_counts(
+    pml4_phys: u64,
+    release_user_code_pfns: bool,
+    code_page_count: usize,
+    stack_page_count_from_top: usize,
+) {
     // Always operate on a canonical page-aligned root frame.
     let pml4_phys = page_align_down(pml4_phys);
 
@@ -1409,19 +1433,26 @@ pub fn destroy_user_address_space_with_options(pml4_phys: u64, release_user_code
         return;
     }
 
+    // Clamp caller-provided counts to configured region capacities.
+    let max_code_pages = (USER_CODE_SIZE / SMALL_PAGE_SIZE) as usize;
+    let max_stack_pages = (USER_STACK_SIZE / SMALL_PAGE_SIZE) as usize;
+    let code_pages = code_page_count.min(max_code_pages);
+    let stack_pages = stack_page_count_from_top.min(max_stack_pages);
+
     // Teardown must run while the target CR3 is active so recursive-table
     // helper addresses resolve to the correct hierarchy.
     with_address_space(pml4_phys, || {
-        // Drop USER_CODE mappings page-by-page.
+        // Step 1: Drop user-code mappings for the known mapped prefix.
         // Caller controls whether mapped code PFNs are returned to PMM.
         let mut va = USER_CODE_BASE;
-        while va < USER_CODE_END {
+        for _ in 0..code_pages {
             unmap_page_and_prune_pagetable_hierarchy(va, release_user_code_pfns);
             va += SMALL_PAGE_SIZE;
         }
 
-        // USER_STACK pages are always process-owned; release leaf PFNs.
-        let mut stack_va = USER_STACK_BASE;
+        // Step 2: Drop mapped user-stack pages in the top-down stack window.
+        // Stack pages are always process-owned, so leaf PFNs are always released.
+        let mut stack_va = USER_STACK_TOP - (stack_pages as u64 * SMALL_PAGE_SIZE);
         while stack_va < USER_STACK_TOP {
             unmap_page_and_prune_pagetable_hierarchy(stack_va, true);
             stack_va += SMALL_PAGE_SIZE;
