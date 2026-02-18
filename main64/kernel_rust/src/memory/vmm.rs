@@ -84,6 +84,14 @@ const ENTRY_HUGE: u64 = 1 << 7;
 const ENTRY_GLOBAL: u64 = 1 << 8;
 const ENTRY_FRAME_MASK: u64 = 0x0000_FFFF_FFFF_F000;
 
+/// No-Execute bit (bit 63) in a page table leaf entry.
+///
+/// When set, instruction fetches from this page raise a #PF (page fault).
+/// Only effective after EFER.NXE is set — see `kaosldr_16/longmode.asm`.
+/// Applied to user stack pages to prevent code injection via stack buffer overflows.
+/// Must NOT be set on code pages (USER_CODE region).
+const ENTRY_NO_EXECUTE: u64 = 1 << 63;
+
 const PF_ERR_PRESENT: u64 = 1 << 0;
 
 /// User executable base virtual address.
@@ -235,6 +243,31 @@ impl PageTableEntry {
             self.0 |= ENTRY_GLOBAL;
         } else {
             self.0 &= !ENTRY_GLOBAL;
+        }
+    }
+
+    /// Returns whether the No-Execute bit is set.
+    ///
+    /// When set, instruction fetches from this page raise a #PF.
+    /// Requires EFER.NXE to be active (set in `kaosldr_16/longmode.asm`);
+    /// without it the CPU ignores this bit and the page remains executable.
+    #[inline]
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn no_execute(self) -> bool {
+        (self.0 & ENTRY_NO_EXECUTE) != 0
+    }
+
+    /// Sets or clears the No-Execute bit (bit 63).
+    ///
+    /// Set this on stack and data pages to prevent code injection attacks.
+    /// Never set this on code pages (USER_CODE region) — they must remain executable.
+    /// Requires EFER.NXE to be active (set in `kaosldr_16/longmode.asm`).
+    #[inline]
+    fn set_no_execute(&mut self, val: bool) {
+        if val {
+            self.0 |= ENTRY_NO_EXECUTE;
+        } else {
+            self.0 &= !ENTRY_NO_EXECUTE;
         }
     }
 
@@ -1030,8 +1063,13 @@ pub fn try_handle_page_fault(virtual_address: u64, error_code: u64) -> Result<()
         Some(UserRegion::Code) | Some(UserRegion::Stack)
     );
 
-    // User code pages default to read-only; everything else can start writable.
+    // Derive final permissions from the region:
+    //   USER_CODE  → read-only  (writable=false), executable  (no_execute=false)
+    //   USER_STACK → writable   (writable=true),  non-executable (no_execute=true)
+    //   kernel     → writable   (writable=true),  no NX applied (kernel code/data mixed)
+    // EFER.NXE is activated in kaosldr_16/longmode.asm; without it no_execute is ignored.
     let writable = !matches!(user_region, Some(UserRegion::Code));
+    let no_execute = matches!(user_region, Some(UserRegion::Stack));
     populate_page_table_path(virtual_address, user_access);
     let pt = table_at(pt_table_addr(virtual_address));
     let pt_idx = pt_index(virtual_address);
@@ -1046,9 +1084,19 @@ pub fn try_handle_page_fault(virtual_address: u64, error_code: u64) -> Result<()
         invlpg(virtual_address);
         zero_virt_page(virtual_address);
 
+        // Tighten final permissions after zero-fill.
+        // Both changes (writable downgrade + NX) share a single invlpg to avoid
+        // redundant TLB invalidations.
         if !writable {
-            // Tighten final permissions for code pages after zero-fill.
             pt.entries[pt_idx].set_writable(false);
+        }
+
+        if no_execute {
+            // Mark stack pages as non-executable to prevent code injection
+            // via stack buffer overflows (requires EFER.NXE from longmode.asm).
+            pt.entries[pt_idx].set_no_execute(true);
+        }
+        if !writable || no_execute {
             invlpg(virtual_address);
         }
 
@@ -1413,6 +1461,29 @@ pub fn debug_mapping_flags_for_va(virtual_address: u64) -> Option<(bool, bool, b
     ))
 }
 
+/// Returns whether the No-Execute bit (bit 63) is set in the leaf PTE for
+/// `virtual_address` in the active CR3.
+///
+/// - `Some(true)`  → leaf entry present and NX bit set (page non-executable).
+/// - `Some(false)` → leaf entry present and NX bit clear (page executable).
+/// - `None`        → any page-table level missing, huge-mapped, or leaf not present.
+///
+/// Intended for diagnostics and integration tests only.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn debug_no_execute_flag_for_va(virtual_address: u64) -> Option<bool> {
+    // Diagnostics always inspect the page-aligned address.
+    let virtual_address = page_align_down(virtual_address);
+    let pt = pt_for_if_present(virtual_address)?;
+    let pte = pt.entries[pt_index(virtual_address)];
+
+    // Return NX state only when leaf mapping is currently present.
+    if pte.present() {
+        Some(pte.no_execute())
+    } else {
+        None
+    }
+}
+
 /// Maps one user virtual page to `pfn` using user-accessible permissions.
 ///
 /// `virtual_address` must be within configured user code/stack regions and
@@ -1423,16 +1494,20 @@ pub fn map_user_page(virtual_address: u64, pfn: u64, writable: bool) -> Result<(
     let virtual_address = page_align_down(virtual_address);
 
     // Enforce user-window policy before touching page tables.
-    // Only USER_CODE and USER_STACK are valid targets.
-    match classify_user_region(virtual_address) {
-        Some(UserRegion::Code) | Some(UserRegion::Stack) => {}
+    // Derive the NX policy from the region:
+    //   - CODE  → no_execute = false  (pages must be executable)
+    //   - STACK → no_execute = true   (pages must not be executable; prevents stack injection)
+    // EFER.NXE is activated in kaosldr_16/longmode.asm; without it bit 63 is ignored by the CPU.
+    let no_execute = match classify_user_region(virtual_address) {
+        Some(UserRegion::Code) => false,
+        Some(UserRegion::Stack) => true,
         Some(UserRegion::Guard) => {
             return Err(MapError::UserGuardPage { virtual_address });
         }
         None => {
             return Err(MapError::NotUserRegion { virtual_address });
         }
-    }
+    };
 
     // Ensure all intermediate levels exist and are marked user-accessible.
     populate_page_table_path(virtual_address, true);
@@ -1452,15 +1527,16 @@ pub fn map_user_page(virtual_address: u64, pfn: u64, writable: bool) -> Result<(
             });
         }
 
-        // Keep `present` + physical frame, update only user/writable flags.
+        // Keep `present` + physical frame, update writable, user, and NX flags.
         pt.entries[pt_idx].set_writable(writable);
         pt.entries[pt_idx].set_user(true);
 
-        // A permission change (e.g. writable → read-only) is not visible to
-        // the processor until the stale TLB entry for this VA is evicted.
-        // Without invalidation the CPU may keep using the old cached translation
-        // with the previous writable bit, allowing user code to modify pages
-        // that should be read-only.
+        // Propagate NX policy: stack pages become non-executable, code pages stay executable.
+        pt.entries[pt_idx].set_no_execute(no_execute);
+
+        // A permission change (e.g. writable → read-only, or adding NX) is not visible
+        // to the processor until the stale TLB entry for this VA is evicted.
+        // Without invalidation the CPU may keep using the old cached translation.
         invlpg(virtual_address);
 
         return Ok(());
@@ -1468,6 +1544,9 @@ pub fn map_user_page(virtual_address: u64, pfn: u64, writable: bool) -> Result<(
 
     // Fresh mapping path for previously non-present leaf.
     pt.entries[pt_idx].set_mapping(pfn, true, writable, true);
+
+    // Apply NX policy: stack pages are non-executable, code pages are executable.
+    pt.entries[pt_idx].set_no_execute(no_execute);
 
     // Invalidate stale translation for this VA in current TLB context.
     invlpg(virtual_address);

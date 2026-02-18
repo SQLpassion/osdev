@@ -300,7 +300,10 @@ SwitchToLongMode:
     MOV     ECX, 0xC0000080                     ; Read from the EFER MSR. 
     RDMSR    
  
-    OR      EAX, 0x00000100                     ; Set the LME bit.
+    OR      EAX, 0x00000900                     ; Set LME (bit 8, Long Mode Enable) and NXE (bit 11, No-Execute Enable).
+                                                ; NXE activates the No-Execute bit (bit 63) in page table entries,
+                                                ; which allows marking stack/data pages as non-executable.
+                                                ; Without NXE the CPU ignores bit 63 and all pages are executable.
     WRMSR
  
     MOV     EBX, CR0                            ; Activate long mode -
