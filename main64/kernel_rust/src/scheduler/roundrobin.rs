@@ -130,8 +130,12 @@ struct TaskEntry {
     /// Kernel-only tasks currently keep this at zero.
     cr3: u64,
 
-    /// User-mode stack pointer for ring-3 resume (future user-task entry).
-    /// Kernel-only tasks currently keep this at zero.
+    /// User-mode stack pointer snapshot kept for diagnostics/tests only.
+    ///
+    /// The scheduler resumes tasks from the saved `InterruptStackFrame` on the
+    /// task stack; this field is not used in scheduling decisions.
+    /// Kernel-only tasks keep this at zero.
+    #[cfg_attr(not(test), allow(dead_code))]
     user_rsp: u64,
 
     /// Top of this task's kernel stack, used to program `TSS.RSP0`
