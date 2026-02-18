@@ -1,5 +1,7 @@
 //! Shared process/exec contracts for user-mode program loading.
 
+use core::fmt;
+
 use crate::memory::vmm;
 
 /// Fixed ring-3 entry point for flat user binaries in phase 1.
@@ -52,6 +54,32 @@ pub enum ExecError {
 
     /// Generic storage or transport I/O failure.
     Io,
+}
+
+impl fmt::Display for ExecError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidName => {
+                f.write_str("invalid file name (expected FAT12 8.3 format)")
+            }
+            Self::NotFound => f.write_str("file not found"),
+            Self::IsDirectory => {
+                f.write_str("path points to a directory, not a program file")
+            }
+            Self::EmptyImage => f.write_str("program image is empty"),
+            Self::FileTooLarge => {
+                f.write_str("program image exceeds user code size limit")
+            }
+            Self::OutOfMemory => {
+                f.write_str("out of memory while allocating program pages")
+            }
+            Self::MappingFailed => {
+                f.write_str("failed to map program into user address space")
+            }
+            Self::SpawnFailed => f.write_str("failed to start user task"),
+            Self::Io => f.write_str("I/O error while loading program"),
+        }
+    }
 }
 
 /// Shared result alias for process exec/load operations.

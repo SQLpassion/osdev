@@ -131,6 +131,26 @@ fn test_exec_error_variant_distinction() {
     );
 }
 
+/// Contract: ExecError Display messages remain stable for REPL/user diagnostics.
+#[test_case]
+fn test_exec_error_display_messages() {
+    assert!(
+        alloc::format!("{}", process::ExecError::InvalidName)
+            == "invalid file name (expected FAT12 8.3 format)",
+        "InvalidName display text must stay stable"
+    );
+    assert!(
+        alloc::format!("{}", process::ExecError::OutOfMemory)
+            == "out of memory while allocating program pages",
+        "OutOfMemory display text must stay stable"
+    );
+    assert!(
+        alloc::format!("{}", process::ExecError::Io)
+            == "I/O error while loading program",
+        "Io display text must stay stable"
+    );
+}
+
 /// Contract: FAT12 loader returns the bundled user program and validates size bounds.
 #[test_case]
 fn test_load_program_image_reads_hello_bin() {
