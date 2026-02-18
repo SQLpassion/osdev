@@ -220,6 +220,49 @@ fn test_scheduler_round_robin_pointer_sequence_with_five_tasks() {
     assert!(current == frame_a, "sixth timer tick should wrap to task A");
 }
 
+/// Contract: scheduler sets running state on selected task and restores previous task to ready.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "scheduler sets running state on selected task and restores previous task to ready".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_scheduler_marks_selected_task_running_and_previous_ready() {
+    sched::init();
+
+    let task_a = sched::spawn_kernel_task(dummy_task_a).expect("task A should spawn");
+    let task_b = sched::spawn_kernel_task(dummy_task_b).expect("task B should spawn");
+    let frame_a = sched::task_frame_ptr(task_a).expect("task A frame should exist");
+    let frame_b = sched::task_frame_ptr(task_b).expect("task B frame should exist");
+
+    sched::start();
+    let mut bootstrap = SavedRegisters::default();
+    let mut current = &mut bootstrap as *mut SavedRegisters;
+
+    // Tick 1: select task A.
+    current = sched::on_timer_tick(current);
+    assert!(current == frame_a, "first tick should select task A");
+    assert!(
+        sched::task_state(task_a) == Some(TaskState::Running),
+        "selected task A must be marked Running"
+    );
+    assert!(
+        sched::task_state(task_b) == Some(TaskState::Ready),
+        "non-selected task B must remain Ready"
+    );
+
+    // Tick 2: select task B and demote task A back to Ready.
+    current = sched::on_timer_tick(current);
+    assert!(current == frame_b, "second tick should select task B");
+    assert!(
+        sched::task_state(task_b) == Some(TaskState::Running),
+        "selected task B must be marked Running"
+    );
+    assert!(
+        sched::task_state(task_a) == Some(TaskState::Ready),
+        "previously running task A must be restored to Ready"
+    );
+}
+
 /// Contract: selecting user task updates tss rsp0 from task context.
 /// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
 /// When: The exact operation sequence in this function is executed against that state.
@@ -1258,16 +1301,15 @@ fn test_successive_zombies_are_reaped_across_ticks() {
         "exactly one of task B or C must remain after two zombies are reaped"
     );
 
-    // The surviving task must be Ready (the scheduler tracks
-    // the running task via `running_slot`, not via TaskState).
+    // The surviving task must be Running because it was selected on Tick 3.
     let survivor_state = if b_alive {
         sched::task_state(task_b)
     } else {
         sched::task_state(task_c)
     };
     assert!(
-        survivor_state == Some(TaskState::Ready),
-        "the surviving task must be in Ready state"
+        survivor_state == Some(TaskState::Running),
+        "the surviving task must be in Running state"
     );
 }
 

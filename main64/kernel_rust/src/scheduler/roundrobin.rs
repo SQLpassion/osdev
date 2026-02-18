@@ -91,7 +91,6 @@ pub enum TaskState {
     Ready,
 
     /// Task is the one currently executing on the CPU.
-    #[allow(dead_code)]
     Running,
 
     /// Task is waiting for an external event (e.g. keyboard input).
@@ -1032,6 +1031,17 @@ fn select_next_task(
     detected_slot: Option<usize>,
     current_frame: *mut SavedRegisters,
 ) -> *mut SavedRegisters {
+    // Step 1: Close out the previous running mark before selecting the next slot.
+    // Keep explicit non-running states (Blocked/Zombie) untouched.
+    if let Some(previous_slot) = meta.running_slot {
+        if previous_slot < MAX_TASKS
+            && meta.slots[previous_slot].used
+            && meta.slots[previous_slot].state == TaskState::Running
+        {
+            meta.slots[previous_slot].state = TaskState::Ready;
+        }
+    }
+
     let base_pos = if let Some(slot) = detected_slot {
         (0..meta.task_count)
             .find(|pos| meta.run_queue[*pos] == slot)
@@ -1070,6 +1080,8 @@ fn select_next_task(
     meta.tick_count = meta.tick_count.wrapping_add(1);
 
     if let Some(pos) = selected_pos {
+        // Step 2: Persist scheduler-visible running state for the selected slot.
+        meta.slots[selected_slot].state = TaskState::Running;
         meta.current_queue_pos = pos;
         meta.running_slot = Some(selected_slot);
 
