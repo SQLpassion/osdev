@@ -600,3 +600,74 @@ fn test_fault_mapped_code_page_has_no_execute_bit_clear() {
 
     vmm::unmap_virtual_address(code_va);
 }
+
+/// Allocates PMM frames until exhaustion and stores acquired PFNs into `held_pfns`.
+///
+/// Returns number of held PFNs. Panics if `held_pfns` is too small to observe OOM.
+fn exhaust_pmm_frames(held_pfns: &mut [u64]) -> usize {
+    let mut held_count = 0usize;
+
+    pmm::with_pmm(|mgr| {
+        // Step 1: Drain PMM by repeatedly allocating frames until `alloc_frame` returns None.
+        while held_count < held_pfns.len() {
+            let Some(frame) = mgr.alloc_frame() else {
+                return;
+            };
+            held_pfns[held_count] = frame.pfn;
+            held_count += 1;
+        }
+
+        // Step 2: If the buffer filled up before OOM, fail loudly to keep the test deterministic.
+        if mgr.alloc_frame().is_some() {
+            panic!("OOM test buffer too small; increase held_pfns capacity");
+        }
+    });
+
+    held_count
+}
+
+/// Releases a PFN slice previously returned by `exhaust_pmm_frames`.
+fn release_held_pfns(held_pfns: &[u64]) {
+    pmm::with_pmm(|mgr| {
+        // Restore all held frames so following tests (or cleanup paths) stay unaffected.
+        for &pfn in held_pfns {
+            assert!(mgr.release_pfn(pfn), "failed to release held PFN 0x{:x}", pfn);
+        }
+    });
+}
+
+/// Contract: map user page propagates out of memory from page table path setup.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "map user page propagates out of memory from page table path setup".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_aaa_map_user_page_propagates_out_of_memory_from_path_setup() {
+    const MAX_HELD_PFNS: usize = 131_072;
+
+    // Use a fresh user address space to ensure USER_CODE path tables are not pre-created.
+    let user_cr3 = vmm::clone_kernel_pml4_for_user();
+
+    vmm::with_address_space(user_cr3, || {
+        let target_va = vmm::USER_CODE_BASE;
+        vmm::unmap_virtual_address(target_va);
+
+        // Step 1: Exhaust PMM so intermediate table allocation inside map_user_page must fail.
+        let mut held_pfns = [0u64; MAX_HELD_PFNS];
+        let held_count = exhaust_pmm_frames(&mut held_pfns);
+
+        // Step 2: Mapping must return OutOfMemory (no panic, no partial rollback breakage).
+        let err = vmm::map_user_page(target_va, 0x1234, true)
+            .expect_err("map_user_page should propagate OOM from page-table path allocation");
+        assert!(
+            matches!(err, vmm::MapError::OutOfMemory { virtual_address } if virtual_address == target_va),
+            "expected MapError::OutOfMemory for code VA path setup"
+        );
+
+        // Step 3: Restore PMM state inside this temporary address space.
+        release_held_pfns(&held_pfns[..held_count]);
+    });
+
+    // Release the cloned PML4 root frame.
+    vmm::destroy_user_address_space(user_cr3);
+}

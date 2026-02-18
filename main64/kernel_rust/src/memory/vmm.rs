@@ -141,6 +141,12 @@ pub enum PageFaultError {
         virtual_address: u64,
         error_code: u64,
     },
+
+    /// Fault could not be handled because PMM ran out of physical frames.
+    OutOfMemory {
+        virtual_address: u64,
+        error_code: u64,
+    },
 }
 
 /// Error returned by checked mapping operations.
@@ -158,6 +164,9 @@ pub enum MapError {
 
     /// Address targets the configured guard page.
     UserGuardPage { virtual_address: u64 },
+
+    /// PMM had no free physical frames for required intermediate page tables.
+    OutOfMemory { virtual_address: u64 },
 }
 
 #[derive(Clone, Copy)]
@@ -502,14 +511,18 @@ fn with_vmm<R>(f: impl FnOnce(&mut VmmState) -> R) -> R {
     f(&mut guard)
 }
 
-/// Allocates one physical frame and returns its physical address.
+/// Attempts to allocate one physical frame and returns its physical address.
 #[inline]
-fn alloc_frame_phys() -> u64 {
-    pmm::with_pmm(|mgr| {
-        mgr.alloc_frame()
-            .expect("VMM: out of physical memory while allocating page frame")
-            .physical_address()
-    })
+fn alloc_frame_phys() -> Option<u64> {
+    pmm::with_pmm(|mgr| mgr.alloc_frame().map(|frame| frame.physical_address()))
+}
+
+/// Allocates one physical frame and panics with `context` on OOM.
+///
+/// Bootstrap paths use this helper because they cannot recover gracefully.
+#[inline]
+fn alloc_frame_phys_or_panic(context: &str) -> u64 {
+    alloc_frame_phys().unwrap_or_else(|| panic!("{}", context))
 }
 
 /// Interprets a recursive-mapped virtual address as a mutable page table.
@@ -635,15 +648,26 @@ fn debug_alloc(level: &str, idx: usize, pfn: u64) {
 /// - recursive mapping at PML4[511]
 pub fn init(debug_output: bool) {
     // Step 1: allocate all paging-structure frames required for bootstrap layout.
-    let pml4 = alloc_frame_phys();
-    let pdp_higher = alloc_frame_phys();
-    let pd_higher = alloc_frame_phys();
-    let pt_higher_0 = alloc_frame_phys();
-    let pt_higher_1 = alloc_frame_phys();
-    let pdp_identity = alloc_frame_phys();
-    let pd_identity = alloc_frame_phys();
-    let pt_identity_0 = alloc_frame_phys();
-    let pt_identity_1 = alloc_frame_phys();
+    let pml4 =
+        alloc_frame_phys_or_panic("VMM: out of physical memory while allocating bootstrap PML4");
+    let pdp_higher = alloc_frame_phys_or_panic(
+        "VMM: out of physical memory while allocating bootstrap higher-half PDP",
+    );
+    let pd_higher =
+        alloc_frame_phys_or_panic("VMM: out of physical memory while allocating bootstrap PD");
+    let pt_higher_0 =
+        alloc_frame_phys_or_panic("VMM: out of physical memory while allocating bootstrap PT0");
+    let pt_higher_1 =
+        alloc_frame_phys_or_panic("VMM: out of physical memory while allocating bootstrap PT1");
+    let pdp_identity = alloc_frame_phys_or_panic(
+        "VMM: out of physical memory while allocating bootstrap identity PDP",
+    );
+    let pd_identity =
+        alloc_frame_phys_or_panic("VMM: out of physical memory while allocating identity PD");
+    let pt_identity_0 =
+        alloc_frame_phys_or_panic("VMM: out of physical memory while allocating identity PT0");
+    let pt_identity_1 =
+        alloc_frame_phys_or_panic("VMM: out of physical memory while allocating identity PT1");
 
     // Step 2: clear all fresh table pages before inserting entries.
     for addr in [
@@ -813,14 +837,16 @@ pub unsafe fn switch_page_directory(pml4_phys: u64) {
 /// Builds any missing intermediate page tables (PML4/PDP/PD) for `virtual_address`.
 ///
 #[inline]
-fn populate_page_table_path(virtual_address: u64, user: bool) {
+fn populate_page_table_path(virtual_address: u64, user: bool) -> Result<(), MapError> {
     // Level 1: PML4 entry.
     let pml4 = table_at(PML4_TABLE_ADDR);
     let pml4_idx = pml4_index(virtual_address);
 
     if !pml4.entries[pml4_idx].present() {
         // Allocate and zero a fresh PDP table.
-        let new_table_phys = alloc_frame_phys();
+        let Some(new_table_phys) = alloc_frame_phys() else {
+            return Err(MapError::OutOfMemory { virtual_address });
+        };
         pml4.entries[pml4_idx].set_mapping(phys_to_pfn(new_table_phys), true, true, user);
         invlpg(pdp_table_addr(virtual_address));
         let new_pdp = table_at(pdp_table_addr(virtual_address));
@@ -838,7 +864,9 @@ fn populate_page_table_path(virtual_address: u64, user: bool) {
 
     if !pdp.entries[pdp_idx].present() {
         // Allocate and zero a fresh PD table.
-        let new_table_phys = alloc_frame_phys();
+        let Some(new_table_phys) = alloc_frame_phys() else {
+            return Err(MapError::OutOfMemory { virtual_address });
+        };
         pdp.entries[pdp_idx].set_mapping(phys_to_pfn(new_table_phys), true, true, user);
         invlpg(pd_table_addr(virtual_address));
         let new_pd = table_at(pd_table_addr(virtual_address));
@@ -856,7 +884,9 @@ fn populate_page_table_path(virtual_address: u64, user: bool) {
 
     if !pd.entries[pd_idx].present() {
         // Allocate and zero a fresh PT table.
-        let new_table_phys = alloc_frame_phys();
+        let Some(new_table_phys) = alloc_frame_phys() else {
+            return Err(MapError::OutOfMemory { virtual_address });
+        };
         pd.entries[pd_idx].set_mapping(phys_to_pfn(new_table_phys), true, true, user);
         invlpg(pt_table_addr(virtual_address));
         let new_pt = table_at(pt_table_addr(virtual_address));
@@ -867,6 +897,8 @@ fn populate_page_table_path(virtual_address: u64, user: bool) {
         pd.entries[pd_idx].set_user(true);
         pd.entries[pd_idx].set_writable(true);
     }
+
+    Ok(())
 }
 
 /// Returns the PT containing `virtual_address` if all intermediate levels exist.
@@ -1003,7 +1035,8 @@ fn unmap_page_and_prune_pagetable_hierarchy(virtual_address: u64, release_leaf_p
 /// Handles page faults by demand-allocating page tables and target page frame.
 ///
 /// Returns `Err(PageFaultError::ProtectionFault)` for protection faults (`P=1`),
-/// and `Ok(())` for handled non-present faults.
+/// `Err(PageFaultError::OutOfMemory)` when PMM allocation fails, and `Ok(())`
+/// for handled non-present faults.
 pub fn try_handle_page_fault(virtual_address: u64, error_code: u64) -> Result<(), PageFaultError> {
     // Keep both raw and page-aligned addresses for diagnostics and mapping.
     let fault_address_raw = virtual_address;
@@ -1070,13 +1103,25 @@ pub fn try_handle_page_fault(virtual_address: u64, error_code: u64) -> Result<()
     // EFER.NXE is activated in kaosldr_16/longmode.asm; without it no_execute is ignored.
     let writable = !matches!(user_region, Some(UserRegion::Code));
     let no_execute = matches!(user_region, Some(UserRegion::Stack));
-    populate_page_table_path(virtual_address, user_access);
+    // Step 1: ensure the page-table path exists; propagate OOM instead of panicking.
+    if let Err(_) = populate_page_table_path(virtual_address, user_access) {
+        return Err(PageFaultError::OutOfMemory {
+            virtual_address: fault_address_raw,
+            error_code,
+        });
+    }
     let pt = table_at(pt_table_addr(virtual_address));
     let pt_idx = pt_index(virtual_address);
 
     // Allocate a leaf page only when page is currently non-present.
     if !pt.entries[pt_idx].present() {
-        let new_page_phys = alloc_frame_phys();
+        // Step 2: allocate a leaf frame for demand mapping; OOM is a recoverable error.
+        let Some(new_page_phys) = alloc_frame_phys() else {
+            return Err(PageFaultError::OutOfMemory {
+                virtual_address: fault_address_raw,
+                error_code,
+            });
+        };
 
         // Map writable first so zero-fill is valid even when final mapping
         // should be read-only (e.g. user code pages).
@@ -1110,16 +1155,27 @@ pub fn try_handle_page_fault(virtual_address: u64, error_code: u64) -> Result<()
 ///
 /// This wrapper preserves the existing behavior: protection faults are fatal.
 pub fn handle_page_fault(virtual_address: u64, error_code: u64) {
-    // Production path keeps historical behavior: protection faults are fatal.
-    if let Err(PageFaultError::ProtectionFault {
-        virtual_address,
-        error_code,
-    }) = try_handle_page_fault(virtual_address, error_code)
-    {
-        panic!(
-            "VMM: protection page fault at 0x{:x} err=0x{:x}",
-            virtual_address, error_code
-        );
+    // Production path keeps historical behavior: unrecoverable faults are fatal.
+    match try_handle_page_fault(virtual_address, error_code) {
+        Ok(()) => {}
+        Err(PageFaultError::ProtectionFault {
+            virtual_address,
+            error_code,
+        }) => {
+            panic!(
+                "VMM: protection page fault at 0x{:x} err=0x{:x}",
+                virtual_address, error_code
+            );
+        }
+        Err(PageFaultError::OutOfMemory {
+            virtual_address,
+            error_code,
+        }) => {
+            panic!(
+                "VMM: out of physical memory while handling page fault at 0x{:x} err=0x{:x}",
+                virtual_address, error_code
+            );
+        }
     }
 }
 
@@ -1137,7 +1193,7 @@ pub fn try_map_virtual_to_physical(
     let requested_pfn = phys_to_pfn(physical_address);
 
     // Ensure intermediate levels exist for the target VA.
-    populate_page_table_path(virtual_address, false);
+    populate_page_table_path(virtual_address, false)?;
     let pt = table_at(pt_table_addr(virtual_address));
     let pt_idx = pt_index(virtual_address);
 
@@ -1167,17 +1223,37 @@ pub fn try_map_virtual_to_physical(
 /// Panics if the VA is already mapped to another frame.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn map_virtual_to_physical(virtual_address: u64, physical_address: u64) {
-    // Thin wrapper: convert mapping conflicts into a hard panic.
-    if let Err(MapError::AlreadyMapped {
-        virtual_address,
-        current_pfn,
-        requested_pfn,
-    }) = try_map_virtual_to_physical(virtual_address, physical_address)
-    {
-        panic!(
-            "VMM: mapping conflict for VA 0x{:x}: current PFN=0x{:x}, requested PFN=0x{:x}",
-            virtual_address, current_pfn, requested_pfn
-        );
+    // Thin wrapper: convert checked map errors into a hard panic.
+    match try_map_virtual_to_physical(virtual_address, physical_address) {
+        Ok(()) => {}
+        Err(MapError::AlreadyMapped {
+            virtual_address,
+            current_pfn,
+            requested_pfn,
+        }) => {
+            panic!(
+                "VMM: mapping conflict for VA 0x{:x}: current PFN=0x{:x}, requested PFN=0x{:x}",
+                virtual_address, current_pfn, requested_pfn
+            );
+        }
+        Err(MapError::OutOfMemory { virtual_address }) => {
+            panic!(
+                "VMM: out of physical memory while mapping VA 0x{:x}",
+                virtual_address
+            );
+        }
+        Err(MapError::UserGuardPage { virtual_address }) => {
+            panic!(
+                "VMM: unexpected guard-page map request for VA 0x{:x}",
+                virtual_address
+            );
+        }
+        Err(MapError::NotUserRegion { virtual_address }) => {
+            panic!(
+                "VMM: unexpected non-user map request for VA 0x{:x}",
+                virtual_address
+            );
+        }
     }
 }
 
@@ -1242,7 +1318,8 @@ fn unmap_without_release(virtual_address: u64) {
 /// - The returned frame remains allocated and owned by the caller.
 /// - `unmap_without_release` is used intentionally so PMM does not free it.
 pub fn clone_kernel_pml4_for_user() -> u64 {
-    let new_pml4_phys = alloc_frame_phys();
+    let new_pml4_phys =
+        alloc_frame_phys_or_panic("VMM: out of physical memory while cloning user PML4");
 
     // Reuse one temporary VA for clone operations.
     unmap_without_release(TEMP_CLONE_PML4_VA);
@@ -1510,7 +1587,7 @@ pub fn map_user_page(virtual_address: u64, pfn: u64, writable: bool) -> Result<(
     };
 
     // Ensure all intermediate levels exist and are marked user-accessible.
-    populate_page_table_path(virtual_address, true);
+    populate_page_table_path(virtual_address, true)?;
     let pt = table_at(pt_table_addr(virtual_address));
     let pt_idx = pt_index(virtual_address);
 
