@@ -144,14 +144,10 @@ pub fn map_program_image_into_user_address_space(image: &[u8]) -> ExecResult<Loa
 fn try_map_program_image(user_cr3: u64, image: &[u8], state: &mut MapState) -> ExecResult<LoadedProgram> {
     let code_page_count = page_count_for_len(image.len());
 
-    // Step 1: Allocate all code backing frames up front.
-    // This avoids running out of frames halfway through the writable map pass.
-    for _ in 0..code_page_count {
-        state.code_pfns.push(alloc_frame_pfn()?);
-    }
-
-    // Step 2: Allocate one bootstrap stack page and persist it for rollback.
-    let allocated_stack_pfn = alloc_frame_pfn()?;
+    // Step 1: Allocate all code frames + stack frame in a single PMM lock scope.
+    // This avoids repeated lock/unlock overhead in the hot allocation loop.
+    let (allocated_code_pfns, allocated_stack_pfn) = alloc_program_frames(code_page_count)?;
+    state.code_pfns = allocated_code_pfns;
     state.stack_pfn = Some(allocated_stack_pfn);
 
     // Step 3: Activate target CR3 and perform map/copy/remap sequence.
@@ -290,27 +286,68 @@ const fn page_count_for_len(image_len: usize) -> usize {
     image_len.div_ceil(PAGE_SIZE_BYTES)
 }
 
-/// Allocates one physical frame and returns its PFN.
+/// Allocates code + stack physical frames for one user-image mapping transaction.
 ///
-/// Allocation failure is reported as `ExecError::MappingFailed`.
+/// Allocation is performed under one PMM lock scope and returns:
+/// - one PFN per code page
+/// - one PFN for the bootstrap stack page
 ///
-/// The PMM only manages regions at or above 1 MiB (`KERNEL_OFFSET`), so PFN 0
-/// (physical address 0x0000, IVT/BIOS data area) is structurally unreachable.
-/// The assertion below makes any violation of that invariant visible immediately.
-fn alloc_frame_pfn() -> ExecResult<u64> {
-    let pfn = pmm::with_pmm(|mgr| mgr.alloc_frame().map(|frame| frame.pfn))
-        .ok_or(ExecError::MappingFailed)?;
+/// On partial allocation failure, all already-allocated PFNs in this transaction
+/// are released before returning, so the caller receives all-or-nothing behavior.
+fn alloc_program_frames(code_page_count: usize) -> ExecResult<(Vec<u64>, u64)> {
+    pmm::with_pmm(|mgr| {
+        // Step 1: Reserve code-page backing frames.
+        let mut code_pfns = Vec::with_capacity(code_page_count);
 
-    // PFN 0 maps to physical address 0x0 (IVT/BIOS Data Area). Mapping user
-    // pages there would corrupt low memory and be a security vulnerability.
-    // This should never trigger given the PMM's region filter, but guard
-    // against future PMM changes that might break the invariant.
-    debug_assert!(pfn != 0, "PMM returned PFN 0 (reserved low memory)");
-    if pfn == 0 {
-        return Err(ExecError::MappingFailed);
-    }
+        for _ in 0..code_page_count {
+            let pfn = match mgr.alloc_frame().map(|frame| frame.pfn) {
+                Some(pfn) => pfn,
+                None => {
+                    for allocated_pfn in code_pfns.iter().copied() {
+                        let _ = mgr.release_pfn(allocated_pfn);
+                    }
+                    return None;
+                }
+            };
 
-    Ok(pfn)
+            // PFN 0 maps to physical address 0x0 (IVT/BIOS Data Area). Mapping user
+            // pages there would corrupt low memory and be a security vulnerability.
+            debug_assert!(pfn != 0, "PMM returned PFN 0 (reserved low memory)");
+            if pfn == 0 {
+                for allocated_pfn in code_pfns.iter().copied() {
+                    let _ = mgr.release_pfn(allocated_pfn);
+                }
+                return None;
+            }
+
+            code_pfns.push(pfn);
+        }
+
+        // Step 2: Reserve the bootstrap stack frame.
+        let stack_pfn = match mgr.alloc_frame().map(|frame| frame.pfn) {
+            Some(pfn) => pfn,
+            None => {
+                for allocated_pfn in code_pfns.iter().copied() {
+                    let _ = mgr.release_pfn(allocated_pfn);
+                }
+                return None;
+            }
+        };
+
+        debug_assert!(
+            stack_pfn != 0,
+            "PMM returned PFN 0 (reserved low memory) for stack frame"
+        );
+        if stack_pfn == 0 {
+            for allocated_pfn in code_pfns.iter().copied() {
+                let _ = mgr.release_pfn(allocated_pfn);
+            }
+            return None;
+        }
+
+        Some((code_pfns, stack_pfn))
+    })
+    .ok_or(ExecError::MappingFailed)
 }
 
 /// Best-effort rollback for partially created user mappings.
