@@ -201,6 +201,28 @@ fn test_parser_formats_short_name_lowercase() {
     );
 }
 
+/// Contract: parser omits the dot when the 8.3 extension field is empty.
+#[test_case]
+fn test_parser_formats_short_name_without_extension() {
+    let mut root = [0u8; ROOT_DIR_BYTES];
+    write_entry(&mut root, 0, b"KERNEL  ", b"   ", 0x20, 9, 100);
+    root[ENTRY_SIZE] = 0x00;
+
+    let mut record = None::<RootDirectoryRecord>;
+    let _ = parse_root_directory(&root, |entry| {
+        record = Some(entry);
+    });
+
+    let record = record.expect("expected one parsed entry");
+    let formatted =
+        core::str::from_utf8(&record.name[..record.name_len]).expect("name bytes must be ASCII");
+
+    assert!(
+        formatted == "kernel",
+        "name with empty extension must not include a trailing dot"
+    );
+}
+
 /// Contract: 8.3 normalization returns uppercased, space-padded FAT short name.
 #[test_case]
 fn test_normalize_8_3_name_returns_expected_short_name() {

@@ -168,10 +168,9 @@ impl RawRootDirectoryEntry {
 
         // Extension: up to 3 characters, strip trailing spaces
         let extension = &self.bytes[8..11];
-        let ext_start = extension.iter().position(|&b| b != b' ');
 
         // Add `.ext` only when an extension is actually present.
-        if ext_start.is_some() {
+        if extension.iter().any(|&b| b != b' ') {
             name[pos] = b'.';
             pos += 1;
 
