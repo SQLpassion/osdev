@@ -41,9 +41,6 @@ pub enum ExecError {
     /// Program image does not fit inside the user executable window.
     FileTooLarge,
 
-    /// Creating a dedicated user address space failed.
-    AddressSpaceCreateFailed,
-
     /// Physical-frame allocation failed while preparing code/stack pages.
     OutOfMemory,
 
