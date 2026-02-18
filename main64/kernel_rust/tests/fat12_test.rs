@@ -14,6 +14,11 @@ use kaos_kernel::process;
 
 const ROOT_DIR_BYTES: usize = 224 * 32;
 const ENTRY_SIZE: usize = 32;
+const BYTES_PER_SECTOR: usize = 512;
+const FAT1_LBA: u32 = 1;
+const FAT_SECTORS: u8 = 9;
+const ROOT_DIRECTORY_LBA: u32 = 19;
+const ROOT_DIRECTORY_SECTORS: u8 = 14;
 const EXPECTED_SFILE_BYTES: &[u8] = include_bytes!("../../SFile.txt");
 const EXPECTED_HELLO_BIN_BYTES: &[u8] = include_bytes!("../../user_programs/hello/hello.bin");
 
@@ -48,6 +53,44 @@ fn write_entry(
     root[start + 11] = attributes;
     root[start + 26..start + 28].copy_from_slice(&first_cluster.to_le_bytes());
     root[start + 28..start + 32].copy_from_slice(&file_size.to_le_bytes());
+}
+
+fn find_first_cluster_in_root(root: &[u8], short_name: &[u8; 11]) -> Option<u16> {
+    for entry_idx in 0..(root.len() / ENTRY_SIZE) {
+        let start = entry_idx * ENTRY_SIZE;
+        let entry = &root[start..start + ENTRY_SIZE];
+
+        if entry[0] == 0x00 {
+            break;
+        }
+        if entry[0] == 0xE5 {
+            continue;
+        }
+        if entry[11] == 0x0F || (entry[11] & 0x08) != 0 {
+            continue;
+        }
+        if &entry[0..11] != short_name {
+            continue;
+        }
+
+        return Some(u16::from_le_bytes([entry[26], entry[27]]));
+    }
+
+    None
+}
+
+fn write_fat12_entry(fat: &mut [u8], cluster: u16, value: u16) {
+    let cluster_index = cluster as usize;
+    let offset = cluster_index + (cluster_index / 2);
+    let value = value & 0x0FFF;
+
+    if cluster & 1 == 0 {
+        fat[offset] = (value & 0x00FF) as u8;
+        fat[offset + 1] = (fat[offset + 1] & 0xF0) | ((value >> 8) as u8 & 0x0F);
+    } else {
+        fat[offset] = (fat[offset] & 0x0F) | (((value << 4) as u8) & 0xF0);
+        fat[offset + 1] = (value >> 4) as u8;
+    }
 }
 
 /// Contract: parser skips deleted, LFN, and volume-label entries.
@@ -235,4 +278,40 @@ fn test_read_file_hello_bin_returns_exact_bytes() {
             actual[idx]
         );
     }
+}
+
+/// Contract: a FAT chain that jumps to cluster 1 is reported as CorruptFatChain.
+#[test_case]
+fn test_read_file_reports_corrupt_fat_chain_for_cluster_1_target() {
+    kaos_kernel::drivers::ata::init();
+
+    // Step 1: Locate hello.bin start cluster from raw root directory.
+    let short_name = normalize_8_3_name("hello.bin").expect("hello.bin short name must normalize");
+    let mut root = [0u8; ROOT_DIRECTORY_SECTORS as usize * BYTES_PER_SECTOR];
+    kaos_kernel::drivers::ata::read_sectors(&mut root, ROOT_DIRECTORY_LBA, ROOT_DIRECTORY_SECTORS)
+        .expect("root directory must be readable");
+    let first_cluster = find_first_cluster_in_root(&root, &short_name)
+        .expect("hello.bin directory entry must exist");
+
+    // Step 2: Patch FAT#1 so first cluster points to reserved cluster 1.
+    let mut original_fat = [0u8; FAT_SECTORS as usize * BYTES_PER_SECTOR];
+    kaos_kernel::drivers::ata::read_sectors(&mut original_fat, FAT1_LBA, FAT_SECTORS)
+        .expect("FAT#1 must be readable");
+    let mut patched_fat = original_fat;
+    write_fat12_entry(&mut patched_fat, first_cluster, 1);
+    kaos_kernel::drivers::ata::write_sectors(&patched_fat, FAT1_LBA, FAT_SECTORS)
+        .expect("FAT#1 patch write must succeed");
+
+    // Step 3: Exercise read path and capture error variant before restoring disk state.
+    let result = read_file("hello.bin");
+
+    // Step 4: Restore original FAT content to keep subsequent tests deterministic.
+    kaos_kernel::drivers::ata::write_sectors(&original_fat, FAT1_LBA, FAT_SECTORS)
+        .expect("FAT#1 restore must succeed");
+
+    assert!(
+        matches!(result, Err(Fat12Error::CorruptFatChain)),
+        "cluster target 1 must be classified as CorruptFatChain, got {:?}",
+        result
+    );
 }

@@ -57,16 +57,22 @@ const MAX_FILE_SIZE: usize = 2 * 1024 * 1024;
 pub enum Fat12Error {
     /// ATA controller or transport error while reading sectors.
     Ata(drivers::ata::AtaError),
+
     /// Input file name is not representable as a valid FAT 8.3 short name.
     InvalidFileName,
+
     /// Requested short-name entry does not exist in the root directory.
     NotFound,
+
     /// Matched root-directory entry is a directory, not a regular file.
     IsDirectory,
+
     /// Root-directory metadata is structurally invalid (e.g. bad start cluster).
     CorruptDirectoryEntry,
+
     /// FAT table chain is malformed (loop, reserved/bad/out-of-range value).
     CorruptFatChain,
+
     /// FAT chain ended before `file_size` bytes could be read.
     UnexpectedEof,
 }
@@ -409,7 +415,7 @@ fn fat12_next_cluster(fat: &[u8], cluster: u16) -> Result<u16, Fat12Error> {
 /// Cluster numbering starts at 2 in FAT. Cluster 2 maps to first data sector.
 fn cluster_to_lba(cluster: u16) -> Result<u32, Fat12Error> {
     if cluster < FAT12_MIN_DATA_CLUSTER {
-        return Err(Fat12Error::CorruptDirectoryEntry);
+        return Err(Fat12Error::CorruptFatChain);
     }
 
     Ok(DATA_AREA_START_LBA + (cluster as u32 - FAT12_MIN_DATA_CLUSTER as u32))
