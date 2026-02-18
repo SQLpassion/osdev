@@ -122,8 +122,11 @@ pub fn map_program_image_into_user_address_space(image: &[u8]) -> ExecResult<Loa
         }
 
         // Allocate one initial user stack page so first ring-3 pushes are valid.
-        stack_pfn = Some(alloc_frame_pfn()?);
-        let stack_pfn = stack_pfn.ok_or(ExecError::MappingFailed)?;
+        // Keep both:
+        // - `allocated_stack_pfn` for immediate mapping operations in this scope
+        // - `stack_pfn` (outer Option) for rollback bookkeeping on failure
+        let allocated_stack_pfn = alloc_frame_pfn()?;
+        stack_pfn = Some(allocated_stack_pfn);
 
         // Perform mapping and copy while target CR3 is active.
         vmm::with_address_space(user_cr3, || -> ExecResult<()> {
@@ -147,13 +150,13 @@ pub fn map_program_image_into_user_address_space(image: &[u8]) -> ExecResult<Loa
             }
 
             // Keep one writable bootstrap stack page at top-of-stack region.
-            vmm::map_user_page(USER_STACK_BOOTSTRAP_PAGE_VA, stack_pfn, true)
+            vmm::map_user_page(USER_STACK_BOOTSTRAP_PAGE_VA, allocated_stack_pfn, true)
                 .map_err(|e| {
                     crate::logging::logln(
                         "loader",
                         format_args!(
                             "LOADER: map_user_page(stack, va={:#x}, pfn={:#x}, writable=true) failed: {:?}",
-                            USER_STACK_BOOTSTRAP_PAGE_VA, stack_pfn, e
+                            USER_STACK_BOOTSTRAP_PAGE_VA, allocated_stack_pfn, e
                         ),
                     );
                     ExecError::MappingFailed
