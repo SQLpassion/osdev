@@ -83,3 +83,9 @@ name = "user_mode_iretq_smoke_test"
 
 [[test]]
 name = "syscall_dispatch_test"
+
+[[test]]
+name = "process_contract_test"
+
+[[test]]
+name = "cursor_demo_test"

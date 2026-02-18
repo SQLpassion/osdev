@@ -13,7 +13,9 @@ pub mod abi;
 pub mod user;
 
 #[allow(unused_imports)]
-pub use dispatch::dispatch;
+pub use dispatch::{
+    dispatch, set_syscall_trace_enabled, syscall_name_for_number, syscall_trace_enabled,
+};
 
 #[allow(unused_imports)]
 pub use types::{

@@ -1,0 +1,11 @@
+[target.x86_64-unknown-none]
+rustflags = [
+    "-C", "link-arg=-Tlink.ld",
+    "-C", "link-arg=-z",
+    "-C", "link-arg=max-page-size=0x1000",
+    "-C", "link-arg=-Map=hello.map",
+    "-C", "code-model=large",
+    "-C", "relocation-model=static",
+    "-C", "no-redzone=yes",
+]
+linker = "rust-lld"

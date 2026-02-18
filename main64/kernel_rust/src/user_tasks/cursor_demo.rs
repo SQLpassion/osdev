@@ -18,6 +18,7 @@ use crate::memory::pmm;
 use crate::memory::vmm;
 use crate::scheduler;
 use crate::syscall;
+use alloc::vec::Vec;
 use core::fmt::Write;
 
 /// User stack page VA (mapped writable).
@@ -32,9 +33,10 @@ const USER_CURSOR_TASK_DATA_VA: u64 = vmm::USER_STACK_TOP - 0x2000;
 /// Number of adjacent code pages mapped per function symbol.
 ///
 /// Rationale:
-/// Some debug builds place a function across a page boundary. Mapping two
-/// pages per symbol avoids latent fetch faults when control flow crosses that boundary.
-const USER_CURSOR_CODE_PAGES_PER_SYMBOL: u64 = 2;
+/// Some debug builds place `cursor_ring3_task` across multiple pages.
+/// Mapping four pages per symbol avoids latent user-mode instruction-fetch faults
+/// when control flow crosses beyond the first two pages.
+const USER_CURSOR_CODE_PAGES_PER_SYMBOL: u64 = 4;
 
 // Demo output messages copied into the user data page.
 const CURSOR_MSG_START: &[u8] = b"[ring3] Cursor demo running\n";
@@ -123,6 +125,14 @@ pub(crate) fn run_user_mode_cursor_demo() {
         }
     };
 
+    // Step 6: Ensure round-robin execution is active before waiting.
+    // In normal boot flow the scheduler is already started in `KernelMain`.
+    // Integration tests may call this demo with an initialized-but-not-started
+    // scheduler, which would make `yield_now()` a no-op and stall this loop.
+    if !scheduler::is_running() {
+        scheduler::start();
+    }
+
     while scheduler::task_frame_ptr(task_id).is_some() {
         scheduler::yield_now();
     }
@@ -159,8 +169,9 @@ fn map_cursor_task_pages(target_cr3: u64) -> Result<(), &'static str> {
 
     vmm::with_address_space(target_cr3, || -> Result<(), &'static str> {
         // Deduplicate mapped code pages because multiple symbols may share a page.
-        let mut mapped_pages = [0u64; 24];
-        let mut mapped_count = 0usize;
+        let mut mapped_pages = Vec::with_capacity(
+            required_kernel_function_vas.len() * USER_CURSOR_CODE_PAGES_PER_SYMBOL as usize,
+        );
 
         for fn_va in required_kernel_function_vas {
             let code_kernel_page_va = fn_va & !0xFFFu64;
@@ -169,7 +180,7 @@ fn map_cursor_task_pages(target_cr3: u64) -> Result<(), &'static str> {
                 let candidate_kernel_page_va =
                     code_kernel_page_va.saturating_add(page_idx * pmm::PAGE_SIZE);
 
-                if mapped_pages[..mapped_count].contains(&candidate_kernel_page_va) {
+                if mapped_pages.contains(&candidate_kernel_page_va) {
                     continue;
                 }
 
@@ -181,10 +192,7 @@ fn map_cursor_task_pages(target_cr3: u64) -> Result<(), &'static str> {
                 vmm::map_user_page(code_user_page_va, code_phys / pmm::PAGE_SIZE, false)
                     .map_err(|_| "mapping user code page failed")?;
 
-                if mapped_count < mapped_pages.len() {
-                    mapped_pages[mapped_count] = candidate_kernel_page_va;
-                    mapped_count += 1;
-                }
+                mapped_pages.push(candidate_kernel_page_va);
             }
         }
 

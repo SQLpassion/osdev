@@ -14,10 +14,12 @@
 //! - `R10` -> `arg3`
 
 use core::slice;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::drivers::keyboard;
 use crate::drivers::screen::with_screen;
 use crate::drivers::serial::Serial;
+use crate::logging;
 use crate::scheduler;
 
 use super::{
@@ -32,6 +34,38 @@ const MAX_SERIAL_WRITE_LEN: usize = 4096;
 /// Same DoS/fairness rationale as `MAX_SERIAL_WRITE_LEN`.
 const MAX_CONSOLE_WRITE_LEN: usize = 4096;
 
+/// Global switch for per-syscall trace logging (`[SYSCALL] ...` lines).
+static SYSCALL_TRACE_ENABLED: AtomicBool = AtomicBool::new(true);
+
+/// Enable/disable syscall trace logging.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn set_syscall_trace_enabled(enabled: bool) {
+    SYSCALL_TRACE_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+/// Returns whether syscall trace logging is currently enabled.
+pub fn syscall_trace_enabled() -> bool {
+    SYSCALL_TRACE_ENABLED.load(Ordering::Relaxed)
+}
+
+/// Returns the stable human-readable syscall name for a raw syscall number.
+///
+/// Used by dispatcher logging so serial traces remain understandable without
+/// requiring external number-to-name lookup tables.
+pub const fn syscall_name_for_number(syscall_nr: u64) -> &'static str {
+    match syscall_nr {
+        SyscallId::YIELD => "Yield",
+        SyscallId::WRITE_SERIAL => "WriteSerial",
+        SyscallId::EXIT => "Exit",
+        SyscallId::WRITE_CONSOLE => "WriteConsole",
+        SyscallId::GET_CHAR => "GetChar",
+        SyscallId::GET_CURSOR => "GetCursor",
+        SyscallId::SET_CURSOR => "SetCursor",
+        SyscallId::CLEAR_SCREEN => "ClearScreen",
+        _ => "Unknown",
+    }
+}
+
 /// Resolves syscall number and dispatches to the corresponding kernel handler.
 ///
 /// ABI contract (as set by `int 0x80` entry glue):
@@ -42,7 +76,8 @@ const MAX_CONSOLE_WRITE_LEN: usize = 4096;
 /// - successful calls return syscall-specific values (`SYSCALL_OK` or positive result),
 /// - unknown syscall numbers return `SYSCALL_ERR_UNSUPPORTED`.
 pub fn dispatch(syscall_nr: u64, arg0: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 {
-    match syscall_nr {
+    // Step 1: resolve the handler and compute the syscall return value.
+    let result = match syscall_nr {
         SyscallId::YIELD => syscall_yield_impl(),
         SyscallId::WRITE_SERIAL => syscall_write_serial_impl(arg0 as *const u8, arg1 as usize),
         SyscallId::WRITE_CONSOLE => syscall_write_console_impl(arg0 as *const u8, arg1 as usize),
@@ -51,12 +86,29 @@ pub fn dispatch(syscall_nr: u64, arg0: u64, arg1: u64, arg2: u64, arg3: u64) -> 
         SyscallId::SET_CURSOR => syscall_set_cursor_impl(arg0 as usize, arg1 as usize),
         SyscallId::CLEAR_SCREEN => syscall_clear_screen_impl(),
         SyscallId::EXIT => syscall_exit_impl(),
-        _ => {
-            // Silence unused parameter warnings for future syscalls
-            let _ = (arg0, arg1, arg2, arg3);
-            SYSCALL_ERR_UNSUPPORTED
-        }
-    }
+        _ => SYSCALL_ERR_UNSUPPORTED,
+    };
+
+    // Step 2: emit one serial trace line for every syscall dispatch.
+    // This gives deterministic kernel-side visibility into syscall traffic.
+    let trace_enabled = syscall_trace_enabled();
+    logging::logln_with_options(
+        "syscall",
+        format_args!(
+            "[SYSCALL] nr={} name={} arg0={:#x} arg1={:#x} arg2={:#x} arg3={:#x} ret={:#x}",
+            syscall_nr,
+            syscall_name_for_number(syscall_nr),
+            arg0,
+            arg1,
+            arg2,
+            arg3,
+            result
+        ),
+        trace_enabled,
+        trace_enabled,
+    );
+
+    result
 }
 
 /// Implements `Yield`: cooperative handoff to scheduler.

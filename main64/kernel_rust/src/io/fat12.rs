@@ -8,6 +8,7 @@ use crate::drivers;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt::{Display, Formatter, Write};
+use core::ops::ControlFlow;
 
 // FAT12 disk geometry constants for a 1.44 MB floppy layout.
 const BYTES_PER_SECTOR: usize = 512;
@@ -40,6 +41,15 @@ const FAT12_EOF_MIN: u16 = 0x0FF8;
 const FAT12_MAX_CLUSTER_ID: usize = 0x1000;
 const FAT12_MIN_DATA_CLUSTER: u16 = 2;
 
+/// Maximum file size in bytes that will be accepted from FAT12 directory entries.
+///
+/// This limit protects against corrupted directory entries with unreasonably
+/// large file_size fields that could cause heap exhaustion via Vec::with_capacity().
+///
+/// Set to 2 MiB, which is larger than the entire 1.44 MiB floppy capacity, but
+/// small enough to prevent DoS attacks via memory exhaustion.
+const MAX_FILE_SIZE: usize = 2 * 1024 * 1024;
+
 /// FAT12-specific errors returned by directory parsing and file-content reads.
 ///
 /// This enum separates low-level ATA failures from higher-level filesystem
@@ -48,16 +58,22 @@ const FAT12_MIN_DATA_CLUSTER: u16 = 2;
 pub enum Fat12Error {
     /// ATA controller or transport error while reading sectors.
     Ata(drivers::ata::AtaError),
+
     /// Input file name is not representable as a valid FAT 8.3 short name.
     InvalidFileName,
+
     /// Requested short-name entry does not exist in the root directory.
     NotFound,
+
     /// Matched root-directory entry is a directory, not a regular file.
     IsDirectory,
+
     /// Root-directory metadata is structurally invalid (e.g. bad start cluster).
     CorruptDirectoryEntry,
+
     /// FAT table chain is malformed (loop, reserved/bad/out-of-range value).
     CorruptFatChain,
+
     /// FAT chain ended before `file_size` bytes could be read.
     UnexpectedEof,
 }
@@ -152,10 +168,9 @@ impl RawRootDirectoryEntry {
 
         // Extension: up to 3 characters, strip trailing spaces
         let extension = &self.bytes[8..11];
-        let ext_start = extension.iter().position(|&b| b != b' ');
 
         // Add `.ext` only when an extension is actually present.
-        if ext_start.is_some() {
+        if extension.iter().any(|&b| b != b' ') {
             name[pos] = b'.';
             pos += 1;
 
@@ -169,17 +184,8 @@ impl RawRootDirectoryEntry {
             }
         }
 
-        let first_cluster = u16::from_le_bytes([
-            self.bytes[FIRST_CLUSTER_OFFSET],
-            self.bytes[FIRST_CLUSTER_OFFSET + 1],
-        ]);
-
-        let file_size = u32::from_le_bytes([
-            self.bytes[FILE_SIZE_OFFSET],
-            self.bytes[FILE_SIZE_OFFSET + 1],
-            self.bytes[FILE_SIZE_OFFSET + 2],
-            self.bytes[FILE_SIZE_OFFSET + 3],
-        ]);
+        let first_cluster = self.first_cluster();
+        let file_size = self.file_size();
 
         RootDirectoryRecord {
             name,
@@ -264,7 +270,7 @@ fn read_fat_from_disk() -> Result<Vec<u8>, Fat12Error> {
 ///
 /// Rules enforced:
 /// - base name length: 1..=8
-/// - extension length: 0..=3
+/// - extension length: 1..=3 when `.` is present
 /// - at most one `.` separator
 /// - character set restricted to ASCII alnum plus `_` and `-`
 /// - output uppercased and space-padded
@@ -275,6 +281,7 @@ pub fn normalize_8_3_name(file_name_8_3: &str) -> Result<[u8; 11], Fat12Error> {
         return Err(Fat12Error::InvalidFileName);
     }
 
+    // Step 1: Split optional `base.ext` token and reject ambiguous separators.
     // FAT short names allow at most one '.' separator between base and extension.
     let mut parts = raw_name.split('.');
     let base = parts.next().ok_or(Fat12Error::InvalidFileName)?;
@@ -292,7 +299,14 @@ pub fn normalize_8_3_name(file_name_8_3: &str) -> Result<[u8; 11], Fat12Error> {
         return Err(Fat12Error::InvalidFileName);
     }
 
+    // Step 2: Validate extension only when caller provided a separator.
+    // A trailing dot (e.g. "KERNEL.") is rejected instead of being silently
+    // normalized to "KERNEL".
     if let Some(ext) = extension {
+        if ext.is_empty() {
+            return Err(Fat12Error::InvalidFileName);
+        }
+
         if ext.len() > 3 || ext.bytes().any(|b| !is_valid_short_name_char(b)) {
             return Err(Fat12Error::InvalidFileName);
         }
@@ -322,40 +336,80 @@ fn is_valid_short_name_char(b: u8) -> bool {
 ///
 /// The function scans fixed 32-byte entries and stops at FAT end marker `0x00`.
 /// Deleted, LFN helper and volume-label entries are skipped via `state()`.
+///
+/// # Arguments
+/// - `root_directory`: raw sector data read from LBA 19 (14 contiguous sectors,
+///   7168 bytes total). The buffer may be shorter; only complete 32-byte slots
+///   are examined.
+/// - `normalized_name`: space-padded, uppercased 11-byte FAT short name
+///   (8 bytes base + 3 bytes extension, no dot separator) as produced by
+///   [`normalize_8_3_name`].
+///
+/// # Returns
+/// - `Ok(FileEntryMeta)` — entry found; caller can inspect `attributes` to
+///   distinguish regular files from directories.
+/// - `Err(Fat12Error::NotFound)` — no active entry with a matching short name.
+///
+/// Structural metadata validation (e.g. reserved start-cluster checks) is
+/// performed later by `read_file_from_entry()`.
 fn find_file_in_root_directory(
     root_directory: &[u8],
     normalized_name: &[u8; 11],
 ) -> Result<FileEntryMeta, Fat12Error> {
-    // Guard against malformed/short buffers by parsing only complete 32-byte slots.
-    let entry_count = core::cmp::min(
-        ROOT_DIRECTORY_ENTRIES,
-        root_directory.len() / DIRECTORY_ENTRY_SIZE,
-    );
+    let mut found_entry = None;
+
+    for_each_active_root_entry(root_directory, |entry| {
+        // Compare raw 8.3 bytes directly against normalized short-name token.
+        if &entry.short_name_raw() == normalized_name {
+            found_entry = Some(FileEntryMeta {
+                attributes: entry.attributes(),
+                first_cluster: entry.first_cluster(),
+                file_size: entry.file_size(),
+            });
+
+            return ControlFlow::Break(());
+        }
+
+        ControlFlow::Continue(())
+    });
+
+    found_entry.ok_or(Fat12Error::NotFound)
+}
+
+/// Iterate over active FAT12 root-directory entries with shared traversal semantics.
+///
+/// The iterator:
+/// - parses only complete 32-byte slots up to FAT12 root entry capacity
+/// - stops on FAT12 end marker (`EntryState::End`)
+/// - skips deleted/LFN/volume-label slots (`EntryState::Skip`)
+/// - forwards active entries to `on_active`
+/// - allows early-exit via `ControlFlow::Break`
+fn for_each_active_root_entry<F>(buffer: &[u8], mut on_active: F)
+where
+    F: FnMut(RawRootDirectoryEntry) -> ControlFlow<()>,
+{
+    // Parse at most the FAT12 root table size and never beyond provided bytes.
+    let entry_count = core::cmp::min(ROOT_DIRECTORY_ENTRIES, buffer.len() / DIRECTORY_ENTRY_SIZE);
 
     for entry_idx in 0..entry_count {
         let start = entry_idx * DIRECTORY_ENTRY_SIZE;
+
+        // Copy one raw slot into fixed local buffer for deterministic decode.
         let mut bytes = [0u8; DIRECTORY_ENTRY_SIZE];
-        bytes.copy_from_slice(&root_directory[start..start + DIRECTORY_ENTRY_SIZE]);
+        bytes.copy_from_slice(&buffer[start..start + DIRECTORY_ENTRY_SIZE]);
+
         let entry = RawRootDirectoryEntry { bytes };
 
         match entry.state() {
-            // 0x00 marks end of populated directory entries in FAT12 root table.
             EntryState::End => break,
             EntryState::Skip => continue,
             EntryState::Active => {
-                // Compare raw 8.3 bytes directly against normalized short-name token.
-                if &entry.short_name_raw() == normalized_name {
-                    return Ok(FileEntryMeta {
-                        attributes: entry.attributes(),
-                        first_cluster: entry.first_cluster(),
-                        file_size: entry.file_size(),
-                    });
+                if let ControlFlow::Break(()) = on_active(entry) {
+                    break;
                 }
             }
         }
     }
-
-    Err(Fat12Error::NotFound)
 }
 
 /// Decode next cluster ID from FAT12 table for the given current cluster.
@@ -385,7 +439,7 @@ fn fat12_next_cluster(fat: &[u8], cluster: u16) -> Result<u16, Fat12Error> {
 /// Cluster numbering starts at 2 in FAT. Cluster 2 maps to first data sector.
 fn cluster_to_lba(cluster: u16) -> Result<u32, Fat12Error> {
     if cluster < FAT12_MIN_DATA_CLUSTER {
-        return Err(Fat12Error::CorruptDirectoryEntry);
+        return Err(Fat12Error::CorruptFatChain);
     }
 
     Ok(DATA_AREA_START_LBA + (cluster as u32 - FAT12_MIN_DATA_CLUSTER as u32))
@@ -404,6 +458,11 @@ fn read_file_from_entry(file_meta: FileEntryMeta, fat: &[u8]) -> Result<Vec<u8>,
         return Ok(Vec::new());
     }
 
+    // Reject unreasonably large file sizes that could cause heap exhaustion.
+    if file_size > MAX_FILE_SIZE {
+        return Err(Fat12Error::CorruptDirectoryEntry);
+    }
+
     if file_meta.first_cluster < FAT12_MIN_DATA_CLUSTER {
         return Err(Fat12Error::CorruptDirectoryEntry);
     }
@@ -411,8 +470,9 @@ fn read_file_from_entry(file_meta: FileEntryMeta, fat: &[u8]) -> Result<Vec<u8>,
     let mut content = Vec::with_capacity(file_size);
     let mut current_cluster = file_meta.first_cluster;
 
-    // FAT12 cluster namespace is 12-bit (0x000..0xFFF); this bitmap detects cycles.
-    let mut visited = [false; FAT12_MAX_CLUSTER_ID];
+    // FAT12 cluster namespace is 12-bit (0x000..0xFFF); this bitset detects cycles
+    // with a fixed 512-byte stack footprint instead of 4 KiB for bool flags.
+    let mut visited = [0u64; FAT12_MAX_CLUSTER_ID / 64];
 
     while content.len() < file_size {
         let cluster_index = current_cluster as usize;
@@ -420,11 +480,14 @@ fn read_file_from_entry(file_meta: FileEntryMeta, fat: &[u8]) -> Result<Vec<u8>,
             return Err(Fat12Error::CorruptFatChain);
         }
 
+        let visited_word = cluster_index / 64;
+        let visited_mask = 1u64 << (cluster_index % 64);
+
         // Loop in FAT chain indicates corrupted allocation metadata.
-        if visited[cluster_index] {
+        if visited[visited_word] & visited_mask != 0 {
             return Err(Fat12Error::CorruptFatChain);
         }
-        visited[cluster_index] = true;
+        visited[visited_word] |= visited_mask;
 
         // FAT12 on this media profile is 1 sector per cluster.
         let cluster_lba = cluster_to_lba(current_cluster)?;
@@ -443,7 +506,7 @@ fn read_file_from_entry(file_meta: FileEntryMeta, fat: &[u8]) -> Result<Vec<u8>,
         // Reject invalid data-chain targets before following them.
         let next_cluster = fat12_next_cluster(fat, current_cluster)?;
 
-        if next_cluster == 0
+        if next_cluster <= 1
             || next_cluster == FAT12_BAD_CLUSTER
             || (0x0FF0..=0x0FF6).contains(&next_cluster)
         {
@@ -487,6 +550,8 @@ pub fn read_file(file_name_8_3: &str) -> Result<Vec<u8>, Fat12Error> {
 /// Parse all visible root-directory entries and call `on_entry` for each one.
 ///
 /// Returns `(file_count, total_size)` for printed summary output.
+/// The summary counts/sums only regular files; directory entries are still
+/// forwarded to `on_entry` so callers can render complete listings.
 pub fn parse_root_directory<F>(buffer: &[u8], mut on_entry: F) -> (u32, u32)
 where
     F: FnMut(RootDirectoryRecord),
@@ -494,30 +559,22 @@ where
     let mut file_count: u32 = 0;
     let mut total_size: u32 = 0;
 
-    // Parse at most the FAT12 root table size and never beyond provided bytes.
-    let entry_count = core::cmp::min(ROOT_DIRECTORY_ENTRIES, buffer.len() / DIRECTORY_ENTRY_SIZE);
+    for_each_active_root_entry(buffer, |entry| {
+        // Preserve full listing behavior for callers, then compute summary
+        // metrics only for regular files to keep "N File(s)" semantically exact.
+        let is_directory = (entry.attributes() & ATTR_DIRECTORY) != 0;
+        let record = entry.parse_record();
 
-    for entry_idx in 0..entry_count {
-        let start = entry_idx * DIRECTORY_ENTRY_SIZE;
-        // Copy one raw slot into fixed local buffer for deterministic decode.
-        let mut bytes = [0u8; DIRECTORY_ENTRY_SIZE];
-        bytes.copy_from_slice(&buffer[start..start + DIRECTORY_ENTRY_SIZE]);
+        // Delegate record handling to caller (printing, collecting, etc.).
+        on_entry(record);
 
-        let entry = RawRootDirectoryEntry { bytes };
-
-        match entry.state() {
-            EntryState::End => break,
-            EntryState::Skip => continue,
-            EntryState::Active => {
-                let record = entry.parse_record();
-                // Delegate record handling to caller (printing, collecting, etc.).
-                on_entry(record);
-
-                file_count += 1;
-                total_size += record.file_size;
-            }
+        if !is_directory {
+            file_count += 1;
+            total_size += record.file_size;
         }
-    }
+
+        ControlFlow::Continue(())
+    });
 
     (file_count, total_size)
 }

@@ -13,7 +13,7 @@ echo "========================================"
 echo ""
 
 # Step 1: Build Rust kernel locally
-echo "[1/2] Building Rust kernel locally..."
+echo "[1/3] Building Rust kernel locally..."
 echo "--------------------------------------"
 cd kernel_rust
 
@@ -29,8 +29,14 @@ ls -la target/x86_64-unknown-none/debug/kernel.bin
 cd "$SCRIPT_DIR"
 echo ""
 
-# Step 2: Build bootloaders and create disk image in Docker
-echo "[2/2] Building bootloaders and disk image in Docker..."
+# Step 2: Build user-mode programs
+echo "[2/3] Building user-mode programs..."
+echo "------------------------------------"
+"$SCRIPT_DIR/build_user_programs.sh" debug
+echo ""
+
+# Step 3: Build bootloaders and create disk image in Docker
+echo "[3/3] Building bootloaders and disk image in Docker..."
 echo "-------------------------------------------------------"
 
 docker run --rm -v "$(dirname "$SCRIPT_DIR")":/src sqlpassion/kaos-buildenv /bin/sh -c '
@@ -61,6 +67,7 @@ fat_imgen -c -s boot/bootsector.bin -f kaos64_rust.img
 fat_imgen -m -f kaos64_rust.img -i kaosldr_16/kldr16.bin
 fat_imgen -m -f kaos64_rust.img -i kaosldr_64/kldr64.bin
 fat_imgen -m -f kaos64_rust.img -i kernel_rust/target/x86_64-unknown-none/debug/kernel.bin
+fat_imgen -m -f kaos64_rust.img -i user_programs/hello/hello.bin -n HELLO.BIN
 fat_imgen -m -f kaos64_rust.img -i SFile.txt
 fat_imgen -m -f kaos64_rust.img -i BigFile.txt
 

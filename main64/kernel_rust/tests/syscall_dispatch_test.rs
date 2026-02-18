@@ -13,10 +13,31 @@ use kaos_kernel::syscall::{self, is_valid_user_buffer, SysError, SyscallId};
 #[link_section = ".text.boot"]
 pub extern "C" fn KernelMain(_kernel_size: u64) -> ! {
     kaos_kernel::drivers::serial::init();
+    kaos_kernel::syscall::set_syscall_trace_enabled(false);
     test_main();
     loop {
         core::hint::spin_loop();
     }
+}
+
+/// Contract: syscall trace logging toggle can be changed at runtime.
+#[test_case]
+fn test_syscall_trace_toggle_roundtrip() {
+    let previous = syscall::syscall_trace_enabled();
+
+    syscall::set_syscall_trace_enabled(false);
+    assert!(
+        !syscall::syscall_trace_enabled(),
+        "trace toggle must report disabled after explicit disable"
+    );
+
+    syscall::set_syscall_trace_enabled(true);
+    assert!(
+        syscall::syscall_trace_enabled(),
+        "trace toggle must report enabled after explicit enable"
+    );
+
+    syscall::set_syscall_trace_enabled(previous);
 }
 
 #[panic_handler]
@@ -47,6 +68,47 @@ fn test_syscall_ids_are_stable() {
     assert!(
         SyscallId::ClearScreen as u64 == 7,
         "ClearScreen syscall id changed"
+    );
+}
+
+/// Contract: syscall number-to-name mapping for dispatcher logs stays stable.
+#[test_case]
+fn test_syscall_name_mapping_for_logging_is_stable() {
+    assert!(
+        syscall::syscall_name_for_number(SyscallId::Yield as u64) == "Yield",
+        "Yield mapping must stay stable for syscall trace output"
+    );
+    assert!(
+        syscall::syscall_name_for_number(SyscallId::WriteSerial as u64) == "WriteSerial",
+        "WriteSerial mapping must stay stable for syscall trace output"
+    );
+    assert!(
+        syscall::syscall_name_for_number(SyscallId::Exit as u64) == "Exit",
+        "Exit mapping must stay stable for syscall trace output"
+    );
+    assert!(
+        syscall::syscall_name_for_number(SyscallId::WriteConsole as u64) == "WriteConsole",
+        "WriteConsole mapping must stay stable for syscall trace output"
+    );
+    assert!(
+        syscall::syscall_name_for_number(SyscallId::GetChar as u64) == "GetChar",
+        "GetChar mapping must stay stable for syscall trace output"
+    );
+    assert!(
+        syscall::syscall_name_for_number(SyscallId::GetCursor as u64) == "GetCursor",
+        "GetCursor mapping must stay stable for syscall trace output"
+    );
+    assert!(
+        syscall::syscall_name_for_number(SyscallId::SetCursor as u64) == "SetCursor",
+        "SetCursor mapping must stay stable for syscall trace output"
+    );
+    assert!(
+        syscall::syscall_name_for_number(SyscallId::ClearScreen as u64) == "ClearScreen",
+        "ClearScreen mapping must stay stable for syscall trace output"
+    );
+    assert!(
+        syscall::syscall_name_for_number(0xDEAD) == "Unknown",
+        "unknown syscall mapping must stay stable for syscall trace output"
     );
 }
 

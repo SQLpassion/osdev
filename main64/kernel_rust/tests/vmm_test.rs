@@ -410,6 +410,74 @@ fn test_destroy_user_address_space_does_not_release_code_leaf_frame() {
     });
 }
 
+/// Contract: destroy user address space with owned-code policy releases code leaf frame.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "destroy user address space with owned-code policy releases code leaf frame".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_destroy_user_address_space_with_options_releases_code_leaf_frame() {
+    const TEST_CODE_VA: u64 = vmm::USER_CODE_BASE;
+
+    let user_cr3 = vmm::clone_kernel_pml4_for_user();
+    let code_leaf = pmm::with_pmm(|mgr| mgr.alloc_frame().expect("code frame allocation failed"));
+
+    vmm::with_address_space(user_cr3, || {
+        vmm::map_user_page(TEST_CODE_VA, code_leaf.pfn, false)
+            .expect("test code VA should map in cloned address space");
+    });
+
+    vmm::destroy_user_address_space_with_options(user_cr3, true);
+
+    pmm::with_pmm(|mgr| {
+        assert!(
+            !mgr.release_pfn(code_leaf.pfn),
+            "owned-code policy must release code-leaf PFN during address-space destroy"
+        );
+    });
+}
+
+/// Contract: destroy user address space with page counts tears down only mapped code/stack pages.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "destroy user address space with page counts tears down only mapped code/stack pages".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_destroy_user_address_space_with_page_counts_releases_mapped_code_and_stack_leaf_frames() {
+    let code_va = vmm::USER_CODE_BASE;
+    let stack_va = vmm::USER_STACK_TOP - 4096;
+
+    let user_cr3 = vmm::clone_kernel_pml4_for_user();
+    let code_leaf = pmm::with_pmm(|mgr| mgr.alloc_frame().expect("code frame allocation failed"));
+    let stack_leaf = pmm::with_pmm(|mgr| mgr.alloc_frame().expect("stack frame allocation failed"));
+
+    vmm::with_address_space(user_cr3, || {
+        vmm::map_user_page(code_va, code_leaf.pfn, false)
+            .expect("code page should map in cloned address space");
+        vmm::map_user_page(stack_va, stack_leaf.pfn, true)
+            .expect("stack page should map in cloned address space");
+    });
+
+    // Exactly one mapped code page at USER_CODE_BASE and one mapped stack page
+    // at USER_STACK_TOP-4KiB should be torn down.
+    vmm::destroy_user_address_space_with_page_counts(user_cr3, true, 1, 1);
+
+    pmm::with_pmm(|mgr| {
+        assert!(
+            !mgr.release_pfn(code_leaf.pfn),
+            "count-based destroy must release mapped code leaf PFN"
+        );
+        assert!(
+            !mgr.release_pfn(stack_leaf.pfn),
+            "count-based destroy must release mapped stack leaf PFN"
+        );
+        assert!(
+            !mgr.release_pfn(user_cr3 / pmm::PAGE_SIZE),
+            "count-based destroy must release user CR3 root PFN"
+        );
+    });
+}
+
 /// Contract: map user page accepts code and stack regions.
 /// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
 /// When: The exact operation sequence in this function is executed against that state.
@@ -469,4 +537,178 @@ fn test_map_user_page_rejects_guard_and_non_user_regions() {
     );
 
     pmm::with_pmm(|mgr| assert!(mgr.release_pfn(frame.pfn)));
+}
+
+/// Contract: map user page sets no execute bit on stack page.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "map user page sets no execute bit on stack page".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_map_user_page_sets_no_execute_bit_on_stack_page() {
+    // Stack page one slot below the top of the user stack region.
+    let stack_va = vmm::USER_STACK_TOP - 4096;
+    vmm::unmap_virtual_address(stack_va);
+
+    let frame = pmm::with_pmm(|mgr| mgr.alloc_frame().expect("stack frame alloc failed"));
+    vmm::map_user_page(stack_va, frame.pfn, true)
+        .expect("stack page should map successfully");
+
+    // Stack pages must be non-executable to prevent code injection via stack overflows.
+    // EFER.NXE is activated in kaosldr_16/longmode.asm; bit 63 in the PTE is only
+    // effective after that MSR write.
+    let nx = vmm::debug_no_execute_flag_for_va(stack_va)
+        .expect("mapped stack VA must have a present leaf PTE");
+    assert!(nx, "stack leaf PTE must have No-Execute bit set");
+
+    vmm::unmap_virtual_address(stack_va);
+}
+
+/// Contract: map user page clears no execute bit on code page.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "map user page clears no execute bit on code page".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_map_user_page_clears_no_execute_bit_on_code_page() {
+    // Code page at the start of the user executable window.
+    let code_va = vmm::USER_CODE_BASE;
+    vmm::unmap_virtual_address(code_va);
+
+    let frame = pmm::with_pmm(|mgr| mgr.alloc_frame().expect("code frame alloc failed"));
+
+    // Step 1: initial writable mapping (mirrors what the loader does while copying bytes).
+    vmm::map_user_page(code_va, frame.pfn, true)
+        .expect("code page writable mapping should succeed");
+
+    let nx_writable = vmm::debug_no_execute_flag_for_va(code_va)
+        .expect("mapped code VA must have a present leaf PTE after writable map");
+    assert!(!nx_writable, "code leaf PTE must not have No-Execute bit after writable map");
+
+    // Step 2: permission-update path — same PFN, read-only (mirrors the loader's second pass).
+    vmm::map_user_page(code_va, frame.pfn, false)
+        .expect("code page permission downgrade to read-only should succeed");
+
+    let nx_readonly = vmm::debug_no_execute_flag_for_va(code_va)
+        .expect("mapped code VA must have a present leaf PTE after read-only remap");
+    assert!(!nx_readonly, "code leaf PTE must not have No-Execute bit after read-only remap");
+
+    vmm::unmap_virtual_address(code_va);
+}
+
+/// Contract: fault mapped stack page has no execute bit set.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "fault mapped stack page has no execute bit set".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_fault_mapped_stack_page_has_no_execute_bit_set() {
+    // Stack page demand-mapped via the page-fault handler path.
+    let stack_va = vmm::USER_STACK_TOP - 8192;
+    vmm::unmap_virtual_address(stack_va);
+
+    // Simulate a non-present user-mode stack fault (U=1, P=0 → error_code = 0x4).
+    vmm::try_handle_page_fault(stack_va, 0x4)
+        .expect("user stack non-present fault should be demand-mapped");
+
+    // The demand-paging path must apply NX to stack pages to prevent injection attacks.
+    let nx = vmm::debug_no_execute_flag_for_va(stack_va)
+        .expect("demand-mapped stack VA must have a present leaf PTE");
+    assert!(nx, "demand-mapped stack leaf PTE must have No-Execute bit set");
+
+    vmm::unmap_virtual_address(stack_va);
+}
+
+/// Contract: fault mapped code page has no execute bit clear.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "fault mapped code page has no execute bit clear".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_fault_mapped_code_page_has_no_execute_bit_clear() {
+    // Code page demand-mapped via the page-fault handler path.
+    let code_va = vmm::USER_CODE_BASE + 0x1000;
+    vmm::unmap_virtual_address(code_va);
+
+    // Simulate a non-present user-mode code fault (U=1, P=0 → error_code = 0x4).
+    vmm::try_handle_page_fault(code_va, 0x4)
+        .expect("user code non-present fault should be demand-mapped");
+
+    // Code pages must remain executable: No-Execute bit must NOT be set.
+    let nx = vmm::debug_no_execute_flag_for_va(code_va)
+        .expect("demand-mapped code VA must have a present leaf PTE");
+    assert!(!nx, "demand-mapped code leaf PTE must not have No-Execute bit set");
+
+    vmm::unmap_virtual_address(code_va);
+}
+
+/// Allocates PMM frames until exhaustion and stores acquired PFNs into `held_pfns`.
+///
+/// Returns number of held PFNs. Panics if `held_pfns` is too small to observe OOM.
+fn exhaust_pmm_frames(held_pfns: &mut [u64]) -> usize {
+    let mut held_count = 0usize;
+
+    pmm::with_pmm(|mgr| {
+        // Step 1: Drain PMM by repeatedly allocating frames until `alloc_frame` returns None.
+        while held_count < held_pfns.len() {
+            let Some(frame) = mgr.alloc_frame() else {
+                return;
+            };
+            held_pfns[held_count] = frame.pfn;
+            held_count += 1;
+        }
+
+        // Step 2: If the buffer filled up before OOM, fail loudly to keep the test deterministic.
+        if mgr.alloc_frame().is_some() {
+            panic!("OOM test buffer too small; increase held_pfns capacity");
+        }
+    });
+
+    held_count
+}
+
+/// Releases a PFN slice previously returned by `exhaust_pmm_frames`.
+fn release_held_pfns(held_pfns: &[u64]) {
+    pmm::with_pmm(|mgr| {
+        // Restore all held frames so following tests (or cleanup paths) stay unaffected.
+        for &pfn in held_pfns {
+            assert!(mgr.release_pfn(pfn), "failed to release held PFN 0x{:x}", pfn);
+        }
+    });
+}
+
+/// Contract: map user page propagates out of memory from page table path setup.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "map user page propagates out of memory from page table path setup".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_aaa_map_user_page_propagates_out_of_memory_from_path_setup() {
+    const MAX_HELD_PFNS: usize = 131_072;
+
+    // Use a fresh user address space to ensure USER_CODE path tables are not pre-created.
+    let user_cr3 = vmm::clone_kernel_pml4_for_user();
+
+    vmm::with_address_space(user_cr3, || {
+        let target_va = vmm::USER_CODE_BASE;
+        vmm::unmap_virtual_address(target_va);
+
+        // Step 1: Exhaust PMM so intermediate table allocation inside map_user_page must fail.
+        let mut held_pfns = [0u64; MAX_HELD_PFNS];
+        let held_count = exhaust_pmm_frames(&mut held_pfns);
+
+        // Step 2: Mapping must return OutOfMemory (no panic, no partial rollback breakage).
+        let err = vmm::map_user_page(target_va, 0x1234, true)
+            .expect_err("map_user_page should propagate OOM from page-table path allocation");
+        assert!(
+            matches!(err, vmm::MapError::OutOfMemory { virtual_address } if virtual_address == target_va),
+            "expected MapError::OutOfMemory for code VA path setup"
+        );
+
+        // Step 3: Restore PMM state inside this temporary address space.
+        release_held_pfns(&held_pfns[..held_count]);
+    });
+
+    // Release the cloned PML4 root frame.
+    vmm::destroy_user_address_space(user_cr3);
 }

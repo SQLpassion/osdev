@@ -15,6 +15,7 @@ pub mod drivers;
 pub mod io;
 pub mod logging;
 pub mod memory;
+pub mod process;
 pub mod scheduler;
 pub mod sync;
 pub mod syscall;
