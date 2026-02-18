@@ -270,7 +270,7 @@ fn read_fat_from_disk() -> Result<Vec<u8>, Fat12Error> {
 ///
 /// Rules enforced:
 /// - base name length: 1..=8
-/// - extension length: 0..=3
+/// - extension length: 1..=3 when `.` is present
 /// - at most one `.` separator
 /// - character set restricted to ASCII alnum plus `_` and `-`
 /// - output uppercased and space-padded
@@ -281,6 +281,7 @@ pub fn normalize_8_3_name(file_name_8_3: &str) -> Result<[u8; 11], Fat12Error> {
         return Err(Fat12Error::InvalidFileName);
     }
 
+    // Step 1: Split optional `base.ext` token and reject ambiguous separators.
     // FAT short names allow at most one '.' separator between base and extension.
     let mut parts = raw_name.split('.');
     let base = parts.next().ok_or(Fat12Error::InvalidFileName)?;
@@ -298,7 +299,14 @@ pub fn normalize_8_3_name(file_name_8_3: &str) -> Result<[u8; 11], Fat12Error> {
         return Err(Fat12Error::InvalidFileName);
     }
 
+    // Step 2: Validate extension only when caller provided a separator.
+    // A trailing dot (e.g. "KERNEL.") is rejected instead of being silently
+    // normalized to "KERNEL".
     if let Some(ext) = extension {
+        if ext.is_empty() {
+            return Err(Fat12Error::InvalidFileName);
+        }
+
         if ext.len() > 3 || ext.bytes().any(|b| !is_valid_short_name_char(b)) {
             return Err(Fat12Error::InvalidFileName);
         }
@@ -542,6 +550,8 @@ pub fn read_file(file_name_8_3: &str) -> Result<Vec<u8>, Fat12Error> {
 /// Parse all visible root-directory entries and call `on_entry` for each one.
 ///
 /// Returns `(file_count, total_size)` for printed summary output.
+/// The summary counts/sums only regular files; directory entries are still
+/// forwarded to `on_entry` so callers can render complete listings.
 pub fn parse_root_directory<F>(buffer: &[u8], mut on_entry: F) -> (u32, u32)
 where
     F: FnMut(RootDirectoryRecord),
@@ -550,13 +560,19 @@ where
     let mut total_size: u32 = 0;
 
     for_each_active_root_entry(buffer, |entry| {
+        // Preserve full listing behavior for callers, then compute summary
+        // metrics only for regular files to keep "N File(s)" semantically exact.
+        let is_directory = (entry.attributes() & ATTR_DIRECTORY) != 0;
         let record = entry.parse_record();
 
         // Delegate record handling to caller (printing, collecting, etc.).
         on_entry(record);
 
-        file_count += 1;
-        total_size += record.file_size;
+        if !is_directory {
+            file_count += 1;
+            total_size += record.file_size;
+        }
+
         ControlFlow::Continue(())
     });
 

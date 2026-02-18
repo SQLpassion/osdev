@@ -174,6 +174,34 @@ fn test_parser_stops_on_end_marker() {
     assert!(total_size == 10, "size sum must stop at end marker");
 }
 
+/// Contract: parse_root_directory summary counts only regular files, not directories.
+#[test_case]
+fn test_parser_summary_excludes_directories_from_file_count() {
+    let mut root = [0u8; ROOT_DIR_BYTES];
+
+    write_entry(&mut root, 0, b"SUBDIR  ", b"   ", 0x10, 5, 0);
+    write_entry(&mut root, 1, b"README  ", b"TXT", 0x20, 7, 42);
+    root[2 * ENTRY_SIZE] = 0x00;
+
+    let mut callback_count = 0usize;
+    let (file_count, total_size) = parse_root_directory(&root, |_| {
+        callback_count += 1;
+    });
+
+    assert!(
+        callback_count == 2,
+        "callback must still receive both directory and file entries"
+    );
+    assert!(
+        file_count == 1,
+        "summary file count must exclude directory entries"
+    );
+    assert!(
+        total_size == 42,
+        "summary byte count must include only regular files"
+    );
+}
+
 /// Contract: parser formats 8.3 names as lowercase `name.ext`.
 #[test_case]
 fn test_parser_formats_short_name_lowercase() {
@@ -230,6 +258,16 @@ fn test_normalize_8_3_name_returns_expected_short_name() {
     assert!(
         normalized == *b"README  TXT",
         "normalized FAT short name must be uppercase and space-padded"
+    );
+}
+
+/// Contract: normalize_8_3_name rejects trailing dot tokens (`name.`).
+#[test_case]
+fn test_normalize_8_3_name_rejects_trailing_dot() {
+    let result = normalize_8_3_name("kernel.");
+    assert!(
+        matches!(result, Err(Fat12Error::InvalidFileName)),
+        "trailing dot must be rejected as invalid FAT short name"
     );
 }
 
