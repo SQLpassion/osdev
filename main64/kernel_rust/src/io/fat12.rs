@@ -341,8 +341,9 @@ fn is_valid_short_name_char(b: u8) -> bool {
 /// - `Ok(FileEntryMeta)` — entry found; caller can inspect `attributes` to
 ///   distinguish regular files from directories.
 /// - `Err(Fat12Error::NotFound)` — no active entry with a matching short name.
-/// - `Err(Fat12Error::CorruptDirectoryEntry)` — a matching entry was found but
-///   its metadata is structurally invalid (e.g. start cluster in reserved range).
+///
+/// Structural metadata validation (e.g. reserved start-cluster checks) is
+/// performed later by `read_file_from_entry()`.
 fn find_file_in_root_directory(
     root_directory: &[u8],
     normalized_name: &[u8; 11],
