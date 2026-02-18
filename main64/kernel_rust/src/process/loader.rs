@@ -150,9 +150,9 @@ fn try_map_program_image(user_cr3: u64, image: &[u8], state: &mut MapState) -> E
     state.code_pfns = allocated_code_pfns;
     state.stack_pfn = Some(allocated_stack_pfn);
 
-    // Step 3: Activate target CR3 and perform map/copy/remap sequence.
+    // Step 2: Activate target CR3 and perform map/copy/remap sequence.
     vmm::with_address_space(user_cr3, || -> ExecResult<()> {
-        // Step 3a: Map all code pages writable so copy + tail-zero is valid.
+        // Step 2a: Map all code pages writable so copy + tail-zero is valid.
         for (idx, pfn) in state.code_pfns.iter().copied().enumerate() {
             let page_va = USER_PROGRAM_ENTRY_RIP + idx as u64 * pmm::PAGE_SIZE;
             vmm::map_user_page(page_va, pfn, true).map_err(|e| {
@@ -170,7 +170,7 @@ fn try_map_program_image(user_cr3: u64, image: &[u8], state: &mut MapState) -> E
             state.mapped_code_pages += 1;
         }
 
-        // Step 3b: Map writable bootstrap stack page for initial ring-3 entry.
+        // Step 2b: Map writable bootstrap stack page for initial ring-3 entry.
         vmm::map_user_page(USER_STACK_BOOTSTRAP_PAGE_VA, allocated_stack_pfn, true).map_err(|e| {
             crate::logging::logln(
                 "loader",
@@ -185,7 +185,7 @@ fn try_map_program_image(user_cr3: u64, image: &[u8], state: &mut MapState) -> E
         // Mark stack as mapped so rollback delegates release to VMM teardown.
         state.stack_mapped = true;
 
-        // Step 3c: Zero the bootstrap stack page before first ring-3 use.
+        // Step 2c: Zero the bootstrap stack page before first ring-3 use.
         // This prevents user tasks from observing stale data from recycled
         // physical frames previously used by kernel allocations.
         unsafe {
@@ -195,7 +195,7 @@ fn try_map_program_image(user_cr3: u64, image: &[u8], state: &mut MapState) -> E
             core::ptr::write_bytes(USER_STACK_BOOTSTRAP_PAGE_VA as *mut u8, 0, PAGE_SIZE_BYTES);
         }
 
-        // Step 3d: Copy image bytes and clear the remainder of the last code page.
+        // Step 2d: Copy image bytes and clear the remainder of the last code page.
         debug_assert!(
             code_page_count > 0,
             "validated image must allocate at least one code page"
@@ -226,7 +226,7 @@ fn try_map_program_image(user_cr3: u64, image: &[u8], state: &mut MapState) -> E
             }
         }
 
-        // Step 3e: Tighten code pages to read-only after copy.
+        // Step 2e: Tighten code pages to read-only after copy.
         for (idx, pfn) in state.code_pfns.iter().copied().enumerate() {
             let page_va = USER_PROGRAM_ENTRY_RIP + idx as u64 * pmm::PAGE_SIZE;
             vmm::map_user_page(page_va, pfn, false).map_err(|e| {
@@ -244,7 +244,7 @@ fn try_map_program_image(user_cr3: u64, image: &[u8], state: &mut MapState) -> E
         Ok(())
     })?;
 
-    // Step 4: Return finalized process descriptor for scheduler spawn step.
+    // Step 3: Return finalized process descriptor for scheduler spawn step.
     Ok(LoadedProgram::new(
         user_cr3,
         USER_PROGRAM_ENTRY_RIP,
@@ -314,9 +314,7 @@ fn alloc_program_frames(code_page_count: usize) -> ExecResult<(Vec<u64>, u64)> {
             let pfn = match mgr.alloc_frame().map(|frame| frame.pfn) {
                 Some(pfn) => pfn,
                 None => {
-                    for allocated_pfn in code_pfns.iter().copied() {
-                        let _ = mgr.release_pfn(allocated_pfn);
-                    }
+                    release_allocated_code_pfns(mgr, &code_pfns);
                     return None;
                 }
             };
@@ -325,9 +323,7 @@ fn alloc_program_frames(code_page_count: usize) -> ExecResult<(Vec<u64>, u64)> {
             // pages there would corrupt low memory and be a security vulnerability.
             debug_assert!(pfn != 0, "PMM returned PFN 0 (reserved low memory)");
             if pfn == 0 {
-                for allocated_pfn in code_pfns.iter().copied() {
-                    let _ = mgr.release_pfn(allocated_pfn);
-                }
+                release_allocated_code_pfns(mgr, &code_pfns);
                 return None;
             }
 
@@ -338,9 +334,7 @@ fn alloc_program_frames(code_page_count: usize) -> ExecResult<(Vec<u64>, u64)> {
         let stack_pfn = match mgr.alloc_frame().map(|frame| frame.pfn) {
             Some(pfn) => pfn,
             None => {
-                for allocated_pfn in code_pfns.iter().copied() {
-                    let _ = mgr.release_pfn(allocated_pfn);
-                }
+                release_allocated_code_pfns(mgr, &code_pfns);
                 return None;
             }
         };
@@ -350,15 +344,19 @@ fn alloc_program_frames(code_page_count: usize) -> ExecResult<(Vec<u64>, u64)> {
             "PMM returned PFN 0 (reserved low memory) for stack frame"
         );
         if stack_pfn == 0 {
-            for allocated_pfn in code_pfns.iter().copied() {
-                let _ = mgr.release_pfn(allocated_pfn);
-            }
+            release_allocated_code_pfns(mgr, &code_pfns);
             return None;
         }
 
         Some((code_pfns, stack_pfn))
     })
     .ok_or(ExecError::MappingFailed)
+}
+
+fn release_allocated_code_pfns(mgr: &mut pmm::PhysicalMemoryManager, code_pfns: &[u64]) {
+    for allocated_pfn in code_pfns.iter().copied() {
+        let _ = mgr.release_pfn(allocated_pfn);
+    }
 }
 
 /// Best-effort rollback for partially created user mappings.
