@@ -314,10 +314,7 @@ fn alloc_program_frames(code_page_count: usize) -> ExecResult<(Vec<u64>, u64)> {
             // PFN 0 maps to physical address 0x0 (IVT/BIOS Data Area). Mapping user
             // pages there would corrupt low memory and be a security vulnerability.
             // Treat this as a hard PMM invariant violation in all build profiles.
-            debug_assert!(pfn != 0, "PMM returned PFN 0 (reserved low memory)");
-            if pfn == 0 {
-                panic!("PMM returned PFN 0 (reserved low memory)");
-            }
+            assert!(pfn != 0, "PMM returned PFN 0 (reserved low memory)");
 
             code_pfns.push(pfn);
         }
@@ -331,14 +328,10 @@ fn alloc_program_frames(code_page_count: usize) -> ExecResult<(Vec<u64>, u64)> {
             }
         };
 
-        debug_assert!(
+        assert!(
             stack_pfn != 0,
             "PMM returned PFN 0 (reserved low memory) for stack frame"
         );
-        if stack_pfn == 0 {
-            // Same invariant as code PFNs: PFN 0 must never be handed out.
-            panic!("PMM returned PFN 0 (reserved low memory) for stack frame");
-        }
 
         Ok((code_pfns, stack_pfn))
     })
