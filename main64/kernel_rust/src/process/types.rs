@@ -58,7 +58,8 @@ pub enum ExecError {
 pub type ExecResult<T> = Result<T, ExecError>;
 
 /// Materialized process image ready to be passed to scheduler spawn logic.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use = "LoadedProgram owns a user address space (cr3) and must be consumed or explicitly handled"]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoadedProgram {
     /// Address-space root (physical PML4 address) for this process.
     pub cr3: u64,
