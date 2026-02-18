@@ -110,11 +110,8 @@ pub fn map_program_image_into_user_address_space(image: &[u8]) -> ExecResult<Loa
     );
 
     // Each process gets its own CR3 root cloned from the current kernel baseline.
+    // The clone helper panics on OOM and never returns 0.
     let user_cr3 = vmm::clone_kernel_pml4_for_user();
-
-    if user_cr3 == 0 {
-        return Err(ExecError::AddressSpaceCreateFailed);
-    }
 
     // Keep rollback-relevant ownership state in one place.
     let mut state = MapState {
