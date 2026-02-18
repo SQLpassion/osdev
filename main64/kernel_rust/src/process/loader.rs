@@ -163,55 +163,60 @@ pub fn map_program_image_into_user_address_space(image: &[u8]) -> ExecResult<Loa
             // release is handled by VMM teardown or needs explicit release.
             stack_mapped = true;
 
-            if code_page_count > 0 {
-                let mapped_code_bytes = code_page_count * PAGE_SIZE_BYTES;
+            // The length validator above rejects empty images, so there must be
+            // at least one code page to materialize here.
+            debug_assert!(
+                code_page_count > 0,
+                "validated image must allocate at least one code page"
+            );
 
-                // SAFETY:
-                // - Source slice `image` is valid for `image.len()` bytes.
-                // - Destination starts at `USER_PROGRAM_ENTRY_RIP` and remains writable
-                //   for at least `image.len()` bytes in current CR3.
-                // - Source and destination do not overlap (kernel image vs. user VA range).
+            let mapped_code_bytes = code_page_count * PAGE_SIZE_BYTES;
+
+            // SAFETY:
+            // - Source slice `image` is valid for `image.len()` bytes.
+            // - Destination starts at `USER_PROGRAM_ENTRY_RIP` and remains writable
+            //   for at least `image.len()` bytes in current CR3.
+            // - Source and destination do not overlap (kernel image vs. user VA range).
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    image.as_ptr(),
+                    USER_PROGRAM_ENTRY_RIP as *mut u8,
+                    image.len(),
+                );
+            }
+
+            // Zero only the tail beyond the image to clear stale frame content.
+            // The image bytes copied above already overwrite the leading portion,
+            // so zeroing those bytes again would be redundant work.
+            //
+            // SAFETY:
+            // - Code-page mappings above ensure `[USER_PROGRAM_ENTRY_RIP, +mapped_code_bytes)`
+            //   is writable in the currently active address space.
+            // - `image.len() <= mapped_code_bytes` is guaranteed by `page_count_for_len`.
+            let tail_len = mapped_code_bytes - image.len();
+            if tail_len > 0 {
                 unsafe {
-                    core::ptr::copy_nonoverlapping(
-                        image.as_ptr(),
-                        USER_PROGRAM_ENTRY_RIP as *mut u8,
-                        image.len(),
+                    core::ptr::write_bytes(
+                        (USER_PROGRAM_ENTRY_RIP as usize + image.len()) as *mut u8,
+                        0,
+                        tail_len,
                     );
                 }
+            }
 
-                // Zero only the tail beyond the image to clear stale frame content.
-                // The image bytes copied above already overwrite the leading portion,
-                // so zeroing those bytes again would be redundant work.
-                //
-                // SAFETY:
-                // - Code-page mappings above ensure `[USER_PROGRAM_ENTRY_RIP, +mapped_code_bytes)`
-                //   is writable in the currently active address space.
-                // - `image.len() <= mapped_code_bytes` is guaranteed by `page_count_for_len`.
-                let tail_len = mapped_code_bytes - image.len();
-                if tail_len > 0 {
-                    unsafe {
-                        core::ptr::write_bytes(
-                            (USER_PROGRAM_ENTRY_RIP as usize + image.len()) as *mut u8,
-                            0,
-                            tail_len,
-                        );
-                    }
-                }
-
-                // Phase 2: tighten permissions after copy (code should be read-only).
-                for (idx, pfn) in code_pfns.iter().copied().enumerate() {
-                    let page_va = USER_PROGRAM_ENTRY_RIP + idx as u64 * pmm::PAGE_SIZE;
-                    vmm::map_user_page(page_va, pfn, false).map_err(|e| {
-                        crate::logging::logln(
-                            "loader",
-                            format_args!(
-                                "LOADER: map_user_page(code page {}, va={:#x}, pfn={:#x}, writable=false) failed: {:?}",
-                                idx, page_va, pfn, e
-                            ),
-                        );
-                        ExecError::MappingFailed
-                    })?;
-                }
+            // Phase 2: tighten permissions after copy (code should be read-only).
+            for (idx, pfn) in code_pfns.iter().copied().enumerate() {
+                let page_va = USER_PROGRAM_ENTRY_RIP + idx as u64 * pmm::PAGE_SIZE;
+                vmm::map_user_page(page_va, pfn, false).map_err(|e| {
+                    crate::logging::logln(
+                        "loader",
+                        format_args!(
+                            "LOADER: map_user_page(code page {}, va={:#x}, pfn={:#x}, writable=false) failed: {:?}",
+                            idx, page_va, pfn, e
+                        ),
+                    );
+                    ExecError::MappingFailed
+                })?;
             }
 
             Ok(())
