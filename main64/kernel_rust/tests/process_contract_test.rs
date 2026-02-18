@@ -167,9 +167,9 @@ fn test_validate_program_image_len_enforces_upper_bound() {
     assert!(
         matches!(
             process::validate_program_image_len(0),
-            Err(process::ExecError::FileTooLarge)
+            Err(process::ExecError::EmptyImage)
         ),
-        "zero-length image must be rejected by loader size validator"
+        "zero-length image must be rejected as EmptyImage"
     );
     assert!(
         process::validate_program_image_len(1).is_ok(),
@@ -185,6 +185,24 @@ fn test_validate_program_image_len_enforces_upper_bound() {
             Err(process::ExecError::FileTooLarge)
         ),
         "oversized image must be rejected by loader size validator"
+    );
+}
+
+/// Contract: image-length validator distinguishes empty image and oversized image.
+#[test_case]
+fn test_validate_program_image_len_distinguishes_empty_and_oversized() {
+    let empty_err = process::validate_program_image_len(0)
+        .expect_err("zero-length image must be rejected");
+    assert!(
+        matches!(empty_err, process::ExecError::EmptyImage),
+        "empty image must map to ExecError::EmptyImage"
+    );
+
+    let oversized_err = process::validate_program_image_len(process::USER_PROGRAM_MAX_IMAGE_SIZE + 1)
+        .expect_err("oversized image must be rejected");
+    assert!(
+        matches!(oversized_err, process::ExecError::FileTooLarge),
+        "oversized image must map to ExecError::FileTooLarge"
     );
 }
 

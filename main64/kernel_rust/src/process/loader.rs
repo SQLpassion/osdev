@@ -248,7 +248,12 @@ pub fn map_program_image_into_user_address_space(image: &[u8]) -> ExecResult<Loa
 /// would overflow the fixed user code region.
 #[inline]
 pub const fn validate_program_image_len(image_len: usize) -> ExecResult<()> {
-    if image_len == 0 || !image_fits_user_code(image_len) {
+    // Reject a structurally empty image with a dedicated error so callers can
+    // surface a precise user-facing message.
+    if image_len == 0 {
+        Err(ExecError::EmptyImage)
+    } else if !image_fits_user_code(image_len) {
+        // Reject oversized images that would overflow the fixed USER_CODE area.
         Err(ExecError::FileTooLarge)
     } else {
         Ok(())

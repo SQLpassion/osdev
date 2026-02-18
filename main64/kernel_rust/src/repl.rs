@@ -308,7 +308,13 @@ fn execute_command(line: &str) {
                     scheduler::wait_for_task_exit(task_id);
                 }
                 Err(err) => with_screen(|screen| {
-                    writeln!(screen, "exec failed for '{}': {:?}", file_name, err).unwrap();
+                    writeln!(
+                        screen,
+                        "exec failed for '{}': {}",
+                        file_name,
+                        exec_error_message(err)
+                    )
+                    .unwrap();
                 }),
             },
             _ => with_screen(|screen| {
@@ -320,6 +326,20 @@ fn execute_command(line: &str) {
                 writeln!(screen, "Unknown command: {}", cmd).unwrap();
             });
         }
+    }
+}
+
+fn exec_error_message(err: process::ExecError) -> &'static str {
+    match err {
+        process::ExecError::InvalidName => "invalid file name (expected FAT12 8.3 format)",
+        process::ExecError::NotFound => "file not found",
+        process::ExecError::IsDirectory => "path points to a directory, not a program file",
+        process::ExecError::EmptyImage => "program image is empty",
+        process::ExecError::FileTooLarge => "program image exceeds user code size limit",
+        process::ExecError::AddressSpaceCreateFailed => "could not create user address space",
+        process::ExecError::MappingFailed => "failed to map program into user address space",
+        process::ExecError::SpawnFailed => "failed to start user task",
+        process::ExecError::Io => "I/O error while loading program",
     }
 }
 

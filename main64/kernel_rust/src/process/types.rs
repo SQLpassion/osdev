@@ -35,6 +35,9 @@ pub enum ExecError {
     /// Entry exists but is a directory rather than a regular executable file.
     IsDirectory,
 
+    /// Program image is empty and therefore has no executable payload.
+    EmptyImage,
+
     /// Program image does not fit inside the user executable window.
     FileTooLarge,
 
