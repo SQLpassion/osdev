@@ -44,6 +44,9 @@ pub enum ExecError {
     /// Creating a dedicated user address space failed.
     AddressSpaceCreateFailed,
 
+    /// Physical-frame allocation failed while preparing code/stack pages.
+    OutOfMemory,
+
     /// Mapping code/stack pages into user space failed.
     MappingFailed,
 

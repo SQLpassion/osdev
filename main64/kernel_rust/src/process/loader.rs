@@ -315,7 +315,7 @@ fn alloc_program_frames(code_page_count: usize) -> ExecResult<(Vec<u64>, u64)> {
                 Some(pfn) => pfn,
                 None => {
                     release_allocated_code_pfns(mgr, &code_pfns);
-                    return None;
+                    return Err(ExecError::OutOfMemory);
                 }
             };
 
@@ -324,7 +324,7 @@ fn alloc_program_frames(code_page_count: usize) -> ExecResult<(Vec<u64>, u64)> {
             debug_assert!(pfn != 0, "PMM returned PFN 0 (reserved low memory)");
             if pfn == 0 {
                 release_allocated_code_pfns(mgr, &code_pfns);
-                return None;
+                return Err(ExecError::MappingFailed);
             }
 
             code_pfns.push(pfn);
@@ -335,7 +335,7 @@ fn alloc_program_frames(code_page_count: usize) -> ExecResult<(Vec<u64>, u64)> {
             Some(pfn) => pfn,
             None => {
                 release_allocated_code_pfns(mgr, &code_pfns);
-                return None;
+                return Err(ExecError::OutOfMemory);
             }
         };
 
@@ -345,12 +345,11 @@ fn alloc_program_frames(code_page_count: usize) -> ExecResult<(Vec<u64>, u64)> {
         );
         if stack_pfn == 0 {
             release_allocated_code_pfns(mgr, &code_pfns);
-            return None;
+            return Err(ExecError::MappingFailed);
         }
 
-        Some((code_pfns, stack_pfn))
+        Ok((code_pfns, stack_pfn))
     })
-    .ok_or(ExecError::MappingFailed)
 }
 
 fn release_allocated_code_pfns(mgr: &mut pmm::PhysicalMemoryManager, code_pfns: &[u64]) {

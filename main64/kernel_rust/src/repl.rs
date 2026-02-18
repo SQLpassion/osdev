@@ -337,6 +337,7 @@ fn exec_error_message(err: process::ExecError) -> &'static str {
         process::ExecError::EmptyImage => "program image is empty",
         process::ExecError::FileTooLarge => "program image exceeds user code size limit",
         process::ExecError::AddressSpaceCreateFailed => "could not create user address space",
+        process::ExecError::OutOfMemory => "out of memory while allocating program pages",
         process::ExecError::MappingFailed => "failed to map program into user address space",
         process::ExecError::SpawnFailed => "failed to start user task",
         process::ExecError::Io => "I/O error while loading program",

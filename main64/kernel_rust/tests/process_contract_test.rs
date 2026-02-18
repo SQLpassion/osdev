@@ -124,6 +124,10 @@ fn test_exec_error_variant_distinction() {
         process::ExecError::Io == process::ExecError::Io,
         "same exec failure cause must compare equal"
     );
+    assert!(
+        process::ExecError::OutOfMemory != process::ExecError::MappingFailed,
+        "OOM must stay distinguishable from page-table mapping failures"
+    );
 }
 
 /// Contract: FAT12 loader returns the bundled user program and validates size bounds.
