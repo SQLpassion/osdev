@@ -240,6 +240,7 @@ fn try_map_program_image(user_cr3: u64, image: &[u8], state: &mut MapState) -> E
         USER_PROGRAM_ENTRY_RIP,
         USER_PROGRAM_INITIAL_RSP,
         image.len(),
+        code_page_count,
     ))
 }
 
@@ -412,7 +413,7 @@ fn spawn_loaded_program(loaded: LoadedProgram) -> ExecResult<usize> {
             vmm::destroy_user_address_space_with_page_counts(
                 loaded.cr3,
                 true,
-                page_count_for_len(loaded.image_len),
+                loaded.code_page_count,
                 1,
             );
             Err(ExecError::SpawnFailed)

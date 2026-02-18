@@ -14,6 +14,7 @@
 //! - `R10` -> `arg3`
 
 use core::slice;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::drivers::keyboard;
 use crate::drivers::screen::with_screen;
@@ -32,6 +33,20 @@ const MAX_SERIAL_WRITE_LEN: usize = 4096;
 /// Maximum number of bytes that can be written in a single WriteConsole syscall.
 /// Same DoS/fairness rationale as `MAX_SERIAL_WRITE_LEN`.
 const MAX_CONSOLE_WRITE_LEN: usize = 4096;
+
+/// Global switch for per-syscall trace logging (`[SYSCALL] ...` lines).
+static SYSCALL_TRACE_ENABLED: AtomicBool = AtomicBool::new(true);
+
+/// Enable/disable syscall trace logging.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn set_syscall_trace_enabled(enabled: bool) {
+    SYSCALL_TRACE_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+/// Returns whether syscall trace logging is currently enabled.
+pub fn syscall_trace_enabled() -> bool {
+    SYSCALL_TRACE_ENABLED.load(Ordering::Relaxed)
+}
 
 /// Returns the stable human-readable syscall name for a raw syscall number.
 ///
@@ -76,6 +91,7 @@ pub fn dispatch(syscall_nr: u64, arg0: u64, arg1: u64, arg2: u64, arg3: u64) -> 
 
     // Step 2: emit one serial trace line for every syscall dispatch.
     // This gives deterministic kernel-side visibility into syscall traffic.
+    let trace_enabled = syscall_trace_enabled();
     logging::logln_with_options(
         "syscall",
         format_args!(
@@ -88,8 +104,8 @@ pub fn dispatch(syscall_nr: u64, arg0: u64, arg1: u64, arg2: u64, arg3: u64) -> 
             arg3,
             result
         ),
-        true,
-        true,
+        trace_enabled,
+        trace_enabled,
     );
 
     result

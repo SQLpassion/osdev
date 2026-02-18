@@ -13,10 +13,31 @@ use kaos_kernel::syscall::{self, is_valid_user_buffer, SysError, SyscallId};
 #[link_section = ".text.boot"]
 pub extern "C" fn KernelMain(_kernel_size: u64) -> ! {
     kaos_kernel::drivers::serial::init();
+    kaos_kernel::syscall::set_syscall_trace_enabled(false);
     test_main();
     loop {
         core::hint::spin_loop();
     }
+}
+
+/// Contract: syscall trace logging toggle can be changed at runtime.
+#[test_case]
+fn test_syscall_trace_toggle_roundtrip() {
+    let previous = syscall::syscall_trace_enabled();
+
+    syscall::set_syscall_trace_enabled(false);
+    assert!(
+        !syscall::syscall_trace_enabled(),
+        "trace toggle must report disabled after explicit disable"
+    );
+
+    syscall::set_syscall_trace_enabled(true);
+    assert!(
+        syscall::syscall_trace_enabled(),
+        "trace toggle must report enabled after explicit enable"
+    );
+
+    syscall::set_syscall_trace_enabled(previous);
 }
 
 #[panic_handler]

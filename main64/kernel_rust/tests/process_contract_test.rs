@@ -94,6 +94,7 @@ fn test_loaded_program_descriptor_roundtrip() {
         process::USER_PROGRAM_ENTRY_RIP,
         process::USER_PROGRAM_INITIAL_RSP,
         4096,
+        1,
     );
 
     assert!(descriptor.cr3 == 0x1234_5000, "cr3 must be preserved");
@@ -106,6 +107,10 @@ fn test_loaded_program_descriptor_roundtrip() {
         "user rsp must be preserved"
     );
     assert!(descriptor.image_len == 4096, "image length must be preserved");
+    assert!(
+        descriptor.code_page_count == 1,
+        "code page count must be preserved"
+    );
 }
 
 /// Contract: ExecError equality remains discriminant-based and stable.
@@ -233,6 +238,10 @@ fn test_map_program_image_into_user_address_space_maps_copy_and_permissions() {
     } else {
         (loaded.image_len + pmm::PAGE_SIZE as usize - 1) / pmm::PAGE_SIZE as usize
     };
+    assert!(
+        loaded.code_page_count == code_page_count,
+        "loaded descriptor must preserve precomputed code page count"
+    );
 
     let mut code_pfns = Vec::with_capacity(code_page_count);
     let mut stack_pfn = 0u64;

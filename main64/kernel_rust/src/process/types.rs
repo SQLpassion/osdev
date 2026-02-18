@@ -71,16 +71,26 @@ pub struct LoadedProgram {
 
     /// Loaded executable image length in bytes.
     pub image_len: usize,
+
+    /// Number of mapped code pages backing `image_len`.
+    pub code_page_count: usize,
 }
 
 impl LoadedProgram {
     /// Creates a new loaded-program descriptor.
-    pub const fn new(cr3: u64, entry_rip: u64, user_rsp: u64, image_len: usize) -> Self {
+    pub const fn new(
+        cr3: u64,
+        entry_rip: u64,
+        user_rsp: u64,
+        image_len: usize,
+        code_page_count: usize,
+    ) -> Self {
         Self {
             cr3,
             entry_rip,
             user_rsp,
             image_len,
+            code_page_count,
         }
     }
 }
