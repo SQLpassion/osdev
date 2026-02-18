@@ -482,7 +482,7 @@ fn read_file_from_entry(file_meta: FileEntryMeta, fat: &[u8]) -> Result<Vec<u8>,
         // Reject invalid data-chain targets before following them.
         let next_cluster = fat12_next_cluster(fat, current_cluster)?;
 
-        if next_cluster == 0
+        if next_cluster <= 1
             || next_cluster == FAT12_BAD_CLUSTER
             || (0x0FF0..=0x0FF6).contains(&next_cluster)
         {
