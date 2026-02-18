@@ -15,6 +15,7 @@ use kaos_kernel::process;
 const ROOT_DIR_BYTES: usize = 224 * 32;
 const ENTRY_SIZE: usize = 32;
 const EXPECTED_SFILE_BYTES: &[u8] = include_bytes!("../../SFile.txt");
+const EXPECTED_HELLO_BIN_BYTES: &[u8] = include_bytes!("../../user_programs/hello/hello.bin");
 
 #[no_mangle]
 #[link_section = ".text.boot"]
@@ -210,4 +211,28 @@ fn test_read_file_hello_bin_present_and_within_user_image_limit() {
         actual.len() <= process::USER_PROGRAM_MAX_IMAGE_SIZE,
         "hello.bin size must fit configured user executable window"
     );
+}
+
+/// Contract: `read_file("hello.bin")` returns exact bytes from FAT12 image.
+#[test_case]
+fn test_read_file_hello_bin_returns_exact_bytes() {
+    kaos_kernel::drivers::ata::init();
+
+    let actual = read_file("hello.bin").expect("hello.bin must be readable from FAT12 image");
+    assert!(
+        actual.len() == EXPECTED_HELLO_BIN_BYTES.len(),
+        "read_file length mismatch: expected {} bytes, got {}",
+        EXPECTED_HELLO_BIN_BYTES.len(),
+        actual.len()
+    );
+
+    for idx in 0..EXPECTED_HELLO_BIN_BYTES.len() {
+        assert!(
+            actual[idx] == EXPECTED_HELLO_BIN_BYTES[idx],
+            "byte mismatch at offset {}: expected 0x{:02x}, got 0x{:02x}",
+            idx,
+            EXPECTED_HELLO_BIN_BYTES[idx],
+            actual[idx]
+        );
+    }
 }

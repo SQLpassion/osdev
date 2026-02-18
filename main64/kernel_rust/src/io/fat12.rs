@@ -440,8 +440,9 @@ fn read_file_from_entry(file_meta: FileEntryMeta, fat: &[u8]) -> Result<Vec<u8>,
     let mut content = Vec::with_capacity(file_size);
     let mut current_cluster = file_meta.first_cluster;
 
-    // FAT12 cluster namespace is 12-bit (0x000..0xFFF); this bitmap detects cycles.
-    let mut visited = [false; FAT12_MAX_CLUSTER_ID];
+    // FAT12 cluster namespace is 12-bit (0x000..0xFFF); this bitset detects cycles
+    // with a fixed 512-byte stack footprint instead of 4 KiB for bool flags.
+    let mut visited = [0u64; FAT12_MAX_CLUSTER_ID / 64];
 
     while content.len() < file_size {
         let cluster_index = current_cluster as usize;
@@ -449,11 +450,14 @@ fn read_file_from_entry(file_meta: FileEntryMeta, fat: &[u8]) -> Result<Vec<u8>,
             return Err(Fat12Error::CorruptFatChain);
         }
 
+        let visited_word = cluster_index / 64;
+        let visited_mask = 1u64 << (cluster_index % 64);
+
         // Loop in FAT chain indicates corrupted allocation metadata.
-        if visited[cluster_index] {
+        if visited[visited_word] & visited_mask != 0 {
             return Err(Fat12Error::CorruptFatChain);
         }
-        visited[cluster_index] = true;
+        visited[visited_word] |= visited_mask;
 
         // FAT12 on this media profile is 1 sector per cluster.
         let cluster_lba = cluster_to_lba(current_cluster)?;
