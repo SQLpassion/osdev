@@ -300,6 +300,58 @@ fn test_map_program_image_into_user_address_space_maps_copy_and_permissions() {
     });
 }
 
+/// Contract: loader zero-initializes bootstrap user stack page.
+#[test_case]
+fn test_map_program_image_into_user_address_space_zeroes_bootstrap_stack_page() {
+    let image = process::load_program_image("hello.bin")
+        .expect("hello.bin must be loadable before stack-zeroing check");
+    let loaded = process::map_program_image_into_user_address_space(&image)
+        .expect("valid user image must map into fresh user CR3");
+
+    let mut code_pfns = Vec::with_capacity(loaded.code_page_count);
+    let mut stack_pfn = 0u64;
+    vmm::with_address_space(loaded.cr3, || {
+        // Collect mapped code PFNs for explicit post-teardown release.
+        for idx in 0..loaded.code_page_count {
+            let code_page_va = process::USER_PROGRAM_ENTRY_RIP + idx as u64 * pmm::PAGE_SIZE;
+            let mapped_pfn = vmm::debug_mapped_pfn_for_va(code_page_va)
+                .expect("mapped code page must expose leaf PFN");
+            code_pfns.push(mapped_pfn);
+        }
+
+        let stack_page_va = vmm::USER_STACK_TOP - pmm::PAGE_SIZE;
+        stack_pfn = vmm::debug_mapped_pfn_for_va(stack_page_va)
+            .expect("mapped bootstrap stack page must expose leaf PFN");
+
+        // SAFETY:
+        // - Loader mapped one writable bootstrap stack page at `stack_page_va`.
+        // - Reading one full page is valid before any user code has executed.
+        unsafe {
+            let stack_base = stack_page_va as *const u8;
+            for idx in 0..pmm::PAGE_SIZE as usize {
+                let actual = core::ptr::read_volatile(stack_base.add(idx));
+                assert!(
+                    actual == 0,
+                    "bootstrap stack byte at offset {} must be zero, got 0x{:02x}",
+                    idx,
+                    actual
+                );
+            }
+        }
+    });
+
+    vmm::destroy_user_address_space(loaded.cr3);
+
+    // Release code PFNs explicitly because current VMM teardown keeps USER_CODE
+    // leaf PFNs reserved to support temporary kernel-text alias mappings.
+    pmm::with_pmm(|mgr| {
+        for pfn in code_pfns {
+            let _ = mgr.release_pfn(pfn);
+        }
+        let _ = mgr.release_pfn(stack_pfn);
+    });
+}
+
 extern "C" fn parked_kernel_task() -> ! {
     loop {
         core::hint::spin_loop();

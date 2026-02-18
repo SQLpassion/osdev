@@ -185,7 +185,17 @@ fn try_map_program_image(user_cr3: u64, image: &[u8], state: &mut MapState) -> E
         // Mark stack as mapped so rollback delegates release to VMM teardown.
         state.stack_mapped = true;
 
-        // Step 3c: Copy image bytes and clear the remainder of the last code page.
+        // Step 3c: Zero the bootstrap stack page before first ring-3 use.
+        // This prevents user tasks from observing stale data from recycled
+        // physical frames previously used by kernel allocations.
+        unsafe {
+            // SAFETY:
+            // - `USER_STACK_BOOTSTRAP_PAGE_VA` is mapped writable in current CR3.
+            // - Exactly one page (`PAGE_SIZE_BYTES`) is mapped for bootstrap stack.
+            core::ptr::write_bytes(USER_STACK_BOOTSTRAP_PAGE_VA as *mut u8, 0, PAGE_SIZE_BYTES);
+        }
+
+        // Step 3d: Copy image bytes and clear the remainder of the last code page.
         debug_assert!(
             code_page_count > 0,
             "validated image must allocate at least one code page"
@@ -216,7 +226,7 @@ fn try_map_program_image(user_cr3: u64, image: &[u8], state: &mut MapState) -> E
             }
         }
 
-        // Step 3d: Tighten code pages to read-only after copy.
+        // Step 3e: Tighten code pages to read-only after copy.
         for (idx, pfn) in state.code_pfns.iter().copied().enumerate() {
             let page_va = USER_PROGRAM_ENTRY_RIP + idx as u64 * pmm::PAGE_SIZE;
             vmm::map_user_page(page_va, pfn, false).map_err(|e| {
