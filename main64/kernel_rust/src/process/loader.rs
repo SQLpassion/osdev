@@ -100,14 +100,9 @@ pub fn exec_from_fat12(file_name_8_3: &str) -> ExecResult<usize> {
 ///   The normal entry point `load_program_image()` enforces this via
 ///   `validate_program_image_len()` before calling this function.
 pub fn map_program_image_into_user_address_space(image: &[u8]) -> ExecResult<LoadedProgram> {
-    // Debug-only guard: the validated public entry point load_program_image()
-    // already rejects empty and oversized images before reaching this function.
-    // The assert catches direct callers that bypass that validation.
-    debug_assert!(
-        !image.is_empty() && image_fits_user_code(image.len()),
-        "map_program_image_into_user_address_space: precondition violated (image_len={})",
-        image.len(),
-    );
+    // Public API guard: callers may bypass `load_program_image()`, so enforce
+    // the non-empty / size-bounded image contract in all build profiles.
+    validate_program_image_len(image.len())?;
 
     // Each process gets its own CR3 root cloned from the current kernel baseline.
     // The clone helper panics on OOM and never returns 0.

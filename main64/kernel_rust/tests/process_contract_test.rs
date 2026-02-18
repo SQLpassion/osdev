@@ -8,6 +8,7 @@
 
 extern crate alloc;
 
+use alloc::vec;
 use alloc::vec::Vec;
 use core::panic::PanicInfo;
 use kaos_kernel::arch::{gdt, interrupts};
@@ -212,6 +213,23 @@ fn test_validate_program_image_len_distinguishes_empty_and_oversized() {
     assert!(
         matches!(oversized_err, process::ExecError::FileTooLarge),
         "oversized image must map to ExecError::FileTooLarge"
+    );
+}
+
+/// Contract: public map API rejects empty and oversized images in all builds.
+#[test_case]
+fn test_map_program_image_into_user_address_space_enforces_image_bounds() {
+    let empty = process::map_program_image_into_user_address_space(&[]);
+    assert!(
+        matches!(empty, Err(process::ExecError::EmptyImage)),
+        "empty image must be rejected by public map API"
+    );
+
+    let oversized = vec![0u8; process::USER_PROGRAM_MAX_IMAGE_SIZE + 1];
+    let oversized_result = process::map_program_image_into_user_address_space(&oversized);
+    assert!(
+        matches!(oversized_result, Err(process::ExecError::FileTooLarge)),
+        "oversized image must be rejected by public map API"
     );
 }
 
