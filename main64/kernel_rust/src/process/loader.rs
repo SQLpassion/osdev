@@ -131,13 +131,7 @@ pub fn map_program_image_into_user_address_space(image: &[u8]) -> ExecResult<Loa
 
     if result.is_err() {
         // Roll back page-table state and release still-unmapped physical frames.
-        cleanup_failed_program_mapping(
-            user_cr3,
-            &state.code_pfns,
-            state.stack_pfn,
-            state.mapped_code_pages,
-            state.stack_mapped,
-        );
+        cleanup_failed_program_mapping(user_cr3, &state);
     }
 
     result
@@ -325,33 +319,35 @@ fn alloc_frame_pfn() -> ExecResult<u64> {
 /// then releases only frames that were allocated but never mapped.
 fn cleanup_failed_program_mapping(
     user_cr3: u64,
-    code_pfns: &[u64],
-    stack_pfn: Option<u64>,
-    mapped_code_pages: usize,
-    stack_mapped: bool,
+    state: &MapState,
 ) {
     // Teardown only the mapped ranges with owned-code policy:
     // - `mapped_code_pages` tracks successful code-leaf mappings,
     // - stack teardown only runs when bootstrap page mapping succeeded,
     // - page-table hierarchy + CR3 root are released afterwards by VMM.
-    let stack_pages_mapped = if stack_mapped { 1 } else { 0 };
+    let stack_pages_mapped = if state.stack_mapped { 1 } else { 0 };
     vmm::destroy_user_address_space_with_page_counts(
         user_cr3,
         true,
-        mapped_code_pages,
+        state.mapped_code_pages,
         stack_pages_mapped,
     );
 
     pmm::with_pmm(|mgr| {
-        // Any frames beyond `mapped_code_pages` were never inserted into page
+        // Any frames beyond `state.mapped_code_pages` were never inserted into page
         // tables and therefore are not covered by VMM teardown.
-        for pfn in code_pfns.iter().copied().skip(mapped_code_pages) {
+        for pfn in state
+            .code_pfns
+            .iter()
+            .copied()
+            .skip(state.mapped_code_pages)
+        {
             let _ = mgr.release_pfn(pfn);
         }
 
         // Apply the same rule to the optional bootstrap stack frame.
-        if !stack_mapped {
-            if let Some(pfn) = stack_pfn {
+        if !state.stack_mapped {
+            if let Some(pfn) = state.stack_pfn {
                 let _ = mgr.release_pfn(pfn);
             }
         }

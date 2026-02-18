@@ -8,6 +8,7 @@ use crate::drivers;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt::{Display, Formatter, Write};
+use core::ops::ControlFlow;
 
 // FAT12 disk geometry constants for a 1.44 MB floppy layout.
 const BYTES_PER_SECTOR: usize = 512;
@@ -347,36 +348,60 @@ fn find_file_in_root_directory(
     root_directory: &[u8],
     normalized_name: &[u8; 11],
 ) -> Result<FileEntryMeta, Fat12Error> {
-    // Guard against malformed/short buffers by parsing only complete 32-byte slots.
-    let entry_count = core::cmp::min(
-        ROOT_DIRECTORY_ENTRIES,
-        root_directory.len() / DIRECTORY_ENTRY_SIZE,
-    );
+    let mut found_entry = None;
+
+    for_each_active_root_entry(root_directory, |entry| {
+        // Compare raw 8.3 bytes directly against normalized short-name token.
+        if &entry.short_name_raw() == normalized_name {
+            found_entry = Some(FileEntryMeta {
+                attributes: entry.attributes(),
+                first_cluster: entry.first_cluster(),
+                file_size: entry.file_size(),
+            });
+
+            return ControlFlow::Break(());
+        }
+
+        ControlFlow::Continue(())
+    });
+
+    found_entry.ok_or(Fat12Error::NotFound)
+}
+
+/// Iterate over active FAT12 root-directory entries with shared traversal semantics.
+///
+/// The iterator:
+/// - parses only complete 32-byte slots up to FAT12 root entry capacity
+/// - stops on FAT12 end marker (`EntryState::End`)
+/// - skips deleted/LFN/volume-label slots (`EntryState::Skip`)
+/// - forwards active entries to `on_active`
+/// - allows early-exit via `ControlFlow::Break`
+fn for_each_active_root_entry<F>(buffer: &[u8], mut on_active: F)
+where
+    F: FnMut(RawRootDirectoryEntry) -> ControlFlow<()>,
+{
+    // Parse at most the FAT12 root table size and never beyond provided bytes.
+    let entry_count = core::cmp::min(ROOT_DIRECTORY_ENTRIES, buffer.len() / DIRECTORY_ENTRY_SIZE);
 
     for entry_idx in 0..entry_count {
         let start = entry_idx * DIRECTORY_ENTRY_SIZE;
+
+        // Copy one raw slot into fixed local buffer for deterministic decode.
         let mut bytes = [0u8; DIRECTORY_ENTRY_SIZE];
-        bytes.copy_from_slice(&root_directory[start..start + DIRECTORY_ENTRY_SIZE]);
+        bytes.copy_from_slice(&buffer[start..start + DIRECTORY_ENTRY_SIZE]);
+
         let entry = RawRootDirectoryEntry { bytes };
 
         match entry.state() {
-            // 0x00 marks end of populated directory entries in FAT12 root table.
             EntryState::End => break,
             EntryState::Skip => continue,
             EntryState::Active => {
-                // Compare raw 8.3 bytes directly against normalized short-name token.
-                if &entry.short_name_raw() == normalized_name {
-                    return Ok(FileEntryMeta {
-                        attributes: entry.attributes(),
-                        first_cluster: entry.first_cluster(),
-                        file_size: entry.file_size(),
-                    });
+                if let ControlFlow::Break(()) = on_active(entry) {
+                    break;
                 }
             }
         }
     }
-
-    Err(Fat12Error::NotFound)
 }
 
 /// Decode next cluster ID from FAT12 table for the given current cluster.
@@ -524,30 +549,16 @@ where
     let mut file_count: u32 = 0;
     let mut total_size: u32 = 0;
 
-    // Parse at most the FAT12 root table size and never beyond provided bytes.
-    let entry_count = core::cmp::min(ROOT_DIRECTORY_ENTRIES, buffer.len() / DIRECTORY_ENTRY_SIZE);
+    for_each_active_root_entry(buffer, |entry| {
+        let record = entry.parse_record();
 
-    for entry_idx in 0..entry_count {
-        let start = entry_idx * DIRECTORY_ENTRY_SIZE;
-        // Copy one raw slot into fixed local buffer for deterministic decode.
-        let mut bytes = [0u8; DIRECTORY_ENTRY_SIZE];
-        bytes.copy_from_slice(&buffer[start..start + DIRECTORY_ENTRY_SIZE]);
+        // Delegate record handling to caller (printing, collecting, etc.).
+        on_entry(record);
 
-        let entry = RawRootDirectoryEntry { bytes };
-
-        match entry.state() {
-            EntryState::End => break,
-            EntryState::Skip => continue,
-            EntryState::Active => {
-                let record = entry.parse_record();
-                // Delegate record handling to caller (printing, collecting, etc.).
-                on_entry(record);
-
-                file_count += 1;
-                total_size += record.file_size;
-            }
-        }
-    }
+        file_count += 1;
+        total_size += record.file_size;
+        ControlFlow::Continue(())
+    });
 
     (file_count, total_size)
 }
