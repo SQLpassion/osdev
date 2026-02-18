@@ -184,17 +184,8 @@ impl RawRootDirectoryEntry {
             }
         }
 
-        let first_cluster = u16::from_le_bytes([
-            self.bytes[FIRST_CLUSTER_OFFSET],
-            self.bytes[FIRST_CLUSTER_OFFSET + 1],
-        ]);
-
-        let file_size = u32::from_le_bytes([
-            self.bytes[FILE_SIZE_OFFSET],
-            self.bytes[FILE_SIZE_OFFSET + 1],
-            self.bytes[FILE_SIZE_OFFSET + 2],
-            self.bytes[FILE_SIZE_OFFSET + 3],
-        ]);
+        let first_cluster = self.first_cluster();
+        let file_size = self.file_size();
 
         RootDirectoryRecord {
             name,
