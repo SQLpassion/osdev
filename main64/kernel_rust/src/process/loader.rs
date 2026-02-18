@@ -32,6 +32,18 @@ const PAGE_SIZE_BYTES: usize = pmm::PAGE_SIZE as usize;
 /// downward — not yet implemented; this single page is all that exists today.
 const USER_STACK_BOOTSTRAP_PAGE_VA: u64 = vmm::USER_STACK_TOP - pmm::PAGE_SIZE;
 
+/// Transaction state for user-image mapping.
+///
+/// This structure persists allocation/mapping progress across the fallible
+/// mapping helper so rollback can release exactly the resources that are still
+/// owned by the loader when an error occurs.
+struct MapState {
+    code_pfns: Vec<u64>,
+    stack_pfn: Option<u64>,
+    mapped_code_pages: usize,
+    stack_mapped: bool,
+}
+
 /// Loads a flat user program from FAT12 and validates its image length.
 ///
 /// Phase 4 scope:
@@ -104,148 +116,141 @@ pub fn map_program_image_into_user_address_space(image: &[u8]) -> ExecResult<Loa
         return Err(ExecError::AddressSpaceCreateFailed);
     }
 
-    // Track every allocated PFN so we can reliably roll back on any later error.
-    let code_page_count = page_count_for_len(image.len());
-    let mut code_pfns = Vec::with_capacity(code_page_count);
-    let mut stack_pfn = None::<u64>;
-    let mut mapped_code_pages = 0usize;
-    let mut stack_mapped = false;
+    // Keep rollback-relevant ownership state in one place.
+    let mut state = MapState {
+        code_pfns: Vec::with_capacity(page_count_for_len(image.len())),
+        stack_pfn: None,
+        mapped_code_pages: 0,
+        stack_mapped: false,
+    };
 
     // Transaction-style setup:
     // - success returns a fully initialized descriptor
-    // - failure triggers explicit cleanup below
-    let result = (|| -> ExecResult<LoadedProgram> {
-        // Allocate all required code backing frames first so mapping phase cannot
-        // fail mid-way due to late frame exhaustion.
-        for _ in 0..code_page_count {
-            code_pfns.push(alloc_frame_pfn()?);
-        }
-
-        // Allocate one initial user stack page so first ring-3 pushes are valid.
-        // Keep both:
-        // - `allocated_stack_pfn` for immediate mapping operations in this scope
-        // - `stack_pfn` (outer Option) for rollback bookkeeping on failure
-        let allocated_stack_pfn = alloc_frame_pfn()?;
-        stack_pfn = Some(allocated_stack_pfn);
-
-        // Perform mapping and copy while target CR3 is active.
-        vmm::with_address_space(user_cr3, || -> ExecResult<()> {
-            // Phase 1: map code pages writable to allow zero-fill + image copy.
-            for (idx, pfn) in code_pfns.iter().copied().enumerate() {
-                let page_va = USER_PROGRAM_ENTRY_RIP + idx as u64 * pmm::PAGE_SIZE;
-                vmm::map_user_page(page_va, pfn, true).map_err(|e| {
-                    crate::logging::logln(
-                        "loader",
-                        format_args!(
-                            "LOADER: map_user_page(code page {}, va={:#x}, pfn={:#x}, writable=true) failed: {:?}",
-                            idx, page_va, pfn, e
-                        ),
-                    );
-                    ExecError::MappingFailed
-                })?;
-
-                // Track which code pages are already mapped into this CR3.
-                // Rollback uses this count to release only never-mapped PFNs explicitly.
-                mapped_code_pages += 1;
-            }
-
-            // Keep one writable bootstrap stack page at top-of-stack region.
-            vmm::map_user_page(USER_STACK_BOOTSTRAP_PAGE_VA, allocated_stack_pfn, true)
-                .map_err(|e| {
-                    crate::logging::logln(
-                        "loader",
-                        format_args!(
-                            "LOADER: map_user_page(stack, va={:#x}, pfn={:#x}, writable=true) failed: {:?}",
-                            USER_STACK_BOOTSTRAP_PAGE_VA, allocated_stack_pfn, e
-                        ),
-                    );
-                    ExecError::MappingFailed
-                })?;
-
-            // Mark stack bootstrap page as mapped so rollback knows whether PMM
-            // release is handled by VMM teardown or needs explicit release.
-            stack_mapped = true;
-
-            // The length validator above rejects empty images, so there must be
-            // at least one code page to materialize here.
-            debug_assert!(
-                code_page_count > 0,
-                "validated image must allocate at least one code page"
-            );
-
-            let mapped_code_bytes = code_page_count * PAGE_SIZE_BYTES;
-
-            // SAFETY:
-            // - Source slice `image` is valid for `image.len()` bytes.
-            // - Destination starts at `USER_PROGRAM_ENTRY_RIP` and remains writable
-            //   for at least `image.len()` bytes in current CR3.
-            // - Source and destination do not overlap (kernel image vs. user VA range).
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    image.as_ptr(),
-                    USER_PROGRAM_ENTRY_RIP as *mut u8,
-                    image.len(),
-                );
-            }
-
-            // Zero only the tail beyond the image to clear stale frame content.
-            // The image bytes copied above already overwrite the leading portion,
-            // so zeroing those bytes again would be redundant work.
-            //
-            // SAFETY:
-            // - Code-page mappings above ensure `[USER_PROGRAM_ENTRY_RIP, +mapped_code_bytes)`
-            //   is writable in the currently active address space.
-            // - `image.len() <= mapped_code_bytes` is guaranteed by `page_count_for_len`.
-            let tail_len = mapped_code_bytes - image.len();
-            if tail_len > 0 {
-                unsafe {
-                    core::ptr::write_bytes(
-                        (USER_PROGRAM_ENTRY_RIP as usize + image.len()) as *mut u8,
-                        0,
-                        tail_len,
-                    );
-                }
-            }
-
-            // Phase 2: tighten permissions after copy (code should be read-only).
-            for (idx, pfn) in code_pfns.iter().copied().enumerate() {
-                let page_va = USER_PROGRAM_ENTRY_RIP + idx as u64 * pmm::PAGE_SIZE;
-                vmm::map_user_page(page_va, pfn, false).map_err(|e| {
-                    crate::logging::logln(
-                        "loader",
-                        format_args!(
-                            "LOADER: map_user_page(code page {}, va={:#x}, pfn={:#x}, writable=false) failed: {:?}",
-                            idx, page_va, pfn, e
-                        ),
-                    );
-                    ExecError::MappingFailed
-                })?;
-            }
-
-            Ok(())
-        })?;
-
-        // Return the materialized process image descriptor for later spawn logic.
-        Ok(LoadedProgram::new(
-            user_cr3,
-            USER_PROGRAM_ENTRY_RIP,
-            USER_PROGRAM_INITIAL_RSP,
-            image.len(),
-        ))
-    })();
+    // - failure triggers explicit cleanup below using `state`.
+    let result = try_map_program_image(user_cr3, image, &mut state);
 
     if result.is_err() {
         // Roll back page-table state and release still-unmapped physical frames.
         cleanup_failed_program_mapping(
             user_cr3,
-            &code_pfns,
-            stack_pfn,
-            mapped_code_pages,
-            stack_mapped,
+            &state.code_pfns,
+            state.stack_pfn,
+            state.mapped_code_pages,
+            state.stack_mapped,
         );
     }
 
     result
+}
+
+/// Performs the fallible map/copy transaction for a validated user image.
+///
+/// All progress is tracked in `state` so caller-side rollback can precisely
+/// release only the resources that are still loader-owned on error.
+fn try_map_program_image(user_cr3: u64, image: &[u8], state: &mut MapState) -> ExecResult<LoadedProgram> {
+    let code_page_count = page_count_for_len(image.len());
+
+    // Step 1: Allocate all code backing frames up front.
+    // This avoids running out of frames halfway through the writable map pass.
+    for _ in 0..code_page_count {
+        state.code_pfns.push(alloc_frame_pfn()?);
+    }
+
+    // Step 2: Allocate one bootstrap stack page and persist it for rollback.
+    let allocated_stack_pfn = alloc_frame_pfn()?;
+    state.stack_pfn = Some(allocated_stack_pfn);
+
+    // Step 3: Activate target CR3 and perform map/copy/remap sequence.
+    vmm::with_address_space(user_cr3, || -> ExecResult<()> {
+        // Step 3a: Map all code pages writable so copy + tail-zero is valid.
+        for (idx, pfn) in state.code_pfns.iter().copied().enumerate() {
+            let page_va = USER_PROGRAM_ENTRY_RIP + idx as u64 * pmm::PAGE_SIZE;
+            vmm::map_user_page(page_va, pfn, true).map_err(|e| {
+                crate::logging::logln(
+                    "loader",
+                    format_args!(
+                        "LOADER: map_user_page(code page {}, va={:#x}, pfn={:#x}, writable=true) failed: {:?}",
+                        idx, page_va, pfn, e
+                    ),
+                );
+                ExecError::MappingFailed
+            })?;
+
+            // Track successful writable code-page mappings for partial rollback.
+            state.mapped_code_pages += 1;
+        }
+
+        // Step 3b: Map writable bootstrap stack page for initial ring-3 entry.
+        vmm::map_user_page(USER_STACK_BOOTSTRAP_PAGE_VA, allocated_stack_pfn, true).map_err(|e| {
+            crate::logging::logln(
+                "loader",
+                format_args!(
+                    "LOADER: map_user_page(stack, va={:#x}, pfn={:#x}, writable=true) failed: {:?}",
+                    USER_STACK_BOOTSTRAP_PAGE_VA, allocated_stack_pfn, e
+                ),
+            );
+            ExecError::MappingFailed
+        })?;
+
+        // Mark stack as mapped so rollback delegates release to VMM teardown.
+        state.stack_mapped = true;
+
+        // Step 3c: Copy image bytes and clear the remainder of the last code page.
+        debug_assert!(
+            code_page_count > 0,
+            "validated image must allocate at least one code page"
+        );
+        let mapped_code_bytes = code_page_count * PAGE_SIZE_BYTES;
+
+        // SAFETY:
+        // - Source slice `image` is valid for `image.len()` bytes.
+        // - Destination starts at `USER_PROGRAM_ENTRY_RIP` and remains writable
+        //   for at least `image.len()` bytes in current CR3.
+        // - Source and destination do not overlap (kernel image vs. user VA range).
+        unsafe {
+            core::ptr::copy_nonoverlapping(image.as_ptr(), USER_PROGRAM_ENTRY_RIP as *mut u8, image.len());
+        }
+
+        // Zero only tail bytes not overwritten by the image payload.
+        let tail_len = mapped_code_bytes - image.len();
+        if tail_len > 0 {
+            // SAFETY:
+            // - Writable mapping covers `[USER_PROGRAM_ENTRY_RIP, +mapped_code_bytes)`.
+            // - Start address points exactly to first tail byte after copied image.
+            unsafe {
+                core::ptr::write_bytes(
+                    (USER_PROGRAM_ENTRY_RIP as usize + image.len()) as *mut u8,
+                    0,
+                    tail_len,
+                );
+            }
+        }
+
+        // Step 3d: Tighten code pages to read-only after copy.
+        for (idx, pfn) in state.code_pfns.iter().copied().enumerate() {
+            let page_va = USER_PROGRAM_ENTRY_RIP + idx as u64 * pmm::PAGE_SIZE;
+            vmm::map_user_page(page_va, pfn, false).map_err(|e| {
+                crate::logging::logln(
+                    "loader",
+                    format_args!(
+                        "LOADER: map_user_page(code page {}, va={:#x}, pfn={:#x}, writable=false) failed: {:?}",
+                        idx, page_va, pfn, e
+                    ),
+                );
+                ExecError::MappingFailed
+            })?;
+        }
+
+        Ok(())
+    })?;
+
+    // Step 4: Return finalized process descriptor for scheduler spawn step.
+    Ok(LoadedProgram::new(
+        user_cr3,
+        USER_PROGRAM_ENTRY_RIP,
+        USER_PROGRAM_INITIAL_RSP,
+        image.len(),
+    ))
 }
 
 /// Validates that a program image length is non-empty and fits inside the user
