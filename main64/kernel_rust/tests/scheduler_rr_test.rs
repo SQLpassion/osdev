@@ -1099,21 +1099,31 @@ fn test_single_waitqueue_wake_all_wakes_one_and_clears_slot() {
     );
 }
 
-/// Contract: waitqueue register out of range is rejected.
+/// Contract: WaitQueue registration fails only when all slots are occupied.
 /// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
 /// When: The exact operation sequence in this function is executed against that state.
-/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "waitqueue register out of range is rejected".
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "WaitQueue registration fails only when all slots are occupied".
 /// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
-fn test_waitqueue_register_out_of_range_is_rejected() {
+fn test_waitqueue_register_fails_when_all_slots_full() {
     let q: WaitQueue<4> = WaitQueue::new();
+
+    // Large task_ids (formerly rejected by the index-based design) must succeed.
+    assert!(q.register_waiter(100), "slot 0: large task_id must be accepted");
+    assert!(q.register_waiter(200), "slot 1");
+    assert!(q.register_waiter(300), "slot 2");
+    assert!(q.register_waiter(400), "slot 3");
+
+    // All 4 slots occupied — any further registration must fail.
     assert!(
-        !q.register_waiter(4),
-        "register_waiter must reject task_id == capacity"
+        !q.register_waiter(500),
+        "queue full – must reject when all slots occupied"
     );
+
+    // Re-registering an already-registered task_id is idempotent.
     assert!(
-        !q.register_waiter(7),
-        "register_waiter must reject task_id > capacity"
+        q.register_waiter(100),
+        "re-registration of existing id must succeed"
     );
 }
 
