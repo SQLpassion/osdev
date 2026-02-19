@@ -1,0 +1,18 @@
+[package]
+name = "readline_user_program"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+
+[[bin]]
+name = "readline"
+path = "src/main.rs"
+test = false
+bench = false

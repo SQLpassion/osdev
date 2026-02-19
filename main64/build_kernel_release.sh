@@ -69,6 +69,7 @@ fat_imgen -m -f kaos64_rust.img -i kaosldr_16/kldr16.bin
 fat_imgen -m -f kaos64_rust.img -i kaosldr_64/kldr64.bin
 fat_imgen -m -f kaos64_rust.img -i kernel_rust/target/x86_64-unknown-none/release/kernel.bin
 fat_imgen -m -f kaos64_rust.img -i user_programs/hello/hello.bin -n HELLO.BIN
+fat_imgen -m -f kaos64_rust.img -i user_programs/readline/readline.bin -n READLINE.BIN
 fat_imgen -m -f kaos64_rust.img -i SFile.txt
 fat_imgen -m -f kaos64_rust.img -i BigFile.txt
 

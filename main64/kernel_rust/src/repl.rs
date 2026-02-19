@@ -178,6 +178,11 @@ fn execute_command(line: &str) {
                     "  exec <file>     - run FAT12 user program in foreground"
                 )
                 .unwrap();
+                writeln!(
+                    screen,
+                    "                    (e.g. exec HELLO.BIN / exec READLINE.BIN)"
+                )
+                .unwrap();
                 writeln!(screen, "  shutdown        - shutdown the system").unwrap();
             });
         }

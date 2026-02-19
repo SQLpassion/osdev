@@ -7,6 +7,7 @@ mod syscall;
 const HELLO_MSG: &[u8] = b"HELLO.BIN launched as a [ring3] task\n";
 
 #[no_mangle]
+#[link_section = ".ltext._start"]
 pub extern "C" fn _start() -> ! {
     // SAFETY:
     // - `HELLO_MSG` is a valid static byte slice in this image.

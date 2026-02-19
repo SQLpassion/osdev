@@ -21,6 +21,8 @@ const ROOT_DIRECTORY_LBA: u32 = 19;
 const ROOT_DIRECTORY_SECTORS: u8 = 14;
 const EXPECTED_SFILE_BYTES: &[u8] = include_bytes!("../../SFile.txt");
 const EXPECTED_HELLO_BIN_BYTES: &[u8] = include_bytes!("../../user_programs/hello/hello.bin");
+const EXPECTED_READLINE_BIN_BYTES: &[u8] =
+    include_bytes!("../../user_programs/readline/readline.bin");
 
 #[no_mangle]
 #[link_section = ".text.boot"]
@@ -364,6 +366,31 @@ fn test_read_file_hello_bin_returns_exact_bytes() {
             "byte mismatch at offset {}: expected 0x{:02x}, got 0x{:02x}",
             idx,
             EXPECTED_HELLO_BIN_BYTES[idx],
+            actual[idx]
+        );
+    }
+}
+
+/// Contract: `read_file("readline.bin")` returns exact bytes from FAT12 image.
+#[test_case]
+fn test_read_file_readline_bin_returns_exact_bytes() {
+    kaos_kernel::drivers::ata::init();
+
+    let actual = read_file("readline.bin")
+        .expect("readline.bin must be readable from FAT12 image");
+    assert!(
+        actual.len() == EXPECTED_READLINE_BIN_BYTES.len(),
+        "read_file length mismatch: expected {} bytes, got {}",
+        EXPECTED_READLINE_BIN_BYTES.len(),
+        actual.len()
+    );
+
+    for idx in 0..EXPECTED_READLINE_BIN_BYTES.len() {
+        assert!(
+            actual[idx] == EXPECTED_READLINE_BIN_BYTES[idx],
+            "byte mismatch at offset {}: expected 0x{:02x}, got 0x{:02x}",
+            idx,
+            EXPECTED_READLINE_BIN_BYTES[idx],
             actual[idx]
         );
     }
