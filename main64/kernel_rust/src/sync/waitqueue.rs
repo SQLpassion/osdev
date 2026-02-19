@@ -12,7 +12,10 @@ const NO_WAITER: usize = usize::MAX;
 ///
 /// `N` is the maximum number of concurrently registered waiters.
 /// Task IDs are stored as values in slots — not used as indices —
-/// so any task_id is valid regardless of its magnitude.
+/// so any task_id is valid regardless of its magnitude, **except**
+/// `usize::MAX` which is reserved as the `NO_WAITER` sentinel.
+/// Task IDs originate from `Vec` indices in the scheduler, so
+/// `usize::MAX` is structurally unreachable in practice.
 pub struct WaitQueue<const N: usize> {
     slots: [AtomicUsize; N],
 }
@@ -32,6 +35,13 @@ impl<const N: usize> WaitQueue<N> {
     /// On a single-core kernel this must be called with interrupts disabled so
     /// the scan-then-CAS sequence is not interrupted.
     pub fn register_waiter(&self, task_id: usize) -> bool {
+        // `usize::MAX` is the NO_WAITER sentinel — passing it would silently
+        // be treated as "slot already empty" and corrupt queue state.
+        debug_assert!(
+            task_id != NO_WAITER,
+            "register_waiter: task_id == usize::MAX collides with NO_WAITER sentinel"
+        );
+
         // Single pass: remember the first empty slot while checking for an
         // existing registration of this task_id.
         let mut first_empty: Option<&AtomicUsize> = None;

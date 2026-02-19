@@ -644,7 +644,8 @@ fn remove_task(meta: &mut SchedulerMetadata, task_id: usize) -> bool {
 pub fn init() {
     // Collect stacks to free while holding the lock, then free after release.
     // `mem::take` on `pending_free_stacks` gives us the Vec with zero allocation;
-    // active slot stacks are pushed into it (safe at boot: non-IRQ context).
+    // active slot stacks are pushed into it via try_reserve to avoid OOM panics
+    // inside the spinlock (where interrupts are disabled).
     let mut stacks_to_free: Vec<(*mut u8, usize)> = Vec::new();
 
     with_sched(|meta| {
@@ -652,9 +653,15 @@ pub fn init() {
         stacks_to_free = core::mem::take(&mut meta.pending_free_stacks);
 
         // Collect stacks from all active slots into stacks_to_free.
+        // Use try_reserve(1) to avoid a potential panic (via the alloc-error
+        // handler) inside the spinlock, where interrupts are already disabled.
+        // An OOM here leaks one 64 KiB stack per failed reservation, but that
+        // is far safer than a panic with interrupts disabled.
         for slot in meta.slots.iter() {
             if slot.used && !slot.stack_base.is_null() {
-                stacks_to_free.push((slot.stack_base, slot.stack_size));
+                if stacks_to_free.try_reserve(1).is_ok() {
+                    stacks_to_free.push((slot.stack_base, slot.stack_size));
+                }
             }
         }
 
@@ -983,6 +990,12 @@ fn select_next_task(
     }
 
     let task_count = meta.run_queue.len();
+    // Guard: a caller must ensure the run_queue is non-empty before calling
+    // this function. An empty queue causes division-by-zero in the modulo
+    // arithmetic below. `on_timer_tick` already enforces this via its
+    // `run_queue.is_empty()` early-return, but the assert catches future
+    // call sites that might miss the precondition.
+    debug_assert!(task_count > 0, "select_next_task called with empty run_queue");
 
     let base_pos = if let Some(slot) = detected_slot {
         meta.run_queue

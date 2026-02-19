@@ -22,6 +22,13 @@ impl SingleWaitQueue {
     ///
     /// Returns `false` when a different waiter is already registered.
     pub fn register_waiter(&self, task_id: usize) -> bool {
+        // `usize::MAX` is the NO_WAITER sentinel — passing it would silently
+        // be treated as "slot already empty" and corrupt queue state.
+        debug_assert!(
+            task_id != NO_WAITER,
+            "register_waiter: task_id == usize::MAX collides with NO_WAITER sentinel"
+        );
+
         match self
             .waiter
             .compare_exchange(NO_WAITER, task_id, Ordering::AcqRel, Ordering::Acquire)
