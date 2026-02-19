@@ -439,6 +439,26 @@ fn test_exec_from_fat12_spawns_user_task() {
     );
 }
 
+/// Contract: `exec_from_fat12` can spawn the bundled readline user program.
+#[test_case]
+fn test_exec_from_fat12_spawns_readline_user_task() {
+    scheduler::init();
+    scheduler::set_kernel_address_space_cr3(vmm::get_pml4_address());
+
+    let task_id = process::exec_from_fat12("readline.bin")
+        .expect("readline.bin exec path must spawn user task");
+
+    assert!(
+        scheduler::is_user_task(task_id),
+        "readline.bin exec must create a user-mode scheduler entry"
+    );
+
+    assert!(
+        scheduler::terminate_task(task_id),
+        "spawned readline user task must be terminatable for test cleanup"
+    );
+}
+
 /// Contract: terminating an exec-loaded task releases loader-owned code PFNs.
 #[test_case]
 fn test_exec_from_fat12_terminate_releases_loader_code_pfn() {
@@ -508,4 +528,29 @@ fn test_exec_from_fat12_maps_invalid_name_error() {
         matches!(result, Err(process::ExecError::InvalidName)),
         "invalid 8.3 input must fail early with ExecError::InvalidName"
     );
+}
+
+/// Contract: user-program linker scripts place `.text._start` at image base.
+#[test_case]
+fn test_user_program_linker_scripts_prioritize_start_section() {
+    let hello_linker = include_str!("../../user_programs/hello/link.ld");
+    let readline_linker = include_str!("../../user_programs/readline/link.ld");
+
+    fn assert_start_before_text(script: &str, name: &str) {
+        let start_pos = script
+            .find("*(.ltext._start)")
+            .expect("linker script must define explicit .ltext._start placement");
+        let text_pos = script
+            .find("*(.ltext .ltext.*)")
+            .expect("linker script must define generic .ltext placement");
+
+        assert!(
+            start_pos < text_pos,
+            "{} linker script must place .ltext._start before .ltext.* to keep entry at image base",
+            name
+        );
+    }
+
+    assert_start_before_text(hello_linker, "hello");
+    assert_start_before_text(readline_linker, "readline");
 }
