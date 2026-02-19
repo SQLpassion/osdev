@@ -10,7 +10,7 @@ use core::panic::PanicInfo;
 use kaos_kernel::arch::gdt;
 use kaos_kernel::arch::interrupts::{self, SavedRegisters};
 use kaos_kernel::memory::{heap, pmm, vmm};
-use kaos_kernel::scheduler::{self as sched, SpawnError, TaskState};
+use kaos_kernel::scheduler::{self as sched, TaskState};
 use kaos_kernel::sync::singlewaitqueue::SingleWaitQueue;
 use kaos_kernel::sync::waitqueue::WaitQueue;
 use kaos_kernel::sync::waitqueue_adapter;
@@ -568,24 +568,24 @@ fn test_terminating_multiple_tasks_allows_same_count_respawn_cycle() {
     );
 }
 
-/// Contract: scheduler capacity limit.
+/// Contract: scheduler grows dynamically beyond former 8-task limit.
 /// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
 /// When: The exact operation sequence in this function is executed against that state.
-/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "scheduler capacity limit".
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "scheduler grows dynamically beyond former 8-task limit".
 /// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
-fn test_scheduler_capacity_limit() {
+fn test_scheduler_dynamic_capacity() {
     sched::init();
 
-    for _ in 0..8 {
-        sched::spawn_kernel_task(dummy_task_a).expect("spawn within pool capacity should succeed");
+    // Spawn well beyond the former MAX_TASKS = 8 hard limit.
+    // With heap-backed Vecs the scheduler must accept all of these.
+    for i in 0..16 {
+        sched::spawn_kernel_task(dummy_task_a)
+            .unwrap_or_else(|e| panic!("spawn #{i} failed: {e:?}"));
     }
 
-    let err = sched::spawn_kernel_task(dummy_task_b).expect_err("spawn beyond capacity must fail");
-    assert!(
-        matches!(err, SpawnError::CapacityExceeded),
-        "expected CapacityExceeded when task pool is full"
-    );
+    // The 17th spawn must also succeed — capacity is only bounded by the heap.
+    sched::spawn_kernel_task(dummy_task_b).expect("spawn beyond former static limit must succeed");
 }
 
 /// Contract: spawn allocates distinct task frames.

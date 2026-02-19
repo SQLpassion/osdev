@@ -23,7 +23,10 @@ const SCANCODE_TABLE_LEN: usize = 0x59;
 /// Ring buffer capacity (must be > 1)
 const INPUT_BUFFER_CAPACITY: usize = 256;
 const RAW_BUFFER_CAPACITY: usize = 64;
-const INPUT_WAITERS_CAPACITY: usize = 8;
+// Must be larger than the highest task_id that may call read_char_blocking().
+// With dynamic scheduling, slot indices can grow without bound; 64 provides
+// a generous safety margin for this kernel's expected workload.
+const INPUT_WAITERS_CAPACITY: usize = 64;
 
 /// Lower-case QWERTZ scan code map (printable ASCII only; 0 == ignored)
 const SCANCODES_LOWER: [u8; SCANCODE_TABLE_LEN] = [

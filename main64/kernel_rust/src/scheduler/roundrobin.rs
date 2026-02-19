@@ -10,6 +10,7 @@ use core::ptr;
 
 extern crate alloc;
 use alloc::alloc as heap_alloc;
+use alloc::vec::Vec;
 
 use crate::arch::gdt;
 use crate::arch::interrupts::{self, InterruptStackFrame, SavedRegisters};
@@ -22,7 +23,6 @@ use crate::sync::spinlock::SpinLock;
 /// to never return.
 pub type KernelTaskFn = extern "C" fn() -> !;
 
-const MAX_TASKS: usize = 8;
 const TASK_STACK_SIZE: usize = 64 * 1024;
 const STACK_ALIGNMENT: usize = 16;
 const PAGE_SIZE: usize = 4096;
@@ -77,10 +77,7 @@ pub enum SpawnError {
     /// Scheduler has not been initialized via [`init`].
     NotInitialized,
 
-    /// Task pool is full.
-    CapacityExceeded,
-
-    /// Heap allocation for the task stack failed.
+    /// Heap allocation for the task stack or scheduler metadata failed.
     StackAllocationFailed,
 }
 
@@ -246,16 +243,14 @@ struct SchedulerMetadata {
     /// Points at the most recently selected queue position.
     current_queue_pos: usize,
 
-    /// Number of active entries in `run_queue` and `slots`.
-    task_count: usize,
-
     /// Compact queue of active task slot IDs in scheduling order.
-    /// Only indices `< task_count` are valid.
-    run_queue: [usize; MAX_TASKS],
+    /// Length gives the number of active tasks.
+    run_queue: Vec<usize>,
 
     /// Per-slot task metadata table.
-    /// `used=false` marks free slots.
-    slots: [TaskEntry; MAX_TASKS],
+    /// `used=false` marks free slots available for reuse.
+    /// The Vec grows on demand; slots are never removed, only marked unused.
+    slots: Vec<TaskEntry>,
 
     /// Total number of timer ticks processed while scheduler is started.
     /// Primarily for diagnostics/tests.
@@ -281,14 +276,15 @@ struct SchedulerMetadata {
     /// Keeping the range here allows [`frame_within_any_task_stack`] to
     /// recognize stale task frames and avoid overwriting `bootstrap_frame`.
     /// The stacks are freed on the next [`on_timer_tick`] call.
-    pending_free_stacks: [(*mut u8, usize); MAX_TASKS],
-
-    /// Number of valid entries in `pending_free_stacks`.
-    pending_free_count: usize,
+    /// Drained via `core::mem::take` inside the scheduler lock.
+    pending_free_stacks: Vec<(*mut u8, usize)>,
 }
 
 impl SchedulerMetadata {
     /// Returns the initial scheduler metadata.
+    ///
+    /// `Vec::new()` does not allocate, so this is safe as a `const fn` and
+    /// can be used to initialize the global `static SCHED`.
     const fn new() -> Self {
         Self {
             initialized: false,
@@ -297,15 +293,13 @@ impl SchedulerMetadata {
             bootstrap_frame: ptr::null_mut(),
             running_slot: None,
             current_queue_pos: 0,
-            task_count: 0,
-            run_queue: [0; MAX_TASKS],
-            slots: [TaskEntry::empty(); MAX_TASKS],
+            run_queue: Vec::new(),
+            slots: Vec::new(),
             tick_count: 0,
             address_space_switching_enabled: false,
             kernel_cr3: 0,
             active_cr3: 0,
-            pending_free_stacks: [(ptr::null_mut(), 0); MAX_TASKS],
-            pending_free_count: 0,
+            pending_free_stacks: Vec::new(),
         }
     }
 }
@@ -474,8 +468,7 @@ fn find_entry_by_frame(
         return None;
     }
 
-    for pos in 0..meta.task_count {
-        let slot = meta.run_queue[pos];
+    for &slot in meta.run_queue.iter() {
         if meta.slots[slot].used && meta.slots[slot].is_frame_within_stack(frame_ptr) {
             return Some(slot);
         }
@@ -501,8 +494,7 @@ fn frame_within_any_task_stack(meta: &SchedulerMetadata, frame_ptr: *const Saved
     // Check stacks from recently terminated tasks that haven't been freed yet.
     let frame_start = frame_ptr as usize;
     let frame_end = frame_start + size_of::<SavedRegisters>() + size_of::<InterruptStackFrame>();
-    for i in 0..meta.pending_free_count {
-        let (base, size) = meta.pending_free_stacks[i];
+    for &(base, size) in meta.pending_free_stacks.iter() {
         if !base.is_null() {
             let stack_start = base as usize;
             let stack_end = stack_start + size;
@@ -524,13 +516,13 @@ fn frame_within_any_task_stack(meta: &SchedulerMetadata, frame_ptr: *const Saved
 /// Returns `true` when an active task was removed.
 fn remove_task(meta: &mut SchedulerMetadata, task_id: usize) -> bool {
     // Step 1: reject invalid or already-free task IDs.
-    if task_id >= MAX_TASKS || !meta.slots[task_id].used {
+    if task_id >= meta.slots.len() || !meta.slots[task_id].used {
         return false;
     }
 
     // Step 2: locate the task inside the compact run queue.
     // If it is not present, scheduler metadata is inconsistent for this ID.
-    let Some(removed_pos) = (0..meta.task_count).find(|pos| meta.run_queue[*pos] == task_id) else {
+    let Some(removed_pos) = meta.run_queue.iter().position(|&s| s == task_id) else {
         return false;
     };
 
@@ -594,39 +586,28 @@ fn remove_task(meta: &mut SchedulerMetadata, task_id: usize) -> bool {
     // until the next timer tick, preventing stale task frames from being
     // mistaken for bootstrap frames.
     //
-    // `pending_free_count >= MAX_TASKS` is structurally unreachable:
-    // the array holds MAX_TASKS entries, at most MAX_TASKS tasks can exist,
-    // and the list is drained to zero on every timer tick. A full list
-    // therefore always indicates a bug elsewhere in the scheduler.
-    //
     // Immediate stack freeing is NOT a safe fallback here: `terminate_task`
     // can be called while the caller is still executing on the target task's
     // stack. Freeing it immediately would leave the CPU on a freed allocation.
-    // The debug_assert makes the bug visible in debug builds; in release builds
-    // the guard prevents an out-of-bounds write at the cost of a stack leak.
+    //
+    // `try_reserve(1)` is used because this path can run inside an IRQ handler
+    // (via `reap_zombies`). On this single-core kernel the scheduler spinlock
+    // already disabled interrupts (`cli`), so nesting the heap spinlock is
+    // safe. OOM here would be a stack leak, but is structurally unreachable:
+    // the list is drained to empty on every timer tick, so its length is
+    // bounded by the number of tasks terminated since the previous tick.
     if !meta.slots[task_id].stack_base.is_null() {
-        debug_assert!(
-            meta.pending_free_count < MAX_TASKS,
-            "pending_free_stacks full ({} entries) — 64 KiB stack leak for task {}",
-            meta.pending_free_count,
-            task_id,
-        );
-        if meta.pending_free_count < MAX_TASKS {
-            meta.pending_free_stacks[meta.pending_free_count] = (
+        if meta.pending_free_stacks.try_reserve(1).is_ok() {
+            meta.pending_free_stacks.push((
                 meta.slots[task_id].stack_base,
                 meta.slots[task_id].stack_size,
-            );
-            meta.pending_free_count += 1;
+            ));
         }
     }
 
-    // Step 4: compact the run queue by shifting all entries after `removed_pos`.
-    for pos in removed_pos..meta.task_count - 1 {
-        meta.run_queue[pos] = meta.run_queue[pos + 1];
-    }
-
-    meta.run_queue[meta.task_count - 1] = 0;
-    meta.task_count -= 1;
+    // Step 4: compact the run queue by removing the entry at `removed_pos`.
+    // `Vec::remove` performs the same O(n) left-shift as the previous manual loop.
+    meta.run_queue.remove(removed_pos);
 
     // If the removed slot was marked as currently running, clear the marker.
     if meta.running_slot == Some(task_id) {
@@ -640,12 +621,12 @@ fn remove_task(meta: &mut SchedulerMetadata, task_id: usize) -> bool {
     // - queue empty: reset to 0
     // - removed before cursor: shift cursor one step left
     // - cursor now out-of-range: clamp to last remaining entry
-    if meta.task_count == 0 {
+    if meta.run_queue.is_empty() {
         meta.current_queue_pos = 0;
     } else if removed_pos < meta.current_queue_pos {
         meta.current_queue_pos -= 1;
-    } else if meta.current_queue_pos >= meta.task_count {
-        meta.current_queue_pos = meta.task_count - 1;
+    } else if meta.current_queue_pos >= meta.run_queue.len() {
+        meta.current_queue_pos = meta.run_queue.len() - 1;
     }
 
     // Final step: release user address-space resources if cleanup is safe.
@@ -662,23 +643,18 @@ fn remove_task(meta: &mut SchedulerMetadata, task_id: usize) -> bool {
 /// This also registers the PIT IRQ handler that drives preemption.
 pub fn init() {
     // Collect stacks to free while holding the lock, then free after release.
-    let mut stacks_to_free: [(*mut u8, usize); MAX_TASKS] = [(ptr::null_mut(), 0); MAX_TASKS];
-    let mut free_count = 0;
+    // `mem::take` on `pending_free_stacks` gives us the Vec with zero allocation;
+    // active slot stacks are pushed into it (safe at boot: non-IRQ context).
+    let mut stacks_to_free: Vec<(*mut u8, usize)> = Vec::new();
 
     with_sched(|meta| {
-        // Free any stacks from a previous scheduler session.
-        for slot in meta.slots.iter() {
-            if slot.used && !slot.stack_base.is_null() && free_count < MAX_TASKS {
-                stacks_to_free[free_count] = (slot.stack_base, slot.stack_size);
-                free_count += 1;
-            }
-        }
+        // Start with any pending-free stacks (no allocation via mem::take).
+        stacks_to_free = core::mem::take(&mut meta.pending_free_stacks);
 
-        // Also drain any pending-free stacks from terminated tasks.
-        for i in 0..meta.pending_free_count {
-            if free_count < MAX_TASKS {
-                stacks_to_free[free_count] = meta.pending_free_stacks[i];
-                free_count += 1;
+        // Collect stacks from all active slots into stacks_to_free.
+        for slot in meta.slots.iter() {
+            if slot.used && !slot.stack_base.is_null() {
+                stacks_to_free.push((slot.stack_base, slot.stack_size));
             }
         }
 
@@ -687,7 +663,7 @@ pub fn init() {
     });
 
     // Free old stacks outside the scheduler lock.
-    for &(ptr, _size) in &stacks_to_free[..free_count] {
+    for &(ptr, _size) in &stacks_to_free {
         // SAFETY: Pointers were returned by `allocate_task_stack`.
         unsafe {
             free_task_stack(ptr);
@@ -700,12 +676,12 @@ pub fn init() {
 /// Starts scheduling if initialized and at least one task is available.
 pub fn start() {
     with_sched(|meta| {
-        if meta.initialized && meta.task_count > 0 {
+        if meta.initialized && !meta.run_queue.is_empty() {
             meta.started = true;
             meta.stop_requested = false;
             meta.bootstrap_frame = ptr::null_mut();
             meta.running_slot = None;
-            meta.current_queue_pos = meta.task_count - 1;
+            meta.current_queue_pos = meta.run_queue.len() - 1;
         }
     });
 }
@@ -752,14 +728,11 @@ pub fn spawn_user_task_owning_code(
 /// The stack is heap-allocated *before* acquiring the scheduler lock to
 /// avoid nested spinlock acquisition (scheduler lock + heap lock).
 fn spawn_internal(kind: SpawnKind) -> Result<usize, SpawnError> {
-    // Pre-check: reject early if scheduler is not initialized or full,
+    // Pre-check: reject early if scheduler is not initialized,
     // before performing the (expensive) heap allocation.
     let pre_check = with_sched(|meta| {
         if !meta.initialized {
             return Err(SpawnError::NotInitialized);
-        }
-        if meta.task_count >= MAX_TASKS {
-            return Err(SpawnError::CapacityExceeded);
         }
         Ok(())
     });
@@ -780,13 +753,24 @@ fn spawn_internal(kind: SpawnKind) -> Result<usize, SpawnError> {
             return Err(SpawnError::NotInitialized);
         }
 
-        if meta.task_count >= MAX_TASKS {
-            return Err(SpawnError::CapacityExceeded);
-        }
+        // Find a free (previously used) slot or determine that a new one must
+        // be appended. Slot indices are stable: the Vec grows but never shrinks.
+        let (slot_idx, is_new_slot) = match meta.slots.iter().position(|s| !s.used) {
+            Some(i) => (i, false),
+            None    => (meta.slots.len(), true),
+        };
 
-        let slot_idx = (0..MAX_TASKS)
-            .find(|idx| !meta.slots[*idx].used)
-            .ok_or(SpawnError::CapacityExceeded)?;
+        // Pre-reserve Vec capacity so the actual push operations are infallible.
+        // Both reservations happen before any state is mutated so that an OOM
+        // during either reservation leaves the scheduler in a consistent state.
+        if is_new_slot {
+            meta.slots
+                .try_reserve(1)
+                .map_err(|_| SpawnError::StackAllocationFailed)?;
+        }
+        meta.run_queue
+            .try_reserve(1)
+            .map_err(|_| SpawnError::StackAllocationFailed)?;
 
         let (frame_ptr, cr3, user_rsp, kernel_rsp_top, is_user, release_user_code_pfns) = match kind
         {
@@ -814,7 +798,7 @@ fn spawn_internal(kind: SpawnKind) -> Result<usize, SpawnError> {
             }
         };
 
-        meta.slots[slot_idx] = TaskEntry {
+        let entry = TaskEntry {
             used: true,
             state: TaskState::Ready,
             frame_ptr,
@@ -827,8 +811,13 @@ fn spawn_internal(kind: SpawnKind) -> Result<usize, SpawnError> {
             stack_size: TASK_STACK_SIZE,
         };
 
-        meta.run_queue[meta.task_count] = slot_idx;
-        meta.task_count += 1;
+        if is_new_slot {
+            meta.slots.push(entry); // capacity guaranteed by try_reserve above
+        } else {
+            meta.slots[slot_idx] = entry;
+        }
+
+        meta.run_queue.push(slot_idx); // capacity guaranteed by try_reserve above
 
         Ok(slot_idx)
     });
@@ -924,7 +913,7 @@ fn apply_selected_address_space(meta: &mut SchedulerMetadata, selected_slot: usi
 /// deallocated after releasing the scheduler lock.
 fn reap_zombies(meta: &mut SchedulerMetadata) {
     let mut i = 0;
-    while i < meta.task_count {
+    while i < meta.run_queue.len() {
         let slot = meta.run_queue[i];
 
         if meta.slots[slot].state == TaskState::Zombie {
@@ -953,57 +942,6 @@ fn bootstrap_or_current(
     }
 }
 
-/// Moves all pending-free stack entries into `out[*count..]` and resets the
-/// pending-free list to empty.
-///
-/// Entries that would exceed `MAX_TASKS` in `out` are silently skipped; the
-/// `debug_assert` in `remove_task` is the authoritative guard for that case.
-fn drain_pending_stacks_into(
-    meta: &mut SchedulerMetadata,
-    out: &mut [(*mut u8, usize); MAX_TASKS],
-    count: &mut usize,
-) {
-    for i in 0..meta.pending_free_count {
-        if *count < MAX_TASKS {
-            out[*count] = meta.pending_free_stacks[i];
-            *count += 1;
-        }
-    }
-
-    meta.pending_free_count = 0;
-    meta.pending_free_stacks = [(ptr::null_mut(), 0); MAX_TASKS];
-}
-
-/// Collects stacks from every active slot and the pending-free list into `out`.
-///
-/// Called only when a stop has been requested so that all memory is freed after
-/// the scheduler lock is released.
-fn collect_all_task_stacks(
-    meta: &mut SchedulerMetadata,
-    out: &mut [(*mut u8, usize); MAX_TASKS],
-    count: &mut usize,
-) {
-    for slot_idx in 0..MAX_TASKS {
-        if meta.slots[slot_idx].used
-            && !meta.slots[slot_idx].stack_base.is_null()
-            && *count < MAX_TASKS
-        {
-            out[*count] = (
-                meta.slots[slot_idx].stack_base,
-                meta.slots[slot_idx].stack_size,
-            );
-            *count += 1;
-        }
-    }
-
-    // Also collect any zombie stacks that were just reaped.
-    for i in 0..meta.pending_free_count {
-        if *count < MAX_TASKS {
-            out[*count] = meta.pending_free_stacks[i];
-            *count += 1;
-        }
-    }
-}
 
 /// Clears all volatile scheduling state after a stop request.
 ///
@@ -1015,12 +953,10 @@ fn reset_scheduler_state(meta: &mut SchedulerMetadata) {
     meta.bootstrap_frame = ptr::null_mut();
     meta.running_slot = None;
     meta.current_queue_pos = 0;
-    meta.task_count = 0;
     meta.tick_count = 0;
-    meta.run_queue = [0; MAX_TASKS];
-    meta.slots = [TaskEntry::empty(); MAX_TASKS];
-    meta.pending_free_stacks = [(ptr::null_mut(), 0); MAX_TASKS];
-    meta.pending_free_count = 0;
+    meta.run_queue.clear();
+    meta.slots.clear();
+    meta.pending_free_stacks.clear();
 }
 
 /// Selects the next runnable task in round-robin order and returns its frame.
@@ -1038,7 +974,7 @@ fn select_next_task(
     // Step 1: Close out the previous running mark before selecting the next slot.
     // Keep explicit non-running states (Blocked/Zombie) untouched.
     if let Some(previous_slot) = meta.running_slot {
-        if previous_slot < MAX_TASKS
+        if previous_slot < meta.slots.len()
             && meta.slots[previous_slot].used
             && meta.slots[previous_slot].state == TaskState::Running
         {
@@ -1046,22 +982,25 @@ fn select_next_task(
         }
     }
 
+    let task_count = meta.run_queue.len();
+
     let base_pos = if let Some(slot) = detected_slot {
-        (0..meta.task_count)
-            .find(|pos| meta.run_queue[*pos] == slot)
+        meta.run_queue
+            .iter()
+            .position(|&s| s == slot)
             .unwrap_or(meta.current_queue_pos)
     } else {
         meta.current_queue_pos
     };
 
-    let search_start_pos = (base_pos + 1) % meta.task_count;
+    let search_start_pos = (base_pos + 1) % task_count;
 
     let mut selected_pos = None;
     let mut selected_slot = 0usize;
     let mut selected_frame = ptr::null_mut();
 
-    for step in 0..meta.task_count {
-        let pos = (search_start_pos + step) % meta.task_count;
+    for step in 0..task_count {
+        let pos = (search_start_pos + step) % task_count;
         let slot = meta.run_queue[pos];
 
         // Skip non-runnable tasks (blocked or zombie).
@@ -1110,8 +1049,12 @@ fn select_next_task(
 /// task in round-robin order, and returns the frame pointer to resume.
 pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters {
     // Stacks to free after releasing the scheduler lock.
-    let mut stacks_to_free = [(ptr::null_mut(), 0usize); MAX_TASKS];
-    let mut free_count = 0;
+    // Populated via `core::mem::take` which swaps `pending_free_stacks` with an
+    // empty Vec — zero allocation on the take, and deallocation happens outside
+    // the lock.  Declared without initialisation: Rust's definite-initialisation
+    // analysis ensures the only path that does NOT assign this variable
+    // (`!meta.started`) returns before this binding is ever used or dropped.
+    let mut stacks_to_free: Vec<(*mut u8, usize)>;
 
     let result = {
         let mut sched = SCHED.lock();
@@ -1127,12 +1070,12 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
         // drained below, after the bootstrap frame detection.
         reap_zombies(meta);
 
-        if meta.task_count == 0 {
+        if meta.run_queue.is_empty() {
             meta.running_slot = None;
-            drain_pending_stacks_into(meta, &mut stacks_to_free, &mut free_count);
+            stacks_to_free = core::mem::take(&mut meta.pending_free_stacks);
             let frame = bootstrap_or_current(meta, current_frame);
             drop(sched);
-            free_pending_stacks(&stacks_to_free[..free_count]);
+            free_pending_stacks(&stacks_to_free);
 
             return frame;
         }
@@ -1149,16 +1092,25 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
             meta.bootstrap_frame = current_frame;
         }
 
-        // Bootstrap frame detection is done; drain pending-free stacks for
-        // deallocation after the lock is released.
-        drain_pending_stacks_into(meta, &mut stacks_to_free, &mut free_count);
+        // Bootstrap frame detection is done; take pending-free stacks for
+        // deallocation after the lock is released.  `mem::take` replaces
+        // `pending_free_stacks` with an empty Vec (no allocation).
+        stacks_to_free = core::mem::take(&mut meta.pending_free_stacks);
 
         if meta.stop_requested {
-            collect_all_task_stacks(meta, &mut stacks_to_free, &mut free_count);
+            // Collect stacks from all active slots and append to stacks_to_free.
+            // pending_free_stacks was already taken above, so only active slots remain.
+            for slot in meta.slots.iter() {
+                if slot.used && !slot.stack_base.is_null() {
+                    if stacks_to_free.try_reserve(1).is_ok() {
+                        stacks_to_free.push((slot.stack_base, slot.stack_size));
+                    }
+                }
+            }
             let return_frame = bootstrap_or_current(meta, current_frame);
             reset_scheduler_state(meta);
             drop(sched);
-            free_pending_stacks(&stacks_to_free[..free_count]);
+            free_pending_stacks(&stacks_to_free);
 
             return return_frame;
         }
@@ -1171,7 +1123,7 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
             // This avoids corrupting RR state when called with a foreign frame pointer.
             let frame = meta.slots[running_slot].frame_ptr;
             drop(sched);
-            free_pending_stacks(&stacks_to_free[..free_count]);
+            free_pending_stacks(&stacks_to_free);
 
             return frame;
         }
@@ -1180,7 +1132,7 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
     };
 
     // Free stacks from previous tick after releasing the scheduler lock.
-    free_pending_stacks(&stacks_to_free[..free_count]);
+    free_pending_stacks(&stacks_to_free);
 
     result
 }
@@ -1200,7 +1152,7 @@ fn free_pending_stacks(stacks: &[(*mut u8, usize)]) {
 /// Primarily intended for integration tests and diagnostics.
 pub fn task_frame_ptr(task_id: usize) -> Option<*mut SavedRegisters> {
     with_sched(|meta| {
-        if task_id >= MAX_TASKS || !meta.slots[task_id].used {
+        if task_id >= meta.slots.len() || !meta.slots[task_id].used {
             None
         } else {
             Some(meta.slots[task_id].frame_ptr)
@@ -1214,7 +1166,7 @@ pub fn task_frame_ptr(task_id: usize) -> Option<*mut SavedRegisters> {
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn task_iret_frame(task_id: usize) -> Option<InterruptStackFrame> {
     with_sched(|meta| {
-        if task_id >= MAX_TASKS || !meta.slots[task_id].used {
+        if task_id >= meta.slots.len() || !meta.slots[task_id].used {
             return None;
         }
         let frame_ptr = meta.slots[task_id].frame_ptr as usize;
@@ -1237,7 +1189,7 @@ pub fn current_task_id() -> Option<usize> {
 /// unblocked via [`unblock_task`].
 pub fn block_task(task_id: usize) {
     with_sched(|meta| {
-        if task_id < MAX_TASKS
+        if task_id < meta.slots.len()
             && meta.slots[task_id].used
             && meta.slots[task_id].state != TaskState::Blocked
         {
@@ -1252,7 +1204,7 @@ pub fn block_task(task_id: usize) {
 /// interrupt masking internally).
 pub fn unblock_task(task_id: usize) {
     with_sched(|meta| {
-        if task_id < MAX_TASKS
+        if task_id < meta.slots.len()
             && meta.slots[task_id].used
             && meta.slots[task_id].state == TaskState::Blocked
         {
@@ -1314,7 +1266,7 @@ pub fn wait_for_task_exit_with<FAlive, FYield>(
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn set_task_user_context(task_id: usize, cr3: u64, user_rsp: u64, kernel_rsp_top: u64) -> bool {
     with_sched(|meta| {
-        if task_id >= MAX_TASKS || !meta.slots[task_id].used {
+        if task_id >= meta.slots.len() || !meta.slots[task_id].used {
             return false;
         }
 
@@ -1331,7 +1283,7 @@ pub fn set_task_user_context(task_id: usize, cr3: u64, user_rsp: u64, kernel_rsp
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn is_user_task(task_id: usize) -> bool {
     with_sched(|meta| {
-        task_id < MAX_TASKS && meta.slots[task_id].used && meta.slots[task_id].is_user
+        task_id < meta.slots.len() && meta.slots[task_id].used && meta.slots[task_id].is_user
     })
 }
 
@@ -1339,7 +1291,7 @@ pub fn is_user_task(task_id: usize) -> bool {
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn task_context(task_id: usize) -> Option<(u64, u64, u64)> {
     with_sched(|meta| {
-        if task_id >= MAX_TASKS || !meta.slots[task_id].used {
+        if task_id >= meta.slots.len() || !meta.slots[task_id].used {
             None
         } else {
             let slot = &meta.slots[task_id];
@@ -1352,7 +1304,7 @@ pub fn task_context(task_id: usize) -> Option<(u64, u64, u64)> {
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn task_state(task_id: usize) -> Option<TaskState> {
     with_sched(|meta| {
-        if task_id >= MAX_TASKS || !meta.slots[task_id].used {
+        if task_id >= meta.slots.len() || !meta.slots[task_id].used {
             None
         } else {
             Some(meta.slots[task_id].state)
