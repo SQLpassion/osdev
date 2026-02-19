@@ -23,10 +23,6 @@ const SCANCODE_TABLE_LEN: usize = 0x59;
 /// Ring buffer capacity (must be > 1)
 const INPUT_BUFFER_CAPACITY: usize = 256;
 const RAW_BUFFER_CAPACITY: usize = 64;
-// Maximum number of tasks that may concurrently wait for keyboard input.
-// With the slot-based WaitQueue design, task_ids are stored as values, so
-// this is independent of how large task_ids grow.
-const INPUT_WAITERS_CAPACITY: usize = 8;
 
 /// Lower-case QWERTZ scan code map (printable ASCII only; 0 == ignored)
 const SCANCODES_LOWER: [u8; SCANCODE_TABLE_LEN] = [
@@ -93,7 +89,7 @@ static KEYBOARD_STATE: SpinLock<KeyboardState> = SpinLock::new(KeyboardState::ne
 static RAW_WAITQUEUE: SingleWaitQueue = SingleWaitQueue::new();
 
 /// Wakes consumer tasks when decoded characters are available.
-static INPUT_WAITQUEUE: WaitQueue<INPUT_WAITERS_CAPACITY> = WaitQueue::new();
+static INPUT_WAITQUEUE: WaitQueue = WaitQueue::new();
 
 /// Initialize the keyboard driver state.
 pub fn init() {
@@ -146,7 +142,7 @@ pub fn read_char_blocking() -> u8 {
 
         if waitqueue_adapter::sleep_if_multi(&INPUT_WAITQUEUE, task_id, || {
             KEYBOARD.buffer.is_empty()
-        }) {
+        }).should_yield() {
             scheduler::yield_now();
         }
     }
@@ -174,7 +170,9 @@ pub extern "C" fn keyboard_worker_task() -> ! {
         // `sleep_if` checks `is_empty()` with interrupts disabled so an IRQ
         // that fires between the pop-loop above and this point does not cause
         // a lost wakeup.
-        if waitqueue_adapter::sleep_if_single(&RAW_WAITQUEUE, task_id, || KEYBOARD.raw.is_empty()) {
+        if waitqueue_adapter::sleep_if_single(&RAW_WAITQUEUE, task_id, || KEYBOARD.raw.is_empty())
+            .should_yield()
+        {
             scheduler::yield_now();
         }
     }

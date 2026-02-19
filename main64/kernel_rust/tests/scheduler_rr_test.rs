@@ -1045,7 +1045,7 @@ fn test_scheduler_reinit_clears_blocked_state_from_previous_run() {
 /// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_waitqueue_wake_all_returns_all_registered_waiters_once() {
-    let q: WaitQueue<8> = WaitQueue::new();
+    let q: WaitQueue = WaitQueue::new();
 
     assert!(q.register_waiter(1), "register waiter 1 must succeed");
     assert!(q.register_waiter(3), "register waiter 3 must succeed");
@@ -1099,25 +1099,25 @@ fn test_single_waitqueue_wake_all_wakes_one_and_clears_slot() {
     );
 }
 
-/// Contract: WaitQueue registration fails only when all slots are occupied.
+/// Contract: WaitQueue accepts arbitrarily many waiters and re-registration is idempotent.
 /// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
 /// When: The exact operation sequence in this function is executed against that state.
-/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "WaitQueue registration fails only when all slots are occupied".
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "WaitQueue accepts arbitrarily many waiters and re-registration is idempotent".
 /// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
-fn test_waitqueue_register_fails_when_all_slots_full() {
-    let q: WaitQueue<4> = WaitQueue::new();
+fn test_waitqueue_accepts_many_waiters_and_idempotent_reregistration() {
+    let q: WaitQueue = WaitQueue::new();
 
-    // Large task_ids (formerly rejected by the index-based design) must succeed.
-    assert!(q.register_waiter(100), "slot 0: large task_id must be accepted");
-    assert!(q.register_waiter(200), "slot 1");
-    assert!(q.register_waiter(300), "slot 2");
-    assert!(q.register_waiter(400), "slot 3");
+    // Large task_ids must succeed — no sentinel or index limit exists.
+    assert!(q.register_waiter(100), "large task_id must be accepted");
+    assert!(q.register_waiter(200), "second registration must succeed");
+    assert!(q.register_waiter(300), "third registration must succeed");
+    assert!(q.register_waiter(400), "fourth registration must succeed");
 
-    // All 4 slots occupied — any further registration must fail.
+    // Dynamic queue: further registrations succeed as long as heap is available.
     assert!(
-        !q.register_waiter(500),
-        "queue full – must reject when all slots occupied"
+        q.register_waiter(500),
+        "dynamic queue must accept more than the former static limit"
     );
 
     // Re-registering an already-registered task_id is idempotent.
@@ -1336,10 +1336,10 @@ fn test_waitqueue_adapter_blocks_then_wakes_task() {
     let _task_b = sched::spawn_kernel_task(dummy_task_b).expect("task B should spawn");
     let frame_a = sched::task_frame_ptr(task_a).expect("task A frame should exist");
 
-    let q: WaitQueue<8> = WaitQueue::new();
-    let blocked = waitqueue_adapter::sleep_if_multi(&q, task_a, || true);
+    let q: WaitQueue = WaitQueue::new();
+    let outcome = waitqueue_adapter::sleep_if_multi(&q, task_a, || true);
     assert!(
-        blocked,
+        matches!(outcome, waitqueue_adapter::SleepOutcome::Blocked),
         "sleep_if_multi should block when predicate is true"
     );
 

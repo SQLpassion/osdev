@@ -3,97 +3,72 @@
 //! This module only tracks waiter registration.  Blocking/unblocking tasks is
 //! handled by adapter functions in `waitqueue_adapter.rs`.
 
-use core::sync::atomic::{AtomicUsize, Ordering};
+extern crate alloc;
+use alloc::vec::Vec;
 
-/// Sentinel value meaning "slot is empty".
-const NO_WAITER: usize = usize::MAX;
+use crate::sync::spinlock::SpinLock;
 
 /// Multi-waiter queue with wake-all semantics.
 ///
-/// `N` is the maximum number of concurrently registered waiters.
-/// Task IDs are stored as values in slots — not used as indices —
-/// so any task_id is valid regardless of its magnitude, **except**
-/// `usize::MAX` which is reserved as the `NO_WAITER` sentinel.
-/// Task IDs originate from `Vec` indices in the scheduler, so
-/// `usize::MAX` is structurally unreachable in practice.
-pub struct WaitQueue<const N: usize> {
-    slots: [AtomicUsize; N],
+/// Waiters are stored in a heap-allocated `Vec`, so capacity is bounded only
+/// by available heap memory.  Any `task_id` value is valid — there is no
+/// sentinel that limits the usable ID range.
+///
+/// Concurrent access is serialised by an internal `SpinLock`.  The lock
+/// disables interrupts while held, so this type is safe to use from both
+/// task context and IRQ handlers.
+pub struct WaitQueue {
+    waiters: SpinLock<Vec<usize>>,
 }
 
-impl<const N: usize> WaitQueue<N> {
+impl WaitQueue {
     pub const fn new() -> Self {
         Self {
-            slots: [const { AtomicUsize::new(NO_WAITER) }; N],
+            // `Vec::new()` and `SpinLock::new()` are both `const fn`,
+            // so `WaitQueue` can be used as a `static`.
+            waiters: SpinLock::new(Vec::new()),
         }
     }
 
     /// Registers `task_id` as a waiter.
     ///
-    /// Returns `false` only when all `N` slots are already occupied by other
-    /// task IDs.  Re-registration of the same `task_id` is idempotent.
-    ///
-    /// On a single-core kernel this must be called with interrupts disabled so
-    /// the scan-then-CAS sequence is not interrupted.
+    /// Returns `false` only on heap-allocation failure (OOM).
+    /// Re-registration of the same `task_id` is idempotent.
     pub fn register_waiter(&self, task_id: usize) -> bool {
-        // `usize::MAX` is the NO_WAITER sentinel — passing it would silently
-        // be treated as "slot already empty" and corrupt queue state.
-        debug_assert!(
-            task_id != NO_WAITER,
-            "register_waiter: task_id == usize::MAX collides with NO_WAITER sentinel"
-        );
-
-        // Single pass: remember the first empty slot while checking for an
-        // existing registration of this task_id.
-        let mut first_empty: Option<&AtomicUsize> = None;
-        for slot in self.slots.iter() {
-            let current = slot.load(Ordering::Acquire);
-            if current == task_id {
-                return true; // already registered – idempotent
-            }
-            if current == NO_WAITER && first_empty.is_none() {
-                first_empty = Some(slot);
-            }
+        let mut w = self.waiters.lock();
+        if w.contains(&task_id) {
+            return true; // already registered – idempotent
         }
-        // Claim the first empty slot found.
-        if let Some(slot) = first_empty {
-            // With interrupts disabled (single-core) this CAS always succeeds;
-            // kept for correctness on future SMP paths.
-            slot.compare_exchange(NO_WAITER, task_id, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-        } else {
-            false // all N slots occupied
+        // Use try_reserve to avoid a panic (via the alloc-error handler)
+        // inside the spinlock, where interrupts are already disabled.
+        if w.try_reserve(1).is_err() {
+            return false; // OOM — caller treats this as QueueFull
         }
+        w.push(task_id);
+        true
     }
 
     /// Removes the registration for `task_id`.
     pub fn clear_waiter(&self, task_id: usize) {
-        for slot in self.slots.iter() {
-            if slot
-                .compare_exchange(task_id, NO_WAITER, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-            {
-                return;
-            }
-        }
+        self.waiters.lock().retain(|&id| id != task_id);
     }
 
     /// Atomically drains every registered waiter and calls `wake` for each.
+    ///
+    /// The waiter list is drained under the internal lock via `mem::take`
+    /// (zero allocation), then `wake` is called for each entry *outside* the
+    /// lock.  This avoids holding the WaitQueue lock while acquiring the
+    /// scheduler lock inside `wake`.
     pub fn wake_all(&self, mut wake: impl FnMut(usize)) {
-        for slot in self.slots.iter() {
-            let task_id = slot.swap(NO_WAITER, Ordering::AcqRel);
-            if task_id != NO_WAITER {
-                wake(task_id);
-            }
+        let to_wake = core::mem::take(&mut *self.waiters.lock());
+        for task_id in to_wake {
+            wake(task_id);
         }
     }
 }
 
-impl<const N: usize> Default for WaitQueue<N> {
+impl Default for WaitQueue {
     fn default() -> Self {
         Self::new()
     }
 }
-
-// SAFETY: All fields are atomic — no shared mutable state.
-unsafe impl<const N: usize> Sync for WaitQueue<N> {}
-unsafe impl<const N: usize> Send for WaitQueue<N> {}
