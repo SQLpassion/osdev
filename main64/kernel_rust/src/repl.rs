@@ -152,17 +152,6 @@ fn execute_command(line: &str) {
                 .unwrap();
                 writeln!(screen, "  vmmtest [--debug] - run VMM smoke test").unwrap();
                 writeln!(screen, "  heaptest        - run heap self-test").unwrap();
-                writeln!(screen, "  userdemo        - run ring-3 console demo task").unwrap();
-                writeln!(
-                    screen,
-                    "  echodemo        - run ring-3 echo demo (GetChar syscall)"
-                )
-                .unwrap();
-                writeln!(
-                    screen,
-                    "  readlinedemo    - run ring-3 readline demo (user_readline)"
-                )
-                .unwrap();
                 writeln!(
                     screen,
                     "  cursordemo      - run ring-3 cursor syscall demo (GetCursor/SetCursor)"
@@ -280,15 +269,6 @@ fn execute_command(line: &str) {
         }
         "heaptest" => {
             with_screen(heap::run_self_test);
-        }
-        "userdemo" => {
-            user_tasks::run_user_mode_serial_demo();
-        }
-        "echodemo" => {
-            user_tasks::run_user_mode_echo_demo();
-        }
-        "readlinedemo" => {
-            user_tasks::run_user_mode_readline_demo();
         }
         "cursordemo" => {
             user_tasks::run_user_mode_cursor_demo();

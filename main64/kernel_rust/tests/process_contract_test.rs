@@ -41,22 +41,32 @@ fn panic(info: &PanicInfo) -> ! {
 /// Contract: process entry/stack/image constants stay aligned to VMM layout.
 #[test_case]
 fn test_process_constants_match_vmm_layout() {
+    let entry_rip = core::hint::black_box(process::USER_PROGRAM_ENTRY_RIP);
+    let user_code_base = core::hint::black_box(vmm::USER_CODE_BASE);
     assert!(
-        process::USER_PROGRAM_ENTRY_RIP == vmm::USER_CODE_BASE,
+        entry_rip == user_code_base,
         "user entry rip must stay anchored at USER_CODE_BASE"
     );
+
+    let max_image_size = core::hint::black_box(process::USER_PROGRAM_MAX_IMAGE_SIZE);
+    let user_code_size = core::hint::black_box(vmm::USER_CODE_SIZE as usize);
     assert!(
-        process::USER_PROGRAM_MAX_IMAGE_SIZE == vmm::USER_CODE_SIZE as usize,
+        max_image_size == user_code_size,
         "max image size must match USER_CODE_SIZE window"
     );
+
+    let initial_rsp = core::hint::black_box(process::USER_PROGRAM_INITIAL_RSP);
+    let expected_rsp =
+        core::hint::black_box(vmm::USER_STACK_TOP - process::USER_PROGRAM_STACK_ALIGNMENT);
     assert!(
-        process::USER_PROGRAM_INITIAL_RSP
-            == vmm::USER_STACK_TOP - process::USER_PROGRAM_STACK_ALIGNMENT,
+        initial_rsp == expected_rsp,
         "initial rsp must be derived from USER_STACK_TOP and configured alignment"
     );
+
+    let stack_base = core::hint::black_box(vmm::USER_STACK_BASE);
+    let stack_top = core::hint::black_box(vmm::USER_STACK_TOP);
     assert!(
-        process::USER_PROGRAM_INITIAL_RSP >= vmm::USER_STACK_BASE
-            && process::USER_PROGRAM_INITIAL_RSP < vmm::USER_STACK_TOP,
+        initial_rsp >= stack_base && initial_rsp < stack_top,
         "initial rsp must lie within user stack mapping range"
     );
 }
@@ -64,8 +74,10 @@ fn test_process_constants_match_vmm_layout() {
 /// Contract: initial user stack pointer remains 16-byte aligned.
 #[test_case]
 fn test_initial_user_rsp_is_aligned() {
+    let initial_rsp = core::hint::black_box(process::USER_PROGRAM_INITIAL_RSP);
+    let alignment = core::hint::black_box(process::USER_PROGRAM_STACK_ALIGNMENT);
     assert!(
-        process::USER_PROGRAM_INITIAL_RSP % process::USER_PROGRAM_STACK_ALIGNMENT == 0,
+        initial_rsp.is_multiple_of(alignment),
         "initial user rsp must stay aligned for ABI-compatible user code"
     );
 }
@@ -107,7 +119,10 @@ fn test_loaded_program_descriptor_roundtrip() {
         descriptor.user_rsp == process::USER_PROGRAM_INITIAL_RSP,
         "user rsp must be preserved"
     );
-    assert!(descriptor.image_len == 4096, "image length must be preserved");
+    assert!(
+        descriptor.image_len == 4096,
+        "image length must be preserved"
+    );
     assert!(
         descriptor.code_page_count == 1,
         "code page count must be preserved"
@@ -121,8 +136,9 @@ fn test_exec_error_variant_distinction() {
         process::ExecError::InvalidName != process::ExecError::NotFound,
         "distinct exec failure causes must not collapse into one variant"
     );
+    let io_err = core::hint::black_box(process::ExecError::Io);
     assert!(
-        process::ExecError::Io == process::ExecError::Io,
+        io_err == process::ExecError::Io,
         "same exec failure cause must compare equal"
     );
     assert!(
@@ -145,8 +161,7 @@ fn test_exec_error_display_messages() {
         "OutOfMemory display text must stay stable"
     );
     assert!(
-        alloc::format!("{}", process::ExecError::Io)
-            == "I/O error while loading program",
+        alloc::format!("{}", process::ExecError::Io) == "I/O error while loading program",
         "Io display text must stay stable"
     );
 }
@@ -158,10 +173,7 @@ fn test_load_program_image_reads_hello_bin() {
 
     let image = process::load_program_image("hello.bin")
         .expect("hello.bin must be loadable via process FAT12 loader");
-    assert!(
-        !image.is_empty(),
-        "loaded user image must contain bytes"
-    );
+    assert!(!image.is_empty(), "loaded user image must contain bytes");
     assert!(
         image.len() <= process::USER_PROGRAM_MAX_IMAGE_SIZE,
         "loaded user image must fit configured executable mapping window"
@@ -221,15 +233,16 @@ fn test_validate_program_image_len_enforces_upper_bound() {
 /// Contract: image-length validator distinguishes empty image and oversized image.
 #[test_case]
 fn test_validate_program_image_len_distinguishes_empty_and_oversized() {
-    let empty_err = process::validate_program_image_len(0)
-        .expect_err("zero-length image must be rejected");
+    let empty_err =
+        process::validate_program_image_len(0).expect_err("zero-length image must be rejected");
     assert!(
         matches!(empty_err, process::ExecError::EmptyImage),
         "empty image must map to ExecError::EmptyImage"
     );
 
-    let oversized_err = process::validate_program_image_len(process::USER_PROGRAM_MAX_IMAGE_SIZE + 1)
-        .expect_err("oversized image must be rejected");
+    let oversized_err =
+        process::validate_program_image_len(process::USER_PROGRAM_MAX_IMAGE_SIZE + 1)
+            .expect_err("oversized image must be rejected");
     assert!(
         matches!(oversized_err, process::ExecError::FileTooLarge),
         "oversized image must map to ExecError::FileTooLarge"
@@ -275,11 +288,7 @@ fn test_map_program_image_into_user_address_space_maps_copy_and_permissions() {
         "mapped program descriptor must preserve source image length"
     );
 
-    let code_page_count = if loaded.image_len == 0 {
-        0
-    } else {
-        (loaded.image_len + pmm::PAGE_SIZE as usize - 1) / pmm::PAGE_SIZE as usize
-    };
+    let code_page_count = loaded.image_len.div_ceil(pmm::PAGE_SIZE as usize);
     assert!(
         loaded.code_page_count == code_page_count,
         "loaded descriptor must preserve precomputed code page count"
@@ -496,11 +505,8 @@ fn test_exec_from_fat12_maps_spawn_failure_to_spawn_failed() {
     scheduler::set_kernel_address_space_cr3(vmm::get_pml4_address());
 
     let mut filler_task_ids = Vec::new();
-    loop {
-        match scheduler::spawn_kernel_task(parked_kernel_task) {
-            Ok(task_id) => filler_task_ids.push(task_id),
-            Err(_) => break,
-        }
+    while let Ok(task_id) = scheduler::spawn_kernel_task(parked_kernel_task) {
+        filler_task_ids.push(task_id);
     }
 
     assert!(
