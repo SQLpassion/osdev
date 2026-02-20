@@ -1128,6 +1128,46 @@ fn test_waitqueue_accepts_many_waiters_and_idempotent_reregistration() {
     );
 }
 
+/// Contract: waitqueue remains FIFO across multiple wake cycles.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "waitqueue remains FIFO across multiple wake cycles".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_waitqueue_fifo_order_is_stable_across_wake_cycles() {
+    let q: WaitQueue = WaitQueue::new();
+
+    assert!(q.register_waiter(10), "register waiter 10 must succeed");
+    assert!(q.register_waiter(20), "register waiter 20 must succeed");
+    assert!(q.register_waiter(30), "register waiter 30 must succeed");
+
+    let mut first_cycle = [usize::MAX; 3];
+    let mut first_count = 0usize;
+    q.wake_all(|task_id| {
+        first_cycle[first_count] = task_id;
+        first_count += 1;
+    });
+
+    assert!(first_count == 3, "first wake cycle must wake all waiters");
+    assert!(first_cycle[0] == 10, "first waiter must wake first");
+    assert!(first_cycle[1] == 20, "second waiter must wake second");
+    assert!(first_cycle[2] == 30, "third waiter must wake third");
+
+    assert!(q.register_waiter(40), "register waiter 40 must succeed");
+    assert!(q.register_waiter(50), "register waiter 50 must succeed");
+
+    let mut second_cycle = [usize::MAX; 2];
+    let mut second_count = 0usize;
+    q.wake_all(|task_id| {
+        second_cycle[second_count] = task_id;
+        second_count += 1;
+    });
+
+    assert!(second_count == 2, "second wake cycle must wake all waiters");
+    assert!(second_cycle[0] == 40, "fourth waiter must wake first");
+    assert!(second_cycle[1] == 50, "fifth waiter must wake second");
+}
+
 /// Contract: single waitqueue register second waiter is rejected.
 /// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
 /// When: The exact operation sequence in this function is executed against that state.
