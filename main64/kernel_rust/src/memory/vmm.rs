@@ -1118,7 +1118,42 @@ pub fn try_handle_page_fault(virtual_address: u64, error_code: u64) -> Result<()
     let writable = !matches!(user_region, Some(UserRegion::Code));
     let no_execute = matches!(user_region, Some(UserRegion::Stack));
 
-    // Step 1: ensure the page-table path exists; propagate OOM instead of panicking.
+    // Step 1: user-stack faults grow downward stack pages on demand.
+    if matches!(user_region, Some(UserRegion::Stack)) {
+        return demand_map_user_stack_growth(virtual_address, fault_address_raw, error_code);
+    }
+
+    // Step 2: non-stack faults use single-page demand mapping.
+    demand_map_leaf_page(
+        virtual_address,
+        user_access,
+        writable,
+        no_execute,
+        fault_address_raw,
+        error_code,
+    )
+}
+
+/// Returns whether a present leaf mapping exists for `virtual_address`.
+#[inline]
+fn is_leaf_present(virtual_address: u64) -> bool {
+    let Some(pt) = pt_for_if_present(virtual_address) else {
+        return false;
+    };
+
+    pt.entries[pt_index(virtual_address)].present()
+}
+
+/// Ensures one virtual page is mapped according to demand-paging policy.
+fn demand_map_leaf_page(
+    virtual_address: u64,
+    user_access: bool,
+    writable: bool,
+    no_execute: bool,
+    fault_address_raw: u64,
+    error_code: u64,
+) -> Result<(), PageFaultError> {
+    // Step 1: ensure page-table path exists for this VA; OOM is recoverable.
     if populate_page_table_path(virtual_address, user_access).is_err() {
         return Err(PageFaultError::OutOfMemory {
             virtual_address: fault_address_raw,
@@ -1129,9 +1164,8 @@ pub fn try_handle_page_fault(virtual_address: u64, error_code: u64) -> Result<()
     let pt = table_at(pt_table_addr(virtual_address));
     let pt_idx = pt_index(virtual_address);
 
-    // Allocate a leaf page only when page is currently non-present.
+    // Step 2: allocate and zero only when the leaf is currently non-present.
     if !pt.entries[pt_idx].present() {
-        // Step 2: allocate a leaf frame for demand mapping; OOM is a recoverable error.
         let Some(new_page_phys) = alloc_frame_phys() else {
             return Err(PageFaultError::OutOfMemory {
                 virtual_address: fault_address_raw,
@@ -1139,22 +1173,16 @@ pub fn try_handle_page_fault(virtual_address: u64, error_code: u64) -> Result<()
             });
         };
 
-        // Map writable first so zero-fill is valid even when final mapping
-        // should be read-only (e.g. user code pages).
+        // Map writable first so zero-fill is valid even for final read-only pages.
         pt.entries[pt_idx].set_mapping(phys_to_pfn(new_page_phys), true, true, user_access);
         invlpg(virtual_address);
         zero_virt_page(virtual_address);
 
-        // Tighten final permissions after zero-fill.
-        // Both changes (writable downgrade + NX) share a single invlpg to avoid
-        // redundant TLB invalidations.
+        // Step 3: tighten final permissions and NX policy after zero-fill.
         if !writable {
             pt.entries[pt_idx].set_writable(false);
         }
-
         if no_execute {
-            // Mark stack pages as non-executable to prevent code injection
-            // via stack buffer overflows (requires EFER.NXE from longmode.asm).
             pt.entries[pt_idx].set_no_execute(true);
         }
         if !writable || no_execute {
@@ -1162,6 +1190,38 @@ pub fn try_handle_page_fault(virtual_address: u64, error_code: u64) -> Result<()
         }
 
         debug_alloc("PT", pt_idx, pt.entries[pt_idx].frame());
+    }
+
+    Ok(())
+}
+
+/// Grows the user stack downward from `fault_page_va` up to the nearest mapped page above it.
+///
+/// This keeps stack growth contiguous in virtual space even when the fault lands
+/// several pages below the current mapped top due to large stack adjustments.
+fn demand_map_user_stack_growth(
+    fault_page_va: u64,
+    fault_address_raw: u64,
+    error_code: u64,
+) -> Result<(), PageFaultError> {
+    // Step 1: find the first already-mapped stack page above the fault.
+    // If none exists, grow at most up to `USER_STACK_TOP`.
+    let mut upper_bound_exclusive = USER_STACK_TOP;
+    let mut probe_va = fault_page_va.saturating_add(SMALL_PAGE_SIZE);
+    while probe_va < USER_STACK_TOP {
+        if is_leaf_present(probe_va) {
+            upper_bound_exclusive = probe_va;
+            break;
+        }
+        probe_va = probe_va.saturating_add(SMALL_PAGE_SIZE);
+    }
+
+    // Step 2: map the missing range [fault_page_va, upper_bound_exclusive) as
+    // writable + NX user stack pages.
+    let mut map_va = fault_page_va;
+    while map_va < upper_bound_exclusive {
+        demand_map_leaf_page(map_va, true, true, true, fault_address_raw, error_code)?;
+        map_va = map_va.saturating_add(SMALL_PAGE_SIZE);
     }
 
     Ok(())

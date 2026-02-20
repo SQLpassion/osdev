@@ -569,8 +569,7 @@ fn test_map_user_page_sets_no_execute_bit_on_stack_page() {
     vmm::unmap_virtual_address(stack_va);
 
     let frame = pmm::with_pmm(|mgr| mgr.alloc_frame().expect("stack frame alloc failed"));
-    vmm::map_user_page(stack_va, frame.pfn, true)
-        .expect("stack page should map successfully");
+    vmm::map_user_page(stack_va, frame.pfn, true).expect("stack page should map successfully");
 
     // Stack pages must be non-executable to prevent code injection via stack overflows.
     // EFER.NXE is activated in kaosldr_16/longmode.asm; bit 63 in the PTE is only
@@ -601,7 +600,10 @@ fn test_map_user_page_clears_no_execute_bit_on_code_page() {
 
     let nx_writable = vmm::debug_no_execute_flag_for_va(code_va)
         .expect("mapped code VA must have a present leaf PTE after writable map");
-    assert!(!nx_writable, "code leaf PTE must not have No-Execute bit after writable map");
+    assert!(
+        !nx_writable,
+        "code leaf PTE must not have No-Execute bit after writable map"
+    );
 
     // Step 2: permission-update path — same PFN, read-only (mirrors the loader's second pass).
     vmm::map_user_page(code_va, frame.pfn, false)
@@ -609,7 +611,10 @@ fn test_map_user_page_clears_no_execute_bit_on_code_page() {
 
     let nx_readonly = vmm::debug_no_execute_flag_for_va(code_va)
         .expect("mapped code VA must have a present leaf PTE after read-only remap");
-    assert!(!nx_readonly, "code leaf PTE must not have No-Execute bit after read-only remap");
+    assert!(
+        !nx_readonly,
+        "code leaf PTE must not have No-Execute bit after read-only remap"
+    );
 
     vmm::unmap_virtual_address(code_va);
 }
@@ -632,9 +637,68 @@ fn test_fault_mapped_stack_page_has_no_execute_bit_set() {
     // The demand-paging path must apply NX to stack pages to prevent injection attacks.
     let nx = vmm::debug_no_execute_flag_for_va(stack_va)
         .expect("demand-mapped stack VA must have a present leaf PTE");
-    assert!(nx, "demand-mapped stack leaf PTE must have No-Execute bit set");
+    assert!(
+        nx,
+        "demand-mapped stack leaf PTE must have No-Execute bit set"
+    );
 
     vmm::unmap_virtual_address(stack_va);
+}
+
+/// Contract: user stack fault grows contiguous pages up to mapped stack top.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "user stack fault grows contiguous pages up to mapped stack top".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_user_stack_fault_grows_contiguous_pages_up_to_mapped_top() {
+    let top_page_va = vmm::USER_STACK_TOP - 4096;
+    let mid_page_va = vmm::USER_STACK_TOP - 8192;
+    let deep_page_va = vmm::USER_STACK_TOP - 12288;
+
+    // Step 1: Prepare deterministic stack layout: only top bootstrap page mapped.
+    vmm::unmap_virtual_address(deep_page_va);
+    vmm::unmap_virtual_address(mid_page_va);
+    vmm::unmap_virtual_address(top_page_va);
+
+    let top_frame = pmm::with_pmm(|mgr| mgr.alloc_frame().expect("top stack frame alloc failed"));
+    vmm::map_user_page(top_page_va, top_frame.pfn, true)
+        .expect("top bootstrap stack page should map successfully");
+
+    // Step 2: Faulting three pages below top must backfill missing intermediate pages.
+    vmm::try_handle_page_fault(deep_page_va, 0x4)
+        .expect("deep user stack non-present fault should trigger stack growth");
+
+    // Step 3: Verify contiguous stack growth pages are now mapped as user+writable+NX.
+    let deep_flags = vmm::debug_mapping_flags_for_va(deep_page_va)
+        .expect("deep stack page should be mapped after demand growth");
+    let mid_flags = vmm::debug_mapping_flags_for_va(mid_page_va)
+        .expect("intermediate stack page should be mapped after demand growth");
+    let top_flags = vmm::debug_mapping_flags_for_va(top_page_va)
+        .expect("top stack page should remain mapped after demand growth");
+    assert!(
+        deep_flags == (true, true, true, true, true),
+        "deep stack page must have user path bits set and writable leaf"
+    );
+    assert!(
+        mid_flags == (true, true, true, true, true),
+        "intermediate stack page must have user path bits set and writable leaf"
+    );
+    assert!(
+        top_flags == (true, true, true, true, true),
+        "top stack page must keep user path bits set and writable leaf"
+    );
+
+    let deep_nx = vmm::debug_no_execute_flag_for_va(deep_page_va)
+        .expect("deep stack page must have a present leaf PTE");
+    let mid_nx = vmm::debug_no_execute_flag_for_va(mid_page_va)
+        .expect("intermediate stack page must have a present leaf PTE");
+    assert!(deep_nx, "deep stack page must be non-executable");
+    assert!(mid_nx, "intermediate stack page must be non-executable");
+
+    vmm::unmap_virtual_address(deep_page_va);
+    vmm::unmap_virtual_address(mid_page_va);
+    vmm::unmap_virtual_address(top_page_va);
 }
 
 /// Contract: fault mapped code page has no execute bit clear.
@@ -655,7 +719,10 @@ fn test_fault_mapped_code_page_has_no_execute_bit_clear() {
     // Code pages must remain executable: No-Execute bit must NOT be set.
     let nx = vmm::debug_no_execute_flag_for_va(code_va)
         .expect("demand-mapped code VA must have a present leaf PTE");
-    assert!(!nx, "demand-mapped code leaf PTE must not have No-Execute bit set");
+    assert!(
+        !nx,
+        "demand-mapped code leaf PTE must not have No-Execute bit set"
+    );
 
     vmm::unmap_virtual_address(code_va);
 }
@@ -690,7 +757,11 @@ fn release_held_pfns(held_pfns: &[u64]) {
     pmm::with_pmm(|mgr| {
         // Restore all held frames so following tests (or cleanup paths) stay unaffected.
         for &pfn in held_pfns {
-            assert!(mgr.release_pfn(pfn), "failed to release held PFN 0x{:x}", pfn);
+            assert!(
+                mgr.release_pfn(pfn),
+                "failed to release held PFN 0x{:x}",
+                pfn
+            );
         }
     });
 }
