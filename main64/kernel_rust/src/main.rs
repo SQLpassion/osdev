@@ -15,7 +15,7 @@ mod io;
 mod logging;
 mod memory;
 mod panic;
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 mod process;
 mod repl;
 mod scheduler;

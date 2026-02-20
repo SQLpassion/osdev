@@ -39,7 +39,7 @@ pub const fn normalize_echo_input_byte(ch: u8) -> u8 {
 /// This invokes syscall `Yield` and returns `Ok(())` on success.
 /// Any kernel error sentinel is translated to `SysError`.
 #[inline(always)]
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn sys_yield() -> Result<(), SysError> {
     let raw_value = unsafe {
         // SAFETY:

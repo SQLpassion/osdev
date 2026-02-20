@@ -22,7 +22,7 @@ const DEFAULT_ROWS: usize = 25;
 
 /// VGA Colors (matching C defines in screen.h)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 #[repr(u8)]
 pub enum Color {
     Black = 0,

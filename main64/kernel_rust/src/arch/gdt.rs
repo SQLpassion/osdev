@@ -44,7 +44,7 @@ pub const USER_CODE_SELECTOR: u16 = (USER_CODE_INDEX << 3) | RPL_RING3;
 pub const USER_DATA_SELECTOR: u16 = (USER_DATA_INDEX << 3) | RPL_RING3;
 
 /// TSS selector.
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub const TSS_SELECTOR: u16 = TSS_INDEX << 3;
 
 // x86 descriptor access-byte bits.

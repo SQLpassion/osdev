@@ -288,7 +288,7 @@ pub struct PageFrame {
 
     /// Internal: index of the memory region this frame belongs to.
     /// Kept for future PMM diagnostics and debugging capabilities.
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), allow(dead_code))]
     region_index: u32,
 }
 
