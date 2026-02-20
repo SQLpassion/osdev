@@ -122,6 +122,35 @@ fn test_heap_merge_allows_large_alloc() {
     heap::free(ptr3);
 }
 
+/// Contract: heap coalesces both neighbors around a middle free.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "heap coalesces both neighbors around a middle free".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_heap_coalesces_prev_and_next_neighbors() {
+    heap::init(false);
+    let ptr1 = heap::malloc(128);
+    let ptr2 = heap::malloc(128);
+    let ptr3 = heap::malloc(128);
+    assert!(
+        !ptr1.is_null() && !ptr2.is_null() && !ptr3.is_null(),
+        "allocations should succeed"
+    );
+
+    // Free outer blocks first, then free the middle block to force two-sided coalescing.
+    heap::free(ptr1);
+    heap::free(ptr3);
+    heap::free(ptr2);
+
+    let merged = heap::malloc(320);
+    assert!(
+        merged == ptr1,
+        "coalescing previous and next neighbors should produce one large block at first address"
+    );
+    heap::free(merged);
+}
+
 /// Contract: heap alignment for small allocs.
 /// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
 /// When: The exact operation sequence in this function is executed against that state.
@@ -296,7 +325,10 @@ fn test_heap_rejects_double_free_and_remains_usable() {
 fn test_heap_self_test_is_non_destructive_for_live_allocations() {
     heap::init(false);
     let ptr = heap::malloc(64);
-    assert!(!ptr.is_null(), "precondition: allocation before self-test must succeed");
+    assert!(
+        !ptr.is_null(),
+        "precondition: allocation before self-test must succeed"
+    );
 
     // SAFETY:
     // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
