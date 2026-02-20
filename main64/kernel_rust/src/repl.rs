@@ -32,6 +32,7 @@ static mut KERNEL_SIZE: u64 = 0;
 ///
 /// # Safety
 /// - This requires `unsafe` because it performs operations that Rust marks as potentially violating memory or concurrency invariants.
+///
 /// Must be called exactly once, before any task is spawned.
 pub fn set_kernel_size(size: u64) {
     unsafe {

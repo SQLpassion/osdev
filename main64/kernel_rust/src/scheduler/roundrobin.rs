@@ -481,13 +481,10 @@ fn find_entry_by_frame(
         return None;
     }
 
-    for &slot in meta.run_queue.iter() {
-        if meta.slots[slot].used && meta.slots[slot].is_frame_within_stack(frame_ptr) {
-            return Some(slot);
-        }
-    }
-
-    None
+    meta.run_queue
+        .iter()
+        .find(|&&slot| meta.slots[slot].used && meta.slots[slot].is_frame_within_stack(frame_ptr))
+        .copied()
 }
 
 /// Returns `true` when `frame_ptr` lies within any scheduler-owned task stack,
@@ -610,13 +607,12 @@ fn remove_task(meta: &mut SchedulerMetadata, task_id: usize) -> bool {
     // safe. OOM here would be a stack leak, but is structurally unreachable:
     // the list is drained to empty on every timer tick, so its length is
     // bounded by the number of tasks terminated since the previous tick.
-    if !meta.slots[task_id].stack_base.is_null() {
-        if meta.pending_free_stacks.try_reserve(1).is_ok() {
-            meta.pending_free_stacks.push((
-                meta.slots[task_id].stack_base,
-                meta.slots[task_id].stack_size,
-            ));
-        }
+    if !meta.slots[task_id].stack_base.is_null() && meta.pending_free_stacks.try_reserve(1).is_ok()
+    {
+        meta.pending_free_stacks.push((
+            meta.slots[task_id].stack_base,
+            meta.slots[task_id].stack_size,
+        ));
     }
 
     // Step 4: compact the run queue by removing the entry at `removed_pos`.
@@ -672,10 +668,8 @@ pub fn init() {
         // An OOM here leaks one 64 KiB stack per failed reservation, but that
         // is far safer than a panic with interrupts disabled.
         for slot in meta.slots.iter() {
-            if slot.used && !slot.stack_base.is_null() {
-                if stacks_to_free.try_reserve(1).is_ok() {
-                    stacks_to_free.push((slot.stack_base, slot.stack_size));
-                }
+            if slot.used && !slot.stack_base.is_null() && stacks_to_free.try_reserve(1).is_ok() {
+                stacks_to_free.push((slot.stack_base, slot.stack_size));
             }
         }
 
@@ -779,7 +773,7 @@ fn spawn_internal(kind: SpawnKind) -> Result<usize, SpawnError> {
         // be appended. Slot indices are stable: the Vec grows but never shrinks.
         let (slot_idx, is_new_slot) = match meta.slots.iter().position(|s| !s.used) {
             Some(i) => (i, false),
-            None    => (meta.slots.len(), true),
+            None => (meta.slots.len(), true),
         };
 
         // Pre-reserve Vec capacity so the actual push operations are infallible.
@@ -966,7 +960,6 @@ fn bootstrap_or_current(
     }
 }
 
-
 /// Clears all volatile scheduling state after a stop request.
 ///
 /// Address-space configuration and `initialized` are preserved so the
@@ -1012,7 +1005,10 @@ fn select_next_task(
     // arithmetic below. `on_timer_tick` already enforces this via its
     // `run_queue.is_empty()` early-return, but the assert catches future
     // call sites that might miss the precondition.
-    debug_assert!(task_count > 0, "select_next_task called with empty run_queue");
+    debug_assert!(
+        task_count > 0,
+        "select_next_task called with empty run_queue"
+    );
 
     let base_pos = if let Some(slot) = detected_slot {
         meta.run_queue
@@ -1131,10 +1127,9 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
             // Collect stacks from all active slots and append to stacks_to_free.
             // pending_free_stacks was already taken above, so only active slots remain.
             for slot in meta.slots.iter() {
-                if slot.used && !slot.stack_base.is_null() {
-                    if stacks_to_free.try_reserve(1).is_ok() {
-                        stacks_to_free.push((slot.stack_base, slot.stack_size));
-                    }
+                if slot.used && !slot.stack_base.is_null() && stacks_to_free.try_reserve(1).is_ok()
+                {
+                    stacks_to_free.push((slot.stack_base, slot.stack_size));
                 }
             }
             let return_frame = bootstrap_or_current(meta, current_frame);

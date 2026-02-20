@@ -73,6 +73,7 @@ pub fn sys_yield() -> Result<(), SysError> {
 ///
 /// # Safety
 /// - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
+///
 /// Caller must ensure that `ptr..ptr+len` is readable in the current
 /// user/kernel context expected by the syscall boundary.
 #[inline(always)]
@@ -107,6 +108,7 @@ pub unsafe fn sys_write_serial(ptr: *const u8, len: usize) -> Result<usize, SysE
 ///
 /// # Safety
 /// - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
+///
 /// Caller must ensure that `ptr..ptr+len` is readable in the current
 /// user/kernel context expected by the syscall boundary.
 #[inline(always)]
