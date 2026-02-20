@@ -63,6 +63,10 @@ unsafe fn zero_bss() {
 pub extern "C" fn KernelMain(kernel_size: u64) -> ! {
     // Zero BSS before touching any static variable — physical hardware
     // does not guarantee zeroed RAM (QEMU does, hiding this bug).
+    // SAFETY:
+    // - This requires `unsafe` because it performs operations that Rust marks as potentially violating memory or concurrency invariants.
+    // - Called exactly once at early boot before static state is used.
+    // - Linker symbols define a valid writable BSS range.
     unsafe { zero_bss(); }
 
     // Initialize debug serial output first for early debugging
@@ -135,6 +139,10 @@ pub extern "C" fn KernelMain(kernel_size: u64) -> ! {
 /// Low-power idle loop entered after the scheduler is started.
 fn idle_loop() -> ! {
     loop {
+        // SAFETY:
+        // - This requires `unsafe` because inline assembly and privileged CPU instructions are outside Rust's static safety model.
+        // - `hlt` is valid in ring 0 and used for intentional idle waiting.
+        // - Interrupt handlers wake the CPU and resume control flow.
         unsafe {
             core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
         }

@@ -187,6 +187,7 @@ fn map_userdemo_task_pages(target_cr3: u64) -> Result<(), &'static str> {
 fn write_userdemo_message_page(target_cr3: u64) -> Result<(), &'static str> {
     vmm::with_address_space(target_cr3, || {
         // SAFETY:
+        // - This requires `unsafe` because raw memory copy operations require manually proving non-overlap and valid ranges.
         // - `USER_SERIAL_TASK_MSG_VA` is mapped in `map_userdemo_task_pages`.
         // - Message length fits into one mapped 4 KiB message page.
         unsafe {
@@ -209,6 +210,7 @@ fn write_userdemo_message_page(target_cr3: u64) -> Result<(), &'static str> {
 /// 3. `Exit(0)`
 extern "C" fn userdemo_ring3_task() -> ! {
     // SAFETY:
+    // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
     // - `USER_SERIAL_TASK_MSG_VA` points to a mapped user-readable buffer.
     // - `USER_SERIAL_TASK_MSG_LEN` bytes were copied into that page.
     unsafe {

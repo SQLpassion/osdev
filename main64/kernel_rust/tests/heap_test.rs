@@ -58,6 +58,7 @@ fn test_heap_alloc_free_round_trip() {
     );
 
     // SAFETY:
+    // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
     // - `ptr` is returned by `heap::malloc`, so it is valid and writable.
     // - We only access one byte within the allocated region.
     unsafe {
@@ -174,6 +175,7 @@ fn test_heap_large_allocation_requires_growth() {
     );
 
     // SAFETY:
+    // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
     // - `ptr` is returned by `heap::malloc(4096)`, so 4096 bytes are valid.
     // - We only touch the last byte within that allocation.
     unsafe {
@@ -204,6 +206,7 @@ fn test_heap_large_allocation_requires_multiple_growth_steps() {
     );
 
     // SAFETY:
+    // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
     // - `ptr` is returned by `heap::malloc(9000)`, so 9000 bytes are valid.
     // - We only touch the last byte within that allocation.
     unsafe {
@@ -249,6 +252,7 @@ fn test_heap_rejects_invalid_free_and_remains_usable() {
     assert!(!ptr.is_null(), "allocation should succeed");
 
     // SAFETY:
+    // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
     // - `ptr` points to a valid allocation.
     // - `ptr.add(1)` intentionally creates an invalid payload pointer for `free`.
     unsafe {
@@ -388,10 +392,15 @@ fn test_global_allocator_round_trip() {
     heap::init(false);
     let layout = Layout::from_size_align(32, 8).unwrap();
 
+    // SAFETY:
+    // - This requires `unsafe` because manual allocator calls require upholding allocation and layout contracts that Rust cannot enforce.
+    // - `layout` has non-zero size and valid alignment.
+    // - Global allocator is initialized via `heap::init(false)` above.
     let ptr = unsafe { GLOBAL_ALLOCATOR.alloc(layout) };
     assert!(!ptr.is_null(), "global allocator should return a pointer");
 
     // SAFETY:
+    // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
     // - `ptr` was allocated with at least 32 bytes.
     // - We only touch the first byte of the allocation.
     unsafe {
@@ -414,6 +423,10 @@ fn test_global_allocator_round_trip() {
 fn test_global_allocator_supports_overaligned_layout() {
     heap::init(false);
     let layout = Layout::from_size_align(64, 64).unwrap();
+    // SAFETY:
+    // - This requires `unsafe` because manual allocator calls require upholding allocation and layout contracts that Rust cannot enforce.
+    // - `layout` has non-zero size and power-of-two alignment.
+    // - Global allocator is initialized via `heap::init(false)` above.
     let ptr = unsafe { GLOBAL_ALLOCATOR.alloc(layout) };
     assert!(!ptr.is_null(), "over-aligned allocation should succeed");
     assert!(
@@ -422,6 +435,7 @@ fn test_global_allocator_supports_overaligned_layout() {
     );
 
     // SAFETY:
+    // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
     // - `ptr` was allocated for 64 bytes with alignment 64.
     // - Access stays within allocation bounds.
     unsafe {

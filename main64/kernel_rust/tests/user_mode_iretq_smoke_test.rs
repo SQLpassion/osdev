@@ -64,6 +64,7 @@ fn write_user_stub(code_va: u64, flag_va: u64, flag_value: u8) {
     code[12] = 0xFE;
 
     // SAFETY:
+    // - This requires `unsafe` because raw memory copy operations require manually proving non-overlap and valid ranges.
     // - `code_va` points to a mapped writable user page prepared by test setup.
     // - Copy length is exactly the assembled stub length.
     unsafe {
@@ -74,6 +75,7 @@ fn write_user_stub(code_va: u64, flag_va: u64, flag_value: u8) {
 extern "C" fn observer_task() -> ! {
     loop {
         // SAFETY: `USER_FLAG_VA` is mapped before this task is spawned.
+        // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
         let value = unsafe { core::ptr::read_volatile(USER_FLAG_VA as *const u8) };
         if value == USER_FLAG_VALUE {
             USER_TASK_OBSERVED.store(true, Ordering::Release);
@@ -117,6 +119,7 @@ fn test_one_user_task_is_reached_via_scheduler_irq_iretq_path() {
 
     // Ensure flag is initially zero.
     // SAFETY: `USER_FLAG_VA` is mapped writable above.
+    // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
     unsafe {
         core::ptr::write_volatile(USER_FLAG_VA as *mut u8, 0);
     }

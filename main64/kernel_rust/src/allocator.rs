@@ -21,6 +21,7 @@ fn aligned_backref_slot(aligned_ptr: *mut u8) -> *mut *mut u8 {
 }
 
 // SAFETY:
+// - This requires `unsafe` because the compiler cannot automatically verify the thread-safety invariants of this `unsafe impl`.
 // - `heap::malloc`/`heap::free` provide exclusive access internally via a spinlock.
 // - The heap returns pointers within a valid mapped region.
 unsafe impl GlobalAlloc for KernelAllocator {
@@ -55,6 +56,7 @@ unsafe impl GlobalAlloc for KernelAllocator {
         let aligned_ptr = aligned_addr as *mut u8;
 
         // SAFETY:
+        // - This requires `unsafe` because it performs operations that Rust marks as potentially violating memory or concurrency invariants.
         // - `aligned_ptr` lies within the over-allocated region returned by `heap::malloc`.
         // - One pointer-sized slot before `aligned_ptr` is reserved for storing `raw_ptr`.
         unsafe {
@@ -74,6 +76,7 @@ unsafe impl GlobalAlloc for KernelAllocator {
         }
 
         // SAFETY:
+        // - This requires `unsafe` because it performs operations that Rust marks as potentially violating memory or concurrency invariants.
         // - For over-aligned allocations, `alloc` stored the original heap pointer
         //   one pointer-sized slot before `ptr`.
         let raw_ptr = unsafe { core::ptr::read(aligned_backref_slot(ptr)) };

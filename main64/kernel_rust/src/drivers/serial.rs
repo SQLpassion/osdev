@@ -44,6 +44,10 @@ impl Serial {
     ///
     /// Sets up 115200 baud, 8 data bits, no parity, 1 stop bit (8N1)
     pub fn init(&self) {
+        // SAFETY:
+        // - This requires `unsafe` because hardware port I/O is inherently outside Rust's memory-safety guarantees.
+        // - COM1 register ports are valid hardware I/O targets in ring 0.
+        // - Sequence programs UART configuration registers only.
         unsafe {
             let interrupt_enable = PortByte::new(self.base_port + INTERRUPT_ENABLE);
             let fifo_control = PortByte::new(self.base_port + FIFO_CONTROL);
@@ -78,6 +82,10 @@ impl Serial {
 
     /// Check if the transmit buffer is empty and ready for data
     fn is_transmit_empty(&self) -> bool {
+        // SAFETY:
+        // - This requires `unsafe` because hardware port I/O is inherently outside Rust's memory-safety guarantees.
+        // - Reads UART line-status register at COM1 base.
+        // - No memory aliasing or pointer dereference involved.
         unsafe {
             let line_status = PortByte::new(self.base_port + LINE_STATUS);
             (line_status.read() & LINE_STATUS_THRE) != 0
@@ -91,6 +99,10 @@ impl Serial {
             core::hint::spin_loop();
         }
 
+        // SAFETY:
+        // - This requires `unsafe` because hardware port I/O is inherently outside Rust's memory-safety guarantees.
+        // - DATA register write is valid after THRE indicates transmitter ready.
+        // - Port targets COM1 data register configured by this driver.
         unsafe {
             let data = PortByte::new(self.base_port + DATA_REGISTER);
             data.write(byte);

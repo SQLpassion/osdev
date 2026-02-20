@@ -149,6 +149,7 @@ fn map_echo_task_pages(target_cr3: u64) -> Result<(), &'static str> {
 fn write_echo_data_page(target_cr3: u64) -> Result<(), &'static str> {
     vmm::with_address_space(target_cr3, || {
         // SAFETY: USER_ECHO_TASK_DATA_VA is mapped in map_echo_task_pages.
+        // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
         unsafe {
             let base = USER_ECHO_TASK_DATA_VA as *mut u8;
 
@@ -192,6 +193,7 @@ fn write_echo_data_page(target_cr3: u64) -> Result<(), &'static str> {
 extern "C" fn echo_ring3_task() -> ! {
     // Print welcome message.
     // SAFETY: USER_ECHO_TASK_DATA_VA points to the initialized readonly data page.
+    // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
     unsafe {
         let welcome_ptr = (USER_ECHO_TASK_DATA_VA + USER_ECHO_WELCOME_OFFSET as u64) as *const u8;
         let _ = syscall::user::sys_write_console(welcome_ptr, USER_ECHO_WELCOME_MSG.len());
@@ -203,6 +205,7 @@ extern "C" fn echo_ring3_task() -> ! {
             Ok(ch) => ch,
             Err(_) => {
                 // SAFETY: ERR segment is inside the initialized data page.
+                // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
                 unsafe {
                     let err_ptr =
                         (USER_ECHO_TASK_DATA_VA + USER_ECHO_ERR_OFFSET as u64) as *const u8;
@@ -216,6 +219,7 @@ extern "C" fn echo_ring3_task() -> ! {
         // ESC key (0x1B) - exit.
         if ch == 0x1B {
             // SAFETY: EXIT segment is inside the initialized data page.
+            // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
             unsafe {
                 let exit_ptr = (USER_ECHO_TASK_DATA_VA + USER_ECHO_EXIT_OFFSET as u64) as *const u8;
                 let _ = syscall::user::sys_write_console(exit_ptr, USER_ECHO_EXIT_MSG.len());
@@ -230,6 +234,7 @@ extern "C" fn echo_ring3_task() -> ! {
         let echo_ch = syscall::user::normalize_echo_input_byte(ch);
 
         // SAFETY: `&echo_ch` is valid for one byte for the duration of the syscall.
+        // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
         unsafe {
             let _ = syscall::user::sys_write_console(&echo_ch as *const u8, 1);
         }

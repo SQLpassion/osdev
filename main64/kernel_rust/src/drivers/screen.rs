@@ -125,6 +125,10 @@ impl Screen {
 
     /// Write a character to the VGA buffer (volatile write)
     fn write_vga(&self, row: usize, col: usize, ch: VgaChar) {
+        // SAFETY:
+        // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
+        // - `vga_ptr(row, col)` computes an in-bounds MMIO cell address.
+        // - Volatile write is required for VGA memory-mapped I/O semantics.
         unsafe {
             ptr::write_volatile(self.vga_ptr(row, col), ch);
         }
@@ -245,6 +249,10 @@ impl Screen {
             // The VGA buffer is MMIO, so every read/write must be volatile
             // to prevent the compiler from reordering or eliding them.
             let count = (self.num_rows - 1) * self.num_cols;
+            // SAFETY:
+            // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
+            // - `src` and `dst` point to valid VGA rows and range is in-bounds.
+            // - Volatile accesses preserve MMIO ordering semantics.
             unsafe {
                 let dst = self.vga_ptr(0, 0);
                 let src = self.vga_ptr(1, 0);
@@ -272,6 +280,10 @@ impl Screen {
     fn update_cursor(&self) {
         let pos = (self.row * self.num_cols + self.col) as u16;
 
+        // SAFETY:
+        // - This requires `unsafe` because hardware port I/O is inherently outside Rust's memory-safety guarantees.
+        // - VGA controller cursor ports are valid on x86 text mode hardware.
+        // - Writes only program cursor position registers.
         unsafe {
             let ctrl = PortByte::new(VGA_CTRL_REGISTER);
             let data = PortByte::new(VGA_DATA_REGISTER);

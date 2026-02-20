@@ -153,6 +153,7 @@ pub fn init(debug_output: bool) -> usize {
     let heap_end = HEAP_START_OFFSET + INITIAL_HEAP_SIZE;
 
     // SAFETY:
+    // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
     // - `heap_start..heap_end` is the reserved kernel heap region.
     // - The VMM will demand-map pages on access.
     // - We only zero the initial heap range.
@@ -161,6 +162,7 @@ pub fn init(debug_output: bool) -> usize {
     }
 
     // SAFETY:
+    // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
     // - `heap_start` is aligned and points to the start of the heap.
     // - The heap range is writable.
     unsafe {
@@ -291,6 +293,7 @@ pub fn free(ptr: *mut u8) {
         };
 
         // SAFETY:
+        // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
         // - `block` was found via a full heap walk matching `payload_ptr(block) == ptr`.
         // - Therefore it points to a valid block header.
         let header = unsafe { &mut *block };
@@ -339,6 +342,7 @@ fn find_block_in_heap(state: &HeapState, size: usize) -> Option<*mut HeapBlockHe
     let mut current = state.heap_start;
     while current < state.heap_end {
         // SAFETY:
+        // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
         // - `current` is within the heap bounds.
         // - The heap region is mapped on demand.
         let header = unsafe { &*header_at(current) };
@@ -368,6 +372,7 @@ fn find_block_by_payload_ptr(state: &HeapState, ptr: *mut u8) -> Option<*mut Hea
     let mut current = state.heap_start;
     while current < state.heap_end {
         // SAFETY:
+        // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
         // - `current` is within heap bounds and points to a block header.
         let header = unsafe { &*header_at(current) };
         let block_size = header.size();
@@ -391,6 +396,7 @@ fn find_block_by_payload_ptr(state: &HeapState, ptr: *mut u8) -> Option<*mut Hea
 
 fn allocate_block(block: *mut HeapBlockHeader, size: usize) {
     // SAFETY:
+    // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
     // - `block` points to a valid heap block header.
     // - `size` is aligned and includes the header.
     unsafe {
@@ -421,6 +427,7 @@ fn merge_free_blocks(state: &mut HeapState) -> usize {
     let mut current = state.heap_start;
     while current < state.heap_end {
         // SAFETY:
+        // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
         // - `current` is within the heap.
         let header = unsafe { &mut *header_at(current) };
         let size = header.size();
@@ -447,6 +454,7 @@ fn merge_free_blocks(state: &mut HeapState) -> usize {
             }
 
             // SAFETY:
+            // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
             // - `next_addr` is within the heap.
             let next_header = unsafe { &*header_at(next_addr) };
             let next_size = next_header.size();
@@ -506,6 +514,7 @@ fn grow_heap(state: &mut HeapState, amount: usize) -> bool {
     };
 
     // SAFETY:
+    // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
     // - `old_end` is the previous heap end, so it is safe to place a new block there.
     // - Pages are mapped on demand via the VMM.
     unsafe {
@@ -529,6 +538,7 @@ fn compute_heap_growth_for_request(required_block_size: usize) -> usize {
 /// This helper is intended for heap self-tests to validate internal layout.
 fn read_block_metadata(base: usize, offset: usize) -> (usize, bool) {
     // SAFETY:
+    // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
     // - Caller ensures `base + offset` points into the heap.
     unsafe {
         let header = &*header_at(base + offset);

@@ -259,6 +259,10 @@ fn log_release(pfn: u64, region_index: u32) {
 
 #[inline]
 /// Sets a single bit in the PMM bitmap.
+///
+/// # Safety
+/// `base` must point to a valid writable bitmap word array and `idx` must be
+/// within the bitmap range.
 unsafe fn set_bit(idx: u64, base: *mut u64) {
     let word = base.add((idx / 64) as usize);
     let mask = 1u64 << (idx % 64);
@@ -268,6 +272,10 @@ unsafe fn set_bit(idx: u64, base: *mut u64) {
 #[inline]
 #[cfg_attr(not(test), allow(dead_code))]
 /// Clears a single bit in the PMM bitmap.
+///
+/// # Safety
+/// `base` must point to a valid writable bitmap word array and `idx` must be
+/// within the bitmap range.
 unsafe fn clear_bit(idx: u64, base: *mut u64) {
     let word = base.add((idx / 64) as usize);
     let mask = 1u64 << (idx % 64);
@@ -385,6 +393,7 @@ pub struct PhysicalMemoryManager {
 }
 
 // SAFETY: PhysicalMemoryManager contains a raw pointer to static physical memory.
+// - This requires `unsafe` because the compiler cannot automatically verify the thread-safety invariants of this `unsafe impl`.
 // Access is synchronized via SpinLock, and the pointer is never sent across threads
 // unsafely. The PMM layout is stable after initialization.
 unsafe impl Send for PhysicalMemoryManager {}
@@ -392,6 +401,11 @@ unsafe impl Send for PhysicalMemoryManager {}
 impl PhysicalMemoryManager {
     /// Returns a mutable slice over the PMM region array stored after the header.
     fn regions(&mut self) -> &mut [PmmRegion] {
+        // SAFETY:
+        // - This requires `unsafe` because constructing a slice from a raw pointer requires manually proving pointer validity and bounds.
+        // - `self.header` is initialized in `new()` before this method is used.
+        // - `region_count` and `regions_ptr` belong to the in-memory PMM layout.
+        // - The returned mutable slice is tied to `&mut self`, preventing aliasing.
         unsafe {
             let count = (*self.header).region_count as usize;
             let regions_ptr = (*self.header).regions_ptr;
@@ -402,6 +416,10 @@ impl PhysicalMemoryManager {
     /// Constructs the PMM layout and initializes region metadata.
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
+        // SAFETY:
+        // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
+        // - Bootloader populated BIOS data at fixed offsets before kernel entry.
+        // - `BIB_OFFSET` and `MEMORYMAP_OFFSET` point to valid static data.
         let (bib, region) = unsafe {
             (
                 (bios::BIB_OFFSET as *mut BiosInformationBlock)
@@ -412,10 +430,16 @@ impl PhysicalMemoryManager {
         };
 
         // Place PMM layout right after the kernel image (including BSS), aligned to 4K.
+        // SAFETY: `__bss_end` is a linker-defined symbol with static lifetime.
+        // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
         let kernel_end_virt = unsafe { &__bss_end as *const u8 as u64 };
         let kernel_end_phys = virt_to_phys(kernel_end_virt);
         let start_addr = align_up(kernel_end_phys, PAGE_SIZE);
         let header = start_addr as *mut PmmLayoutHeader;
+        // SAFETY:
+        // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
+        // - `header` points into reserved physical memory owned by PMM metadata.
+        // - We initialize the layout header exactly once during PMM construction.
         unsafe {
             (*header).region_count = 0;
             (*header).padding = 0;
@@ -429,11 +453,17 @@ impl PhysicalMemoryManager {
         let mut count = 0u32;
 
         for i in 0..bib.memory_map_entries as usize {
+            // SAFETY:
+            // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
+            // - `i` is bounded by `memory_map_entries`.
+            // - `region` points to a contiguous BIOS memory map array.
             let r = unsafe { &*region.add(i) };
             if r.region_type == 1 && r.start >= KERNEL_OFFSET {
                 count += 1;
             }
         }
+        // SAFETY: `header` is valid and writable during PMM initialization.
+        // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
         unsafe {
             (*header).region_count = count;
         }
@@ -444,6 +474,10 @@ impl PhysicalMemoryManager {
         let mut idx = 0usize;
 
         for i in 0..bib.memory_map_entries as usize {
+            // SAFETY:
+            // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
+            // - `i` is bounded by `memory_map_entries`.
+            // - `region` points to a contiguous BIOS memory map array.
             let r = unsafe { &*region.add(i) };
 
             if r.region_type == 1 && r.start >= KERNEL_OFFSET {
@@ -467,6 +501,10 @@ impl PhysicalMemoryManager {
 
         for r in regions.iter_mut() {
             r.bitmap_start = bitmap_base;
+            // SAFETY:
+            // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
+            // - `bitmap_start..bitmap_start+bitmap_bytes` is PMM-owned metadata memory.
+            // - We clear each bitmap once before allocator use.
             unsafe {
                 core::ptr::write_bytes(r.bitmap_start as *mut u8, 0, r.bitmap_bytes as usize)
             };
@@ -506,6 +544,10 @@ impl PhysicalMemoryManager {
             let bitmap = r.bitmap_start as *mut u64;
 
             for bit in first_bit..end_bit {
+                // SAFETY:
+                // - This requires `unsafe` because it performs operations that Rust marks as potentially violating memory or concurrency invariants.
+                // - `bit` is within the region bitmap bounds derived from overlap.
+                // - `bitmap` points to writable PMM bitmap memory.
                 unsafe { set_bit(bit, bitmap) };
                 r.frames_free -= 1;
             }
@@ -526,6 +568,10 @@ impl PhysicalMemoryManager {
             let bitmap = r.bitmap_start as *mut u64;
 
             for w in 0..words {
+                // SAFETY:
+                // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
+                // - `w < words` and `words == bitmap_bytes/8`, so `bitmap.add(w)` is in-bounds.
+                // - `bitmap` points to PMM-owned bitmap memory.
                 let val = unsafe { *bitmap.add(w) };
 
                 if val != u64::MAX {
@@ -533,6 +579,10 @@ impl PhysicalMemoryManager {
                     let bit_idx = (w as u64) * 64 + free_bit;
 
                     if bit_idx < r.frames_total {
+                        // SAFETY:
+                        // - This requires `unsafe` because it performs operations that Rust marks as potentially violating memory or concurrency invariants.
+                        // - `bit_idx < frames_total` ensures valid bit index for this region.
+                        // - `bitmap` points to writable PMM bitmap memory.
                         unsafe { set_bit(bit_idx, bitmap) };
                         r.frames_free -= 1;
 
@@ -568,13 +618,23 @@ impl PhysicalMemoryManager {
             let bitmap = r.bitmap_start as *mut u64;
             let word_idx = (bit_idx / 64) as usize;
             let bit_mask = 1u64 << (bit_idx % 64);
+            // SAFETY:
+            // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
+            // - `bit_idx` is derived from a PFN proven to be inside this region.
+            // - Therefore `word_idx` addresses a valid bitmap word.
             let word_ptr = unsafe { bitmap.add(word_idx) };
+            // SAFETY: `word_ptr` points to a valid bitmap word for this region.
+            // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
             let word_val = unsafe { *word_ptr };
 
             if (word_val & bit_mask) == 0 {
                 return false;
             }
 
+            // SAFETY:
+            // - This requires `unsafe` because it performs operations that Rust marks as potentially violating memory or concurrency invariants.
+            // - `bit_idx` belongs to this region and currently marks an allocated frame.
+            // - `bitmap` points to writable PMM bitmap memory.
             unsafe { clear_bit(bit_idx, bitmap) };
             r.frames_free += 1;
             log_release(pfn, region_index as u32);

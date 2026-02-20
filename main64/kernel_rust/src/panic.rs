@@ -28,6 +28,10 @@ fn panic(info: &PanicInfo) -> ! {
 
     // Halt the CPU
     loop {
+        // SAFETY:
+        // - This requires `unsafe` because inline assembly and privileged CPU instructions are outside Rust's static safety model.
+        // - Panic path intentionally stops all forward progress.
+        // - `cli`/`hlt` are privileged instructions and valid in ring 0.
         unsafe {
             core::arch::asm!("cli"); // Disable interrupts
             core::arch::asm!("hlt"); // Halt

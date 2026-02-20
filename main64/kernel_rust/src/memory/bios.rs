@@ -55,6 +55,10 @@ pub struct BiosMemoryRegion {
 impl BiosInformationBlock {
     /// Prints the memory map that we have obtained from the BIOS in x16 Real Mode.
     pub fn print_memory_map(screen: &mut Screen) {
+        // SAFETY:
+        // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
+        // - `BIB_OFFSET` points to bootloader-populated BIOS info in low memory.
+        // - Data is read-only from kernel perspective.
         let bib = unsafe { &*(BIB_OFFSET as *const BiosInformationBlock) };
 
         let region = MEMORYMAP_OFFSET as *const BiosMemoryRegion;
@@ -70,6 +74,10 @@ impl BiosInformationBlock {
 
         // Loop over each entry
         for i in 0..entry_count {
+            // SAFETY:
+            // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
+            // - `i` is bounded by `entry_count` from BIOS information block.
+            // - `region` points to contiguous BIOS memory map entries.
             let current_region = unsafe { &*region.add(i) };
 
             // Set color based on region type

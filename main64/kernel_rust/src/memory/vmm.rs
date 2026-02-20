@@ -411,6 +411,7 @@ fn phys_to_pfn(addr: u64) -> u64 {
 fn read_cr3() -> u64 {
     let val: u64;
     // SAFETY:
+    // - This requires `unsafe` because inline assembly and privileged CPU instructions are outside Rust's static safety model.
     // - Reading CR3 is privileged and valid in ring 0.
     // - Does not dereference memory.
     unsafe {
@@ -424,6 +425,7 @@ fn read_cr3() -> u64 {
 /// Caller contract: `val` must point to a valid PML4 frame.
 fn write_cr3(val: u64) {
     // SAFETY:
+    // - This requires `unsafe` because inline assembly and privileged CPU instructions are outside Rust's static safety model.
     // - Caller guarantees `val` points to a valid PML4 root frame.
     // - Executed only in ring 0.
     unsafe {
@@ -436,6 +438,7 @@ fn write_cr3(val: u64) {
 /// Caller contract: must run in ring 0 on x86_64.
 fn invlpg(addr: u64) {
     // SAFETY:
+    // - This requires `unsafe` because inline assembly and privileged CPU instructions are outside Rust's static safety model.
     // - `invlpg` is privileged and valid in ring 0.
     // - Operand is treated as an address tag for TLB invalidation.
     unsafe {
@@ -456,6 +459,10 @@ unsafe fn enable_global_pages() {
     const CR4_PGE: u64 = 1 << 7; // Page Global Enable bit
 
     let mut cr4: u64;
+    // SAFETY:
+    // - This requires `unsafe` because inline assembly and privileged CPU instructions are outside Rust's static safety model.
+    // - Accessing CR4 is privileged and valid in ring 0.
+    // - This sequence only toggles CR4.PGE and preserves all other CR4 bits.
     unsafe {
         // Read current CR4 value
         asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack, preserves_flags));
@@ -531,6 +538,7 @@ fn alloc_frame_phys_or_panic(context: &str) -> u64 {
 #[inline]
 fn table_at(addr: u64) -> &'static mut PageTable {
     // SAFETY:
+    // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
     // - Caller guarantees `addr` points to a mapped page table page.
     // - Returned reference is used under page-table ownership conventions.
     unsafe { &mut *(addr as *mut PageTable) }
@@ -542,6 +550,7 @@ fn table_at(addr: u64) -> &'static mut PageTable {
 #[inline]
 fn zero_phys_page(addr: u64) {
     // SAFETY:
+    // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
     // - Caller guarantees `addr` is writable and page-aligned.
     // - Writes exactly one 4 KiB page.
     unsafe {
@@ -553,6 +562,7 @@ fn zero_phys_page(addr: u64) {
 #[inline]
 fn zero_virt_page(addr: u64) {
     // SAFETY:
+    // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
     // - Caller guarantees `addr` points to a currently mapped writable page.
     // - Writes exactly one 4 KiB page.
     unsafe {
@@ -574,6 +584,7 @@ fn serial_debug_enabled() -> bool {
 #[inline]
 fn write_virt_u8(addr: u64, value: u8) {
     // SAFETY:
+    // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
     // - Caller guarantees `addr` is mapped and writable.
     // - Volatile write is used for deterministic test/probe behavior.
     unsafe {
@@ -585,6 +596,7 @@ fn write_virt_u8(addr: u64, value: u8) {
 #[inline]
 fn read_virt_u8(addr: u64) -> u8 {
     // SAFETY:
+    // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
     // - Caller guarantees `addr` is mapped and readable.
     // - Volatile read is used for deterministic test/probe behavior.
     unsafe { core::ptr::read_volatile(addr as *const u8) }
@@ -760,6 +772,7 @@ pub fn init(debug_output: bool) {
     // Enable global pages (CR4.PGE) to avoid flushing kernel TLB entries on CR3 switch.
     // Global pages marked with the G-bit persist in the TLB across address space switches.
     // SAFETY: Enabling CR4.PGE is a standard kernel optimization and safe after
+    // - This requires `unsafe` because it performs operations that Rust marks as potentially violating memory or concurrency invariants.
     // global-bit configuration is complete.
     unsafe {
         enable_global_pages();
@@ -790,6 +803,7 @@ pub fn with_address_space<R>(pml4_phys: u64, f: impl FnOnce() -> R) -> R {
     // Switch only when target differs from current root.
     if previous_cr3 != pml4_phys {
         // SAFETY:
+        // - This requires `unsafe` because changing CPU address-space state is a privileged operation outside Rust's guarantees.
         // - `pml4_phys` is supplied by trusted kernel code that owns the target root.
         // - Interrupts are disabled for the entire temporary switch.
         unsafe {
@@ -803,6 +817,7 @@ pub fn with_address_space<R>(pml4_phys: u64, f: impl FnOnce() -> R) -> R {
     // Restore original CR3 before leaving critical section.
     if previous_cr3 != pml4_phys {
         // SAFETY:
+        // - This requires `unsafe` because changing CPU address-space state is a privileged operation outside Rust's guarantees.
         // - `previous_cr3` was read from the CPU before switching and is valid.
         // - Restoring CR3 under disabled interrupts returns to the original context.
         unsafe {
@@ -1325,11 +1340,12 @@ pub fn clone_kernel_pml4_for_user() -> u64 {
     unmap_without_release(TEMP_CLONE_PML4_VA);
     map_virtual_to_physical(TEMP_CLONE_PML4_VA, new_pml4_phys);
 
+    // SAFETY:
+    // - This requires `unsafe` because raw memory copy operations require manually proving non-overlap and valid ranges.
+    // - Source is the current recursively mapped kernel PML4 page.
+    // - Destination is a freshly allocated page mapped at TEMP_CLONE_PML4_VA.
+    // - Regions are disjoint and exactly one page long.
     unsafe {
-        // SAFETY:
-        // - Source is the current recursively mapped kernel PML4 page.
-        // - Destination is a freshly allocated page mapped at TEMP_CLONE_PML4_VA.
-        // - Regions are disjoint and exactly one page long.
         core::ptr::copy_nonoverlapping(
             PML4_TABLE_ADDR as *const u8,
             TEMP_CLONE_PML4_VA as *mut u8,

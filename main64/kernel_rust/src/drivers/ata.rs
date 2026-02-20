@@ -98,6 +98,7 @@ impl AtaPio {
     /// Read the status register.
     fn read_status(&self) -> StatusRegister {
         // SAFETY:
+        // - This requires `unsafe` because it performs operations that Rust marks as potentially violating memory or concurrency invariants.
         // - Reading ATA status uses the controller I/O port for this device.
         // - `self.status_cmd` was constructed from the ATA base port.
         unsafe { StatusRegister(self.status_cmd.read()) }
@@ -138,10 +139,11 @@ impl AtaPio {
         self.wait_bsy_clear();
 
         // Program transfer count and 28-bit LBA address, then issue command.
+        // SAFETY:
+        // - This requires `unsafe` because it performs operations that Rust marks as potentially violating memory or concurrency invariants.
+        // - Writes target ATA task-file registers on the configured bus.
+        // - Caller guarantees `lba` is 28-bit and command byte is valid.
         unsafe {
-            // SAFETY:
-            // - Writes target ATA task-file registers on the configured bus.
-            // - Caller guarantees `lba` is 28-bit and command byte is valid.
             self.sector_count.write(sector_count);
             self.lba_low.write(lba as u8);
             self.lba_mid.write((lba >> 8) as u8);
@@ -204,10 +206,11 @@ impl AtaPio {
 
             for word_idx in 0..WORDS_PER_SECTOR {
                 // Read one 16-bit PIO word and store it little-endian in buffer.
+                // SAFETY:
+                // - This requires `unsafe` because it performs operations that Rust marks as potentially violating memory or concurrency invariants.
+                // - DRQ was observed for this sector before entering loop.
+                // - Reading from ATA data port consumes one data word.
                 let word = unsafe {
-                    // SAFETY:
-                    // - DRQ was observed for this sector before entering loop.
-                    // - Reading from ATA data port consumes one data word.
                     self.data.read()
                 };
 
@@ -270,10 +273,11 @@ impl AtaPio {
                 let byte_offset = sector_offset + word_idx * 2;
                 let word = (buffer[byte_offset] as u16) | ((buffer[byte_offset + 1] as u16) << 8);
 
+                // SAFETY:
+                // - This requires `unsafe` because it performs operations that Rust marks as potentially violating memory or concurrency invariants.
+                // - DRQ was observed for this sector before entering loop.
+                // - Writing to ATA data port sends one data word.
                 unsafe {
-                    // SAFETY:
-                    // - DRQ was observed for this sector before entering loop.
-                    // - Writing to ATA data port sends one data word.
                     self.data.write(word);
                 }
             }
@@ -294,7 +298,10 @@ static PRIMARY_ATA: AtaGlobal = AtaGlobal {
     initialized: AtomicBool::new(false),
 };
 
-// Safety: AtaGlobal is Sync because SpinLock<AtaPio> is Sync and AtomicBool is Sync.
+// SAFETY:
+// - This requires `unsafe` because the compiler cannot automatically verify the thread-safety invariants of this `unsafe impl`.
+// - `controller` serializes all mutable ATA access via `SpinLock`.
+// - `initialized` is an atomic flag and does not require external synchronization.
 unsafe impl Sync for AtaGlobal {}
 
 /// Initialize the primary ATA controller.

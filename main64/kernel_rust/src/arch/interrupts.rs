@@ -208,7 +208,8 @@ impl InterruptState {
     }
 }
 
-// Safety: The kernel is single-threaded (no SMP).  The IDT is written only
+// SAFETY: The kernel is single-threaded (no SMP).  The IDT is written only
+// - This requires `unsafe` because the compiler cannot automatically verify the thread-safety invariants of this `unsafe impl`.
 // during init() before interrupts are enabled.  IRQ handler slots are written
 // with interrupts disabled and read from dispatch_irq in interrupt context;
 // no concurrent mutation is possible.
@@ -227,6 +228,10 @@ pub fn init() {
 
 /// Enable interrupts globally.
 pub fn enable() {
+    // SAFETY:
+    // - This requires `unsafe` because inline assembly and privileged CPU instructions are outside Rust's static safety model.
+    // - `sti` is privileged and valid in ring 0.
+    // - Only CPU interrupt flag is modified.
     unsafe {
         asm!("sti", options(nomem, nostack, preserves_flags));
     }
@@ -234,6 +239,10 @@ pub fn enable() {
 
 /// Disable interrupts globally.
 pub fn disable() {
+    // SAFETY:
+    // - This requires `unsafe` because inline assembly and privileged CPU instructions are outside Rust's static safety model.
+    // - `cli` is privileged and valid in ring 0.
+    // - Only CPU interrupt flag is modified.
     unsafe {
         asm!("cli", options(nomem, nostack, preserves_flags));
     }
@@ -244,6 +253,7 @@ pub fn disable() {
 pub fn are_enabled() -> bool {
     let rflags: u64;
     // SAFETY:
+    // - This requires `unsafe` because inline assembly and privileged CPU instructions are outside Rust's static safety model.
     // - Reading RFLAGS via pushfq/pop is safe and does not modify flags.
     // - `rflags` is a plain register output.
     unsafe {
@@ -258,6 +268,11 @@ pub fn are_enabled() -> bool {
 }
 
 fn init_idt() {
+    // SAFETY:
+    // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
+    // - `STATE.idt` is a singleton table initialized with interrupts disabled.
+    // - All vector indices are constants within `0..IDT_ENTRIES`.
+    // - `lidt` loads a pointer to this fully initialized IDT image.
     unsafe {
         let idt = &mut *STATE.idt.get();
         idt[EXCEPTION_DIVIDE_ERROR as usize]
@@ -327,6 +342,10 @@ pub const fn exception_has_error_code(vector: u8) -> bool {
 /// Returns the configured IST index for the IDT entry at `vector`.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn idt_ist_index(vector: u8) -> u8 {
+    // SAFETY:
+    // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
+    // - `STATE.idt` points to the initialized IDT singleton.
+    // - Caller provides a vector byte; indexing by `u8` stays within 256 entries.
     unsafe { (&*STATE.idt.get())[vector as usize].ist & 0x07 }
 }
 
@@ -375,6 +394,7 @@ fn write_exception_banner(vector: u8, error_code: u64, frame: *const SavedRegist
     }
 
     // SAFETY:
+    // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
     // - VGA text memory is MMIO-mapped at `VGA_TEXT_BUFFER`.
     // - We only write one in-bounds row (0..80 cells).
     // - Volatile writes are required for MMIO ordering/visibility.
@@ -402,6 +422,7 @@ pub extern "C" fn exception_handler_rust(
         + if has_error_code { size_of::<u64>() } else { 0 };
     let iret_frame = unsafe {
         // SAFETY:
+        // - This requires `unsafe` because it casts and dereferences a raw frame pointer.
         // - `frame` points at the register-save area pushed by the ISR stub.
         // - The CPU-pushed interrupt return frame immediately follows saved regs
         //   (plus optional error code for vectors that carry one).
@@ -421,6 +442,7 @@ pub extern "C" fn exception_handler_rust(
 
     loop {
         // SAFETY:
+        // - This requires `unsafe` because inline assembly and privileged CPU instructions are outside Rust's static safety model.
         // - We are in a fatal exception path and intentionally stop forward progress.
         // - `cli; hlt` is the standard terminal halt sequence for kernel panic/fault sinks.
         unsafe {
@@ -431,6 +453,10 @@ pub extern "C" fn exception_handler_rust(
 
 /// Register a callback for a given interrupt vector.
 pub fn register_irq_handler(vector: u8, handler: IrqHandler) {
+    // SAFETY:
+    // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
+    // - Handler table is a singleton owned by this module.
+    // - Vector index is `u8`, therefore in-bounds for 256-entry table.
     unsafe {
         let handlers = &mut *STATE.handlers.get();
         handlers[vector as usize] = Some(handler);
@@ -438,6 +464,10 @@ pub fn register_irq_handler(vector: u8, handler: IrqHandler) {
 }
 
 fn clear_irq_handlers() {
+    // SAFETY:
+    // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
+    // - Called during init with interrupts disabled.
+    // - Mutably accesses the singleton handler table.
     unsafe {
         let handlers = &mut *STATE.handlers.get();
         for slot in handlers.iter_mut() {
@@ -447,6 +477,10 @@ fn clear_irq_handlers() {
 }
 
 fn dispatch_irq(vector: u8, frame: &mut SavedRegisters) -> *mut SavedRegisters {
+    // SAFETY:
+    // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
+    // - Reads the immutable snapshot of singleton handler table.
+    // - Vector index is bounded by `u8` range and table length.
     let handler = unsafe {
         let handlers = &*STATE.handlers.get();
         handlers[vector as usize]
@@ -464,6 +498,10 @@ fn dispatch_irq(vector: u8, frame: &mut SavedRegisters) -> *mut SavedRegisters {
 }
 
 fn remap_pic(offset1: u8, offset2: u8) {
+    // SAFETY:
+    // - This requires `unsafe` because hardware port I/O is inherently outside Rust's memory-safety guarantees.
+    // - PIC command/data ports are valid hardware I/O targets in ring 0.
+    // - Sequence follows standard PIC remap initialization protocol.
     unsafe {
         let cmd1 = PortByte::new(PIC1_COMMAND);
         let cmd2 = PortByte::new(PIC2_COMMAND);
@@ -498,12 +536,19 @@ fn remap_pic(offset1: u8, offset2: u8) {
 /// necessary on real hardware but harmless on emulators.
 #[inline]
 fn io_wait() {
+    // SAFETY:
+    // - This requires `unsafe` because hardware port I/O is inherently outside Rust's memory-safety guarantees.
+    // - Port `0x80` write is a conventional I/O delay primitive.
+    // - No memory dereference or aliasing involved.
     unsafe {
         PortByte::new(0x80).write(0);
     }
 }
 
 fn mask_pic() {
+    // SAFETY:
+    // - This requires `unsafe` because hardware port I/O is inherently outside Rust's memory-safety guarantees.
+    // - PIC data ports are valid and writes only adjust IRQ mask state.
     unsafe {
         let data1 = PortByte::new(PIC1_DATA);
         let data2 = PortByte::new(PIC2_DATA);
@@ -514,6 +559,10 @@ fn mask_pic() {
 }
 
 fn end_of_interrupt(irq: u8) {
+    // SAFETY:
+    // - This requires `unsafe` because hardware port I/O is inherently outside Rust's memory-safety guarantees.
+    // - EOI commands to PIC ports acknowledge serviced IRQ lines.
+    // - `irq >= 8` correctly determines whether slave PIC also needs EOI.
     unsafe {
         if irq >= 8 {
             PortByte::new(PIC2_COMMAND).write(PIC_EOI);
@@ -548,6 +597,7 @@ pub fn init_periodic_timer(hz: u32) {
     }
 
     // SAFETY:
+    // - This requires `unsafe` because hardware port I/O is inherently outside Rust's memory-safety guarantees.
     // - Writing PIT command/data ports is required to program channel 0.
     // - Caller controls when to initialize; this routine only performs I/O port writes.
     unsafe {
@@ -577,6 +627,7 @@ pub unsafe extern "C" fn irq_rust_dispatch(
 
     let frame = unsafe {
         // SAFETY:
+        // - This requires `unsafe` because it reinterprets a raw pointer as a mutable reference.
         // - `frame` is provided by the IRQ assembly stubs and points to the
         //   register save area currently living on the active kernel stack.
         // - It remains valid until the stub restores registers and executes `iretq`.
@@ -589,6 +640,7 @@ pub unsafe extern "C" fn irq_rust_dispatch(
 /// Dispatch entry point for software interrupt `int 0x80`.
 ///
 /// # Safety
+/// - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
 /// - Must be entered only from the dedicated `int80_syscall_stub`.
 /// - `frame` must point to the saved-register frame on the active kernel stack.
 #[no_mangle]

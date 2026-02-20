@@ -135,6 +135,10 @@ pub fn print_captured_target(
         return;
     }
 
+    // SAFETY:
+    // - This requires `unsafe` because constructing a slice from a raw pointer requires manually proving pointer validity and bounds.
+    // - `(ptr, len)` originates from `capture_buf` and `capture_len` snapshot.
+    // - Buffer outlives this function and `len` is bounded by capture capacity.
     let bytes = unsafe { core::slice::from_raw_parts(ptr, len) };
     let Ok(text) = core::str::from_utf8(bytes) else {
         return;

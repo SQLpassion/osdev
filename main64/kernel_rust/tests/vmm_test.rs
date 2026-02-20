@@ -70,6 +70,10 @@ fn test_non_present_fault_allocates_and_maps_page() {
     vmm::try_handle_page_fault(TEST_VA, 0)
         .expect("non-present fault should be handled by demand allocation");
 
+    // SAFETY:
+    // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
+    // - `TEST_VA` was mapped by the handled non-present fault above.
+    // - Volatile access targets exactly one byte in the mapped page.
     unsafe {
         let ptr = TEST_VA as *mut u8;
         core::ptr::write_volatile(ptr, 0x5A);
@@ -136,6 +140,10 @@ fn test_faulted_page_is_zero_initialized() {
     });
     vmm::map_virtual_to_physical(TEST_VA, frame.physical_address());
 
+    // SAFETY:
+    // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
+    // - `TEST_VA` is mapped writable to `frame` for one page.
+    // - Access stays within first and last byte of that mapped page.
     unsafe {
         let base = TEST_VA as *mut u8;
         core::ptr::write_volatile(base, 0xAB);
@@ -147,6 +155,10 @@ fn test_faulted_page_is_zero_initialized() {
     vmm::try_handle_page_fault(TEST_VA, 0)
         .expect("non-present fault should be handled by demand allocation");
 
+    // SAFETY:
+    // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
+    // - `TEST_VA` was remapped by demand paging above.
+    // - Access is limited to the mapped page bounds.
     unsafe {
         let base = TEST_VA as *const u8;
         let first = core::ptr::read_volatile(base);
@@ -172,6 +184,10 @@ fn test_unmap_absent_address_is_noop() {
     vmm::unmap_virtual_address(TEST_VA);
 
     // The address should still be demand-mappable afterwards.
+    // SAFETY:
+    // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
+    // - First touch triggers demand mapping for this test VA.
+    // - Subsequent volatile read/write stays within one byte.
     unsafe {
         let ptr = TEST_VA as *mut u8;
         core::ptr::write_volatile(ptr, 0x11);
@@ -284,6 +300,7 @@ fn test_clone_kernel_pml4_for_user_returns_distinct_pml4_with_self_recursive_ent
     vmm::map_virtual_to_physical(TEMP_CLONE_VIEW, clone_pml4);
     let recursive_entry = unsafe {
         // SAFETY:
+        // - This requires `unsafe` because it performs volatile access through a raw pointer.
         // - `TEMP_CLONE_VIEW` is mapped to the clone PML4 page.
         // - Entry index 511 is in-bounds for one 4KiB table page.
         core::ptr::read_volatile((TEMP_CLONE_VIEW as *const u64).add(511))
@@ -501,6 +518,7 @@ fn test_map_user_page_accepts_code_and_stack_regions() {
 
     unsafe {
         // SAFETY:
+        // - This requires `unsafe` because it reads/writes memory via raw virtual-address pointers.
         // - Both pages were mapped writable just above.
         core::ptr::write_volatile(code_va as *mut u8, 0xA5);
         core::ptr::write_volatile(stack_va as *mut u8, 0x5A);

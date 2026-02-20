@@ -31,6 +31,7 @@ static mut KERNEL_SIZE: u64 = 0;
 /// Store the kernel size for display in the welcome banner.
 ///
 /// # Safety
+/// - This requires `unsafe` because it performs operations that Rust marks as potentially violating memory or concurrency invariants.
 /// Must be called exactly once, before any task is spawned.
 pub fn set_kernel_size(size: u64) {
     unsafe {
@@ -47,6 +48,10 @@ pub extern "C" fn repl_task() -> ! {
         screen.clear();
 
         // Print welcome message
+        // SAFETY:
+        // - This requires `unsafe` because it performs operations that Rust marks as potentially violating memory or concurrency invariants.
+        // - `KERNEL_SIZE` is written once during boot before scheduler start.
+        // - Reads happen afterwards and are race-free in this single-core kernel.
         let kernel_size = unsafe { KERNEL_SIZE };
         screen.set_color(Color::LightGreen);
         writeln!(screen, "========================================").unwrap();

@@ -126,6 +126,10 @@ impl GdtState {
     }
 }
 
+// SAFETY:
+// - This requires `unsafe` because the compiler cannot automatically verify the thread-safety invariants of this `unsafe impl`.
+// - `GdtState` is a singleton accessed in controlled boot sequencing.
+// - Mutable access uses `UnsafeCell` under kernel initialization invariants.
 unsafe impl Sync for GdtState {}
 
 // SAFETY:
@@ -224,6 +228,7 @@ const fn build_tss_descriptor(base: u64, limit: u32) -> (u64, u64) {
 fn read_rsp() -> u64 {
     let rsp: u64;
     // SAFETY:
+    // - This requires `unsafe` because inline assembly and privileged CPU instructions are outside Rust's static safety model.
     // - Reading `rsp` into a general-purpose register is side-effect free.
     // - This runs in ring 0 on x86_64.
     unsafe {
@@ -244,9 +249,11 @@ pub fn init() {
     let current_rsp = read_rsp();
 
     // SAFETY:
+    // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
     // - `STATE` is a process-wide singleton used during boot sequencing.
     // - We build a complete valid descriptor table before loading it.
     // - `gdt_flush_and_reload` executes privileged instructions expected in ring 0.
+    // - `DOUBLE_FAULT_IST_STACK` is static storage dedicated to IST1.
     unsafe {
         let gdt = &mut *STATE.gdt.get();
         let tss = &mut *STATE.tss.get();
@@ -323,6 +330,7 @@ pub fn is_initialized() -> bool {
 /// Updates `RSP0` in the loaded TSS for future ring-3 to ring-0 transitions.
 pub fn set_kernel_rsp0(rsp0: u64) {
     // SAFETY:
+    // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
     // - `STATE.tss` is the singleton active TSS for this CPU.
     // - Updating `rsp0` is an atomic 64-bit store on x86_64 and sufficient for this kernel.
     unsafe {
@@ -334,6 +342,7 @@ pub fn set_kernel_rsp0(rsp0: u64) {
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn kernel_rsp0() -> u64 {
     // SAFETY:
+    // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
     // - Reading from the singleton TSS is safe; callers get a plain value copy.
     unsafe { (*STATE.tss.get()).rsp0 }
 }
@@ -342,6 +351,7 @@ pub fn kernel_rsp0() -> u64 {
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn kernel_ist1() -> u64 {
     // SAFETY:
+    // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
     // - Reading from the singleton TSS returns a plain value copy.
     unsafe { (*STATE.tss.get())._ist1 }
 }
@@ -350,6 +360,7 @@ pub fn kernel_ist1() -> u64 {
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn descriptor_snapshot() -> [u64; GDT_ENTRY_COUNT] {
     // SAFETY:
+    // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
     // - Reading the table into a by-value array copy does not create aliasing issues.
     unsafe { *STATE.gdt.get() }
 }

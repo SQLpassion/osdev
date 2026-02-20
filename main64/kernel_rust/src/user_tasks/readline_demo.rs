@@ -153,6 +153,7 @@ fn map_readline_task_pages(target_cr3: u64) -> Result<(), &'static str> {
 fn write_readline_data_page(target_cr3: u64) -> Result<(), &'static str> {
     vmm::with_address_space(target_cr3, || {
         // SAFETY: USER_READLINE_TASK_DATA_VA is mapped in map_readline_task_pages.
+        // - This requires `unsafe` because raw memory copy operations require manually proving non-overlap and valid ranges.
         unsafe {
             let base = USER_READLINE_TASK_DATA_VA as *mut u8;
             core::ptr::write_bytes(base, 0, 0x1000);
@@ -187,6 +188,7 @@ fn write_readline_data_page(target_cr3: u64) -> Result<(), &'static str> {
 /// Demonstrates user-space line editing by calling `user_readline`.
 extern "C" fn readline_ring3_task() -> ! {
     // SAFETY:
+    // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
     // - USER_READLINE_TASK_DATA_VA is mapped as user-readable data page.
     // - PROMPT offset/length are within the single initialized 4 KiB data page.
     unsafe {
@@ -200,6 +202,7 @@ extern "C" fn readline_ring3_task() -> ! {
         Ok(len) => len,
         Err(_) => {
             // SAFETY:
+            // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
             // - USER_READLINE_TASK_DATA_VA is mapped as user-readable data page.
             // - ERR offset/length are within the initialized data page.
             unsafe {
@@ -213,6 +216,7 @@ extern "C" fn readline_ring3_task() -> ! {
     };
 
     // SAFETY:
+    // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
     // - USER_READLINE_TASK_DATA_VA is mapped as user-readable data page.
     // - Prefix/NL offsets and lengths are bounded to the initialized data page.
     // - `line.as_ptr()` is valid for `line_len` bytes by construction (`line_len <= line.len()`).

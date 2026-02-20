@@ -182,6 +182,7 @@ fn try_map_program_image(user_cr3: u64, image: &[u8], state: &mut MapState) -> E
         // physical frames previously used by kernel allocations.
         unsafe {
             // SAFETY:
+            // - This requires `unsafe` because it writes bytes through a raw virtual-address pointer.
             // - `USER_STACK_BOOTSTRAP_PAGE_VA` is mapped writable in current CR3.
             // - Exactly one page (`PAGE_SIZE_BYTES`) is mapped for bootstrap stack.
             core::ptr::write_bytes(USER_STACK_BOOTSTRAP_PAGE_VA as *mut u8, 0, PAGE_SIZE_BYTES);
@@ -195,6 +196,7 @@ fn try_map_program_image(user_cr3: u64, image: &[u8], state: &mut MapState) -> E
         let mapped_code_bytes = code_page_count * PAGE_SIZE_BYTES;
 
         // SAFETY:
+        // - This requires `unsafe` because raw memory copy operations require manually proving non-overlap and valid ranges.
         // - Source slice `image` is valid for `image.len()` bytes.
         // - Destination starts at `USER_PROGRAM_ENTRY_RIP` and remains writable
         //   for at least `image.len()` bytes in current CR3.
@@ -207,6 +209,7 @@ fn try_map_program_image(user_cr3: u64, image: &[u8], state: &mut MapState) -> E
         let tail_len = mapped_code_bytes - image.len();
         if tail_len > 0 {
             // SAFETY:
+            // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
             // - Writable mapping covers `[USER_PROGRAM_ENTRY_RIP, +mapped_code_bytes)`.
             // - Start address points exactly to first tail byte after copied image.
             unsafe {

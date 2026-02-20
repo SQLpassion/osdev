@@ -623,6 +623,7 @@ fn test_task_frame_iret_defaults_are_kernel_mode() {
 
     let iret_ptr = frame + core::mem::size_of::<SavedRegisters>();
     // SAFETY:
+    // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
     // - `task_frame_ptr` points into scheduler-owned stack memory.
     // - Initial frame layout writes `InterruptStackFrame` directly behind `SavedRegisters`.
     let iret = unsafe { &*(iret_ptr as *const kaos_kernel::arch::interrupts::InterruptStackFrame) };

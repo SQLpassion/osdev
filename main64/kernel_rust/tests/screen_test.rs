@@ -67,6 +67,7 @@ fn test_print_char_wrap_writes_to_last_row_after_scroll() {
 
     let cell = VGA_BUFFER + ((VGA_ROWS - 1) * VGA_COLS) * 2;
     // SAFETY:
+    // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
     // - `cell` points to VGA text MMIO for row 24 col 0.
     // - Volatile read is required for MMIO.
     let ch = unsafe { core::ptr::read_volatile(cell as *const u8) };
@@ -96,6 +97,7 @@ fn test_print_str_writes_contiguous_progress_bar_pattern() {
     for (idx, expected) in pattern.iter().enumerate() {
         let cell = VGA_BUFFER + ((row * VGA_COLS + col + idx) * 2);
         // SAFETY:
+        // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
         // - `cell` points to VGA text MMIO for the selected row/column.
         // - Volatile read is required for MMIO.
         let ch = unsafe { core::ptr::read_volatile(cell as *const u8) };
@@ -127,6 +129,7 @@ fn test_print_str_can_cover_complete_vga_text_row() {
     for (idx, expected) in full_row.iter().enumerate() {
         let cell = VGA_BUFFER + ((row * VGA_COLS + idx) * 2);
         // SAFETY:
+        // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
         // - `cell` points to VGA text MMIO for the selected row/column.
         // - Volatile read is required for MMIO.
         let ch = unsafe { core::ptr::read_volatile(cell as *const u8) };
@@ -161,6 +164,7 @@ fn test_full_width_row_can_include_label_and_fill_afterwards() {
     for (idx, expected) in full_row.iter().enumerate() {
         let cell = VGA_BUFFER + ((row * VGA_COLS + idx) * 2);
         // SAFETY:
+        // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
         // - `cell` points to VGA text MMIO for the selected row/column.
         // - Volatile read is required for MMIO.
         let ch = unsafe { core::ptr::read_volatile(cell as *const u8) };
@@ -204,6 +208,7 @@ fn test_full_width_row_rewrite_updates_visible_progress_content() {
     for (idx, expected) in second.iter().enumerate() {
         let cell = VGA_BUFFER + ((row * VGA_COLS + idx) * 2);
         // SAFETY:
+        // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
         // - `cell` points to VGA text MMIO for the selected row/column.
         // - Volatile read is required for MMIO.
         let ch = unsafe { core::ptr::read_volatile(cell as *const u8) };

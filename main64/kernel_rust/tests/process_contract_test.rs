@@ -313,6 +313,7 @@ fn test_map_program_image_into_user_address_space_maps_copy_and_permissions() {
             .expect("mapped bootstrap stack page must expose leaf PFN");
 
         // SAFETY:
+        // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
         // - Loader mapped code pages in this address space and copied `image` bytes.
         // - Reading `image.len()` bytes from `USER_PROGRAM_ENTRY_RIP` is valid.
         unsafe {
@@ -366,6 +367,7 @@ fn test_map_program_image_into_user_address_space_zeroes_bootstrap_stack_page() 
             .expect("mapped bootstrap stack page must expose leaf PFN");
 
         // SAFETY:
+        // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
         // - Loader mapped one writable bootstrap stack page at `stack_page_va`.
         // - Reading one full page is valid before any user code has executed.
         unsafe {

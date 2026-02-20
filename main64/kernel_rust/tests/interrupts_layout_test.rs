@@ -50,6 +50,7 @@ fn test_trap_frame_size_and_offsets() {
     let base = tf.as_ptr() as usize;
 
     // SAFETY:
+    // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
     // - `addr_of!` does not dereference memory; it only computes field addresses.
     // - `tf` is `MaybeUninit`, which is valid for offset computations.
     unsafe {
@@ -193,6 +194,7 @@ fn test_int80_syscall_dispatch_roundtrip() {
     interrupts::init();
     let mut ret_rax: u64 = SyscallId::WriteSerial as u64;
     // SAFETY:
+    // - This requires `unsafe` because inline assembly and privileged CPU instructions are outside Rust's static safety model.
     // - `interrupts::init()` loaded an IDT containing the `int 0x80` gate.
     // - The test executes in ring 0, so invoking software interrupt 0x80 is valid.
     // - Register constraints match the syscall ABI used by `syscall_rust_dispatch`.
@@ -220,6 +222,7 @@ fn test_int80_syscall_raw_wrapper_roundtrip() {
     interrupts::init();
     let ret = unsafe {
         // SAFETY:
+        // - This requires `unsafe` because invoking raw syscall ABI uses inline assembly under the hood.
         // - `interrupts::init()` loaded an IDT containing the `int 0x80` gate.
         // - The test executes in ring 0, so invoking software interrupt 0x80 is valid.
         syscall::abi::syscall2(SyscallId::WriteSerial as u64, 0, 0)
@@ -237,6 +240,7 @@ fn test_int80_syscall_user_wrapper_roundtrip() {
     interrupts::init();
     let ret = unsafe {
         // SAFETY:
+        // - This requires `unsafe` because syscall wrapper accepts a raw pointer argument.
         // - Empty slice has valid pointer and zero length.
         syscall::user::sys_write_serial([].as_ptr(), 0)
     };
@@ -257,6 +261,7 @@ fn test_int80_syscall_user_wrapper_with_raw_parts_slice() {
     static BUF: [u8; 0] = [];
     let slice = unsafe {
         // SAFETY:
+        // - This requires `unsafe` because constructing a slice from a raw pointer requires manually proving pointer validity and bounds.
         // - `BUF.as_ptr()` is valid for `BUF.len()` bytes.
         core::slice::from_raw_parts(BUF.as_ptr(), BUF.len())
     };
@@ -281,6 +286,7 @@ fn test_int80_syscall_user_raw_wrapper_roundtrip() {
     interrupts::init();
     let ret = unsafe {
         // SAFETY:
+        // - This requires `unsafe` because syscall wrapper accepts a raw pointer argument.
         // - Null pointer with zero length is accepted by the syscall contract.
         syscall::user::sys_write_serial(core::ptr::null(), 0)
     };

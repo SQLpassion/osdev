@@ -174,6 +174,7 @@ fn syscall_write_serial_impl(ptr: *const u8, len: usize) -> u64 {
 
     let bytes = unsafe {
         // SAFETY:
+        // - This requires `unsafe` because it builds a slice from a raw userspace pointer.
         // - `is_valid_user_buffer` above verified that `ptr..ptr+actual_len` lies
         //   entirely within user canonical space.
         // - `actual_len` is bounded by `MAX_SERIAL_WRITE_LEN`.
@@ -211,6 +212,7 @@ fn syscall_write_console_impl(ptr: *const u8, len: usize) -> u64 {
 
     let bytes = unsafe {
         // SAFETY:
+        // - This requires `unsafe` because it builds a slice from a raw userspace pointer.
         // - `is_valid_user_buffer` above verified that `ptr..ptr+actual_len` lies
         //   entirely within user canonical space.
         // - `actual_len` is bounded by `MAX_CONSOLE_WRITE_LEN`.

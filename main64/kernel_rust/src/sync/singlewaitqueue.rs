@@ -61,5 +61,6 @@ impl Default for SingleWaitQueue {
 }
 
 // SAFETY: All fields are atomic — no shared mutable state.
+// - This requires `unsafe` because the compiler cannot automatically verify the thread-safety invariants of this `unsafe impl`.
 unsafe impl Sync for SingleWaitQueue {}
 unsafe impl Send for SingleWaitQueue {}

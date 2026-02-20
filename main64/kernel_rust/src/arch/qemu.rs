@@ -38,6 +38,10 @@ pub enum QemuExitCode {
 /// On real hardware, this will have no effect (or undefined behavior).
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn exit_qemu(exit_code: QemuExitCode) -> ! {
+    // SAFETY:
+    // - This requires `unsafe` because hardware port I/O is inherently outside Rust's memory-safety guarantees.
+    // - QEMU debug-exit port write is privileged I/O and valid in ring 0.
+    // - Value is restricted to known `QemuExitCode` variants.
     unsafe {
         let port = PortByte::new(QEMU_EXIT_PORT);
         port.write(exit_code as u8);
@@ -45,6 +49,10 @@ pub fn exit_qemu(exit_code: QemuExitCode) -> ! {
 
     // If we're still running (e.g., not in QEMU), halt
     loop {
+        // SAFETY:
+        // - This requires `unsafe` because inline assembly and privileged CPU instructions are outside Rust's static safety model.
+        // - `hlt` is used intentionally as terminal fallback state.
+        // - Executed in ring 0 context.
         unsafe {
             core::arch::asm!("hlt");
         }

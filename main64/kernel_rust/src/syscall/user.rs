@@ -43,6 +43,7 @@ pub const fn normalize_echo_input_byte(ch: u8) -> u8 {
 pub fn sys_yield() -> Result<(), SysError> {
     let raw_value = unsafe {
         // SAFETY:
+        // - This requires `unsafe` because syscall entry executes raw ABI-level interrupt machinery.
         // - Wrapper is intended for ring-3/ring-0 contexts where `int 0x80` is configured.
         abi::syscall0(SyscallId::Yield as u64)
     };
@@ -71,6 +72,7 @@ pub fn sys_yield() -> Result<(), SysError> {
 /// - `Err(...)` when kernel reports a syscall error.
 ///
 /// # Safety
+/// - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
 /// Caller must ensure that `ptr..ptr+len` is readable in the current
 /// user/kernel context expected by the syscall boundary.
 #[inline(always)]
@@ -104,6 +106,7 @@ pub unsafe fn sys_write_serial(ptr: *const u8, len: usize) -> Result<usize, SysE
 /// - `Err(...)` when kernel reports a syscall error.
 ///
 /// # Safety
+/// - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
 /// Caller must ensure that `ptr..ptr+len` is readable in the current
 /// user/kernel context expected by the syscall boundary.
 #[inline(always)]
@@ -151,6 +154,7 @@ pub unsafe fn sys_write_console(ptr: *const u8, len: usize) -> Result<usize, Sys
 pub fn sys_getchar() -> Result<u8, SysError> {
     let raw_value = unsafe {
         // SAFETY:
+        // - This requires `unsafe` because syscall entry executes raw ABI-level interrupt machinery.
         // - Wrapper is intended for contexts where `int 0x80` is configured.
         // - GetChar has no memory arguments, so no buffer validation needed.
         abi::syscall0(SyscallId::GetChar as u64)
@@ -171,6 +175,7 @@ pub fn sys_getchar() -> Result<u8, SysError> {
 pub fn sys_get_cursor() -> Result<(usize, usize), SysError> {
     let raw_value = unsafe {
         // SAFETY:
+        // - This requires `unsafe` because syscall entry executes raw ABI-level interrupt machinery.
         // - Wrapper is intended for contexts where `int 0x80` is configured.
         // - GetCursor has no memory arguments.
         abi::syscall0(SyscallId::GetCursor as u64)
@@ -193,6 +198,7 @@ pub fn sys_get_cursor() -> Result<(usize, usize), SysError> {
 pub fn sys_set_cursor(row: usize, col: usize) -> Result<(), SysError> {
     let raw_value = unsafe {
         // SAFETY:
+        // - This requires `unsafe` because syscall entry executes raw ABI-level interrupt machinery.
         // - Wrapper is intended for contexts where `int 0x80` is configured.
         // - SetCursor takes plain integer arguments only.
         abi::syscall2(SyscallId::SetCursor as u64, row as u64, col as u64)
@@ -213,6 +219,7 @@ pub fn sys_set_cursor(row: usize, col: usize) -> Result<(), SysError> {
 pub fn sys_clear_screen() -> Result<(), SysError> {
     let raw_value = unsafe {
         // SAFETY:
+        // - This requires `unsafe` because syscall entry executes raw ABI-level interrupt machinery.
         // - Wrapper is intended for contexts where `int 0x80` is configured.
         // - ClearScreen takes no memory arguments.
         abi::syscall0(SyscallId::ClearScreen as u64)
@@ -242,6 +249,7 @@ pub fn sys_clear_screen() -> Result<(), SysError> {
 pub fn sys_exit() -> ! {
     let _ = unsafe {
         // SAFETY:
+        // - This requires `unsafe` because inline assembly and privileged CPU instructions are outside Rust's static safety model.
         // - Wrapper is intended for contexts where `int 0x80` exit syscall is available.
         abi::syscall0(SyscallId::Exit as u64)
     };
@@ -296,6 +304,7 @@ pub fn user_readline(buf: &mut [u8]) -> Result<usize, SysError> {
         // pages into the ring-3 alias mapping.
         let get_char_raw = unsafe {
             // SAFETY:
+            // - This requires `unsafe` because syscall entry executes raw ABI-level interrupt machinery.
             // - Wrapper runs only where `int 0x80` syscall entry is configured.
             // - GetChar has no memory arguments.
             abi::syscall0(SyscallId::GetChar as u64)
@@ -321,6 +330,7 @@ pub fn user_readline(buf: &mut [u8]) -> Result<usize, SysError> {
                 let newline = b'\n';
                 let raw = unsafe {
                     // SAFETY:
+                    // - This requires `unsafe` because syscall writes use a raw pointer/length ABI.
                     // - `newline` is a valid stack byte and readable for 1 byte.
                     abi::syscall2(
                         SyscallId::WriteConsole as u64,
@@ -351,6 +361,7 @@ pub fn user_readline(buf: &mut [u8]) -> Result<usize, SysError> {
                     let backspace = 0x08u8;
                     let raw = unsafe {
                         // SAFETY:
+                        // - This requires `unsafe` because syscall writes use a raw pointer/length ABI.
                         // - `backspace` is a valid stack byte and readable for 1 byte.
                         abi::syscall2(
                             SyscallId::WriteConsole as u64,
@@ -381,6 +392,7 @@ pub fn user_readline(buf: &mut [u8]) -> Result<usize, SysError> {
                     // Echo the character (already a stack reference)
                     let raw = unsafe {
                         // SAFETY:
+                        // - This requires `unsafe` because syscall writes use a raw pointer/length ABI.
                         // - `ch` is a valid stack byte and readable for 1 byte.
                         abi::syscall2(SyscallId::WriteConsole as u64, (&ch as *const u8) as u64, 1)
                     };

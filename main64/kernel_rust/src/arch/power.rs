@@ -9,6 +9,10 @@ use core::arch::asm;
 
 /// Attempt to power off. Works on QEMU/Bochs; halts otherwise.
 pub fn shutdown() -> ! {
+    // SAFETY:
+    // - This requires `unsafe` because hardware port I/O is inherently outside Rust's memory-safety guarantees.
+    // - Writing PM control ports is privileged hardware I/O valid in ring 0.
+    // - Fallback `hlt` loop is an intentional terminal state.
     unsafe {
         // QEMU/Bochs ACPI S5: write 0x2000 to 0x604 and 0xB004.
         // If unsupported, execution continues to the halt loop.

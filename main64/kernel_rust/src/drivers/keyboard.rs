@@ -102,11 +102,19 @@ pub fn init() {
 /// Handle IRQ1 (keyboard) top half: enqueue raw scancode and wake the
 /// keyboard worker task so it can decode the scancode into ASCII.
 pub fn handle_irq() {
+    // SAFETY:
+    // - This requires `unsafe` because hardware port I/O is inherently outside Rust's memory-safety guarantees.
+    // - Reading keyboard controller status uses the documented PS/2 status port.
+    // - Port access is valid in ring 0 IRQ context.
     let status = unsafe { PortByte::new(KYBRD_CTRL_STATS_REG).read() };
     if (status & KYBRD_CTRL_STATS_MASK_OUT_BUF) == 0 {
         return;
     }
 
+    // SAFETY:
+    // - This requires `unsafe` because hardware port I/O is inherently outside Rust's memory-safety guarantees.
+    // - Output-buffer-full bit was checked above.
+    // - Reading data port consumes the pending scancode.
     let code = unsafe { PortByte::new(KYBRD_ENC_INPUT_BUF).read() };
     enqueue_raw_scancode(code);
 }

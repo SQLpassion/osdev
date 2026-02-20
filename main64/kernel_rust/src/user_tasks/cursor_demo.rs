@@ -213,6 +213,7 @@ fn map_cursor_task_pages(target_cr3: u64) -> Result<(), &'static str> {
 fn write_cursor_data_page(target_cr3: u64) -> Result<(), &'static str> {
     vmm::with_address_space(target_cr3, || {
         // SAFETY:
+        // - This requires `unsafe` because raw memory copy operations require manually proving non-overlap and valid ranges.
         // - `USER_CURSOR_TASK_DATA_VA` is mapped writable in `map_cursor_task_pages`.
         // - All writes are bounded to the single 4 KiB data page.
         unsafe {
@@ -323,6 +324,7 @@ extern "C" fn cursor_ring3_task() -> ! {
     }
 
     // SAFETY:
+    // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
     // - `USER_CURSOR_TASK_DATA_VA` points to a mapped read-only user data page.
     // - Offsets/lengths used below are compile-time bounded within that page.
     unsafe {
@@ -340,6 +342,7 @@ extern "C" fn cursor_ring3_task() -> ! {
 
     if roundtrip_ok {
         // SAFETY:
+        // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
         // - Data page is mapped user-readable; offset/len are in-bounds constants.
         unsafe {
             let ptr =
@@ -349,6 +352,7 @@ extern "C" fn cursor_ring3_task() -> ! {
     } else {
         failures += 1;
         // SAFETY:
+        // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
         // - Data page is mapped user-readable; offset/len are in-bounds constants.
         unsafe {
             let ptr =
@@ -368,6 +372,7 @@ extern "C" fn cursor_ring3_task() -> ! {
 
     if clamp_ok {
         // SAFETY:
+        // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
         // - Data page is mapped user-readable; offset/len are in-bounds constants.
         unsafe {
             let ptr = (USER_CURSOR_TASK_DATA_VA + CURSOR_MSG_PASS_CLAMP_OFFSET as u64) as *const u8;
@@ -376,6 +381,7 @@ extern "C" fn cursor_ring3_task() -> ! {
     } else {
         failures += 1;
         // SAFETY:
+        // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
         // - Data page is mapped user-readable; offset/len are in-bounds constants.
         unsafe {
             let ptr = (USER_CURSOR_TASK_DATA_VA + CURSOR_MSG_FAIL_CLAMP_OFFSET as u64) as *const u8;
@@ -387,6 +393,7 @@ extern "C" fn cursor_ring3_task() -> ! {
     let newline_ok = match syscall::user::sys_set_cursor(10, 0) {
         Ok(()) => {
             // SAFETY:
+            // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
             // - Data page is mapped user-readable; offset/len are in-bounds constants.
             unsafe {
                 let ptr =
@@ -403,6 +410,7 @@ extern "C" fn cursor_ring3_task() -> ! {
 
     if newline_ok {
         // SAFETY:
+        // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
         // - Data page is mapped user-readable; offset/len are in-bounds constants.
         unsafe {
             let ptr = (USER_CURSOR_TASK_DATA_VA + CURSOR_MSG_PASS_NL_OFFSET as u64) as *const u8;
@@ -411,6 +419,7 @@ extern "C" fn cursor_ring3_task() -> ! {
     } else {
         failures += 1;
         // SAFETY:
+        // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
         // - Data page is mapped user-readable; offset/len are in-bounds constants.
         unsafe {
             let ptr = (USER_CURSOR_TASK_DATA_VA + CURSOR_MSG_FAIL_NL_OFFSET as u64) as *const u8;
@@ -421,6 +430,7 @@ extern "C" fn cursor_ring3_task() -> ! {
     // Final status line.
     if failures == 0 {
         // SAFETY:
+        // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
         // - Data page is mapped user-readable; offset/len are in-bounds constants.
         unsafe {
             let ptr = (USER_CURSOR_TASK_DATA_VA + CURSOR_MSG_SUMMARY_OK_OFFSET as u64) as *const u8;
@@ -428,6 +438,7 @@ extern "C" fn cursor_ring3_task() -> ! {
         }
     } else {
         // SAFETY:
+        // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
         // - Data page is mapped user-readable; offset/len are in-bounds constants.
         unsafe {
             let ptr =
@@ -435,6 +446,7 @@ extern "C" fn cursor_ring3_task() -> ! {
             let _ = syscall::user::sys_write_console(ptr, CURSOR_MSG_SUMMARY_FAIL.len());
         }
         // SAFETY:
+        // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
         // - Data page is mapped user-readable; offset/len are in-bounds constants.
         unsafe {
             let ptr = (USER_CURSOR_TASK_DATA_VA + CURSOR_MSG_ERR_OFFSET as u64) as *const u8;
@@ -443,6 +455,7 @@ extern "C" fn cursor_ring3_task() -> ! {
     }
 
     // SAFETY:
+    // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
     // - Data page is mapped user-readable; offset/len are in-bounds constants.
     unsafe {
         let ptr = (USER_CURSOR_TASK_DATA_VA + CURSOR_MSG_WAIT_ESC_OFFSET as u64) as *const u8;
@@ -459,6 +472,7 @@ extern "C" fn cursor_ring3_task() -> ! {
 
     let _ = syscall::user::sys_clear_screen();
     // SAFETY:
+    // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
     // - Data page is mapped user-readable; offset/len are in-bounds constants.
     unsafe {
         let ptr = (USER_CURSOR_TASK_DATA_VA + CURSOR_MSG_EXIT_OFFSET as u64) as *const u8;

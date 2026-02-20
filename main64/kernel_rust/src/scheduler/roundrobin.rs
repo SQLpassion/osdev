@@ -304,6 +304,11 @@ impl SchedulerMetadata {
     }
 }
 
+// SAFETY:
+// - This requires `unsafe` because the compiler cannot automatically verify the thread-safety invariants of this `unsafe impl`.
+// - `SchedulerMetadata` is only accessed behind `SpinLock<SchedulerMetadata>`.
+// - Raw pointers inside metadata always reference scheduler-owned task stacks.
+// - Cross-thread transfer does not create unsynchronized mutable aliasing.
 unsafe impl Send for SchedulerMetadata {}
 
 // SAFETY:
@@ -333,9 +338,11 @@ fn with_sched<R>(f: impl FnOnce(&mut SchedulerMetadata) -> R) -> R {
 /// context.
 fn allocate_task_stack() -> *mut u8 {
     // SAFETY:
+    // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
     // - Layout is non-zero and alignment is a power of two.
     let layout = unsafe { Layout::from_size_align_unchecked(TASK_STACK_SIZE, STACK_ALIGNMENT) };
     // SAFETY:
+    // - This requires `unsafe` because unchecked `Layout` construction bypasses runtime validation of size/alignment constraints.
     // - Layout has non-zero size.
     let ptr = unsafe { heap_alloc::alloc(layout) };
     if ptr.is_null() {
@@ -344,6 +351,7 @@ fn allocate_task_stack() -> *mut u8 {
 
     // Touch every page to force demand paging now, not during IRQ context.
     // SAFETY:
+    // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
     // - `ptr` points to a valid allocation of `TASK_STACK_SIZE` bytes.
     unsafe {
         for page_off in (0..TASK_STACK_SIZE).step_by(PAGE_SIZE) {
@@ -364,6 +372,9 @@ unsafe fn free_task_stack(ptr: *mut u8) {
     if ptr.is_null() {
         return;
     }
+    // SAFETY:
+    // - Constants match the layout used by `allocate_task_stack`.
+    // - Size is non-zero and alignment is a valid power of two.
     let layout = Layout::from_size_align_unchecked(TASK_STACK_SIZE, STACK_ALIGNMENT);
     heap_alloc::dealloc(ptr, layout);
 }
@@ -382,6 +393,7 @@ fn build_initial_kernel_task_frame(
     entry: KernelTaskFn,
 ) -> (*mut SavedRegisters, u64) {
     // SAFETY:
+    // - This requires `unsafe` because it performs operations that Rust marks as potentially violating memory or concurrency invariants.
     // - `stack_base` points to a valid heap allocation of `stack_size` bytes.
     // - The caller guarantees exclusive access to this stack memory.
     unsafe {
@@ -432,6 +444,7 @@ fn build_initial_user_task_frame(
     user_rsp: u64,
 ) -> (*mut SavedRegisters, u64) {
     // SAFETY:
+    // - This requires `unsafe` because it performs operations that Rust marks as potentially violating memory or concurrency invariants.
     // - `stack_base` points to a valid heap allocation of `stack_size` bytes.
     // - The caller guarantees exclusive access to this stack memory.
     unsafe {
@@ -543,6 +556,7 @@ fn remove_task(meta: &mut SchedulerMetadata, task_id: usize) -> bool {
                 // Before destroying a user address space, ensure we are not
                 // still executing with that CR3 active on this CPU.
                 // SAFETY:
+                // - This requires `unsafe` because changing CPU address-space state is a privileged operation outside Rust's guarantees.
                 // - `kernel_cr3` is configured by scheduler owner via
                 //   `set_kernel_address_space_cr3`.
                 // - Switching away avoids releasing an address space that is
@@ -672,6 +686,7 @@ pub fn init() {
     // Free old stacks outside the scheduler lock.
     for &(ptr, _size) in &stacks_to_free {
         // SAFETY: Pointers were returned by `allocate_task_stack`.
+        // - This requires `unsafe` because it performs operations that Rust marks as potentially violating memory or concurrency invariants.
         unsafe {
             free_task_stack(ptr);
         }
@@ -832,6 +847,7 @@ fn spawn_internal(kind: SpawnKind) -> Result<usize, SpawnError> {
     // If spawn failed after we already allocated the stack, free it.
     if result.is_err() {
         // SAFETY: `stack_ptr` was returned by `allocate_task_stack` and has
+        // - This requires `unsafe` because it performs operations that Rust marks as potentially violating memory or concurrency invariants.
         // not been stored in any task slot (spawn failed).
         unsafe {
             free_task_stack(stack_ptr);
@@ -902,6 +918,7 @@ fn apply_selected_address_space(meta: &mut SchedulerMetadata, selected_slot: usi
     }
 
     // SAFETY:
+    // - This requires `unsafe` because changing CPU address-space state is a privileged operation outside Rust's guarantees.
     // - `target_cr3` originates from scheduler-controlled task metadata.
     // - Caller enables switching only after VMM initialization.
     unsafe {
@@ -1154,6 +1171,7 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
 fn free_pending_stacks(stacks: &[(*mut u8, usize)]) {
     for &(ptr, _size) in stacks {
         // SAFETY: Pointers were returned by `allocate_task_stack`.
+        // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
         unsafe {
             free_task_stack(ptr);
         }
@@ -1185,6 +1203,7 @@ pub fn task_iret_frame(task_id: usize) -> Option<InterruptStackFrame> {
         let frame_ptr = meta.slots[task_id].frame_ptr as usize;
         let iret_ptr = frame_ptr + size_of::<SavedRegisters>();
         // SAFETY:
+        // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
         // - `frame_ptr` belongs to the scheduler-owned stack for this task.
         // - `InterruptStackFrame` is written directly behind `SavedRegisters`.
         Some(unsafe { *(iret_ptr as *const InterruptStackFrame) })
@@ -1368,6 +1387,7 @@ pub fn exit_current_task() -> ! {
 /// Triggers a software timer interrupt to force an immediate reschedule.
 pub fn yield_now() {
     // SAFETY:
+    // - This requires `unsafe` because inline assembly and privileged CPU instructions are outside Rust's static safety model.
     // - Software interrupt to IRQ0 vector enters the same scheduler path as timer IRQ.
     // - Valid only in ring 0, which holds for kernel code.
     unsafe {

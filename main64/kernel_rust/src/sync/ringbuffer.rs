@@ -106,6 +106,10 @@ impl<const N: usize> RingBuffer<N> {
         }
 
         // Write the byte *before* publishing the new head_producer.
+        // SAFETY:
+        // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
+        // - Single-producer contract guarantees exclusive writes to `head` slot.
+        // - `head` is in-bounds due to modulo arithmetic.
         unsafe {
             (*self.buf.get())[head] = value;
         }
@@ -147,6 +151,10 @@ impl<const N: usize> RingBuffer<N> {
 
             // Speculatively read the value — valid because the producer has
             // already published this slot (head_producer is past tail_consumer).
+            // SAFETY:
+            // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
+            // - `tail != head` guarantees slot is initialized by producer.
+            // - `tail` is in-bounds due to modulo arithmetic.
             let value = unsafe { (*self.buf.get())[tail] };
             let next = (tail + 1) % N;
 
@@ -173,7 +181,12 @@ impl<const N: usize> Default for RingBuffer<N> {
 }
 
 // SAFETY: All mutable access to `buf` is synchronized via atomic indices —
+// - This requires `unsafe` because the compiler cannot automatically verify the thread-safety invariants of this `unsafe impl`.
 // the producer writes only to `buf[head_producer]` before publishing, and
 // consumers read only slots between `tail_consumer` and `head_producer`.
 unsafe impl<const N: usize> Sync for RingBuffer<N> {}
+// SAFETY:
+// - This requires `unsafe` because the compiler cannot automatically verify the thread-safety invariants of this `unsafe impl`.
+// - Sending the ring buffer transfers ownership of the atomic state and buffer.
+// - Thread safety invariants are upheld by SPMC protocol and atomic indices.
 unsafe impl<const N: usize> Send for RingBuffer<N> {}

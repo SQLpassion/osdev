@@ -48,6 +48,7 @@ impl<T> Deref for SpinLockGuard<'_, T> {
 
     fn deref(&self) -> &Self::Target {
         // SAFETY:
+        // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
         // - The spinlock guarantees exclusive access while the guard lives.
         unsafe { &*self.lock.data.get() }
     }
@@ -56,6 +57,7 @@ impl<T> Deref for SpinLockGuard<'_, T> {
 impl<T> DerefMut for SpinLockGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         // SAFETY:
+        // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
         // - The spinlock guarantees exclusive access while the guard lives.
         unsafe { &mut *self.lock.data.get() }
     }
@@ -71,7 +73,12 @@ impl<T> Drop for SpinLockGuard<'_, T> {
 }
 
 // SAFETY:
+// - This requires `unsafe` because the compiler cannot automatically verify the thread-safety invariants of this `unsafe impl`.
 // - Access to `data` is synchronized via the spinlock.
 // - `T: Send` ensures it is safe to transfer ownership across threads/CPUs.
 unsafe impl<T: Send> Sync for SpinLock<T> {}
+// SAFETY:
+// - This requires `unsafe` because the compiler cannot automatically verify the thread-safety invariants of this `unsafe impl`.
+// - Moving `SpinLock<T>` between threads preserves synchronization guarantees.
+// - `T: Send` ensures protected payload can cross thread/CPU boundaries.
 unsafe impl<T: Send> Send for SpinLock<T> {}
