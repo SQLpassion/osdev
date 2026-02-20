@@ -992,6 +992,30 @@ fn test_request_stop_returns_to_bootstrap_frame_and_stops_scheduler() {
     );
 }
 
+/// Contract: request_stop before start does not block a later scheduler start.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "request_stop before start does not block a later scheduler start".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_request_stop_before_start_does_not_block_later_start() {
+    sched::init();
+    sched::request_stop();
+
+    let task_a = sched::spawn_kernel_task(dummy_task_a).expect("task A should spawn");
+    let frame_a = sched::task_frame_ptr(task_a).expect("task A frame should exist");
+
+    let mut bootstrap = SavedRegisters::default();
+    let bootstrap_ptr = &mut bootstrap as *mut SavedRegisters;
+
+    sched::start();
+    let selected = sched::on_timer_tick(bootstrap_ptr);
+    assert!(
+        selected == frame_a,
+        "stale stop requests from pre-start phase must not prevent scheduling"
+    );
+}
+
 /// Contract: scheduler reinit clears blocked state from previous run.
 /// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
 /// When: The exact operation sequence in this function is executed against that state.

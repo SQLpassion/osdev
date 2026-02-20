@@ -8,6 +8,9 @@ use core::arch::asm;
 use core::mem::size_of;
 use core::ptr;
 
+#[cfg(debug_assertions)]
+use core::sync::atomic::{AtomicBool, Ordering};
+
 extern crate alloc;
 use alloc::alloc as heap_alloc;
 use alloc::vec::Vec;
@@ -224,12 +227,8 @@ struct SchedulerMetadata {
     initialized: bool,
 
     /// Indicates whether timer ticks should perform scheduling decisions.
-    /// Set by [`start`], cleared on stop paths.
+    /// Set by [`start`], cleared when scheduler state is reset.
     started: bool,
-
-    /// Cooperative stop request flag consumed by [`on_timer_tick`].
-    /// When observed, scheduler returns to bootstrap frame and resets state.
-    stop_requested: bool,
 
     /// Last non-task interrupt frame pointer (typically bootstrap/idle context).
     /// Used as fallback return frame when no runnable tasks exist.
@@ -285,7 +284,6 @@ impl SchedulerMetadata {
         Self {
             initialized: false,
             started: false,
-            stop_requested: false,
             bootstrap_frame: ptr::null_mut(),
             running_slot: None,
             current_queue_pos: 0,
@@ -311,6 +309,14 @@ unsafe impl Send for SchedulerMetadata {}
 // - Raw pointers in slots point into heap-allocated stacks and are only
 //   read/written while holding the lock.
 static SCHED: SpinLock<SchedulerMetadata> = SpinLock::new(SchedulerMetadata::new());
+
+/// Test-only cooperative stop hook.
+///
+/// The production scheduler does not carry stop/restart control state in
+/// `SchedulerMetadata`.  Debug/test builds keep this external hook so
+/// scheduler integration tests can still terminate cleanly.
+#[cfg(debug_assertions)]
+static TEST_STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 /// Aligns `value` down to the given power-of-two `align`.
 #[inline]
@@ -675,6 +681,11 @@ pub fn init() {
         meta.active_cr3 = meta.kernel_cr3;
     });
 
+    #[cfg(debug_assertions)]
+    {
+        TEST_STOP_REQUESTED.store(false, Ordering::Release);
+    }
+
     // Free old stacks outside the scheduler lock.
     for &(ptr, _size) in &stacks_to_free {
         // SAFETY: Pointers were returned by `allocate_task_stack`.
@@ -692,12 +703,16 @@ pub fn start() {
     with_sched(|meta| {
         if meta.initialized && !meta.run_queue.is_empty() {
             meta.started = true;
-            meta.stop_requested = false;
             meta.bootstrap_frame = ptr::null_mut();
             meta.running_slot = None;
             meta.current_queue_pos = meta.run_queue.len() - 1;
         }
     });
+
+    #[cfg(debug_assertions)]
+    {
+        TEST_STOP_REQUESTED.store(false, Ordering::Release);
+    }
 }
 
 /// Creates a new kernel task and appends it to the run queue.
@@ -852,11 +867,10 @@ fn spawn_internal(kind: SpawnKind) -> Result<usize, SpawnError> {
 /// Requests a cooperative scheduler stop on the next timer tick.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn request_stop() {
-    with_sched(|meta| {
-        if meta.started {
-            meta.stop_requested = true;
-        }
-    });
+    #[cfg(debug_assertions)]
+    {
+        TEST_STOP_REQUESTED.store(true, Ordering::Release);
+    }
 }
 
 /// Returns whether the scheduler is currently active.
@@ -935,8 +949,9 @@ fn reap_zombies(meta: &mut SchedulerMetadata) {
 
 /// Returns `bootstrap_frame` if set, otherwise falls back to `current_frame`.
 ///
-/// Used in two places: when the task queue becomes empty and when a stop is
-/// requested. Centralising the fallback avoids repeating the same conditional.
+/// Used in two places: when the task queue becomes empty and when the
+/// debug/test stop hook asks to return to bootstrap context.
+/// Centralising the fallback avoids repeating the same conditional.
 #[inline]
 fn bootstrap_or_current(
     meta: &SchedulerMetadata,
@@ -949,13 +964,12 @@ fn bootstrap_or_current(
     }
 }
 
-/// Clears all volatile scheduling state after a stop request.
+/// Clears all volatile scheduling state after a full scheduler teardown.
 ///
 /// Address-space configuration and `initialized` are preserved so the
 /// scheduler can be restarted without re-registration.
 fn reset_scheduler_state(meta: &mut SchedulerMetadata) {
     meta.started = false;
-    meta.stop_requested = false;
     meta.bootstrap_frame = ptr::null_mut();
     meta.running_slot = None;
     meta.current_queue_pos = 0;
@@ -1112,7 +1126,8 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
         // `pending_free_stacks` with an empty Vec (no allocation).
         stacks_to_free = core::mem::take(&mut meta.pending_free_stacks);
 
-        if meta.stop_requested {
+        #[cfg(debug_assertions)]
+        if TEST_STOP_REQUESTED.swap(false, Ordering::AcqRel) {
             // Collect stacks from all active slots and append to stacks_to_free.
             // pending_free_stacks was already taken above, so only active slots remain.
             for slot in meta.slots.iter() {
@@ -1121,6 +1136,7 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
                     stacks_to_free.push((slot.stack_base, slot.stack_size));
                 }
             }
+
             let return_frame = bootstrap_or_current(meta, current_frame);
             reset_scheduler_state(meta);
             drop(sched);
