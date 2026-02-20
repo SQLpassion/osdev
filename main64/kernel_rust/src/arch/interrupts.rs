@@ -209,11 +209,14 @@ impl InterruptState {
     }
 }
 
-// SAFETY: The kernel is single-threaded (no SMP).  The IDT is written only
+// SAFETY:
 // - This requires `unsafe` because the compiler cannot automatically verify the thread-safety invariants of this `unsafe impl`.
-// during init() before interrupts are enabled.  IRQ handler slots are written
-// with interrupts disabled and read from dispatch_irq in interrupt context;
-// no concurrent mutation is possible.
+// - The kernel is single-threaded (no SMP).
+// - The IDT is written only during `init_idt()` before interrupts are enabled and never mutated afterward.
+// - IRQ handler slots are written by `register_irq_handler`, which always disables
+//   interrupts for the duration of the write (enforced internally, not by callers).
+// - `dispatch_irq` reads the handler table only from IRQ context, where the CPU
+//   has already cleared the interrupt flag. No concurrent mutation is possible.
 unsafe impl Sync for InterruptState {}
 
 static STATE: InterruptState = InterruptState::new();
@@ -453,18 +456,38 @@ pub extern "C" fn exception_handler_rust(
 }
 
 /// Register a callback for a given interrupt vector.
+///
+/// Safe to call at any time, including after interrupts have been globally
+/// enabled. Interrupts are briefly disabled for the duration of the table
+/// write so that `dispatch_irq` cannot observe a partially-written handler
+/// slot when an IRQ fires between a read-check and the store.
 pub fn register_irq_handler(vector: u8, handler: IrqHandler) {
     // Step 1: only hardware IRQ vectors are valid for this registry API.
     let irq_idx = irq_slot_index(vector).expect("register_irq_handler: vector is not a PIC IRQ");
 
-    // Step 2: store handler in direct IRQ-indexed dispatch table.
+    // Step 2: disable interrupts for the duration of the table write.
+    // `dispatch_irq` reads the same slot while in IRQ context (CPU already
+    // has interrupts off). Disabling here ensures the write is never
+    // preempted by an IRQ that reads a half-written slot.
+    let interrupts_were_enabled = are_enabled();
+    if interrupts_were_enabled {
+        disable();
+    }
+
+    // Step 3: store handler in direct IRQ-indexed dispatch table.
     // SAFETY:
     // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
     // - Handler table is a singleton owned by this module.
     // - `irq_idx` is derived from validated IRQ range and is in-bounds for `IRQ_LINES`.
+    // - Interrupts are disabled for the duration of this write (see above).
     unsafe {
         let handlers = &mut *STATE.irq_handlers.get();
         handlers[irq_idx] = Some(handler);
+    }
+
+    // Step 4: restore the caller's interrupt state.
+    if interrupts_were_enabled {
+        enable();
     }
 }
 
