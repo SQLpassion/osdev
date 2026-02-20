@@ -649,7 +649,6 @@ impl PhysicalMemoryManager {
 /// each alloc/release operation acquires the PMM lock independently so IRQs
 /// are not blocked for the whole stress run.
 pub fn run_self_test(stress_iters: u32) {
-    #[inline]
     fn print_test_line(args: core::fmt::Arguments<'_>) {
         with_screen(|screen| {
             let _ = screen.write_fmt(args);
@@ -657,12 +656,10 @@ pub fn run_self_test(stress_iters: u32) {
         });
     }
 
-    #[inline]
     fn alloc_test_frame() -> Option<PageFrame> {
         with_pmm(|mgr| mgr.alloc_frame())
     }
 
-    #[inline]
     fn release_test_pfn(pfn: u64) -> bool {
         with_pmm(|mgr| mgr.release_pfn(pfn))
     }
@@ -672,6 +669,7 @@ pub fn run_self_test(stress_iters: u32) {
         "pmm",
         format_args!("[pmm-test] start (stress={})", stress_iters),
     );
+
     print_test_line(format_args!(
         "Running PMM self-test (stress: {})...",
         stress_iters

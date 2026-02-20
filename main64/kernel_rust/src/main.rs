@@ -67,7 +67,9 @@ pub extern "C" fn KernelMain(kernel_size: u64) -> ! {
     // - This requires `unsafe` because it performs operations that Rust marks as potentially violating memory or concurrency invariants.
     // - Called exactly once at early boot before static state is used.
     // - Linker symbols define a valid writable BSS range.
-    unsafe { zero_bss(); }
+    unsafe {
+        zero_bss();
+    }
 
     // Initialize debug serial output first for early debugging
     serial::init();
@@ -149,7 +151,6 @@ fn idle_loop() -> ! {
     }
 }
 
-#[inline]
 /// Converts higher-half kernel VA to physical address by removing base offset.
 fn kernel_va_to_phys(kernel_va: u64) -> Option<u64> {
     if kernel_va >= KERNEL_HIGHER_HALF_BASE {
@@ -159,7 +160,6 @@ fn kernel_va_to_phys(kernel_va: u64) -> Option<u64> {
     }
 }
 
-#[inline]
 /// Maps a kernel symbol VA into the configured user code alias window.
 fn kernel_va_to_user_code_va(kernel_va: u64) -> Option<u64> {
     syscall::user_alias_va_for_kernel(

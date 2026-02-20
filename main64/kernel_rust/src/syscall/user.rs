@@ -295,7 +295,6 @@ pub fn sys_exit() -> ! {
 ///     }
 /// }
 /// ```
-#[inline(always)]
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn user_readline(buf: &mut [u8]) -> Result<usize, SysError> {
     let mut len = 0usize;

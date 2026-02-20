@@ -851,7 +851,6 @@ pub unsafe fn switch_page_directory(pml4_phys: u64) {
 
 /// Builds any missing intermediate page tables (PML4/PDP/PD) for `virtual_address`.
 ///
-#[inline]
 fn populate_page_table_path(virtual_address: u64, user: bool) -> Result<(), MapError> {
     // Level 1: PML4 entry.
     let pml4 = table_at(PML4_TABLE_ADDR);
@@ -1118,6 +1117,7 @@ pub fn try_handle_page_fault(virtual_address: u64, error_code: u64) -> Result<()
     // EFER.NXE is activated in kaosldr_16/longmode.asm; without it no_execute is ignored.
     let writable = !matches!(user_region, Some(UserRegion::Code));
     let no_execute = matches!(user_region, Some(UserRegion::Stack));
+
     // Step 1: ensure the page-table path exists; propagate OOM instead of panicking.
     if populate_page_table_path(virtual_address, user_access).is_err() {
         return Err(PageFaultError::OutOfMemory {
@@ -1125,6 +1125,7 @@ pub fn try_handle_page_fault(virtual_address: u64, error_code: u64) -> Result<()
             error_code,
         });
     }
+
     let pt = table_at(pt_table_addr(virtual_address));
     let pt_idx = pt_index(virtual_address);
 

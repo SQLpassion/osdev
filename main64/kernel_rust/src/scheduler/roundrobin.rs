@@ -362,34 +362,28 @@ const fn align_down(value: usize, align: usize) -> usize {
 }
 
 /// Executes `f` while holding the scheduler spinlock.
-#[inline]
 fn with_sched<R>(f: impl FnOnce(&mut SchedulerMetadata) -> R) -> R {
     let mut sched = SCHED.lock();
     f(&mut sched)
 }
 
-#[inline]
 fn arch_callbacks() -> SchedulerArchCallbacks {
     *SCHED_ARCH_CALLBACKS.lock()
 }
 
-#[inline]
 fn kernel_cr3_value() -> u64 {
     SCHED_KERNEL_CR3.load(AtomicOrdering::Acquire)
 }
 
-#[inline]
 fn active_cr3_value() -> u64 {
     SCHED_ACTIVE_CR3.load(AtomicOrdering::Acquire)
 }
 
-#[inline]
 fn set_kernel_and_active_cr3(cr3: u64) {
     SCHED_KERNEL_CR3.store(cr3, AtomicOrdering::Release);
     SCHED_ACTIVE_CR3.store(cr3, AtomicOrdering::Release);
 }
 
-#[inline]
 fn set_active_cr3(cr3: u64) {
     SCHED_ACTIVE_CR3.store(cr3, AtomicOrdering::Release);
 }

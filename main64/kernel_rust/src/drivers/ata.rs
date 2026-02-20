@@ -219,14 +219,12 @@ fn acquire_request_slot() -> RequestSlotGuard {
     }
 }
 
-#[inline]
 fn with_controller<R>(f: impl FnOnce(&AtaPio) -> R) -> R {
     // Serialize direct task-file/data-port access to one caller at a time.
     let ata = PRIMARY_ATA.controller.lock();
     f(&ata)
 }
 
-#[inline]
 fn status_is_ready(status: StatusRegister) -> Result<bool, AtaError> {
     // Error bits have priority over readiness; callers must fail fast.
     if status.has_error() {
@@ -239,7 +237,6 @@ fn status_is_ready(status: StatusRegister) -> Result<bool, AtaError> {
     Ok(!status.is_busy() && status.is_drq())
 }
 
-#[inline]
 fn can_sleep_on_irq() -> Option<usize> {
     // Sleeping on IRQ wait queues requires a live scheduler and enabled IRQs.
     if !scheduler::is_running() || !interrupts::are_enabled() {
