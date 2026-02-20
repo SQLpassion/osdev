@@ -63,15 +63,23 @@ impl StatusRegister {
     }
 }
 
+/// Maximum number of polling iterations before ATA waits time out.
+const ATA_POLL_TIMEOUT_ITERATIONS: u32 = 10_000;
+
 /// Errors that can occur during ATA operations.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AtaError {
     /// The drive reported an error (ERR bit set in status).
     DeviceError,
+
     /// The drive reported a fault (DF bit set in status).
     DeviceFault,
+
     /// The LBA exceeds the 28-bit limit (0x0FFFFFFF).
     LbaOutOfRange,
+
+    /// The controller did not leave the expected state before timeout.
+    Timeout,
 }
 
 /// ATA PIO driver for one ATA bus.
@@ -109,16 +117,25 @@ impl AtaPio {
     }
 
     /// Busy-wait until the BSY flag is cleared.
-    fn wait_bsy_clear(&self) {
+    fn wait_bsy_clear(&self) -> Result<(), AtaError> {
+        let mut timeout = ATA_POLL_TIMEOUT_ITERATIONS;
+
         while self.read_status().is_busy() {
+            // Abort after bounded retries to avoid infinite hangs on faulty hardware.
+            if timeout == 0 {
+                return Err(AtaError::Timeout);
+            }
+            timeout -= 1;
             core::hint::spin_loop();
         }
+
+        Ok(())
     }
 
     /// Set up the command registers for a 28-bit LBA transfer.
-    fn setup_command(&self, lba: u32, sector_count: u8, command: u8) {
+    fn setup_command(&self, lba: u32, sector_count: u8, command: u8) -> Result<(), AtaError> {
         // Ensure the device is not busy before programming command registers.
-        self.wait_bsy_clear();
+        self.wait_bsy_clear()?;
 
         // Program transfer count and 28-bit LBA address, then issue command.
         // SAFETY:
@@ -134,6 +151,8 @@ impl AtaPio {
                 .write(DRIVE_SELECT_MASTER_LBA | ((lba >> 24) as u8 & 0x0F));
             self.status_cmd.write(command);
         }
+
+        Ok(())
     }
 }
 
@@ -256,6 +275,8 @@ fn can_sleep_on_irq() -> Option<usize> {
 /// This avoids deadlocks on hardware/controllers that do not reliably deliver
 /// ATA IRQ edges for every intermediate device state transition.
 fn wait_ready_or_error() -> Result<(), AtaError> {
+    let mut timeout = ATA_POLL_TIMEOUT_ITERATIONS;
+
     loop {
         // Step 1: sample controller status under controller lock.
         let status = with_controller(AtaPio::read_status);
@@ -265,18 +286,25 @@ fn wait_ready_or_error() -> Result<(), AtaError> {
             return Ok(());
         }
 
+        // Step 3: abort after bounded retries to prevent unbounded kernel hangs.
+        if timeout == 0 {
+            return Err(AtaError::Timeout);
+        }
+
+        timeout -= 1;
+
         if can_sleep_on_irq().is_some() {
-            // Step 3a: consume a pending IRQ edge before yielding.
+            // Step 4a: consume a pending IRQ edge before yielding.
             // If one is already queued, re-check status immediately.
             if IRQ_EVENT_PENDING.swap(false, Ordering::AcqRel) {
                 continue;
             }
 
-            // Step 3b: no pending IRQ hint; yield once and poll again.
+            // Step 4b: no pending IRQ hint; yield once and poll again.
             // This keeps the system responsive even if an IRQ edge is missed.
             scheduler::yield_now();
         } else {
-            // Step 3c: fallback for contexts without scheduler/IRQs.
+            // Step 4c: fallback for contexts without scheduler/IRQs.
             core::hint::spin_loop();
         }
     }
@@ -356,7 +384,7 @@ pub fn read_sectors(buffer: &mut [u8], lba: u32, sector_count: u8) -> Result<(),
     IRQ_EVENT_PENDING.store(false, Ordering::Release);
 
     // Step 2: program task-file registers.
-    with_controller(|ata| ata.setup_command(lba, sector_count, ATA_CMD_READ_SECTORS));
+    with_controller(|ata| ata.setup_command(lba, sector_count, ATA_CMD_READ_SECTORS))?;
 
     // Step 3: transfer sectors.
     for sector in 0..sector_count as usize {
@@ -416,7 +444,7 @@ pub fn write_sectors(buffer: &[u8], lba: u32, sector_count: u8) -> Result<(), At
     IRQ_EVENT_PENDING.store(false, Ordering::Release);
 
     // Step 2: program task-file registers.
-    with_controller(|ata| ata.setup_command(lba, sector_count, ATA_CMD_WRITE_SECTORS));
+    with_controller(|ata| ata.setup_command(lba, sector_count, ATA_CMD_WRITE_SECTORS))?;
 
     // Step 3: transfer sectors.
     for sector in 0..sector_count as usize {

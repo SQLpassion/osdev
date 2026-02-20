@@ -77,6 +77,26 @@ fn test_ata_init_is_idempotent() {
     );
 }
 
+/// Contract: ATA timeout error variant remains distinct in the public API.
+/// Given: The ATA error enum exposes individual failure causes.
+/// When: Timeout is compared against other ATA error variants.
+/// Then: Timeout must remain distinguishable for callers that handle hangs separately.
+#[test_case]
+fn test_ata_timeout_error_variant_is_distinct() {
+    assert!(
+        ata::AtaError::Timeout != ata::AtaError::DeviceError,
+        "Timeout must remain distinct from device-reported ERR state"
+    );
+    assert!(
+        ata::AtaError::Timeout != ata::AtaError::DeviceFault,
+        "Timeout must remain distinct from device fault (DF) state"
+    );
+    assert!(
+        ata::AtaError::Timeout != ata::AtaError::LbaOutOfRange,
+        "Timeout must remain distinct from caller-side input validation errors"
+    );
+}
+
 /// Contract: ATA write/read roundtrip returns previously written bytes.
 /// Given: ATA subsystem was initialized and a writable test sector is chosen.
 /// When: A sector is written and read back from the same LBA.
