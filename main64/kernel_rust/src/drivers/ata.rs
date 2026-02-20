@@ -6,7 +6,6 @@
 use crate::arch::interrupts::{self, SavedRegisters};
 use crate::arch::port::{PortByte, PortWord};
 use crate::scheduler;
-use crate::sync::singlewaitqueue::SingleWaitQueue;
 use crate::sync::spinlock::SpinLock;
 use crate::sync::waitqueue::WaitQueue;
 use crate::sync::waitqueue_adapter;
@@ -158,9 +157,6 @@ static REQUEST_WAITQUEUE: WaitQueue = WaitQueue::new();
 /// Set by IRQ14 to signal ATA state progress/data readiness.
 static IRQ_EVENT_PENDING: AtomicBool = AtomicBool::new(false);
 
-/// Wait queue used by the active ATA request owner while waiting for IRQ14.
-static IRQ_WAITQUEUE: SingleWaitQueue = SingleWaitQueue::new();
-
 // SAFETY:
 // - This requires `unsafe` because the compiler cannot automatically verify the thread-safety invariants of this `unsafe impl`.
 // - `controller` serializes all mutable ATA access via `SpinLock`.
@@ -256,9 +252,12 @@ fn can_sleep_on_irq() -> Option<usize> {
 
 /// Wait until controller reports `!BSY && DRQ`.
 ///
-/// Primary mode is IRQ-assisted sleeping: the active task sleeps on IRQ14
-/// events and re-checks status after every wakeup. In contexts where sleeping
-/// is unavailable (tests/early boot), this falls back to short spin polling.
+/// Primary mode is cooperative IRQ-hinted polling:
+/// - IRQ14 sets `IRQ_EVENT_PENDING` as a wake hint.
+/// - The requester re-checks status in a loop and yields between checks.
+///
+/// This avoids deadlocks on hardware/controllers that do not reliably deliver
+/// ATA IRQ edges for every intermediate device state transition.
 fn wait_ready_or_error() -> Result<(), AtaError> {
     loop {
         // Step 1: sample controller status under controller lock.
@@ -269,22 +268,16 @@ fn wait_ready_or_error() -> Result<(), AtaError> {
             return Ok(());
         }
 
-        if let Some(task_id) = can_sleep_on_irq() {
-            // Step 3a: consume a pending IRQ edge before sleeping.
+        if can_sleep_on_irq().is_some() {
+            // Step 3a: consume a pending IRQ edge before yielding.
             // If one is already queued, re-check status immediately.
             if IRQ_EVENT_PENDING.swap(false, Ordering::AcqRel) {
                 continue;
             }
 
-            // Step 3b: sleep until IRQ14 marks a new ATA event.
-            if waitqueue_adapter::sleep_if_single(&IRQ_WAITQUEUE, task_id, || {
-                !IRQ_EVENT_PENDING.load(Ordering::Acquire)
-            })
-            .should_yield()
-            {
-                // Yield cooperatively so IRQ worker/scheduler can progress.
-                scheduler::yield_now();
-            }
+            // Step 3b: no pending IRQ hint; yield once and poll again.
+            // This keeps the system responsive even if an IRQ edge is missed.
+            scheduler::yield_now();
         } else {
             // Step 3c: fallback for contexts without scheduler/IRQs.
             core::hint::spin_loop();
@@ -297,15 +290,12 @@ fn wait_ready_or_error() -> Result<(), AtaError> {
 /// Responsibilities of this handler are intentionally minimal and bounded:
 /// - acknowledge ATA progress to the waiting request path via
 ///   `IRQ_EVENT_PENDING`,
-/// - wake the single requester sleeping on `IRQ_WAITQUEUE`,
 /// - return the unchanged trap frame pointer to the IRQ dispatcher.
 ///
 /// Design constraints:
 /// - No data-port PIO transfer is performed here.
 ///   All 16-bit sector reads/writes remain in `read_sectors`/`write_sectors`
 ///   after the task wakes and re-checks controller state.
-/// - Exactly one ATA request may be active (`REQUEST_IN_FLIGHT`), therefore
-///   single-waiter wakeup is sufficient and avoids wakeup storms.
 /// - This function must not block or take long-running locks because it runs
 ///   in interrupt context.
 ///
@@ -318,10 +308,7 @@ fn primary_ata_irq_handler(_vector: u8, frame: &mut SavedRegisters) -> *mut Save
     // Step 1: publish one "ATA progressed" event for the active requester.
     IRQ_EVENT_PENDING.store(true, Ordering::Release);
 
-    // Step 2: wake exactly one ATA waiter (single active request owner).
-    waitqueue_adapter::wake_all_single(&IRQ_WAITQUEUE);
-
-    // Step 3: continue with current trap frame; scheduler may switch later.
+    // Step 2: continue with current trap frame; scheduler may switch later.
     frame as *mut SavedRegisters
 }
 
