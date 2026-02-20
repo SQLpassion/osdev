@@ -68,6 +68,95 @@ impl Default for Screen {
     }
 }
 
+/// Lock-free VGA writer used exclusively by panic paths.
+///
+/// This writer deliberately bypasses `GLOBAL_SCREEN` and therefore cannot
+/// deadlock on `SpinLock<Screen>` if a panic occurs while the lock is held.
+pub struct PanicScreenWriter {
+    row: usize,
+    col: usize,
+    attribute: u8,
+}
+
+impl PanicScreenWriter {
+    /// Creates a panic writer with fixed colors.
+    pub const fn new(foreground: Color, background: Color) -> Self {
+        Self {
+            row: 0,
+            col: 0,
+            attribute: ((background as u8) << 4) | (foreground as u8),
+        }
+    }
+
+    /// Clears the full VGA text buffer without using any locks.
+    pub fn clear(&mut self) {
+        // Step 1: blank every visible VGA cell with the configured attribute.
+        for row in 0..DEFAULT_ROWS {
+            for col in 0..DEFAULT_COLS {
+                let offset = row * DEFAULT_COLS + col;
+                let cell_ptr = (VGA_BUFFER + offset * 2) as *mut VgaChar;
+                let blank = VgaChar {
+                    character: b' ',
+                    attribute: self.attribute,
+                };
+                // SAFETY:
+                // - This requires `unsafe` because raw pointer MMIO writes are outside Rust's static checks.
+                // - `cell_ptr` points to one in-bounds VGA text cell.
+                // - Volatile write is required for deterministic MMIO behavior.
+                unsafe {
+                    ptr::write_volatile(cell_ptr, blank);
+                }
+            }
+        }
+
+        // Step 2: reset cursor state in this lock-free writer.
+        self.row = 0;
+        self.col = 0;
+    }
+
+    #[inline]
+    fn put_byte(&mut self, byte: u8) {
+        match byte {
+            b'\n' => {
+                self.row = (self.row + 1).min(DEFAULT_ROWS - 1);
+                self.col = 0;
+            }
+            _ => {
+                if self.row >= DEFAULT_ROWS {
+                    self.row = DEFAULT_ROWS - 1;
+                }
+                if self.col >= DEFAULT_COLS {
+                    self.col = 0;
+                    self.row = (self.row + 1).min(DEFAULT_ROWS - 1);
+                }
+                let offset = self.row * DEFAULT_COLS + self.col;
+                let cell_ptr = (VGA_BUFFER + offset * 2) as *mut VgaChar;
+                let cell = VgaChar {
+                    character: byte,
+                    attribute: self.attribute,
+                };
+                // SAFETY:
+                // - This requires `unsafe` because raw pointer MMIO writes are outside Rust's static checks.
+                // - `cell_ptr` is computed from bounded row/col coordinates.
+                // - Volatile write is required for deterministic MMIO behavior.
+                unsafe {
+                    ptr::write_volatile(cell_ptr, cell);
+                }
+                self.col += 1;
+            }
+        }
+    }
+}
+
+impl fmt::Write for PanicScreenWriter {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        for byte in s.bytes() {
+            self.put_byte(byte);
+        }
+        Ok(())
+    }
+}
+
 /// Wrapper around a global screen instance.
 ///
 /// Mirrors the `with_pmm` access pattern: all mutable access is routed through
@@ -137,12 +226,6 @@ impl Screen {
     /// Set the current text color
     pub fn set_color(&mut self, color: Color) {
         self.foreground = color;
-    }
-
-    /// Set both foreground and background colors
-    pub fn set_colors(&mut self, foreground: Color, background: Color) {
-        self.foreground = foreground;
-        self.background = background;
     }
 
     /// Clear the screen

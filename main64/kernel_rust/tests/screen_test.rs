@@ -7,7 +7,8 @@
 #![reexport_test_harness_main = "test_main"]
 
 use core::panic::PanicInfo;
-use kaos_kernel::drivers::screen::{with_screen, Screen};
+use core::fmt::Write;
+use kaos_kernel::drivers::screen::{with_screen, Color, PanicScreenWriter, Screen};
 
 const VGA_BUFFER: usize = 0xFFFF8000000B8000;
 const VGA_COLS: usize = 80;
@@ -237,4 +238,29 @@ fn test_with_screen_keeps_global_cursor_between_calls() {
         );
         screen.clear();
     });
+}
+
+/// Contract: panic screen writer is lock-free and writes directly to VGA buffer.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "panic screen writer is lock-free and writes directly to VGA buffer".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_panic_screen_writer_writes_without_global_lock() {
+    with_screen(|screen| screen.clear());
+
+    let mut panic_writer = PanicScreenWriter::new(Color::White, Color::Blue);
+    panic_writer.clear();
+    write!(panic_writer, "PANIC").expect("panic writer should support fmt::Write");
+
+    let expected = b"PANIC";
+    for (idx, byte) in expected.iter().enumerate() {
+        let cell = VGA_BUFFER + idx * 2;
+        // SAFETY:
+        // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
+        // - `cell` addresses the first-row VGA MMIO character cells.
+        // - Volatile read is required for MMIO.
+        let ch = unsafe { core::ptr::read_volatile(cell as *const u8) };
+        assert!(ch == *byte, "panic writer must write expected byte sequence");
+    }
 }

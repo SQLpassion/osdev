@@ -2,7 +2,7 @@
 //!
 //! Required for `no_std` environments.
 
-use crate::drivers::screen::{Color, Screen};
+use crate::drivers::screen::Color;
 use core::fmt::Write;
 use core::panic::PanicInfo;
 
@@ -12,19 +12,22 @@ use core::panic::PanicInfo;
 /// Later phases will add stack traces and debugging info.
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    // Initialize the screen
-    let mut screen = Screen::new();
+    // Step 1: render panic text through a lock-free VGA writer.
+    //
+    // Why lock-free:
+    // - panic may occur while `GLOBAL_SCREEN` lock is already held.
+    // - taking the same lock again would deadlock the panic path.
+    let mut screen = crate::drivers::screen::PanicScreenWriter::new(Color::White, Color::Blue);
     screen.clear();
 
-    screen.set_colors(Color::White, Color::Blue);
-    write!(screen, "!!! KERNEL PANIC !!!").unwrap();
+    let _ = writeln!(screen, "!!! KERNEL PANIC !!!");
 
     if let Some(location) = info.location() {
-        writeln!(screen, "Location: {}:{}", location.file(), location.line()).unwrap();
-        writeln!(screen).unwrap();
+        let _ = writeln!(screen, "Location: {}:{}", location.file(), location.line());
+        let _ = writeln!(screen);
     }
 
-    writeln!(screen, "Message: {}", info.message()).unwrap();
+    let _ = writeln!(screen, "Message: {}", info.message());
 
     // Halt the CPU
     loop {
