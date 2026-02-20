@@ -536,12 +536,42 @@ fn alloc_frame_phys_or_panic(context: &str) -> u64 {
 ///
 /// Caller contract: `addr` must point to a valid, mapped page-table page.
 #[inline]
-fn table_at(addr: u64) -> &'static mut PageTable {
+fn table_at(addr: u64) -> *mut PageTable {
+    addr as *mut PageTable
+}
+
+#[inline]
+fn table_zero(table: *mut PageTable) {
     // SAFETY:
-    // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
-    // - Caller guarantees `addr` points to a mapped page table page.
-    // - Returned reference is used under page-table ownership conventions.
-    unsafe { &mut *(addr as *mut PageTable) }
+    // - This requires `unsafe` because raw-pointer dereference cannot be validated by Rust.
+    // - Caller guarantees `table` points to a valid writable page-table page.
+    unsafe {
+        (*table).zero();
+    }
+}
+
+#[inline]
+fn table_entry(table: *const PageTable, idx: usize) -> PageTableEntry {
+    // SAFETY:
+    // - This requires `unsafe` because raw-pointer dereference cannot be validated by Rust.
+    // - Caller guarantees `table` points to a valid page-table page and `idx < PT_ENTRIES`.
+    unsafe { (*table).entries[idx] }
+}
+
+/// Returns a raw mutable pointer to the page-table entry at `idx` within `table`.
+///
+/// This is the single write primitive for all page-table modifications.
+/// Callers dereference the returned pointer inside `unsafe` blocks that
+/// document the site-specific safety invariants.
+///
+/// # Safety
+/// - `table` must point to a valid, mapped page-table page.
+/// - `idx < PT_ENTRIES` (512).
+/// - No other mutable reference to `table.entries[idx]` may exist for the
+///   duration of the dereference.
+#[inline]
+unsafe fn entry_ptr(table: *mut PageTable, idx: usize) -> *mut PageTableEntry {
+    core::ptr::addr_of_mut!((*table).entries[idx])
 }
 
 /// Zeros one 4 KiB page in physical memory.
@@ -701,66 +731,94 @@ pub fn init(debug_output: bool) {
     // - slot 256 -> higher-half kernel subtree
     // - slot 511 -> recursive self-map
     let pml4_tbl = table_at(pml4);
-    pml4_tbl.entries[0].set_mapping(phys_to_pfn(pdp_identity), true, true, false);
-    pml4_tbl.entries[256].set_mapping(phys_to_pfn(pdp_higher), true, true, false);
-    pml4_tbl.entries[511].set_mapping(phys_to_pfn(pml4), true, true, false);
+
+    // SAFETY: `pml4_tbl` is a valid PML4 page, indices < PT_ENTRIES, boot context (single-threaded).
+    unsafe {
+        (*entry_ptr(pml4_tbl, 0)).set_mapping(phys_to_pfn(pdp_identity), true, true, false);
+        (*entry_ptr(pml4_tbl, 256)).set_mapping(phys_to_pfn(pdp_higher), true, true, false);
+        (*entry_ptr(pml4_tbl, 511)).set_mapping(phys_to_pfn(pml4), true, true, false);
+    }
 
     // Build identity mapping subtree for first 4 MiB.
     let pdp_identity_tbl = table_at(pdp_identity);
-    pdp_identity_tbl.entries[0].set_mapping(phys_to_pfn(pd_identity), true, true, false);
+
+    // SAFETY: `pdp_identity_tbl` is a valid PDP page, `0 < PT_ENTRIES`, boot context.
+    unsafe {
+        (*entry_ptr(pdp_identity_tbl, 0)).set_mapping(phys_to_pfn(pd_identity), true, true, false);
+    }
 
     let pd_identity_tbl = table_at(pd_identity);
-    pd_identity_tbl.entries[0].set_mapping(phys_to_pfn(pt_identity_0), true, true, false);
-    pd_identity_tbl.entries[1].set_mapping(phys_to_pfn(pt_identity_1), true, true, false);
+
+    // SAFETY: `pd_identity_tbl` is a valid PD page, indices < PT_ENTRIES, boot context.
+    unsafe {
+        (*entry_ptr(pd_identity_tbl, 0)).set_mapping(phys_to_pfn(pt_identity_0), true, true, false);
+        (*entry_ptr(pd_identity_tbl, 1)).set_mapping(phys_to_pfn(pt_identity_1), true, true, false);
+    }
 
     let pt_identity_tbl_0 = table_at(pt_identity_0);
-
-    // Identity-map physical 0..2 MiB.
     for i in 0..PT_ENTRIES {
-        pt_identity_tbl_0.entries[i].set_mapping(i as u64, true, true, false);
+        // SAFETY: `pt_identity_tbl_0` is a valid PT page, `i < PT_ENTRIES`, boot context.
+        unsafe { (*entry_ptr(pt_identity_tbl_0, i)).set_mapping(i as u64, true, true, false) };
     }
 
     let pt_identity_tbl_1 = table_at(pt_identity_1);
-
-    // Identity-map physical 2..4 MiB.
     for i in 0..PT_ENTRIES {
-        pt_identity_tbl_1.entries[i].set_mapping((PT_ENTRIES + i) as u64, true, true, false);
+        // SAFETY: `pt_identity_tbl_1` is a valid PT page, `i < PT_ENTRIES`, boot context.
+        unsafe {
+            (*entry_ptr(pt_identity_tbl_1, i)).set_mapping(
+                (PT_ENTRIES + i) as u64,
+                true,
+                true,
+                false,
+            )
+        };
     }
 
     // Build higher-half mapping subtree that mirrors same physical 0..4 MiB.
     let pdp_higher_tbl = table_at(pdp_higher);
-    pdp_higher_tbl.entries[0].set_mapping(phys_to_pfn(pd_higher), true, true, false);
+
+    // SAFETY: `pdp_higher_tbl` is a valid PDP page, `0 < PT_ENTRIES`, boot context.
+    unsafe {
+        (*entry_ptr(pdp_higher_tbl, 0)).set_mapping(phys_to_pfn(pd_higher), true, true, false)
+    };
 
     let pd_higher_tbl = table_at(pd_higher);
-    pd_higher_tbl.entries[0].set_mapping(phys_to_pfn(pt_higher_0), true, true, false);
-    pd_higher_tbl.entries[1].set_mapping(phys_to_pfn(pt_higher_1), true, true, false);
+
+    // SAFETY: `pd_higher_tbl` is a valid PD page, indices < PT_ENTRIES, boot context.
+    unsafe {
+        (*entry_ptr(pd_higher_tbl, 0)).set_mapping(phys_to_pfn(pt_higher_0), true, true, false);
+        (*entry_ptr(pd_higher_tbl, 1)).set_mapping(phys_to_pfn(pt_higher_1), true, true, false);
+    }
 
     let pt_higher_tbl_0 = table_at(pt_higher_0);
-
-    // Map first 2 MiB into higher-half window and mark as global.
     for i in 0..PT_ENTRIES {
-        pt_higher_tbl_0.entries[i].set_mapping(i as u64, true, true, false);
-
-        // Mark kernel pages as global to avoid TLB flush on CR3 switch
-        pt_higher_tbl_0.entries[i].set_global(true);
+        // SAFETY: `pt_higher_tbl_0` is a valid PT page, `i < PT_ENTRIES`, boot context.
+        unsafe {
+            let e = entry_ptr(pt_higher_tbl_0, i);
+            (*e).set_mapping(i as u64, true, true, false);
+            (*e).set_global(true);
+        }
     }
 
     let pt_higher_tbl_1 = table_at(pt_higher_1);
-
-    // Map second 2 MiB into higher-half window and mark as global.
     for i in 0..PT_ENTRIES {
-        pt_higher_tbl_1.entries[i].set_mapping((PT_ENTRIES + i) as u64, true, true, false);
-
-        // Mark kernel pages as global to avoid TLB flush on CR3 switch
-        pt_higher_tbl_1.entries[i].set_global(true);
+        // SAFETY: `pt_higher_tbl_1` is a valid PT page, `i < PT_ENTRIES`, boot context.
+        unsafe {
+            let e = entry_ptr(pt_higher_tbl_1, i);
+            (*e).set_mapping((PT_ENTRIES + i) as u64, true, true, false);
+            (*e).set_global(true);
+        }
     }
 
     // Mark higher-half page-directory and page-table entries as global
-    // (but NOT the recursive PML4 entry, which must change per address space)
-    pd_higher_tbl.entries[0].set_global(true);
-    pd_higher_tbl.entries[1].set_global(true);
-    pdp_higher_tbl.entries[0].set_global(true);
-    pml4_tbl.entries[256].set_global(true);
+    // (but NOT the recursive PML4 entry, which must change per address space).
+    // SAFETY: all tables are valid PT pages, indices < PT_ENTRIES, boot context.
+    unsafe {
+        (*entry_ptr(pd_higher_tbl, 0)).set_global(true);
+        (*entry_ptr(pd_higher_tbl, 1)).set_global(true);
+        (*entry_ptr(pdp_higher_tbl, 0)).set_global(true);
+        (*entry_ptr(pml4_tbl, 256)).set_global(true);
+    }
 
     // Step 4: publish VMM state and mark it initialized for runtime APIs.
     set_vmm_state_unchecked(pml4, debug_output);
@@ -856,60 +914,86 @@ fn populate_page_table_path(virtual_address: u64, user: bool) -> Result<(), MapE
     let pml4 = table_at(PML4_TABLE_ADDR);
     let pml4_idx = pml4_index(virtual_address);
 
-    if !pml4.entries[pml4_idx].present() {
+    if !table_entry(pml4, pml4_idx).present() {
         // Allocate and zero a fresh PDP table.
         let Some(new_table_phys) = alloc_frame_phys() else {
             return Err(MapError::OutOfMemory { virtual_address });
         };
-        pml4.entries[pml4_idx].set_mapping(phys_to_pfn(new_table_phys), true, true, user);
+
+        // SAFETY: `pml4` is a valid PML4 page, `pml4_idx < PT_ENTRIES`, interrupts disabled.
+        unsafe {
+            (*entry_ptr(pml4, pml4_idx)).set_mapping(phys_to_pfn(new_table_phys), true, true, user)
+        };
+
         invlpg(pdp_table_addr(virtual_address));
         let new_pdp = table_at(pdp_table_addr(virtual_address));
-        new_pdp.zero();
-        debug_alloc("PML4", pml4_idx, pml4.entries[pml4_idx].frame());
+        table_zero(new_pdp);
+        debug_alloc("PML4", pml4_idx, table_entry(pml4, pml4_idx).frame());
     } else if user {
         // Existing path: elevate permissions for user mapping requests.
-        pml4.entries[pml4_idx].set_user(true);
-        pml4.entries[pml4_idx].set_writable(true);
+        // SAFETY: `pml4` is a valid PML4 page, `pml4_idx < PT_ENTRIES`, interrupts disabled.
+        unsafe {
+            let e = entry_ptr(pml4, pml4_idx);
+            (*e).set_user(true);
+            (*e).set_writable(true);
+        }
     }
 
     // Level 2: PDP entry.
     let pdp = table_at(pdp_table_addr(virtual_address));
     let pdp_idx = pdp_index(virtual_address);
 
-    if !pdp.entries[pdp_idx].present() {
+    if !table_entry(pdp, pdp_idx).present() {
         // Allocate and zero a fresh PD table.
         let Some(new_table_phys) = alloc_frame_phys() else {
             return Err(MapError::OutOfMemory { virtual_address });
         };
-        pdp.entries[pdp_idx].set_mapping(phys_to_pfn(new_table_phys), true, true, user);
+
+        // SAFETY: `pdp` is a valid PDP page, `pdp_idx < PT_ENTRIES`, interrupts disabled.
+        unsafe {
+            (*entry_ptr(pdp, pdp_idx)).set_mapping(phys_to_pfn(new_table_phys), true, true, user)
+        };
+
         invlpg(pd_table_addr(virtual_address));
         let new_pd = table_at(pd_table_addr(virtual_address));
-        new_pd.zero();
-        debug_alloc("PDP", pdp_idx, pdp.entries[pdp_idx].frame());
+        table_zero(new_pd);
+        debug_alloc("PDP", pdp_idx, table_entry(pdp, pdp_idx).frame());
     } else if user {
         // Existing path: elevate permissions for user mapping requests.
-        pdp.entries[pdp_idx].set_user(true);
-        pdp.entries[pdp_idx].set_writable(true);
+        // SAFETY: `pdp` is a valid PDP page, `pdp_idx < PT_ENTRIES`, interrupts disabled.
+        unsafe {
+            let e = entry_ptr(pdp, pdp_idx);
+            (*e).set_user(true);
+            (*e).set_writable(true);
+        }
     }
 
     // Level 3: PD entry.
     let pd = table_at(pd_table_addr(virtual_address));
     let pd_idx = pd_index(virtual_address);
 
-    if !pd.entries[pd_idx].present() {
+    if !table_entry(pd, pd_idx).present() {
         // Allocate and zero a fresh PT table.
         let Some(new_table_phys) = alloc_frame_phys() else {
             return Err(MapError::OutOfMemory { virtual_address });
         };
-        pd.entries[pd_idx].set_mapping(phys_to_pfn(new_table_phys), true, true, user);
+        // SAFETY: `pd` is a valid PD page, `pd_idx < PT_ENTRIES`, interrupts disabled.
+        unsafe {
+            (*entry_ptr(pd, pd_idx)).set_mapping(phys_to_pfn(new_table_phys), true, true, user)
+        };
+
         invlpg(pt_table_addr(virtual_address));
         let new_pt = table_at(pt_table_addr(virtual_address));
-        new_pt.zero();
-        debug_alloc("PD", pd_idx, pd.entries[pd_idx].frame());
+        table_zero(new_pt);
+        debug_alloc("PD", pd_idx, table_entry(pd, pd_idx).frame());
     } else if user {
         // Existing path: elevate permissions for user mapping requests.
-        pd.entries[pd_idx].set_user(true);
-        pd.entries[pd_idx].set_writable(true);
+        // SAFETY: `pd` is a valid PD page, `pd_idx < PT_ENTRIES`, interrupts disabled.
+        unsafe {
+            let e = entry_ptr(pd, pd_idx);
+            (*e).set_user(true);
+            (*e).set_writable(true);
+        }
     }
 
     Ok(())
@@ -920,11 +1004,11 @@ fn populate_page_table_path(virtual_address: u64, user: bool) -> Result<(), MapE
 /// Returns `None` if any level is non-present or uses a huge page mapping.
 ///
 #[inline]
-fn pt_for_if_present(virtual_address: u64) -> Option<&'static mut PageTable> {
+fn pt_for_if_present(virtual_address: u64) -> Option<*mut PageTable> {
     // Resolve PML4 level and reject missing/huge entries.
     let pml4 = table_at(PML4_TABLE_ADDR);
     let pml4_idx = pml4_index(virtual_address);
-    let pml4e = pml4.entries[pml4_idx];
+    let pml4e = table_entry(pml4, pml4_idx);
 
     if !pml4e.present() || pml4e.huge() {
         return None;
@@ -933,7 +1017,7 @@ fn pt_for_if_present(virtual_address: u64) -> Option<&'static mut PageTable> {
     // Resolve PDP level and reject missing/huge entries.
     let pdp = table_at(pdp_table_addr(virtual_address));
     let pdp_idx = pdp_index(virtual_address);
-    let pdpe = pdp.entries[pdp_idx];
+    let pdpe = table_entry(pdp, pdp_idx);
 
     if !pdpe.present() || pdpe.huge() {
         return None;
@@ -942,7 +1026,7 @@ fn pt_for_if_present(virtual_address: u64) -> Option<&'static mut PageTable> {
     // Resolve PD level and reject missing/huge entries.
     let pd = table_at(pd_table_addr(virtual_address));
     let pd_idx = pd_index(virtual_address);
-    let pde = pd.entries[pd_idx];
+    let pde = table_entry(pd, pd_idx);
 
     if !pde.present() || pde.huge() {
         return None;
@@ -954,8 +1038,13 @@ fn pt_for_if_present(virtual_address: u64) -> Option<&'static mut PageTable> {
 
 /// Returns whether a page-table page contains no present entries.
 #[inline]
-fn table_is_empty(table: &PageTable) -> bool {
-    table.entries.iter().all(|entry| !entry.present())
+fn table_is_empty(table: *const PageTable) -> bool {
+    for idx in 0..PT_ENTRIES {
+        if table_entry(table, idx).present() {
+            return false;
+        }
+    }
+    true
 }
 
 /// Clears one mapped leaf page and prunes empty page-table levels for `virtual_address`.
@@ -973,24 +1062,21 @@ fn unmap_page_and_prune_pagetable_hierarchy(virtual_address: u64, release_leaf_p
     // normal 4KiB leaf to clear and therefore nothing to prune.
     let pml4 = table_at(PML4_TABLE_ADDR);
     let pml4_idx = pml4_index(virtual_address);
-    let pml4e = pml4.entries[pml4_idx];
-
+    let pml4e = table_entry(pml4, pml4_idx);
     if !pml4e.present() || pml4e.huge() {
         return;
     }
 
     let pdp = table_at(pdp_table_addr(virtual_address));
     let pdp_idx = pdp_index(virtual_address);
-    let pdpe = pdp.entries[pdp_idx];
-
+    let pdpe = table_entry(pdp, pdp_idx);
     if !pdpe.present() || pdpe.huge() {
         return;
     }
 
     let pd = table_at(pd_table_addr(virtual_address));
     let pd_idx = pd_index(virtual_address);
-    let pde = pd.entries[pd_idx];
-
+    let pde = table_entry(pd, pd_idx);
     if !pde.present() || pde.huge() {
         return;
     }
@@ -1002,9 +1088,11 @@ fn unmap_page_and_prune_pagetable_hierarchy(virtual_address: u64, release_leaf_p
     // Optionally release the old leaf PFN depending on caller policy:
     // - true  => regular owned user page, return frame to PMM
     // - false => alias/scratch mapping, only remove mapping
-    if pt.entries[pt_idx].present() {
-        let leaf_pfn = pt.entries[pt_idx].frame();
-        pt.entries[pt_idx].clear();
+    if table_entry(pt, pt_idx).present() {
+        let leaf_pfn = table_entry(pt, pt_idx).frame();
+
+        // SAFETY: `pt` is a valid PT page, `pt_idx < PT_ENTRIES`, interrupts disabled.
+        unsafe { (*entry_ptr(pt, pt_idx)).clear() };
         invlpg(virtual_address);
         if release_leaf_pfn {
             let _ = pmm::with_pmm(|mgr| mgr.release_pfn(leaf_pfn));
@@ -1014,34 +1102,36 @@ fn unmap_page_and_prune_pagetable_hierarchy(virtual_address: u64, release_leaf_p
     // Step 3: Bottom-up pruning.
     // Only remove a parent-table entry if the child table became empty.
     // This guarantees we never drop shared siblings.
-
-    // 3a) PT empty? remove PD -> PT edge and release PT frame.
-    if !table_is_empty(pt) {
+    if !table_is_empty(pt.cast_const()) {
         return;
     }
 
-    let pt_pfn = pd.entries[pd_idx].frame();
-    pd.entries[pd_idx].clear();
+    let pt_pfn = table_entry(pd, pd_idx).frame();
+
+    // SAFETY: `pd` is a valid PD page, `pd_idx < PT_ENTRIES`, interrupts disabled.
+    unsafe { (*entry_ptr(pd, pd_idx)).clear() };
     invlpg(pt_table_addr(virtual_address));
     let _ = pmm::with_pmm(|mgr| mgr.release_pfn(pt_pfn));
 
-    // 3b) PD empty? remove PDP -> PD edge and release PD frame.
-    if !table_is_empty(pd) {
+    if !table_is_empty(pd.cast_const()) {
         return;
     }
 
-    let pd_pfn = pdp.entries[pdp_idx].frame();
-    pdp.entries[pdp_idx].clear();
+    let pd_pfn = table_entry(pdp, pdp_idx).frame();
+
+    // SAFETY: `pdp` is a valid PDP page, `pdp_idx < PT_ENTRIES`, interrupts disabled.
+    unsafe { (*entry_ptr(pdp, pdp_idx)).clear() };
     invlpg(pd_table_addr(virtual_address));
     let _ = pmm::with_pmm(|mgr| mgr.release_pfn(pd_pfn));
 
-    // 3c) PDP empty? remove PML4 -> PDP edge and release PDP frame.
-    if !table_is_empty(pdp) {
+    if !table_is_empty(pdp.cast_const()) {
         return;
     }
 
-    let pdp_pfn = pml4.entries[pml4_idx].frame();
-    pml4.entries[pml4_idx].clear();
+    let pdp_pfn = table_entry(pml4, pml4_idx).frame();
+
+    // SAFETY: `pml4` is a valid PML4 page, `pml4_idx < PT_ENTRIES`, interrupts disabled.
+    unsafe { (*entry_ptr(pml4, pml4_idx)).clear() };
     invlpg(pdp_table_addr(virtual_address));
     let _ = pmm::with_pmm(|mgr| mgr.release_pfn(pdp_pfn));
 }
@@ -1140,8 +1230,7 @@ fn is_leaf_present(virtual_address: u64) -> bool {
     let Some(pt) = pt_for_if_present(virtual_address) else {
         return false;
     };
-
-    pt.entries[pt_index(virtual_address)].present()
+    table_entry(pt, pt_index(virtual_address)).present()
 }
 
 /// Ensures one virtual page is mapped according to demand-paging policy.
@@ -1165,7 +1254,7 @@ fn demand_map_leaf_page(
     let pt_idx = pt_index(virtual_address);
 
     // Step 2: allocate and zero only when the leaf is currently non-present.
-    if !pt.entries[pt_idx].present() {
+    if !table_entry(pt, pt_idx).present() {
         let Some(new_page_phys) = alloc_frame_phys() else {
             return Err(PageFaultError::OutOfMemory {
                 virtual_address: fault_address_raw,
@@ -1174,22 +1263,34 @@ fn demand_map_leaf_page(
         };
 
         // Map writable first so zero-fill is valid even for final read-only pages.
-        pt.entries[pt_idx].set_mapping(phys_to_pfn(new_page_phys), true, true, user_access);
+        // SAFETY: `pt` is a valid PT page, `pt_idx < PT_ENTRIES`, interrupts disabled in page-fault handler.
+        unsafe {
+            (*entry_ptr(pt, pt_idx)).set_mapping(
+                phys_to_pfn(new_page_phys),
+                true,
+                true,
+                user_access,
+            )
+        };
         invlpg(virtual_address);
         zero_virt_page(virtual_address);
 
         // Step 3: tighten final permissions and NX policy after zero-fill.
         if !writable {
-            pt.entries[pt_idx].set_writable(false);
+            // SAFETY: `pt` is a valid PT page, `pt_idx < PT_ENTRIES`, interrupts disabled.
+            unsafe { (*entry_ptr(pt, pt_idx)).set_writable(false) };
         }
+
         if no_execute {
-            pt.entries[pt_idx].set_no_execute(true);
+            // SAFETY: `pt` is a valid PT page, `pt_idx < PT_ENTRIES`, interrupts disabled.
+            unsafe { (*entry_ptr(pt, pt_idx)).set_no_execute(true) };
         }
+
         if !writable || no_execute {
             invlpg(virtual_address);
         }
 
-        debug_alloc("PT", pt_idx, pt.entries[pt_idx].frame());
+        debug_alloc("PT", pt_idx, table_entry(pt, pt_idx).frame());
     }
 
     Ok(())
@@ -1274,8 +1375,9 @@ pub fn try_map_virtual_to_physical(
     let pt_idx = pt_index(virtual_address);
 
     // Existing mapping path: only accept if PFN matches requested PFN.
-    if pt.entries[pt_idx].present() {
-        let current_pfn = pt.entries[pt_idx].frame();
+    if table_entry(pt, pt_idx).present() {
+        let current_pfn = table_entry(pt, pt_idx).frame();
+
         if current_pfn != requested_pfn {
             return Err(MapError::AlreadyMapped {
                 virtual_address,
@@ -1288,9 +1390,11 @@ pub fn try_map_virtual_to_physical(
     }
 
     // Fresh mapping path.
-    pt.entries[pt_idx].set_mapping(requested_pfn, true, true, false);
+    // SAFETY: `pt` is a valid PT page, `pt_idx < PT_ENTRIES`, interrupts disabled.
+    unsafe { (*entry_ptr(pt, pt_idx)).set_mapping(requested_pfn, true, true, false) };
     invlpg(virtual_address);
-    debug_alloc("PT", pt_idx, pt.entries[pt_idx].frame());
+    debug_alloc("PT", pt_idx, table_entry(pt, pt_idx).frame());
+
     Ok(())
 }
 
@@ -1344,13 +1448,17 @@ pub fn unmap_virtual_address(virtual_address: u64) {
     };
 
     let pt_idx = pt_index(virtual_address);
-    if pt.entries[pt_idx].present() {
+    if table_entry(pt, pt_idx).present() {
         // Remove leaf mapping and invalidate stale translation.
-        let old_pfn = pt.entries[pt_idx].frame();
-        pt.entries[pt_idx].clear();
+        let old_pfn = table_entry(pt, pt_idx).frame();
+
+        // SAFETY: `pt` is a valid PT page, `pt_idx < PT_ENTRIES`, interrupts disabled.
+        unsafe { (*entry_ptr(pt, pt_idx)).clear() };
         invlpg(virtual_address);
+
         // Return physical frame ownership to PMM when possible.
         let released = pmm::with_pmm(|mgr| mgr.release_pfn(old_pfn));
+
         if !released {
             // Best-effort warning for non-PMM-managed mappings.
             vmm_logln(format_args!(
@@ -1430,7 +1538,12 @@ pub fn clone_kernel_pml4_for_user() -> u64 {
     // - Recursive virtual windows (PML4/PDP/PD/PT helper addresses) operate on
     //   the cloned hierarchy once this CR3 is activated, not on the kernel root.
     let clone_pml4 = table_at(TEMP_CLONE_PML4_VA);
-    clone_pml4.entries[511].set_mapping(phys_to_pfn(new_pml4_phys), true, true, false);
+    // SAFETY: `clone_pml4` is a valid PML4 page (freshly mapped scratch at TEMP_CLONE_PML4_VA),
+    // `511 < PT_ENTRIES`, interrupts disabled for the duration of the scratch mapping.
+    unsafe {
+        (*entry_ptr(clone_pml4, 511)).set_mapping(phys_to_pfn(new_pml4_phys), true, true, false)
+    };
+
     unmap_without_release(TEMP_CLONE_PML4_VA);
 
     new_pml4_phys
@@ -1558,7 +1671,7 @@ pub fn debug_table_pfns_for_va(virtual_address: u64) -> Option<(u64, u64, u64)> 
     let virtual_address = page_align_down(virtual_address);
     let pml4 = table_at(PML4_TABLE_ADDR);
     let pml4_idx = pml4_index(virtual_address);
-    let pml4e = pml4.entries[pml4_idx];
+    let pml4e = table_entry(pml4, pml4_idx);
 
     if !pml4e.present() || pml4e.huge() {
         return None;
@@ -1566,7 +1679,7 @@ pub fn debug_table_pfns_for_va(virtual_address: u64) -> Option<(u64, u64, u64)> 
 
     let pdp = table_at(pdp_table_addr(virtual_address));
     let pdp_idx = pdp_index(virtual_address);
-    let pdpe = pdp.entries[pdp_idx];
+    let pdpe = table_entry(pdp, pdp_idx);
 
     if !pdpe.present() || pdpe.huge() {
         return None;
@@ -1574,7 +1687,7 @@ pub fn debug_table_pfns_for_va(virtual_address: u64) -> Option<(u64, u64, u64)> 
 
     let pd = table_at(pd_table_addr(virtual_address));
     let pd_idx = pd_index(virtual_address);
-    let pde = pd.entries[pd_idx];
+    let pde = table_entry(pd, pd_idx);
 
     if !pde.present() || pde.huge() {
         return None;
@@ -1592,7 +1705,7 @@ pub fn debug_mapped_pfn_for_va(virtual_address: u64) -> Option<u64> {
     // Diagnostics always inspect page-aligned address.
     let virtual_address = page_align_down(virtual_address);
     let pt = pt_for_if_present(virtual_address)?;
-    let pte = pt.entries[pt_index(virtual_address)];
+    let pte = table_entry(pt, pt_index(virtual_address));
 
     // Return leaf PFN only when mapping is currently present.
     if pte.present() {
@@ -1611,27 +1724,31 @@ pub fn debug_mapping_flags_for_va(virtual_address: u64) -> Option<(bool, bool, b
     let virtual_address = page_align_down(virtual_address);
     let pml4 = table_at(PML4_TABLE_ADDR);
     let pml4_idx = pml4_index(virtual_address);
-    let pml4e = pml4.entries[pml4_idx];
+    let pml4e = table_entry(pml4, pml4_idx);
+
     if !pml4e.present() || pml4e.huge() {
         return None;
     }
 
     let pdp = table_at(pdp_table_addr(virtual_address));
     let pdp_idx = pdp_index(virtual_address);
-    let pdpe = pdp.entries[pdp_idx];
+    let pdpe = table_entry(pdp, pdp_idx);
+
     if !pdpe.present() || pdpe.huge() {
         return None;
     }
 
     let pd = table_at(pd_table_addr(virtual_address));
     let pd_idx = pd_index(virtual_address);
-    let pde = pd.entries[pd_idx];
+    let pde = table_entry(pd, pd_idx);
+
     if !pde.present() || pde.huge() {
         return None;
     }
 
     let pt = table_at(pt_table_addr(virtual_address));
-    let pte = pt.entries[pt_index(virtual_address)];
+    let pte = table_entry(pt, pt_index(virtual_address));
+
     if !pte.present() {
         return None;
     }
@@ -1659,7 +1776,7 @@ pub fn debug_no_execute_flag_for_va(virtual_address: u64) -> Option<bool> {
     // Diagnostics always inspect the page-aligned address.
     let virtual_address = page_align_down(virtual_address);
     let pt = pt_for_if_present(virtual_address)?;
-    let pte = pt.entries[pt_index(virtual_address)];
+    let pte = table_entry(pt, pt_index(virtual_address));
 
     // Return NX state only when leaf mapping is currently present.
     if pte.present() {
@@ -1701,8 +1818,8 @@ pub fn map_user_page(virtual_address: u64, pfn: u64, writable: bool) -> Result<(
 
     // Existing mapping: allow idempotent "same PFN, permission update".
     // Reject remap attempts to a different PFN to avoid silent alias changes.
-    if pt.entries[pt_idx].present() {
-        let current_pfn = pt.entries[pt_idx].frame();
+    if table_entry(pt, pt_idx).present() {
+        let current_pfn = table_entry(pt, pt_idx).frame();
 
         if current_pfn != pfn {
             return Err(MapError::AlreadyMapped {
@@ -1713,11 +1830,14 @@ pub fn map_user_page(virtual_address: u64, pfn: u64, writable: bool) -> Result<(
         }
 
         // Keep `present` + physical frame, update writable, user, and NX flags.
-        pt.entries[pt_idx].set_writable(writable);
-        pt.entries[pt_idx].set_user(true);
-
-        // Propagate NX policy: stack pages become non-executable, code pages stay executable.
-        pt.entries[pt_idx].set_no_execute(no_execute);
+        // SAFETY: `pt` is a valid PT page, `pt_idx < PT_ENTRIES`, interrupts disabled.
+        unsafe {
+            let e = entry_ptr(pt, pt_idx);
+            (*e).set_writable(writable);
+            (*e).set_user(true);
+            // Propagate NX policy: stack pages become non-executable, code pages stay executable.
+            (*e).set_no_execute(no_execute);
+        }
 
         // A permission change (e.g. writable → read-only, or adding NX) is not visible
         // to the processor until the stale TLB entry for this VA is evicted.
@@ -1728,10 +1848,14 @@ pub fn map_user_page(virtual_address: u64, pfn: u64, writable: bool) -> Result<(
     }
 
     // Fresh mapping path for previously non-present leaf.
-    pt.entries[pt_idx].set_mapping(pfn, true, writable, true);
+    // SAFETY: `pt` is a valid PT page, `pt_idx < PT_ENTRIES`, interrupts disabled.
+    unsafe {
+        let e = entry_ptr(pt, pt_idx);
+        (*e).set_mapping(pfn, true, writable, true);
 
-    // Apply NX policy: stack pages are non-executable, code pages are executable.
-    pt.entries[pt_idx].set_no_execute(no_execute);
+        // Apply NX policy: stack pages are non-executable, code pages are executable.
+        (*e).set_no_execute(no_execute);
+    }
 
     // Invalidate stale translation for this VA in current TLB context.
     invlpg(virtual_address);
