@@ -129,6 +129,12 @@ struct HeapState {
     /// End address (exclusive) of the managed heap region.
     heap_end: usize,
 
+    /// Address of the last physical block in the heap (the one whose end == `heap_end`).
+    ///
+    /// Maintained by `init`, `grow_heap`, `allocate_block`, and `free` so that
+    /// `grow_heap` can read the tail block size in O(1) instead of walking the heap.
+    tail_block_addr: usize,
+
     /// Segregated free-list heads, grouped by block size class.
     free_bins: [Option<usize>; FREE_BIN_COUNT],
 
@@ -141,6 +147,7 @@ impl HeapState {
         Self {
             heap_start: 0,
             heap_end: 0,
+            tail_block_addr: 0,
             free_bins: [None; FREE_BIN_COUNT],
             free_bin_bitmap: 0,
         }
@@ -271,6 +278,9 @@ pub fn init(debug_output: bool) -> usize {
         }
 
         insert_free_block(state, header_at(heap_start));
+
+        // Step 3: The initial block is the only and therefore last physical block.
+        state.tail_block_addr = heap_start;
     });
 
     HEAP.serial_debug_enabled
@@ -418,6 +428,12 @@ pub fn free(ptr: *mut u8) {
         // - This requires `unsafe` because it dereferences raw pointers.
         // - `coalesced` points to a valid heap header after coalescing.
         let final_size = unsafe { (&*coalesced).size() };
+
+        // Step 3: If the coalesced block ends at `heap_end`, it is now the last physical block.
+        if coalesced as usize + final_size == state.heap_end {
+            state.tail_block_addr = coalesced as usize;
+        }
+
         FreeResult::Freed {
             block_size: final_size,
         }
@@ -564,36 +580,43 @@ fn find_suitable_free_block(
     None
 }
 
+/// Validates `ptr` as a payload address returned by `malloc` and returns its block header.
+///
+/// Every valid payload is exactly `HEADER_SIZE` bytes past its block header, so the
+/// block address is `ptr - HEADER_SIZE` — no heap walk required (O(1)).
+///
+/// Validation steps:
+/// 1. Back-compute the expected block address.
+/// 2. Verify the address lies within the managed heap arena.
+/// 3. Read the header and reject structurally implausible sizes.
+///
+/// The caller still checks `header.in_use()` to catch double-free.
 fn find_block_by_payload_ptr(state: &HeapState, ptr: *mut u8) -> Option<*mut HeapBlockHeader> {
     let ptr_addr = ptr as usize;
-    let min_payload = state.heap_start.checked_add(HEADER_SIZE)?;
-    if ptr_addr < min_payload || ptr_addr >= state.heap_end {
+
+    // Step 1: every valid payload is exactly HEADER_SIZE bytes past its block header.
+    let block_addr = ptr_addr.checked_sub(HEADER_SIZE)?;
+
+    // Step 2: block header must lie within the managed heap arena.
+    if block_addr < state.heap_start || block_addr >= state.heap_end {
         return None;
     }
 
-    let mut current = state.heap_start;
-    while current < state.heap_end {
-        // SAFETY:
-        // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
-        // - `current` is within heap bounds and points to a block header.
-        let header = unsafe { &*header_at(current) };
-        let block_size = header.size();
-        if block_size < HEADER_SIZE {
-            return None;
-        }
-
-        let next_addr = current.checked_add(block_size)?;
-        if next_addr > state.heap_end {
-            return None;
-        }
-
-        let block = header_at(current);
-        if payload_ptr(block) as usize == ptr_addr {
-            return Some(block);
-        }
-        current = next_addr;
+    // Step 3: read header and reject structurally implausible blocks.
+    // SAFETY:
+    // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
+    // - `block_addr` is within `[heap_start, heap_end)`, which is valid mapped heap memory.
+    let header = unsafe { &*header_at(block_addr) };
+    let block_size = header.size();
+    if block_size < HEADER_SIZE {
+        return None;
     }
-    None
+    let block_end = block_addr.checked_add(block_size)?;
+    if block_end > state.heap_end {
+        return None;
+    }
+
+    Some(header_at(block_addr))
 }
 
 /// Updates `prev_size` of the physical successor block, if present.
@@ -637,6 +660,11 @@ fn allocate_block(state: &mut HeapState, block: *mut HeapBlockHeader, size: usiz
             // Step 2: Repair successor boundary-tag and insert split remainder.
             update_next_prev_size(state, tail_addr, tail_header.size());
             insert_free_block(state, header_at(tail_addr));
+
+            // Step 3: If the split block was the current tail, the remainder is the new tail.
+            if block as usize == state.tail_block_addr {
+                state.tail_block_addr = tail_addr;
+            }
         } else {
             // Step 3: Consume full block when split remainder would be too small.
             header.set_in_use(true);
@@ -732,38 +760,21 @@ fn grow_heap(state: &mut HeapState, amount: usize) -> bool {
         return false;
     };
 
-    // Step 1: Find the previous tail block so the new block gets correct `prev_size`.
+    // Step 1: Read the tail block size in O(1) from the cached `tail_block_addr`.
+    // When the heap is empty (old_end == heap_start), there is no predecessor.
     let prev_block_size = if old_end == state.heap_start {
         0
     } else {
-        let mut current = state.heap_start;
-        let mut tail_size = 0;
-        while current < old_end {
-            // SAFETY:
-            // - This requires `unsafe` because it dereferences raw pointers.
-            // - `current` iterates through validated heap block headers.
-            let header = unsafe { &*header_at(current) };
-            let size = header.size();
-            if size < HEADER_SIZE {
-                return false;
-            }
-
-            let Some(next) = current.checked_add(size) else {
-                return false;
-            };
-            if next > old_end {
-                return false;
-            }
-
-            tail_size = size;
-            current = next;
-        }
-
-        if current != old_end {
+        // SAFETY:
+        // - This requires `unsafe` because it dereferences raw pointers.
+        // - `tail_block_addr` is always maintained to point to the last physical block
+        //   in the heap, so dereferencing it yields a valid `HeapBlockHeader`.
+        let header = unsafe { &*header_at(state.tail_block_addr) };
+        let size = header.size();
+        if size < HEADER_SIZE {
             return false;
         }
-
-        tail_size
+        size
     };
 
     // Step 2: Materialize a new free block in the freshly extended range.
@@ -781,6 +792,8 @@ fn grow_heap(state: &mut HeapState, amount: usize) -> bool {
 
     // Step 3: Coalesce with neighboring free tail and enqueue once.
     let block = coalesce_free_block(state, header_at(old_end));
+    // The coalesced block ends at `new_end` and is now the last physical block.
+    state.tail_block_addr = block as usize;
     insert_free_block(state, block);
     true
 }
