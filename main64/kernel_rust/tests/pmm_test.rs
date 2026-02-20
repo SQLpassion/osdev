@@ -136,6 +136,26 @@ fn test_pmm_allocation_and_release() {
     });
 }
 
+/// Contract: pmm self-test leaves PMM allocator usable for subsequent allocations.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "pmm self-test leaves PMM allocator usable for subsequent allocations".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_pmm_self_test_leaves_allocator_usable() {
+    pmm::run_self_test(64);
+
+    pmm::with_pmm(|mgr| {
+        let frame = mgr
+            .alloc_frame()
+            .expect("allocator must still return a frame after self-test");
+        assert!(
+            mgr.release_pfn(frame.pfn),
+            "allocator must release frame after self-test"
+        );
+    });
+}
+
 /// Test that released frames are reused by subsequent allocations
 /// Contract: pmm frame reuse after release.
 /// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.

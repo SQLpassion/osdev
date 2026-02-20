@@ -237,9 +237,9 @@ fn execute_command(line: &str) {
             with_screen(bios::BiosInformationBlock::print_memory_map);
         }
         "pmm" => match (parts.next(), parts.next()) {
-            (None, None) => with_screen(|screen| pmm::run_self_test(screen, 2048)),
+            (None, None) => pmm::run_self_test(2048),
             (Some(n_str), None) => match n_str.parse::<u32>() {
-                Ok(n) if n > 0 => with_screen(|screen| pmm::run_self_test(screen, n)),
+                Ok(n) if n > 0 => pmm::run_self_test(n),
                 _ => with_screen(|screen| {
                     writeln!(screen, "Usage: pmm [n]  (n must be > 0)").unwrap();
                 }),
