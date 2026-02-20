@@ -657,8 +657,8 @@ pub unsafe extern "C" fn syscall_rust_dispatch(frame: *mut SavedRegisters) -> *m
     let arg1 = frame.rsi;
     let arg2 = frame.rdx;
     let arg3 = frame.r10;
-    let result = crate::syscall::dispatch(syscall_nr, arg0, arg1, arg2, arg3);
-    frame.rax = result;
+    let result = crate::syscall::dispatch_checked(syscall_nr, arg0, arg1, arg2, arg3);
+    frame.rax = crate::syscall::syscall_result_to_raw(result);
 
     // Yield and Exit both need an immediate reschedule via the scheduler.
     //

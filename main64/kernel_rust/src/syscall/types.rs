@@ -58,6 +58,44 @@ pub const SYSCALL_ERR_IO: u64 = u64::MAX - 2;
 /// Successful syscall return code for void-like operations.
 pub const SYSCALL_OK: u64 = 0;
 
+/// Kernel-internal syscall error type used by dispatcher logic.
+///
+/// This keeps syscall implementations free from raw ABI sentinel values.
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyscallError {
+    /// Unknown or unsupported syscall number.
+    Unsupported,
+
+    /// Invalid syscall arguments (e.g., null pointer, out-of-bounds buffer).
+    InvalidArg,
+
+    /// I/O error during syscall execution.
+    Io,
+}
+
+/// Kernel-internal syscall result type.
+pub type SyscallResult<T> = Result<T, SyscallError>;
+
+/// Converts a kernel-internal syscall error into the raw ABI return value.
+#[inline]
+pub const fn syscall_error_to_raw(err: SyscallError) -> u64 {
+    match err {
+        SyscallError::Unsupported => SYSCALL_ERR_UNSUPPORTED,
+        SyscallError::InvalidArg => SYSCALL_ERR_INVALID_ARG,
+        SyscallError::Io => SYSCALL_ERR_IO,
+    }
+}
+
+/// Converts a kernel-internal syscall result into the raw ABI return value.
+#[inline]
+pub const fn syscall_result_to_raw(result: SyscallResult<u64>) -> u64 {
+    match result {
+        Ok(value) => value,
+        Err(err) => syscall_error_to_raw(err),
+    }
+}
+
 /// Computes the user-mode alias RIP for a kernel function page mapped at `code_page_user_va`.
 ///
 /// The returned address keeps the original 4 KiB page offset of `kernel_entry_va`.

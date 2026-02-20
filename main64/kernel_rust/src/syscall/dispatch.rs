@@ -23,7 +23,8 @@ use crate::logging;
 use crate::scheduler;
 
 use super::{
-    is_valid_user_buffer, SyscallId, SYSCALL_ERR_INVALID_ARG, SYSCALL_ERR_UNSUPPORTED, SYSCALL_OK,
+    is_valid_user_buffer, syscall_result_to_raw, SyscallError, SyscallId, SyscallResult,
+    SYSCALL_OK,
 };
 
 /// Maximum number of bytes that can be written in a single WriteSerial syscall.
@@ -72,10 +73,16 @@ pub const fn syscall_name_for_number(syscall_nr: u64) -> &'static str {
 /// - `syscall_nr`: `RAX`
 /// - `arg0..arg3`: `RDI`, `RSI`, `RDX`, `R10`
 ///
-/// Return contract:
-/// - successful calls return syscall-specific values (`SYSCALL_OK` or positive result),
-/// - unknown syscall numbers return `SYSCALL_ERR_UNSUPPORTED`.
-pub fn dispatch(syscall_nr: u64, arg0: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 {
+/// Returns kernel-internal typed results.
+///
+/// Raw ABI conversion to sentinel `u64` values is done at the syscall boundary.
+pub fn dispatch_checked(
+    syscall_nr: u64,
+    arg0: u64,
+    arg1: u64,
+    arg2: u64,
+    arg3: u64,
+) -> SyscallResult<u64> {
     // Step 1: resolve the handler and compute the syscall return value.
     let result = match syscall_nr {
         SyscallId::YIELD => syscall_yield_impl(),
@@ -86,11 +93,12 @@ pub fn dispatch(syscall_nr: u64, arg0: u64, arg1: u64, arg2: u64, arg3: u64) -> 
         SyscallId::SET_CURSOR => syscall_set_cursor_impl(arg0 as usize, arg1 as usize),
         SyscallId::CLEAR_SCREEN => syscall_clear_screen_impl(),
         SyscallId::EXIT => syscall_exit_impl(),
-        _ => SYSCALL_ERR_UNSUPPORTED,
+        _ => Err(SyscallError::Unsupported),
     };
 
     // Step 2: emit one serial trace line for every syscall dispatch.
     // This gives deterministic kernel-side visibility into syscall traffic.
+    let raw_result = syscall_result_to_raw(result);
     let trace_enabled = syscall_trace_enabled();
     logging::logln_with_options(
         "syscall",
@@ -102,13 +110,19 @@ pub fn dispatch(syscall_nr: u64, arg0: u64, arg1: u64, arg2: u64, arg3: u64) -> 
             arg1,
             arg2,
             arg3,
-            result
+            raw_result
         ),
         trace_enabled,
         trace_enabled,
     );
 
     result
+}
+
+/// ABI-compatible raw dispatcher (`Result` encoded to sentinel `u64` values).
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn dispatch(syscall_nr: u64, arg0: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 {
+    syscall_result_to_raw(dispatch_checked(syscall_nr, arg0, arg1, arg2, arg3))
 }
 
 /// Implements `Yield`: cooperative handoff to scheduler.
@@ -136,8 +150,8 @@ pub fn dispatch(syscall_nr: u64, arg0: u64, arg1: u64, arg2: u64, arg3: u64) -> 
 /// By returning `SYSCALL_OK` here and letting `syscall_rust_dispatch` feed
 /// the *original* `int 0x80` frame into `on_timer_tick`, the scheduler sees
 /// the correct user context and can switch tasks with a single `iretq`.
-fn syscall_yield_impl() -> u64 {
-    SYSCALL_OK
+fn syscall_yield_impl() -> SyscallResult<u64> {
+    Ok(SYSCALL_OK)
 }
 
 /// Implements `WriteSerial(ptr, len)`.
@@ -157,9 +171,9 @@ fn syscall_yield_impl() -> u64 {
 /// The maximum write length prevents a single syscall from monopolizing
 /// the CPU for an unbounded duration. User code must chunk large writes
 /// into multiple syscalls.
-fn syscall_write_serial_impl(ptr: *const u8, len: usize) -> u64 {
+fn syscall_write_serial_impl(ptr: *const u8, len: usize) -> SyscallResult<u64> {
     if len == 0 {
-        return 0;
+        return Ok(0);
     }
 
     // Clamp to maximum to prevent denial-of-service.
@@ -169,7 +183,7 @@ fn syscall_write_serial_impl(ptr: *const u8, len: usize) -> u64 {
     // Reject kernel-half addresses, null pointers, and overflow attempts.
     // Actual page mappability is enforced by the MMU at access time.
     if !is_valid_user_buffer(ptr, actual_len) {
-        return SYSCALL_ERR_INVALID_ARG;
+        return Err(SyscallError::InvalidArg);
     }
 
     let bytes = unsafe {
@@ -187,7 +201,7 @@ fn syscall_write_serial_impl(ptr: *const u8, len: usize) -> u64 {
         serial.write_byte(*byte);
     }
 
-    actual_len as u64
+    Ok(actual_len as u64)
 }
 
 /// Implements `WriteConsole(ptr, len)`.
@@ -200,14 +214,14 @@ fn syscall_write_serial_impl(ptr: *const u8, len: usize) -> u64 {
 ///
 /// Bytes are written as raw VGA text characters; this syscall does not enforce
 /// UTF-8 validity and is intended for simple ASCII/debug output.
-fn syscall_write_console_impl(ptr: *const u8, len: usize) -> u64 {
+fn syscall_write_console_impl(ptr: *const u8, len: usize) -> SyscallResult<u64> {
     if len == 0 {
-        return 0;
+        return Ok(0);
     }
 
     let actual_len = len.min(MAX_CONSOLE_WRITE_LEN);
     if !is_valid_user_buffer(ptr, actual_len) {
-        return SYSCALL_ERR_INVALID_ARG;
+        return Err(SyscallError::InvalidArg);
     }
 
     let bytes = unsafe {
@@ -225,7 +239,7 @@ fn syscall_write_console_impl(ptr: *const u8, len: usize) -> u64 {
         }
     });
 
-    actual_len as u64
+    Ok(actual_len as u64)
 }
 
 /// Implements `GetChar()`.
@@ -246,8 +260,8 @@ fn syscall_write_console_impl(ptr: *const u8, len: usize) -> u64 {
 /// # Return Value
 /// Returns the ASCII value of the decoded character (0-255). Special keys that
 /// don't produce printable characters are filtered out by the keyboard driver.
-fn syscall_getchar_impl() -> u64 {
-    keyboard::read_char_blocking() as u64
+fn syscall_getchar_impl() -> SyscallResult<u64> {
+    Ok(keyboard::read_char_blocking() as u64)
 }
 
 /// Implements `GetCursor()`.
@@ -255,32 +269,32 @@ fn syscall_getchar_impl() -> u64 {
 /// Returns the current VGA cursor as a packed 64-bit value:
 /// - upper 32 bits: `row`
 /// - lower 32 bits: `col`
-fn syscall_get_cursor_impl() -> u64 {
-    with_screen(|screen| {
+fn syscall_get_cursor_impl() -> SyscallResult<u64> {
+    Ok(with_screen(|screen| {
         let (row, col) = screen.get_cursor();
         ((row as u64) << 32) | (col as u64)
-    })
+    }))
 }
 
 /// Implements `SetCursor(row, col)`.
 ///
 /// Sets the VGA cursor position. Values outside the current screen bounds are
 /// clamped by the screen driver.
-fn syscall_set_cursor_impl(row: usize, col: usize) -> u64 {
+fn syscall_set_cursor_impl(row: usize, col: usize) -> SyscallResult<u64> {
     with_screen(|screen| {
         screen.set_cursor(row, col);
     });
-    SYSCALL_OK
+    Ok(SYSCALL_OK)
 }
 
 /// Implements `ClearScreen()`.
 ///
 /// Clears the entire VGA text buffer and resets the cursor position to `(0, 0)`.
-fn syscall_clear_screen_impl() -> u64 {
+fn syscall_clear_screen_impl() -> SyscallResult<u64> {
     with_screen(|screen| {
         screen.clear();
     });
-    SYSCALL_OK
+    Ok(SYSCALL_OK)
 }
 
 /// Implements `Exit()`.
@@ -298,7 +312,7 @@ fn syscall_clear_screen_impl() -> u64 {
 /// This syscall does not accept an exit code parameter. If future support
 /// for process wait semantics is added, the exit code parameter can be
 /// reintroduced and stored in the task entry for retrieval by a parent task.
-fn syscall_exit_impl() -> u64 {
+fn syscall_exit_impl() -> SyscallResult<u64> {
     scheduler::mark_current_as_zombie();
-    SYSCALL_OK
+    Ok(SYSCALL_OK)
 }

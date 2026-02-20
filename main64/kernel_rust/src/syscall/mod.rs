@@ -14,11 +14,13 @@ pub mod user;
 
 #[allow(unused_imports)]
 pub use dispatch::{
-    dispatch, set_syscall_trace_enabled, syscall_name_for_number, syscall_trace_enabled,
+    dispatch, dispatch_checked, set_syscall_trace_enabled, syscall_name_for_number,
+    syscall_trace_enabled,
 };
 
 #[allow(unused_imports)]
 pub use types::{
-    decode_result, is_valid_user_buffer, user_alias_rip, user_alias_va_for_kernel, SysError,
-    SyscallId, SYSCALL_ERR_INVALID_ARG, SYSCALL_ERR_IO, SYSCALL_ERR_UNSUPPORTED, SYSCALL_OK,
+    decode_result, is_valid_user_buffer, syscall_error_to_raw, syscall_result_to_raw, user_alias_rip,
+    user_alias_va_for_kernel, SysError, SyscallError, SyscallId, SyscallResult,
+    SYSCALL_ERR_INVALID_ARG, SYSCALL_ERR_IO, SYSCALL_ERR_UNSUPPORTED, SYSCALL_OK,
 };
