@@ -256,10 +256,6 @@ struct SchedulerMetadata {
     /// Primarily for diagnostics/tests.
     tick_count: u64,
 
-    /// Enables CR3 switching based on task type/context.
-    /// Disabled by default for compatibility with early bring-up/tests.
-    address_space_switching_enabled: bool,
-
     /// Physical PML4 address of kernel address space.
     /// Used when switching from user task back to kernel context.
     kernel_cr3: u64,
@@ -296,7 +292,6 @@ impl SchedulerMetadata {
             run_queue: Vec::new(),
             slots: Vec::new(),
             tick_count: 0,
-            address_space_switching_enabled: false,
             kernel_cr3: 0,
             active_cr3: 0,
             pending_free_stacks: Vec::new(),
@@ -565,8 +560,6 @@ fn remove_task(meta: &mut SchedulerMetadata, task_id: usize) -> bool {
                 meta.active_cr3 = meta.kernel_cr3;
             } else {
                 // This branch indicates a scheduler bug:
-                // - kernel_cr3 == 0: set_kernel_address_space_cr3() was never called
-                //   while a user task with its own CR3 was already running.
                 // - kernel_cr3 == cr3: a user task was spawned with the kernel CR3,
                 //   which violates the address-space isolation invariant.
                 //
@@ -581,9 +574,7 @@ fn remove_task(meta: &mut SchedulerMetadata, task_id: usize) -> bool {
                 debug_assert!(
                     false,
                     "remove_task: cannot tear down user CR3 {:#x} — \
-                     no safe kernel CR3 available (kernel_cr3={:#x}). \
-                     Ensure set_kernel_address_space_cr3() is called before \
-                     spawning user tasks.",
+                     no safe kernel CR3 available (kernel_cr3={:#x}).",
                     cr3, meta.kernel_cr3,
                 );
 
@@ -675,6 +666,13 @@ pub fn init() {
 
         *meta = SchedulerMetadata::new();
         meta.initialized = true;
+
+        // Scheduler invariant:
+        // - kernel CR3 is always defined after init.
+        // - active CR3 tracks the currently active address space.
+        // This removes the need for an optional "switching enabled" mode.
+        meta.kernel_cr3 = vmm::get_pml4_address();
+        meta.active_cr3 = meta.kernel_cr3;
     });
 
     // Free old stacks outside the scheduler lock.
@@ -867,26 +865,14 @@ pub fn is_running() -> bool {
     with_sched(|meta| meta.started)
 }
 
-/// Enables per-task address-space switching.
+/// Sets the kernel address-space root used for kernel-task selections.
 ///
-/// `kernel_cr3` must be the physical PML4 address for kernel-mode execution.
-/// Once enabled, selecting a user task switches to that task's `cr3`; selecting
-/// a kernel task switches back to `kernel_cr3`.
+/// `kernel_cr3` must be a valid physical PML4 address for kernel-mode execution.
 pub fn set_kernel_address_space_cr3(kernel_cr3: u64) {
     with_sched(|meta| {
-        meta.address_space_switching_enabled = true;
+        debug_assert!(kernel_cr3 != 0, "kernel_cr3 must be non-zero");
         meta.kernel_cr3 = kernel_cr3;
         meta.active_cr3 = kernel_cr3;
-    });
-}
-
-/// Disables per-task address-space switching.
-#[cfg_attr(not(test), allow(dead_code))]
-pub fn disable_address_space_switching() {
-    with_sched(|meta| {
-        meta.address_space_switching_enabled = false;
-        meta.kernel_cr3 = 0;
-        meta.active_cr3 = 0;
     });
 }
 
@@ -895,17 +881,20 @@ fn timer_irq_handler(_vector: u8, frame: &mut SavedRegisters) -> *mut SavedRegis
     on_timer_tick(frame as *mut SavedRegisters)
 }
 
-/// Switches CR3 to the selected task context when switching is enabled.
+/// Switches CR3 to the selected task context.
 fn apply_selected_address_space(meta: &mut SchedulerMetadata, selected_slot: usize) {
-    if !meta.address_space_switching_enabled {
-        return;
-    }
-
     let target_cr3 = if meta.slots[selected_slot].is_user {
         meta.slots[selected_slot].cr3
     } else {
         meta.kernel_cr3
     };
+
+    debug_assert!(
+        target_cr3 != 0,
+        "scheduler selected task with invalid CR3 (slot={}, is_user={})",
+        selected_slot,
+        meta.slots[selected_slot].is_user
+    );
 
     if target_cr3 == 0 || meta.active_cr3 == target_cr3 {
         return;
