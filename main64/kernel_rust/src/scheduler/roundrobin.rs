@@ -248,8 +248,12 @@ struct SchedulerMetadata {
     run_queue: Vec<usize>,
 
     /// Per-slot task metadata table.
-    /// `used=false` marks free slots available for reuse.
-    /// The Vec grows on demand; slots are never removed, only marked unused.
+    ///
+    /// `used=false` marks free slots available for reuse by `spawn_internal`.
+    /// The Vec grows when all existing slots are occupied. After a task exits,
+    /// any trailing `used=false` entries are trimmed by `remove_task` so that
+    /// the Vec length reflects the number of live tasks after every removal.
+    /// Interior unused holes remain and are filled by first-fit search.
     slots: Vec<TaskEntry>,
 
     /// Total number of timer ticks processed while scheduler is started.
@@ -695,6 +699,21 @@ fn remove_task(meta: &mut SchedulerMetadata, task_id: usize) -> bool {
         meta.current_queue_pos = meta.run_queue.len() - 1;
     }
 
+    // Step 6: trim trailing unused slots to prevent unbounded Vec growth.
+    //
+    // Only trailing entries can be removed safely: `run_queue` stores slot
+    // indices, so removing from the middle or from an index that is still live
+    // would invalidate those references. Unused entries at the tail (beyond the
+    // last `used` slot) have no `run_queue` entry and no `running_slot` claim,
+    // so truncating them is safe. The Vec may still retain unused holes in the
+    // interior, but those will be filled by the first-fit search in `spawn_internal`.
+    let live_end = meta
+        .slots
+        .iter()
+        .rposition(|s| s.used)
+        .map_or(0, |i| i + 1);
+    meta.slots.truncate(live_end);
+
     // Final step: release user address-space resources if cleanup is safe.
     if let Some((cr3, release_user_code_pfns)) = cleanup {
         vmm::destroy_user_address_space_with_options(cr3, release_user_code_pfns);
@@ -841,7 +860,8 @@ fn spawn_internal(kind: SpawnKind) -> Result<usize, SpawnError> {
         }
 
         // Find a free (previously used) slot or determine that a new one must
-        // be appended. Slot indices are stable: the Vec grows but never shrinks.
+        // be appended. `remove_task` trims trailing unused entries, so the Vec
+        // length reflects the live high-water mark; new slots are pushed at the end.
         let (slot_idx, is_new_slot) = match meta.slots.iter().position(|s| !s.used) {
             Some(i) => (i, false),
             None => (meta.slots.len(), true),
@@ -1286,6 +1306,19 @@ pub fn task_iret_frame(task_id: usize) -> Option<InterruptStackFrame> {
 /// Returns the slot index of the currently running task, if any.
 pub fn current_task_id() -> Option<usize> {
     with_sched(|meta| meta.running_slot)
+}
+
+/// Returns the current length of the internal slot table.
+///
+/// After every task removal `remove_task` trims trailing unused entries, so
+/// this value reflects the number of slots up to and including the last live
+/// task. It shrinks when the highest-index tasks exit and grows when new tasks
+/// are spawned beyond the current length.
+///
+/// Primarily intended for integration tests that verify the Vec-shrink contract.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn slot_table_len() -> usize {
+    with_sched(|meta| meta.slots.len())
 }
 
 /// Marks the task in `task_id` as [`TaskState::Blocked`].

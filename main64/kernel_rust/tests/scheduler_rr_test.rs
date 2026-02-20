@@ -657,6 +657,71 @@ fn test_scheduler_dynamic_capacity() {
     sched::spawn_kernel_task(dummy_task_b).expect("spawn beyond former static limit must succeed");
 }
 
+/// Contract: slot Vec shrinks when trailing tasks exit, preventing unbounded memory growth.
+///
+/// Verifies three properties of the trim-on-remove contract:
+/// 1. Removing the tail slot reduces `slot_table_len` immediately.
+/// 2. Removing an interior slot (not the tail) does NOT reduce the length
+///    (the tail is still occupied and cannot be trimmed).
+/// 3. Once the last task exits, `slot_table_len` drops to zero and the first
+///    new spawn reuses slot index 0.
+#[test_case]
+fn test_slot_vec_shrinks_after_task_removal() {
+    sched::init();
+
+    // Spawn four tasks — slots 0..3 are allocated sequentially.
+    let t0 = sched::spawn_kernel_task(dummy_task_a).expect("spawn t0");
+    let t1 = sched::spawn_kernel_task(dummy_task_b).expect("spawn t1");
+    let t2 = sched::spawn_kernel_task(dummy_task_c).expect("spawn t2");
+    let t3 = sched::spawn_kernel_task(dummy_task_d).expect("spawn t3");
+
+    assert!(
+        sched::slot_table_len() == 4,
+        "slot table must reach length 4 after 4 sequential spawns"
+    );
+
+    // Remove the tail task (t3 at index 3) — trailing unused entry is trimmed.
+    assert!(sched::terminate_task(t3), "t3 removal must succeed");
+    assert!(
+        sched::slot_table_len() == 3,
+        "slot table must shrink to 3 after removing the tail slot"
+    );
+
+    // Remove an interior slot (t0 at index 0). The tail (t2 at index 2) is
+    // still live, so no trailing entries can be trimmed — length stays at 3.
+    assert!(sched::terminate_task(t0), "t0 removal must succeed");
+    assert!(
+        sched::slot_table_len() == 3,
+        "slot table must not shrink when a non-tail slot is freed (tail still live)"
+    );
+
+    // Remove t2 (slot 2, the new tail). Slot 2 becomes unused; it is now the
+    // trailing entry, so the trim removes it. Slot 0 is also unused but interior.
+    // Result: trim stops at slot 1 (t1, still live) → len = 2.
+    assert!(sched::terminate_task(t2), "t2 removal must succeed");
+    assert!(
+        sched::slot_table_len() == 2,
+        "slot table must shrink to 2 after removing the slot at the new tail position"
+    );
+
+    // Remove the last live task (t1 at slot 1). Both slot 0 and 1 are now
+    // unused — rposition finds no live entry → truncate to 0.
+    assert!(sched::terminate_task(t1), "t1 removal must succeed");
+    assert!(
+        sched::slot_table_len() == 0,
+        "slot table must shrink to 0 when all tasks have been removed"
+    );
+
+    // After the Vec was trimmed to zero, spawn must still work correctly.
+    // The first new task must land at slot index 0 (Vec is empty, so push at 0).
+    let t4 = sched::spawn_kernel_task(dummy_task_e).expect("spawn after full shrink must succeed");
+    assert!(t4 == 0, "first spawn after full shrink must reuse slot index 0");
+    assert!(
+        sched::slot_table_len() == 1,
+        "slot table must be length 1 after a single new spawn"
+    );
+}
+
 /// Contract: spawn allocates distinct task frames.
 /// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
 /// When: The exact operation sequence in this function is executed against that state.
