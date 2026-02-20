@@ -346,7 +346,12 @@ fn test_scheduler_uses_configured_arch_callbacks() {
     let task_a = sched::spawn_kernel_task(dummy_task_a).expect("task A should spawn");
     let frame_a = sched::task_frame_ptr(task_a).expect("task A frame should exist");
     assert!(
-        sched::set_task_user_context(task_a, EXPECTED_USER_CR3, 0x0000_7FFF_FFFF_F000, EXPECTED_RSP0),
+        sched::set_task_user_context(
+            task_a,
+            EXPECTED_USER_CR3,
+            0x0000_7FFF_FFFF_F000,
+            EXPECTED_RSP0
+        ),
         "setting user context for callback test task must succeed"
     );
 
@@ -1256,6 +1261,51 @@ fn test_waitqueue_fifo_order_is_stable_across_wake_cycles() {
     assert!(second_cycle[1] == 50, "fifth waiter must wake second");
 }
 
+/// Contract: waitqueue wake all drains a snapshot and allows re-registration from wake callback.
+/// Given: A waitqueue with two registered waiters.
+/// When: wake_all wakes both waiters and the callback re-registers one waiter.
+/// Then: The re-registered waiter is not part of the current wake cycle and is woken in the next cycle.
+#[test_case]
+fn test_waitqueue_wake_all_snapshot_and_reregister_behavior() {
+    let q: WaitQueue = WaitQueue::new();
+
+    assert!(q.register_waiter(7), "register waiter 7 must succeed");
+    assert!(q.register_waiter(9), "register waiter 9 must succeed");
+
+    let mut first_cycle = [usize::MAX; 2];
+    let mut first_count = 0usize;
+    q.wake_all(|task_id| {
+        first_cycle[first_count] = task_id;
+        first_count += 1;
+
+        // Re-register from callback to prove wake_all does not hold queue lock
+        // while executing wake hooks.
+        if task_id == 7 {
+            assert!(
+                q.register_waiter(42),
+                "re-registration from wake callback must succeed"
+            );
+        }
+    });
+
+    assert!(
+        first_count == 2,
+        "first wake cycle must include only initial snapshot waiters"
+    );
+    assert!(first_cycle[0] == 7, "first snapshot waiter must wake first");
+    assert!(
+        first_cycle[1] == 9,
+        "second snapshot waiter must wake second"
+    );
+
+    let mut second_cycle = usize::MAX;
+    q.wake_all(|task_id| second_cycle = task_id);
+    assert!(
+        second_cycle == 42,
+        "re-registered waiter must be handled by the next wake cycle"
+    );
+}
+
 /// Contract: single waitqueue register second waiter is rejected.
 /// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
 /// When: The exact operation sequence in this function is executed against that state.
@@ -1540,9 +1590,13 @@ fn test_wait_for_task_exit_with_polls_until_liveness_turns_false() {
 #[test_case]
 fn test_wait_for_task_exit_returns_immediately_for_absent_task() {
     let mut yield_calls = 0usize;
-    sched::wait_for_task_exit_with(usize::MAX, |_task_id| false, || {
-        yield_calls += 1;
-    });
+    sched::wait_for_task_exit_with(
+        usize::MAX,
+        |_task_id| false,
+        || {
+            yield_calls += 1;
+        },
+    );
 
     assert!(
         yield_calls == 0,

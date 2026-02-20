@@ -55,30 +55,20 @@ impl WaitQueue {
 
     /// Atomically drains every registered waiter and calls `wake` for each.
     ///
-    /// Step 1: remove one waiter id at a time under the internal lock.
-    /// Step 2: call `wake` for that id after the lock has been released.
+    /// Step 1: take ownership of the full waiter list under one lock hold.
+    /// Step 2: release the lock and wake all drained waiters.
     ///
-    /// This avoids holding the WaitQueue lock while acquiring scheduler state
-    /// inside `wake`, and it also avoids the per-wakeup `Vec` drop/recreate
-    /// cycle that previously caused heap alloc/free churn on hot input paths.
+    /// This avoids repeated lock/unlock churn for large waiter sets and keeps
+    /// scheduler wakeup work outside the queue lock.
     pub fn wake_all(&self, mut wake: impl FnMut(usize)) {
-        loop {
-            // Preserve FIFO wake order by removing the current front element.
-            // `remove(0)` is O(n), but wait queues are expected to stay small
-            // and this keeps the implementation allocation-free.
-            let next = {
-                let mut waiters = self.waiters.lock();
-                if waiters.is_empty() {
-                    None
-                } else {
-                    Some(waiters.remove(0))
-                }
-            };
+        // Step 1: drain the current waiter snapshot in one critical section.
+        let drained_waiters = {
+            let mut waiters = self.waiters.lock();
+            core::mem::take(&mut *waiters)
+        };
 
-            let Some(task_id) = next else {
-                break;
-            };
-
+        // Step 2: wake drained waiters after releasing the queue lock.
+        for task_id in drained_waiters {
             wake(task_id);
         }
     }
