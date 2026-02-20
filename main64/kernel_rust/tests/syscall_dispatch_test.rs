@@ -494,6 +494,83 @@ fn test_write_console_rejects_kernel_pointer() {
     );
 }
 
+/// Contract: write_serial rejects (ptr, len) whose end overflows u64 — even after clamping
+/// the len to MAX_SERIAL_WRITE_LEN would have produced a valid range.
+///
+/// A caller that passes usize::MAX as len is describing a structurally invalid buffer.
+/// The kernel must reject the full claimed range, not silently accept a clamped subset.
+#[test_case]
+fn test_write_serial_rejects_overflowing_len() {
+    // ptr is a valid user address; but ptr + usize::MAX overflows → EINVAL.
+    let ret = syscall::dispatch(
+        SyscallId::WriteSerial as u64,
+        0x0000_0000_0001_0000, // valid user address
+        usize::MAX as u64,
+        0,
+        0,
+    );
+    assert!(
+        ret == syscall::SYSCALL_ERR_INVALID_ARG,
+        "write_serial with overflowing ptr+len must return EINVAL"
+    );
+}
+
+/// Contract: write_serial rejects a (ptr, len) pair that crosses the user canonical boundary,
+/// even though clamping len to MAX_SERIAL_WRITE_LEN would have kept the access inside user space.
+///
+/// The full claimed range must be valid, not just the first MAX bytes.
+#[test_case]
+fn test_write_serial_rejects_len_crossing_canonical_boundary() {
+    // ptr is near the top of user space; ptr + 8193 crosses USER_CANONICAL_END.
+    // After clamping to 4096, the access would be safe — but we must reject the
+    // full claimed range before applying the DoS cap.
+    let ptr = (0x0000_8000_0000_0000u64 - 4096) as u64; // last 4 KiB of user space
+    let ret = syscall::dispatch(
+        SyscallId::WriteSerial as u64,
+        ptr,
+        8193, // crosses the canonical boundary
+        0,
+        0,
+    );
+    assert!(
+        ret == syscall::SYSCALL_ERR_INVALID_ARG,
+        "write_serial with (ptr, len) crossing canonical boundary must return EINVAL"
+    );
+}
+
+/// Contract: write_console rejects (ptr, len) whose end overflows u64.
+#[test_case]
+fn test_write_console_rejects_overflowing_len() {
+    let ret = syscall::dispatch(
+        SyscallId::WriteConsole as u64,
+        0x0000_0000_0001_0000, // valid user address
+        usize::MAX as u64,
+        0,
+        0,
+    );
+    assert!(
+        ret == syscall::SYSCALL_ERR_INVALID_ARG,
+        "write_console with overflowing ptr+len must return EINVAL"
+    );
+}
+
+/// Contract: write_console rejects a (ptr, len) pair that crosses the user canonical boundary.
+#[test_case]
+fn test_write_console_rejects_len_crossing_canonical_boundary() {
+    let ptr = (0x0000_8000_0000_0000u64 - 4096) as u64;
+    let ret = syscall::dispatch(
+        SyscallId::WriteConsole as u64,
+        ptr,
+        8193,
+        0,
+        0,
+    );
+    assert!(
+        ret == syscall::SYSCALL_ERR_INVALID_ARG,
+        "write_console with (ptr, len) crossing canonical boundary must return EINVAL"
+    );
+}
+
 /// Contract: set_cursor + get_cursor roundtrip returns the requested position.
 #[test_case]
 fn test_set_cursor_then_get_cursor_roundtrip() {

@@ -163,9 +163,16 @@ fn syscall_yield_impl() -> SyscallResult<u64> {
 /// Behavior:
 /// - `len == 0` is treated as success and returns `0`,
 /// - null pointer with non-zero `len` returns `SYSCALL_ERR_INVALID_ARG`,
-/// - invalid user buffer returns `SYSCALL_ERR_INVALID_ARG`,
+/// - claimed `(ptr, len)` that overflows, crosses the canonical boundary,
+///   or reaches into kernel space returns `SYSCALL_ERR_INVALID_ARG`,
 /// - otherwise bytes are read from caller memory and written to COM1,
-///   returning the number of bytes actually written.
+///   returning the number of bytes actually written (≤ `MAX_SERIAL_WRITE_LEN`).
+///
+/// # Validation order
+/// The full claimed range `ptr..ptr+len` is validated before any clamping so
+/// that callers whose buffer description is structurally invalid (overflowing
+/// end address, boundary-crossing, kernel pointer) always receive `EINVAL`
+/// rather than a silent partial success.
 ///
 /// # DoS Protection
 /// The maximum write length prevents a single syscall from monopolizing
@@ -176,21 +183,24 @@ fn syscall_write_serial_impl(ptr: *const u8, len: usize) -> SyscallResult<u64> {
         return Ok(0);
     }
 
-    // Clamp to maximum to prevent denial-of-service.
-    // User code must chunk large buffers across multiple syscalls.
-    let actual_len = len.min(MAX_SERIAL_WRITE_LEN);
-
-    // Reject kernel-half addresses, null pointers, and overflow attempts.
-    // Actual page mappability is enforced by the MMU at access time.
-    if !is_valid_user_buffer(ptr, actual_len) {
+    // Step 1: Validate the full claimed range before clamping.
+    // A caller whose (ptr, len) overflows, crosses the canonical boundary,
+    // is null, or reaches into kernel space receives EINVAL — even though
+    // we will subsequently write fewer than `len` bytes due to the DoS cap.
+    if !is_valid_user_buffer(ptr, len) {
         return Err(SyscallError::InvalidArg);
     }
+
+    // Step 2: Clamp to maximum to prevent denial-of-service.
+    // The full range was validated above; the slice covers a valid sub-range.
+    let actual_len = len.min(MAX_SERIAL_WRITE_LEN);
 
     let bytes = unsafe {
         // SAFETY:
         // - This requires `unsafe` because it builds a slice from a raw userspace pointer.
-        // - `is_valid_user_buffer` above verified that `ptr..ptr+actual_len` lies
+        // - `is_valid_user_buffer` above verified that `ptr..ptr+len` lies
         //   entirely within user canonical space.
+        // - `actual_len <= len`, so `ptr..ptr+actual_len` is a valid sub-range.
         // - `actual_len` is bounded by `MAX_SERIAL_WRITE_LEN`.
         slice::from_raw_parts(ptr, actual_len)
     };
@@ -209,26 +219,35 @@ fn syscall_write_serial_impl(ptr: *const u8, len: usize) -> SyscallResult<u64> {
 /// Writes up to `MAX_CONSOLE_WRITE_LEN` bytes from the user buffer to the VGA
 /// text console. Semantics mirror `WriteSerial`:
 /// - `len == 0` returns `0`,
-/// - invalid pointer/range returns `SYSCALL_ERR_INVALID_ARG`,
-/// - successful call returns number of bytes written.
+/// - claimed `(ptr, len)` that overflows, crosses the canonical boundary,
+///   or reaches into kernel space returns `SYSCALL_ERR_INVALID_ARG`,
+/// - successful call returns number of bytes written (≤ `MAX_CONSOLE_WRITE_LEN`).
 ///
 /// Bytes are written as raw VGA text characters; this syscall does not enforce
 /// UTF-8 validity and is intended for simple ASCII/debug output.
+///
+/// # Validation order
+/// The full claimed range `ptr..ptr+len` is validated before any clamping —
+/// mirroring the `WriteSerial` contract exactly.
 fn syscall_write_console_impl(ptr: *const u8, len: usize) -> SyscallResult<u64> {
     if len == 0 {
         return Ok(0);
     }
 
-    let actual_len = len.min(MAX_CONSOLE_WRITE_LEN);
-    if !is_valid_user_buffer(ptr, actual_len) {
+    // Step 1: Validate the full claimed range before clamping.
+    if !is_valid_user_buffer(ptr, len) {
         return Err(SyscallError::InvalidArg);
     }
+
+    // Step 2: Clamp to maximum to prevent denial-of-service.
+    let actual_len = len.min(MAX_CONSOLE_WRITE_LEN);
 
     let bytes = unsafe {
         // SAFETY:
         // - This requires `unsafe` because it builds a slice from a raw userspace pointer.
-        // - `is_valid_user_buffer` above verified that `ptr..ptr+actual_len` lies
+        // - `is_valid_user_buffer` above verified that `ptr..ptr+len` lies
         //   entirely within user canonical space.
+        // - `actual_len <= len`, so `ptr..ptr+actual_len` is a valid sub-range.
         // - `actual_len` is bounded by `MAX_CONSOLE_WRITE_LEN`.
         slice::from_raw_parts(ptr, actual_len)
     };
