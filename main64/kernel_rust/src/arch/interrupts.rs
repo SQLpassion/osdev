@@ -22,7 +22,7 @@ const IRQ10_FREE_VECTOR: u8 = IRQ_BASE + 10;
 const IRQ11_FREE_VECTOR: u8 = IRQ_BASE + 11;
 const IRQ12_PS2_MOUSE_VECTOR: u8 = IRQ_BASE + 12;
 const IRQ13_FPU_VECTOR: u8 = IRQ_BASE + 13;
-const IRQ14_PRIMARY_ATA_VECTOR: u8 = IRQ_BASE + 14;
+pub const IRQ14_PRIMARY_ATA_VECTOR: u8 = IRQ_BASE + 14;
 const IRQ15_SECONDARY_ATA_VECTOR: u8 = IRQ_BASE + 15;
 pub const SYSCALL_INT80_VECTOR: u8 = 0x80;
 pub const EXCEPTION_DIVIDE_ERROR: u8 = 0;
@@ -553,8 +553,13 @@ fn mask_pic() {
         let data1 = PortByte::new(PIC1_DATA);
         let data2 = PortByte::new(PIC2_DATA);
 
-        data1.write(0xFC); // Unmask IRQ0 + IRQ1.
-        data2.write(0xFF); // Mask all slave IRQs.
+        // Step 1: Keep timer (IRQ0) and keyboard (IRQ1) enabled.
+        // Step 2: Unmask cascade (IRQ2) so slave PIC IRQs can propagate.
+        data1.write(0xF8); // Unmask IRQ0 + IRQ1 + IRQ2.
+
+        // Step 3: Unmask primary ATA on slave PIC (IRQ14 -> bit 6).
+        // All other slave IRQs remain masked.
+        data2.write(0xBF); // 0b1011_1111
     }
 }
 

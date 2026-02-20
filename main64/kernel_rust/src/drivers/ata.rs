@@ -3,8 +3,13 @@
 //! Implements 28-bit LBA sector read/write using PIO (Programmed I/O) mode
 //! on the primary ATA bus (ports 0x1F0-0x1F7).
 
+use crate::arch::interrupts::{self, SavedRegisters};
 use crate::arch::port::{PortByte, PortWord};
+use crate::scheduler;
+use crate::sync::singlewaitqueue::SingleWaitQueue;
 use crate::sync::spinlock::SpinLock;
+use crate::sync::waitqueue::WaitQueue;
+use crate::sync::waitqueue_adapter;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 /// Bytes per sector on an ATA disk.
@@ -111,28 +116,6 @@ impl AtaPio {
         }
     }
 
-    /// Busy-wait until DRQ is set (data ready to transfer).
-    /// Also checks for error/fault conditions.
-    fn wait_drq(&self) -> Result<(), AtaError> {
-        loop {
-            let status = self.read_status();
-
-            if status.has_error() {
-                return Err(AtaError::DeviceError);
-            }
-
-            if status.has_fault() {
-                return Err(AtaError::DeviceFault);
-            }
-
-            if !status.is_busy() && status.is_drq() {
-                return Ok(());
-            }
-
-            core::hint::spin_loop();
-        }
-    }
-
     /// Set up the command registers for a 28-bit LBA transfer.
     fn setup_command(&self, lba: u32, sector_count: u8, command: u8) {
         // Ensure the device is not busy before programming command registers.
@@ -153,138 +136,6 @@ impl AtaPio {
             self.status_cmd.write(command);
         }
     }
-
-    /// Read `sector_count` consecutive sectors starting at `lba` into `buffer`.
-    ///
-    /// Uses ATA PIO `READ SECTORS` (0x20) and transfers one 16-bit word at a
-    /// time from the data port into `buffer` (little-endian byte order).
-    ///
-    /// Contract:
-    /// - `lba` must fit in 28-bit addressing (`<= 0x0FFF_FFFF`).
-    /// - `buffer.len()` must be at least `sector_count as usize * 512`.
-    /// - On success, exactly `sector_count * 512` bytes are written to
-    ///   the front of `buffer`.
-    ///
-    /// Errors:
-    /// - [`AtaError::LbaOutOfRange`] if `lba` exceeds 28-bit range.
-    /// - [`AtaError::DeviceError`] if the controller reports `ERR`.
-    /// - [`AtaError::DeviceFault`] if the controller reports `DF`.
-    ///
-    /// Panics:
-    /// - If `buffer` is too small for the requested transfer.
-    ///
-    /// Execution model:
-    /// - Synchronous and busy-waiting; the call spins until `BSY` clears and
-    ///   `DRQ` is asserted for each transferred sector.
-    pub fn read_sectors(
-        &self,
-        buffer: &mut [u8],
-        lba: u32,
-        sector_count: u8,
-    ) -> Result<(), AtaError> {
-        if lba > 0x0FFF_FFFF {
-            return Err(AtaError::LbaOutOfRange);
-        }
-
-        let total_bytes = sector_count as usize * SECTOR_SIZE;
-        assert!(
-            buffer.len() >= total_bytes,
-            "ATA read buffer too small: need {} bytes, got {}",
-            total_bytes,
-            buffer.len()
-        );
-
-        // Program controller registers and issue READ SECTORS command.
-        self.setup_command(lba, sector_count, ATA_CMD_READ_SECTORS);
-
-        for sector in 0..sector_count as usize {
-            // For every sector wait until controller is ready to transfer.
-            self.wait_bsy_clear();
-            self.wait_drq()?;
-
-            let sector_offset = sector * SECTOR_SIZE;
-
-            for word_idx in 0..WORDS_PER_SECTOR {
-                // Read one 16-bit PIO word and store it little-endian in buffer.
-                // SAFETY:
-                // - This requires `unsafe` because it performs operations that Rust marks as potentially violating memory or concurrency invariants.
-                // - DRQ was observed for this sector before entering loop.
-                // - Reading from ATA data port consumes one data word.
-                let word = unsafe {
-                    self.data.read()
-                };
-
-                let byte_offset = sector_offset + word_idx * 2;
-                buffer[byte_offset] = word as u8;
-                buffer[byte_offset + 1] = (word >> 8) as u8;
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Write `sector_count` consecutive sectors starting at `lba` from `buffer`.
-    ///
-    /// Uses ATA PIO `WRITE SECTORS` (0x30) and writes one 16-bit word at a
-    /// time to the data port, packing pairs of bytes from `buffer` as
-    /// little-endian words.
-    ///
-    /// Contract:
-    /// - `lba` must fit in 28-bit addressing (`<= 0x0FFF_FFFF`).
-    /// - `buffer.len()` must be at least `sector_count as usize * 512`.
-    /// - The first `sector_count * 512` bytes of `buffer` are written.
-    ///
-    /// Errors:
-    /// - [`AtaError::LbaOutOfRange`] if `lba` exceeds 28-bit range.
-    /// - [`AtaError::DeviceError`] if the controller reports `ERR`.
-    /// - [`AtaError::DeviceFault`] if the controller reports `DF`.
-    ///
-    /// Panics:
-    /// - If `buffer` is too small for the requested transfer.
-    ///
-    /// Execution model:
-    /// - Synchronous and busy-waiting; the call spins until `BSY` clears and
-    ///   `DRQ` is asserted for each transferred sector.
-    pub fn write_sectors(&self, buffer: &[u8], lba: u32, sector_count: u8) -> Result<(), AtaError> {
-        if lba > 0x0FFF_FFFF {
-            return Err(AtaError::LbaOutOfRange);
-        }
-
-        let total_bytes = sector_count as usize * SECTOR_SIZE;
-
-        assert!(
-            buffer.len() >= total_bytes,
-            "ATA write buffer too small: need {} bytes, got {}",
-            total_bytes,
-            buffer.len()
-        );
-
-        // Program controller registers and issue WRITE SECTORS command.
-        self.setup_command(lba, sector_count, ATA_CMD_WRITE_SECTORS);
-
-        for sector in 0..sector_count as usize {
-            // For every sector wait until controller requests write data.
-            self.wait_bsy_clear();
-            self.wait_drq()?;
-
-            let sector_offset = sector * SECTOR_SIZE;
-
-            for word_idx in 0..WORDS_PER_SECTOR {
-                let byte_offset = sector_offset + word_idx * 2;
-                let word = (buffer[byte_offset] as u16) | ((buffer[byte_offset + 1] as u16) << 8);
-
-                // SAFETY:
-                // - This requires `unsafe` because it performs operations that Rust marks as potentially violating memory or concurrency invariants.
-                // - DRQ was observed for this sector before entering loop.
-                // - Writing to ATA data port sends one data word.
-                unsafe {
-                    self.data.write(word);
-                }
-            }
-        }
-
-        Ok(())
-    }
 }
 
 /// Global primary ATA controller instance.
@@ -298,14 +149,192 @@ static PRIMARY_ATA: AtaGlobal = AtaGlobal {
     initialized: AtomicBool::new(false),
 };
 
+/// True while one task owns the primary ATA request slot.
+static REQUEST_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+/// Waiters blocked while another task owns the ATA request slot.
+static REQUEST_WAITQUEUE: WaitQueue = WaitQueue::new();
+
+/// Set by IRQ14 to signal ATA state progress/data readiness.
+static IRQ_EVENT_PENDING: AtomicBool = AtomicBool::new(false);
+
+/// Wait queue used by the active ATA request owner while waiting for IRQ14.
+static IRQ_WAITQUEUE: SingleWaitQueue = SingleWaitQueue::new();
+
 // SAFETY:
 // - This requires `unsafe` because the compiler cannot automatically verify the thread-safety invariants of this `unsafe impl`.
 // - `controller` serializes all mutable ATA access via `SpinLock`.
 // - `initialized` is an atomic flag and does not require external synchronization.
 unsafe impl Sync for AtaGlobal {}
 
+/// RAII token for exclusive ATA request ownership.
+struct RequestSlotGuard;
+
+impl Drop for RequestSlotGuard {
+    fn drop(&mut self) {
+        // Step 1: release the global in-flight marker so one waiting request
+        // can acquire the controller path.
+        REQUEST_IN_FLIGHT.store(false, Ordering::Release);
+
+        // Step 2: wake request waiters outside of any controller lock so
+        // blocked tasks can re-contend for the request slot.
+        waitqueue_adapter::wake_all_multi(&REQUEST_WAITQUEUE);
+    }
+}
+
+/// Acquire exclusive ownership of the ATA request path.
+///
+/// In scheduler context this blocks cooperatively on a wait queue so other
+/// tasks can continue to run. In early-boot/test contexts (without scheduler)
+/// it falls back to brief spin-waiting.
+fn acquire_request_slot() -> RequestSlotGuard {
+    loop {
+        // Step 1: fast path — try to claim exclusive request ownership.
+        if REQUEST_IN_FLIGHT
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            return RequestSlotGuard;
+        }
+
+        // Step 2: decide whether cooperative sleeping is possible in this
+        // execution context (scheduler running + current task available).
+        let maybe_task_id = if scheduler::is_running() {
+            scheduler::current_task_id()
+        } else {
+            None
+        };
+
+        if let Some(task_id) = maybe_task_id {
+            // Step 3a: scheduler context — sleep while request slot stays busy.
+            // Predicate is rechecked with interrupts disabled by waitqueue adapter.
+            if waitqueue_adapter::sleep_if_multi(&REQUEST_WAITQUEUE, task_id, || {
+                REQUEST_IN_FLIGHT.load(Ordering::Acquire)
+            })
+            .should_yield()
+            {
+                // Hand CPU to current owner or another runnable task.
+                scheduler::yield_now();
+            }
+        } else {
+            // Step 3b: early boot/test context — no scheduler sleep available.
+            core::hint::spin_loop();
+        }
+    }
+}
+
+#[inline]
+fn with_controller<R>(f: impl FnOnce(&AtaPio) -> R) -> R {
+    // Serialize direct task-file/data-port access to one caller at a time.
+    let ata = PRIMARY_ATA.controller.lock();
+    f(&ata)
+}
+
+#[inline]
+fn status_is_ready(status: StatusRegister) -> Result<bool, AtaError> {
+    // Error bits have priority over readiness; callers must fail fast.
+    if status.has_error() {
+        return Err(AtaError::DeviceError);
+    }
+    if status.has_fault() {
+        return Err(AtaError::DeviceFault);
+    }
+
+    Ok(!status.is_busy() && status.is_drq())
+}
+
+#[inline]
+fn can_sleep_on_irq() -> Option<usize> {
+    // Sleeping on IRQ wait queues requires a live scheduler and enabled IRQs.
+    if !scheduler::is_running() || !interrupts::are_enabled() {
+        return None;
+    }
+
+    // Current task ID is required for waitqueue registration.
+    scheduler::current_task_id()
+}
+
+/// Wait until controller reports `!BSY && DRQ`.
+///
+/// Primary mode is IRQ-assisted sleeping: the active task sleeps on IRQ14
+/// events and re-checks status after every wakeup. In contexts where sleeping
+/// is unavailable (tests/early boot), this falls back to short spin polling.
+fn wait_ready_or_error() -> Result<(), AtaError> {
+    loop {
+        // Step 1: sample controller status under controller lock.
+        let status = with_controller(AtaPio::read_status);
+
+        // Step 2: terminate on ERR/DF or succeed on !BSY && DRQ.
+        if status_is_ready(status)? {
+            return Ok(());
+        }
+
+        if let Some(task_id) = can_sleep_on_irq() {
+            // Step 3a: consume a pending IRQ edge before sleeping.
+            // If one is already queued, re-check status immediately.
+            if IRQ_EVENT_PENDING.swap(false, Ordering::AcqRel) {
+                continue;
+            }
+
+            // Step 3b: sleep until IRQ14 marks a new ATA event.
+            if waitqueue_adapter::sleep_if_single(&IRQ_WAITQUEUE, task_id, || {
+                !IRQ_EVENT_PENDING.load(Ordering::Acquire)
+            })
+            .should_yield()
+            {
+                // Yield cooperatively so IRQ worker/scheduler can progress.
+                scheduler::yield_now();
+            }
+        } else {
+            // Step 3c: fallback for contexts without scheduler/IRQs.
+            core::hint::spin_loop();
+        }
+    }
+}
+
+/// IRQ14 top-half handler for the primary ATA controller.
+///
+/// Responsibilities of this handler are intentionally minimal and bounded:
+/// - acknowledge ATA progress to the waiting request path via
+///   `IRQ_EVENT_PENDING`,
+/// - wake the single requester sleeping on `IRQ_WAITQUEUE`,
+/// - return the unchanged trap frame pointer to the IRQ dispatcher.
+///
+/// Design constraints:
+/// - No data-port PIO transfer is performed here.
+///   All 16-bit sector reads/writes remain in `read_sectors`/`write_sectors`
+///   after the task wakes and re-checks controller state.
+/// - Exactly one ATA request may be active (`REQUEST_IN_FLIGHT`), therefore
+///   single-waiter wakeup is sufficient and avoids wakeup storms.
+/// - This function must not block or take long-running locks because it runs
+///   in interrupt context.
+///
+/// Ordering contract:
+/// - Store to `IRQ_EVENT_PENDING` uses `Release`.
+/// - Wait side consumes with `AcqRel`/`Acquire` before sleeping/rechecking.
+/// - This guarantees the requester observes the IRQ event and does not miss
+///   the wakeup edge.
+fn primary_ata_irq_handler(_vector: u8, frame: &mut SavedRegisters) -> *mut SavedRegisters {
+    // Step 1: publish one "ATA progressed" event for the active requester.
+    IRQ_EVENT_PENDING.store(true, Ordering::Release);
+
+    // Step 2: wake exactly one ATA waiter (single active request owner).
+    waitqueue_adapter::wake_all_single(&IRQ_WAITQUEUE);
+
+    // Step 3: continue with current trap frame; scheduler may switch later.
+    frame as *mut SavedRegisters
+}
+
 /// Initialize the primary ATA controller.
 pub fn init() {
+    // Register ATA IRQ before exposing `initialized=true` so new requests
+    // cannot miss handler installation.
+    interrupts::register_irq_handler(
+        interrupts::IRQ14_PRIMARY_ATA_VECTOR,
+        primary_ata_irq_handler,
+    );
+
+    // Publish readiness for external callers.
     PRIMARY_ATA.initialized.store(true, Ordering::Release);
 }
 
@@ -316,14 +345,58 @@ pub fn init() {
 ///
 /// Delegates to [`AtaPio::read_sectors`] for transfer semantics.
 pub fn read_sectors(buffer: &mut [u8], lba: u32, sector_count: u8) -> Result<(), AtaError> {
+    // Step 0: lifecycle guard.
     assert!(
         PRIMARY_ATA.initialized.load(Ordering::Acquire),
         "ATA driver not initialized"
     );
 
-    // Serialize access to the single primary ATA controller.
-    let ata = PRIMARY_ATA.controller.lock();
-    ata.read_sectors(buffer, lba, sector_count)
+    // Step 1: validate user-provided geometry before touching hardware.
+    if lba > 0x0FFF_FFFF {
+        return Err(AtaError::LbaOutOfRange);
+    }
+
+    let total_bytes = sector_count as usize * SECTOR_SIZE;
+    assert!(
+        buffer.len() >= total_bytes,
+        "ATA read buffer too small: need {} bytes, got {}",
+        total_bytes,
+        buffer.len()
+    );
+
+    // Step 1: serialize full request lifetime without holding a spinlock.
+    // The slot can be held across scheduler sleeps, unlike SpinLock guards.
+    let _request = acquire_request_slot();
+
+    // Clear stale IRQ edge from any prior request before issuing a command.
+    IRQ_EVENT_PENDING.store(false, Ordering::Release);
+
+    // Step 2: program task-file registers.
+    with_controller(|ata| ata.setup_command(lba, sector_count, ATA_CMD_READ_SECTORS));
+
+    // Step 3: transfer sectors.
+    for sector in 0..sector_count as usize {
+        // Wait until this sector transfer is accepted by device (or fails).
+        wait_ready_or_error()?;
+
+        let sector_offset = sector * SECTOR_SIZE;
+        with_controller(|ata| {
+            for word_idx in 0..WORDS_PER_SECTOR {
+                // SAFETY:
+                // - This requires `unsafe` because hardware port I/O is outside Rust safety checks.
+                // - Controller state is `!BSY && DRQ` for this sector.
+                // - The active request slot guarantees exclusive ATA data-port ownership.
+                let word = unsafe { ata.data.read() };
+
+                // Copy one PIO word into destination buffer in little-endian layout.
+                let byte_offset = sector_offset + word_idx * 2;
+                buffer[byte_offset] = word as u8;
+                buffer[byte_offset + 1] = (word >> 8) as u8;
+            }
+        });
+    }
+
+    Ok(())
 }
 
 /// Write sectors to the global primary ATA drive instance.
@@ -333,12 +406,56 @@ pub fn read_sectors(buffer: &mut [u8], lba: u32, sector_count: u8) -> Result<(),
 ///
 /// Delegates to [`AtaPio::write_sectors`] for transfer semantics.
 pub fn write_sectors(buffer: &[u8], lba: u32, sector_count: u8) -> Result<(), AtaError> {
+    // Step 0: lifecycle guard.
     assert!(
         PRIMARY_ATA.initialized.load(Ordering::Acquire),
         "ATA driver not initialized"
     );
 
-    // Serialize access to the single primary ATA controller.
-    let ata = PRIMARY_ATA.controller.lock();
-    ata.write_sectors(buffer, lba, sector_count)
+    // Step 1: validate caller-provided addressing and buffer size.
+    if lba > 0x0FFF_FFFF {
+        return Err(AtaError::LbaOutOfRange);
+    }
+
+    let total_bytes = sector_count as usize * SECTOR_SIZE;
+    assert!(
+        buffer.len() >= total_bytes,
+        "ATA write buffer too small: need {} bytes, got {}",
+        total_bytes,
+        buffer.len()
+    );
+
+    // Step 1: serialize full request lifetime without holding a spinlock.
+    let _request = acquire_request_slot();
+
+    // Clear stale IRQ edge from any prior request before issuing a command.
+    IRQ_EVENT_PENDING.store(false, Ordering::Release);
+
+    // Step 2: program task-file registers.
+    with_controller(|ata| ata.setup_command(lba, sector_count, ATA_CMD_WRITE_SECTORS));
+
+    // Step 3: transfer sectors.
+    for sector in 0..sector_count as usize {
+        // Wait until device requests the next sector payload.
+        wait_ready_or_error()?;
+
+        let sector_offset = sector * SECTOR_SIZE;
+        with_controller(|ata| {
+            for word_idx in 0..WORDS_PER_SECTOR {
+                // Pack two bytes into one 16-bit PIO word (little-endian).
+                let byte_offset = sector_offset + word_idx * 2;
+                let word = (buffer[byte_offset] as u16) | ((buffer[byte_offset + 1] as u16) << 8);
+
+                // SAFETY:
+                // - This requires `unsafe` because hardware port I/O is outside Rust safety checks.
+                // - Controller state is `!BSY && DRQ` for this sector.
+                // - The active request slot guarantees exclusive ATA data-port ownership.
+                unsafe {
+                    ata.data.write(word);
+                }
+            }
+        });
+    }
+
+    Ok(())
 }
