@@ -7,6 +7,7 @@ use core::alloc::Layout;
 use core::arch::asm;
 use core::mem::size_of;
 use core::ptr;
+use core::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 #[cfg(debug_assertions)]
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -255,14 +256,6 @@ struct SchedulerMetadata {
     /// Primarily for diagnostics/tests.
     tick_count: u64,
 
-    /// Physical PML4 address of kernel address space.
-    /// Used when switching from user task back to kernel context.
-    kernel_cr3: u64,
-
-    /// Last CR3 value written by scheduler-managed switch path.
-    /// Avoids redundant `mov cr3` on consecutive selections in same address space.
-    active_cr3: u64,
-
     /// Stacks from terminated tasks awaiting deallocation.
     ///
     /// When a task is terminated via [`terminate_task`] while the scheduler is
@@ -290,8 +283,6 @@ impl SchedulerMetadata {
             run_queue: Vec::new(),
             slots: Vec::new(),
             tick_count: 0,
-            kernel_cr3: 0,
-            active_cr3: 0,
             pending_free_stacks: Vec::new(),
         }
     }
@@ -309,6 +300,52 @@ unsafe impl Send for SchedulerMetadata {}
 // - Raw pointers in slots point into heap-allocated stacks and are only
 //   read/written while holding the lock.
 static SCHED: SpinLock<SchedulerMetadata> = SpinLock::new(SchedulerMetadata::new());
+
+/// Architecture-specific callbacks used by scheduler core.
+///
+/// This isolates MMU/TSS details from round-robin selection logic and makes
+/// behavior replaceable in tests without modifying scheduler internals.
+#[derive(Clone, Copy)]
+pub struct SchedulerArchCallbacks {
+    /// Returns the currently active kernel address-space root (CR3).
+    pub read_kernel_cr3: fn() -> u64,
+    /// Programs TSS.RSP0 before resuming a user-mode task.
+    pub set_kernel_rsp0: fn(u64),
+    /// Switches CPU address space to `cr3`.
+    pub switch_cr3: unsafe fn(u64),
+}
+
+fn default_read_kernel_cr3() -> u64 {
+    vmm::get_pml4_address()
+}
+
+fn default_set_kernel_rsp0(rsp0: u64) {
+    gdt::set_kernel_rsp0(rsp0);
+}
+
+unsafe fn default_switch_cr3(cr3: u64) {
+    vmm::switch_page_directory(cr3);
+}
+
+impl SchedulerArchCallbacks {
+    const fn default_callbacks() -> Self {
+        Self {
+            read_kernel_cr3: default_read_kernel_cr3,
+            set_kernel_rsp0: default_set_kernel_rsp0,
+            switch_cr3: default_switch_cr3,
+        }
+    }
+}
+
+/// Runtime-selected architecture backend.
+static SCHED_ARCH_CALLBACKS: SpinLock<SchedulerArchCallbacks> =
+    SpinLock::new(SchedulerArchCallbacks::default_callbacks());
+
+/// Kernel CR3 currently configured for kernel task selections.
+static SCHED_KERNEL_CR3: AtomicU64 = AtomicU64::new(0);
+
+/// Last CR3 switched by scheduler path (for redundant-switch elimination).
+static SCHED_ACTIVE_CR3: AtomicU64 = AtomicU64::new(0);
 
 /// Test-only cooperative stop hook.
 ///
@@ -329,6 +366,32 @@ const fn align_down(value: usize, align: usize) -> usize {
 fn with_sched<R>(f: impl FnOnce(&mut SchedulerMetadata) -> R) -> R {
     let mut sched = SCHED.lock();
     f(&mut sched)
+}
+
+#[inline]
+fn arch_callbacks() -> SchedulerArchCallbacks {
+    *SCHED_ARCH_CALLBACKS.lock()
+}
+
+#[inline]
+fn kernel_cr3_value() -> u64 {
+    SCHED_KERNEL_CR3.load(AtomicOrdering::Acquire)
+}
+
+#[inline]
+fn active_cr3_value() -> u64 {
+    SCHED_ACTIVE_CR3.load(AtomicOrdering::Acquire)
+}
+
+#[inline]
+fn set_kernel_and_active_cr3(cr3: u64) {
+    SCHED_KERNEL_CR3.store(cr3, AtomicOrdering::Release);
+    SCHED_ACTIVE_CR3.store(cr3, AtomicOrdering::Release);
+}
+
+#[inline]
+fn set_active_cr3(cr3: u64) {
+    SCHED_ACTIVE_CR3.store(cr3, AtomicOrdering::Release);
 }
 
 /// Allocates a stack from the kernel heap and touches every page.
@@ -549,8 +612,10 @@ fn remove_task(meta: &mut SchedulerMetadata, task_id: usize) -> bool {
     };
 
     if let Some((cr3, _)) = cleanup {
-        if meta.active_cr3 == cr3 {
-            if meta.kernel_cr3 != 0 && meta.kernel_cr3 != cr3 {
+        if active_cr3_value() == cr3 {
+            let kernel_cr3 = kernel_cr3_value();
+
+            if kernel_cr3 != 0 && kernel_cr3 != cr3 {
                 // Before destroying a user address space, ensure we are not
                 // still executing with that CR3 active on this CPU.
                 // SAFETY:
@@ -560,10 +625,10 @@ fn remove_task(meta: &mut SchedulerMetadata, task_id: usize) -> bool {
                 // - Switching away avoids releasing an address space that is
                 //   currently active in CR3.
                 unsafe {
-                    vmm::switch_page_directory(meta.kernel_cr3);
+                    (arch_callbacks().switch_cr3)(kernel_cr3);
                 }
 
-                meta.active_cr3 = meta.kernel_cr3;
+                set_active_cr3(kernel_cr3);
             } else {
                 // This branch indicates a scheduler bug:
                 // - kernel_cr3 == cr3: a user task was spawned with the kernel CR3,
@@ -581,7 +646,7 @@ fn remove_task(meta: &mut SchedulerMetadata, task_id: usize) -> bool {
                     false,
                     "remove_task: cannot tear down user CR3 {:#x} — \
                      no safe kernel CR3 available (kernel_cr3={:#x}).",
-                    cr3, meta.kernel_cr3,
+                    cr3, kernel_cr3,
                 );
 
                 cleanup = None;
@@ -672,14 +737,13 @@ pub fn init() {
 
         *meta = SchedulerMetadata::new();
         meta.initialized = true;
-
-        // Scheduler invariant:
-        // - kernel CR3 is always defined after init.
-        // - active CR3 tracks the currently active address space.
-        // This removes the need for an optional "switching enabled" mode.
-        meta.kernel_cr3 = vmm::get_pml4_address();
-        meta.active_cr3 = meta.kernel_cr3;
     });
+
+    // Initialize architecture-visible CR3 tracking via callback backend.
+    // This keeps CR3 policy outside of scheduler metadata internals.
+    let backend = arch_callbacks();
+    let initial_kernel_cr3 = (backend.read_kernel_cr3)();
+    set_kernel_and_active_cr3(initial_kernel_cr3);
 
     #[cfg(debug_assertions)]
     {
@@ -879,15 +943,26 @@ pub fn is_running() -> bool {
     with_sched(|meta| meta.started)
 }
 
+/// Replace architecture callback set used by scheduler core.
+///
+/// This hook keeps round-robin logic independent from concrete MMU/TSS wiring.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn set_arch_callbacks(callbacks: SchedulerArchCallbacks) {
+    *SCHED_ARCH_CALLBACKS.lock() = callbacks;
+}
+
+/// Restore default x86_64 backend callbacks (`vmm` + `gdt` integration).
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn reset_arch_callbacks_to_default() {
+    *SCHED_ARCH_CALLBACKS.lock() = SchedulerArchCallbacks::default_callbacks();
+}
+
 /// Sets the kernel address-space root used for kernel-task selections.
 ///
 /// `kernel_cr3` must be a valid physical PML4 address for kernel-mode execution.
 pub fn set_kernel_address_space_cr3(kernel_cr3: u64) {
-    with_sched(|meta| {
-        debug_assert!(kernel_cr3 != 0, "kernel_cr3 must be non-zero");
-        meta.kernel_cr3 = kernel_cr3;
-        meta.active_cr3 = kernel_cr3;
-    });
+    debug_assert!(kernel_cr3 != 0, "kernel_cr3 must be non-zero");
+    set_kernel_and_active_cr3(kernel_cr3);
 }
 
 /// IRQ adapter that routes PIT ticks into the scheduler core.
@@ -900,7 +975,7 @@ fn apply_selected_address_space(meta: &mut SchedulerMetadata, selected_slot: usi
     let target_cr3 = if meta.slots[selected_slot].is_user {
         meta.slots[selected_slot].cr3
     } else {
-        meta.kernel_cr3
+        kernel_cr3_value()
     };
 
     debug_assert!(
@@ -910,18 +985,19 @@ fn apply_selected_address_space(meta: &mut SchedulerMetadata, selected_slot: usi
         meta.slots[selected_slot].is_user
     );
 
-    if target_cr3 == 0 || meta.active_cr3 == target_cr3 {
+    if target_cr3 == 0 || active_cr3_value() == target_cr3 {
         return;
     }
 
     // SAFETY:
     // - This requires `unsafe` because changing CPU address-space state is a privileged operation outside Rust's guarantees.
     // - `target_cr3` originates from scheduler-controlled task metadata.
-    // - Caller enables switching only after VMM initialization.
+    // - Backend callback defines platform-specific switch operation.
     unsafe {
-        vmm::switch_page_directory(target_cr3);
+        (arch_callbacks().switch_cr3)(target_cr3);
     }
-    meta.active_cr3 = target_cr3;
+
+    set_active_cr3(target_cr3);
 }
 
 /// Removes all [`Zombie`](TaskState::Zombie) tasks from the run queue.
@@ -934,6 +1010,7 @@ fn apply_selected_address_space(meta: &mut SchedulerMetadata, selected_slot: usi
 /// deallocated after releasing the scheduler lock.
 fn reap_zombies(meta: &mut SchedulerMetadata) {
     let mut i = 0;
+
     while i < meta.run_queue.len() {
         let slot = meta.run_queue[i];
 
@@ -1058,7 +1135,7 @@ fn select_next_task(
         meta.running_slot = Some(selected_slot);
 
         if meta.slots[selected_slot].is_user {
-            gdt::set_kernel_rsp0(meta.slots[selected_slot].kernel_rsp_top);
+            (arch_callbacks().set_kernel_rsp0)(meta.slots[selected_slot].kernel_rsp_top);
         }
 
         apply_selected_address_space(meta, selected_slot);

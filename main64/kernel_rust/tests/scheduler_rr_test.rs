@@ -7,13 +7,30 @@
 #![reexport_test_harness_main = "test_main"]
 
 use core::panic::PanicInfo;
+use core::sync::atomic::{AtomicU64, Ordering};
 use kaos_kernel::arch::gdt;
 use kaos_kernel::arch::interrupts::{self, SavedRegisters};
 use kaos_kernel::memory::{heap, pmm, vmm};
-use kaos_kernel::scheduler::{self as sched, TaskState};
+use kaos_kernel::scheduler::{self as sched, SchedulerArchCallbacks, TaskState};
 use kaos_kernel::sync::singlewaitqueue::SingleWaitQueue;
 use kaos_kernel::sync::waitqueue::WaitQueue;
 use kaos_kernel::sync::waitqueue_adapter;
+
+static TEST_ARCH_KERNEL_CR3: AtomicU64 = AtomicU64::new(0);
+static TEST_ARCH_LAST_RSP0: AtomicU64 = AtomicU64::new(0);
+static TEST_ARCH_LAST_SWITCH_CR3: AtomicU64 = AtomicU64::new(0);
+
+fn test_arch_read_kernel_cr3() -> u64 {
+    TEST_ARCH_KERNEL_CR3.load(Ordering::Acquire)
+}
+
+fn test_arch_set_kernel_rsp0(rsp0: u64) {
+    TEST_ARCH_LAST_RSP0.store(rsp0, Ordering::Release);
+}
+
+unsafe fn test_arch_switch_cr3(cr3: u64) {
+    TEST_ARCH_LAST_SWITCH_CR3.store(cr3, Ordering::Release);
+}
 
 #[no_mangle]
 #[link_section = ".text.boot"]
@@ -301,6 +318,53 @@ fn test_selecting_user_task_updates_tss_rsp0_from_task_context() {
         gdt::kernel_rsp0() == expected_rsp0,
         "selecting a user task must update TSS.RSP0 to the task's kernel stack top"
     );
+}
+
+/// Contract: scheduler uses configured architecture callbacks for rsp0 and cr3 transitions.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "scheduler uses configured architecture callbacks for rsp0 and cr3 transitions".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_scheduler_uses_configured_arch_callbacks() {
+    const EXPECTED_KERNEL_CR3: u64 = 0x0000_0000_0012_3000;
+    const EXPECTED_USER_CR3: u64 = 0x0000_0000_0045_6000;
+    const EXPECTED_RSP0: u64 = 0xFFFF_8000_0014_2000;
+
+    TEST_ARCH_KERNEL_CR3.store(EXPECTED_KERNEL_CR3, Ordering::Release);
+    TEST_ARCH_LAST_RSP0.store(0, Ordering::Release);
+    TEST_ARCH_LAST_SWITCH_CR3.store(0, Ordering::Release);
+
+    sched::set_arch_callbacks(SchedulerArchCallbacks {
+        read_kernel_cr3: test_arch_read_kernel_cr3,
+        set_kernel_rsp0: test_arch_set_kernel_rsp0,
+        switch_cr3: test_arch_switch_cr3,
+    });
+
+    sched::init();
+
+    let task_a = sched::spawn_kernel_task(dummy_task_a).expect("task A should spawn");
+    let frame_a = sched::task_frame_ptr(task_a).expect("task A frame should exist");
+    assert!(
+        sched::set_task_user_context(task_a, EXPECTED_USER_CR3, 0x0000_7FFF_FFFF_F000, EXPECTED_RSP0),
+        "setting user context for callback test task must succeed"
+    );
+
+    sched::start();
+    let mut bootstrap = SavedRegisters::default();
+    let current = sched::on_timer_tick(&mut bootstrap as *mut SavedRegisters);
+    assert!(current == frame_a, "first tick should select task A");
+
+    assert!(
+        TEST_ARCH_LAST_RSP0.load(Ordering::Acquire) == EXPECTED_RSP0,
+        "scheduler must delegate TSS.RSP0 update to configured callback"
+    );
+    assert!(
+        TEST_ARCH_LAST_SWITCH_CR3.load(Ordering::Acquire) == EXPECTED_USER_CR3,
+        "scheduler must delegate CR3 switch to configured callback"
+    );
+
+    sched::reset_arch_callbacks_to_default();
 }
 
 /// Contract: block and unblock influence next round-robin selections.
