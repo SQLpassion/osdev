@@ -1039,6 +1039,7 @@ fn bootstrap_or_current(
 ///
 /// Address-space configuration and `initialized` are preserved so the
 /// scheduler can be restarted without re-registration.
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
 fn reset_scheduler_state(meta: &mut SchedulerMetadata) {
     meta.started = false;
     meta.bootstrap_frame = ptr::null_mut();
@@ -1154,6 +1155,7 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
     // the lock.  Declared without initialisation: Rust's definite-initialisation
     // analysis ensures the only path that does NOT assign this variable
     // (`!meta.started`) returns before this binding is ever used or dropped.
+    #[cfg_attr(not(debug_assertions), allow(unused_mut))]
     let mut stacks_to_free: Vec<(*mut u8, usize)>;
 
     let result = {

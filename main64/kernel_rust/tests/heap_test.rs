@@ -291,6 +291,38 @@ fn test_heap_rejects_double_free_and_remains_usable() {
     heap::free(ptr2);
 }
 
+/// Contract: heap self-test does not reset live allocator state.
+#[test_case]
+fn test_heap_self_test_is_non_destructive_for_live_allocations() {
+    heap::init(false);
+    let ptr = heap::malloc(64);
+    assert!(!ptr.is_null(), "precondition: allocation before self-test must succeed");
+
+    // SAFETY:
+    // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
+    // - `ptr` is a valid allocation returned by `heap::malloc(64)`.
+    // - We read/write only one byte inside the allocation.
+    unsafe {
+        core::ptr::write_volatile(ptr, 0x5A);
+    }
+
+    let mut screen = kaos_kernel::drivers::screen::Screen::new();
+    heap::run_self_test(&mut screen);
+
+    // SAFETY:
+    // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
+    // - Pointer validity must survive the self-test (regression target).
+    unsafe {
+        let value = core::ptr::read_volatile(ptr);
+        assert!(
+            value == 0x5A,
+            "self-test must not invalidate pre-existing allocations"
+        );
+    }
+
+    heap::free(ptr);
+}
+
 /// Contract: heap growth is bounded and reports oom.
 /// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
 /// When: The exact operation sequence in this function is executed against that state.
