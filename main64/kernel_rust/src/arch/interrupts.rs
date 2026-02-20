@@ -8,6 +8,7 @@ use crate::arch::port::PortByte;
 
 const IDT_ENTRIES: usize = 256;
 const IRQ_BASE: u8 = 32;
+const IRQ_LINES: usize = 16;
 pub const IRQ0_PIT_TIMER_VECTOR: u8 = IRQ_BASE;
 pub const IRQ1_KEYBOARD_VECTOR: u8 = IRQ_BASE + 1;
 const IRQ2_PIC_CASCADE_VECTOR: u8 = IRQ_BASE + 2;
@@ -196,14 +197,14 @@ type IrqHandler = fn(u8, &mut SavedRegisters) -> *mut SavedRegisters;
 /// `static mut` (which permits aliased `&mut` references and is unsound).
 struct InterruptState {
     idt: UnsafeCell<[IdtEntry; IDT_ENTRIES]>,
-    handlers: UnsafeCell<[Option<IrqHandler>; IDT_ENTRIES]>,
+    irq_handlers: UnsafeCell<[Option<IrqHandler>; IRQ_LINES]>,
 }
 
 impl InterruptState {
     const fn new() -> Self {
         Self {
             idt: UnsafeCell::new([IdtEntry::missing(); IDT_ENTRIES]),
-            handlers: UnsafeCell::new([None; IDT_ENTRIES]),
+            irq_handlers: UnsafeCell::new([None; IRQ_LINES]),
         }
     }
 }
@@ -453,13 +454,17 @@ pub extern "C" fn exception_handler_rust(
 
 /// Register a callback for a given interrupt vector.
 pub fn register_irq_handler(vector: u8, handler: IrqHandler) {
+    // Step 1: only hardware IRQ vectors are valid for this registry API.
+    let irq_idx = irq_slot_index(vector).expect("register_irq_handler: vector is not a PIC IRQ");
+
+    // Step 2: store handler in direct IRQ-indexed dispatch table.
     // SAFETY:
     // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
     // - Handler table is a singleton owned by this module.
-    // - Vector index is `u8`, therefore in-bounds for 256-entry table.
+    // - `irq_idx` is derived from validated IRQ range and is in-bounds for `IRQ_LINES`.
     unsafe {
-        let handlers = &mut *STATE.handlers.get();
-        handlers[vector as usize] = Some(handler);
+        let handlers = &mut *STATE.irq_handlers.get();
+        handlers[irq_idx] = Some(handler);
     }
 }
 
@@ -469,7 +474,8 @@ fn clear_irq_handlers() {
     // - Called during init with interrupts disabled.
     // - Mutably accesses the singleton handler table.
     unsafe {
-        let handlers = &mut *STATE.handlers.get();
+        let handlers = &mut *STATE.irq_handlers.get();
+
         for slot in handlers.iter_mut() {
             *slot = None;
         }
@@ -477,15 +483,22 @@ fn clear_irq_handlers() {
 }
 
 fn dispatch_irq(vector: u8, frame: &mut SavedRegisters) -> *mut SavedRegisters {
+    // Step 1: map vector to direct IRQ slot (irq0..irq15 => 0..15).
+    let Some(irq_idx) = irq_slot_index(vector) else {
+        return frame as *mut SavedRegisters;
+    };
+
     // SAFETY:
     // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
     // - Reads the immutable snapshot of singleton handler table.
-    // - Vector index is bounded by `u8` range and table length.
+    // - `irq_idx` is validated and in-bounds for `IRQ_LINES`.
     let handler = unsafe {
-        let handlers = &*STATE.handlers.get();
-        handlers[vector as usize]
+        let handlers = &*STATE.irq_handlers.get();
+        handlers[irq_idx]
     };
+
     let mut next_frame = frame as *mut SavedRegisters;
+
     if let Some(handler) = handler {
         next_frame = handler(vector, frame);
     }
@@ -495,6 +508,16 @@ fn dispatch_irq(vector: u8, frame: &mut SavedRegisters) -> *mut SavedRegisters {
     }
 
     next_frame
+}
+
+#[inline]
+fn irq_slot_index(vector: u8) -> Option<usize> {
+    // Convert PIC vector space (`IRQ_BASE..IRQ_BASE+16`) into direct slot index.
+    if !(IRQ_BASE..IRQ_BASE + IRQ_LINES as u8).contains(&vector) {
+        return None;
+    }
+
+    Some((vector - IRQ_BASE) as usize)
 }
 
 fn remap_pic(offset1: u8, offset2: u8) {
