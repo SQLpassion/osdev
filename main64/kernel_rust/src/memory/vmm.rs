@@ -1790,6 +1790,19 @@ pub fn debug_no_execute_flag_for_va(virtual_address: u64) -> Option<bool> {
 ///
 /// `virtual_address` must be within configured user code/stack regions and
 /// must not target the configured guard page.
+///
+/// # Safety
+/// This function mutates page tables via recursive mapping and therefore
+/// requires a stable active address space while it runs.
+///
+/// Callers must execute it only inside `with_address_space` (or an equivalent
+/// critical section) that:
+/// - disables interrupts for the full duration, and
+/// - guarantees `CR3` does not change until the function returns.
+///
+/// If this precondition is violated, a context switch can switch to a different
+/// `CR3` while recursive addresses are being resolved, which can race and write
+/// into the wrong page-table hierarchy.
 pub fn map_user_page(virtual_address: u64, pfn: u64, writable: bool) -> Result<(), MapError> {
     // Normalize to 4 KiB page granularity; callers may pass any address
     // within the target page.
