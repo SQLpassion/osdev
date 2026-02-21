@@ -1611,10 +1611,18 @@ pub fn exit_current_task() -> ! {
 }
 
 /// Triggers a software timer interrupt to force an immediate reschedule.
+///
+/// EOI semantics:
+/// - `int IRQ0_PIT_TIMER_VECTOR` is a software interrupt, not a physical PIT edge.
+/// - The shared IRQ dispatcher currently sends PIC EOI for this vector as part
+///   of its normal IRQ epilogue.
+/// - Therefore `timer_irq_handler` must never emit its own EOI; doing so would
+///   duplicate EOI on real hardware IRQ0 entries and obscure this software path.
 pub fn yield_now() {
     // SAFETY:
     // - This requires `unsafe` because inline assembly and privileged CPU instructions are outside Rust's static safety model.
-    // - Software interrupt to IRQ0 vector enters the same scheduler path as timer IRQ.
+    // - Step 1: Trigger software `int` on IRQ0 so we reuse the timer/scheduler IRQ path.
+    // - Step 2: Keep EOI handling centralized in `interrupts::dispatch_irq`; this routine only enters the vector.
     // - Valid only in ring 0, which holds for kernel code.
     unsafe {
         asm!(
