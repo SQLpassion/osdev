@@ -24,8 +24,10 @@ use crate::sync::spinlock::SpinLock;
 
 /// Size of one block header in bytes.
 const HEADER_SIZE: usize = size_of::<HeapBlockHeader>();
+
 /// Size of intrusive node stored in payload of free blocks.
 const FREE_NODE_SIZE: usize = size_of::<FreeListNode>();
+
 /// Global heap payload alignment.
 const ALIGNMENT: usize = align_of::<usize>();
 
@@ -317,6 +319,7 @@ pub const HEAP_ALIGNMENT: usize = ALIGNMENT;
 /// Allocates `size` bytes and returns a pointer to the payload.
 pub fn malloc(size: usize) -> *mut u8 {
     let requested_size = size;
+
     let Some(size) = compute_aligned_heapblock_size(requested_size) else {
         logging::logln_with_options(
             "heap",
@@ -327,6 +330,7 @@ pub fn malloc(size: usize) -> *mut u8 {
             serial_debug_enabled(),
             true,
         );
+
         return core::ptr::null_mut();
     };
 
@@ -346,6 +350,7 @@ pub fn malloc(size: usize) -> *mut u8 {
 
             // Step 2: Grow heap when no fitting block currently exists.
             let growth = compute_heap_growth_for_request(size);
+
             if grow_heap(state, growth) {
                 AllocAttempt::Retry
             } else {
@@ -364,6 +369,7 @@ pub fn malloc(size: usize) -> *mut u8 {
                     serial_debug_enabled(),
                     true,
                 );
+
                 return ptr;
             }
             AllocAttempt::Retry => {}
@@ -377,6 +383,7 @@ pub fn malloc(size: usize) -> *mut u8 {
                     serial_debug_enabled(),
                     true,
                 );
+
                 return core::ptr::null_mut();
             }
         }
@@ -406,6 +413,7 @@ pub fn free(ptr: *mut u8) {
         // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
         // - `block` was found by exact payload match and therefore points to a valid block header.
         let header = unsafe { &mut *block };
+
         if !header.in_use() {
             return FreeResult::Rejected {
                 reason: "double free",
@@ -413,6 +421,7 @@ pub fn free(ptr: *mut u8) {
         }
 
         let block_size = header.size();
+
         if block_size < HEADER_SIZE {
             return FreeResult::Rejected {
                 reason: "corrupt block header",
@@ -608,10 +617,13 @@ fn find_block_by_payload_ptr(state: &HeapState, ptr: *mut u8) -> Option<*mut Hea
     // - `block_addr` is within `[heap_start, heap_end)`, which is valid mapped heap memory.
     let header = unsafe { &*header_at(block_addr) };
     let block_size = header.size();
+
     if block_size < HEADER_SIZE {
         return None;
     }
+
     let block_end = block_addr.checked_add(block_size)?;
+
     if block_end > state.heap_end {
         return None;
     }
@@ -624,6 +636,7 @@ fn update_next_prev_size(state: &mut HeapState, block_addr: usize, block_size: u
     let Some(next_addr) = block_addr.checked_add(block_size) else {
         return;
     };
+
     if next_addr >= state.heap_end {
         return;
     }
@@ -686,11 +699,14 @@ fn coalesce_free_block(state: &mut HeapState, block: *mut HeapBlockHeader) -> *m
     unsafe {
         let header = &*coalesced;
         let prev_size = header.prev_size();
+
         if prev_size >= HEADER_SIZE {
             let prev_addr = (coalesced as usize).saturating_sub(prev_size);
+
             if prev_addr >= state.heap_start {
                 let prev = header_at(prev_addr);
                 let prev_header = &*prev;
+
                 if !prev_header.in_use() {
                     remove_free_block(state, prev);
 
@@ -712,9 +728,11 @@ fn coalesce_free_block(state: &mut HeapState, block: *mut HeapBlockHeader) -> *m
     unsafe {
         let header = &*coalesced;
         let next_addr = (coalesced as usize).saturating_add(header.size());
+
         if next_addr < state.heap_end {
             let next = header_at(next_addr);
             let next_header = &*next;
+
             if !next_header.in_use() && next_header.size() >= HEADER_SIZE {
                 remove_free_block(state, next);
 
@@ -795,6 +813,7 @@ fn grow_heap(state: &mut HeapState, amount: usize) -> bool {
     // The coalesced block ends at `new_end` and is now the last physical block.
     state.tail_block_addr = block as usize;
     insert_free_block(state, block);
+
     true
 }
 
@@ -812,6 +831,7 @@ pub fn run_self_test(screen: &mut Screen) {
         serial_debug_enabled(),
         true,
     );
+
     // Step 1: Ensure the allocator is initialized, but never reset it once live.
     // Reinitializing in a running kernel would invalidate already-allocated state.
     if !is_initialized() {
@@ -821,6 +841,7 @@ pub fn run_self_test(screen: &mut Screen) {
     // Step 2: Validate independent allocations and payload integrity.
     let ptr1 = malloc(100);
     let ptr2 = malloc(200);
+
     if ptr1.is_null() || ptr2.is_null() || ptr1 == ptr2 {
         failures += 1;
         writeln!(screen, "  [FAIL] independent allocation layout").unwrap();
@@ -837,6 +858,7 @@ pub fn run_self_test(screen: &mut Screen) {
             let last_a = core::ptr::read_volatile(ptr1.add(99));
             let first_b = core::ptr::read_volatile(ptr2);
             let last_b = core::ptr::read_volatile(ptr2.add(199));
+
             if first_a == 0xA1 && last_a == 0xA1 && first_b == 0xB2 && last_b == 0xB2 {
                 writeln!(screen, "  [ OK ] independent allocation layout").unwrap();
             } else {
@@ -850,18 +872,22 @@ pub fn run_self_test(screen: &mut Screen) {
     free(ptr1);
     free(ptr2);
     let ptr3 = malloc(256);
+
     if !ptr3.is_null() {
         writeln!(screen, "  [ OK ] free+reuse large allocation").unwrap();
     } else {
         failures += 1;
         writeln!(screen, "  [FAIL] free+reuse large allocation").unwrap();
     }
+
     free(ptr3);
 
     let mut values: Vec<u64> = Vec::with_capacity(16);
+
     for i in 0..16u64 {
         values.push(i);
     }
+
     if values.len() == 16 && values[0] == 0 && values[15] == 15 {
         writeln!(screen, "  [ OK ] rust alloc (Vec) on heap").unwrap();
         logging::logln_with_options(

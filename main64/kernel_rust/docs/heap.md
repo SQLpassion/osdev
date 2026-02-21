@@ -3,7 +3,228 @@
 This document describes the current heap manager implementation in
 `main64/kernel_rust/src/memory/heap.rs` in detail.
 
-## 1. Scope and Design Goals
+---
+
+## 1. Conceptual Introduction
+
+This section explains the core ideas behind the heap manager for readers who
+have not worked with a segregated free-list allocator before. If you already
+know the concept, skip ahead to [Section 2](#2-scope-and-design-goals).
+
+### 1.1 The Basic Principle
+
+The heap is a large contiguous block of memory. The allocator divides it into
+variable-sized **blocks**. Each block has a small **header** (16 bytes) at its
+start, followed by the usable **payload**:
+
+```text
+heap_start                                                         heap_end
+  |                                                                    |
+  v                                                                    v
++--------+-------------------+--------+------------------+--------+--------...
+| Hdr A  | Payload A         | Hdr B  | Payload B        | Hdr C  | ...
++--------+-------------------+--------+------------------+--------+--------...
+  16 B     e.g. 100 B          16 B     e.g. 200 B
+```
+
+The header stores two pieces of information:
+
+- **Is the block in use?** (1 bit, packed into the size field)
+- **How large is the block?** (block size in bytes, including the header)
+
+When you call `malloc(100)`, the allocator finds a free block large enough to
+hold 100 bytes of payload, marks it as in-use, and returns a pointer to the
+payload area. When you call `free()`, the block is marked as free again.
+
+### 1.2 The Problem: Finding a Free Block Efficiently
+
+The naive approach — scanning every block from `heap_start` to `heap_end` until
+a large enough free block is found — is O(n). With many allocated blocks this
+becomes slow.
+
+The solution used here is a **segregated free-list**.
+
+### 1.3 Segregated Free-List: Sorting Blocks by Size
+
+Instead of one list of all free blocks, the allocator maintains **32 separate
+lists** (called *bins*), each responsible for a different size range:
+
+```text
+Bin  0: blocks  32 –  63 bytes
+Bin  1: blocks  64 – 127 bytes
+Bin  2: blocks 128 – 255 bytes
+Bin  3: blocks 256 – 511 bytes
+...
+Bin 31: very large blocks
+```
+
+The size ranges follow a logarithmic (power-of-two) scale. When `malloc(100)`
+is called, the allocator goes directly to Bin 1 (64–127 bytes) and picks a
+block from there — without touching any other bin.
+
+### 1.4 How a Bin Knows Where Its Blocks Are
+
+This is where two data structures work together.
+
+**The bin array** stores the address of the *first* free block in each bin, or
+`None` if the bin is empty:
+
+```rust
+free_bins: [Option<usize>; 32]
+//  free_bins[0] = Some(0x5100) → first free block in Bin 0
+//  free_bins[1] = Some(0x5200) → first free block in Bin 1
+//  free_bins[3] = None         → Bin 3 is empty
+```
+
+**The free blocks themselves** know where the next block in the same bin is.
+Each free block stores an intrusive `FreeListNode` directly inside its payload
+area:
+
+```rust
+struct FreeListNode {
+    prev: usize,   // address of previous free block in same bin
+    next: usize,   // address of next free block in same bin
+}
+```
+
+Because this node lives *inside the payload that is unused anyway*, no
+additional memory is needed for the list structure. This is called an
+**intrusive linked list**.
+
+The full picture for Bin 1 with two free blocks:
+
+```text
+free_bins[1] = 0x5100
+      │
+      ▼
++─────────────────────────────+          +─────────────────────────────+
+│ Header (size=80, free)      │          │ Header (size=96, free)      │
+├─────────────────────────────┤          ├─────────────────────────────┤
+│ FreeListNode                │          │ FreeListNode                │
+│   prev = 0   (no previous)  │          │   prev = 0x5100             │
+│   next = 0x5200  ───────────┼─────────►│   next = 0  (end of list)  │
+├─────────────────────────────┤          ├─────────────────────────────┤
+│ ... rest of payload ...     │          │ ... rest of payload ...     │
++─────────────────────────────+          +─────────────────────────────+
+  Address: 0x5100                          Address: 0x5200
+```
+
+It is a doubly linked list. Following `next` pointers walks forward through the
+bin; `prev` allows O(1) unlinking of any node.
+
+### 1.4.1 How a Block Gets Into a Bin
+
+A bin does not search for free blocks — the caller always brings the block
+pointer directly to `insert_free_block`:
+
+```rust
+fn insert_free_block(state: &mut HeapState, block: *mut HeapBlockHeader)
+```
+
+The function receives the exact heap address of the block, computes its size
+class, and sets `free_bins[idx]` to that address — making the block the new
+list head. The bin entry is nothing more than a single stored address; there
+is no search involved.
+
+| Caller | Source of the block pointer |
+|---|---|
+| `init()` | `header_at(heap_start)` — the heap start address is a compile-time constant |
+| `allocate_block()` | The split remainder: `block_addr + requested_size` |
+| `grow_heap()` | `header_at(old_heap_end)` — the previous end of the heap |
+| `free()` via `coalesce_free_block()` | The coalesced block returned directly from the coalescing step |
+
+In every case the caller already holds the pointer. It hands it to
+`insert_free_block`, which writes the block's address into `free_bins[idx]`
+and links the block into the existing list:
+
+```text
+Before insert (Bin 1 has one block at 0x5200):
+
+  free_bins[1] = Some(0x5200)
+
+After insert_free_block(block @ 0x5100):
+
+  free_bins[1] = Some(0x5100)   ← new head
+
+  0x5100: FreeListNode { prev: 0,      next: 0x5200 }
+  0x5200: FreeListNode { prev: 0x5100, next: 0      }
+```
+
+If the bin was empty (`None`), `next` is set to `0` (null), and the new block
+becomes the only entry. The bitmap bit for that bin is set in both cases.
+
+### 1.5 The Bitmap Optimization
+
+Even with 32 bins, there is still the question: *which bins are non-empty?*
+Iterating through all 32 bins to find the first non-empty one would still cost
+up to 32 comparisons.
+
+The solution is a single `u64` **bitmap** — one bit per bin:
+
+```text
+free_bin_bitmap: 0b...0001_1010
+                           ↑↑↑
+                           Bin 1 non-empty
+                           Bin 3 non-empty
+                           Bin 4 non-empty
+```
+
+When `malloc` needs a block of size class `k`, it masks all bits below `k` and
+calls `trailing_zeros()` — a single CPU instruction (`TZCNT`) — which instantly
+returns the index of the next non-empty bin at or above class `k`:
+
+```rust
+let remaining = state.free_bin_bitmap & (!0u64 << start_idx);
+let idx = remaining.trailing_zeros(); // single CPU instruction
+```
+
+### 1.6 How Empty Bins Are Distinguished from Non-Empty Ones
+
+A critical detail: the bin array uses `Option<usize>`, not a raw `usize`. An
+empty bin is `None`, not zero or some sentinel address. This makes the
+distinction between "empty" and "contains a block at address 0x0" explicit at
+the type level — the compiler enforces it.
+
+At initialization, **all 32 bins start as `None`**:
+
+```rust
+free_bins: [None; FREE_BIN_COUNT]
+```
+
+After `init()` runs, a single free block covering the initial heap page is
+created and inserted into exactly one bin. All other 31 bins remain `None`.
+
+When code iterates a bin:
+
+```rust
+let current = addr_to_ptr(state.free_bins[idx].unwrap_or(0));
+while !current.is_null() { ... }
+```
+
+`None` becomes address `0`, which `is_null()` catches immediately, so the loop
+body never executes for an empty bin.
+
+### 1.7 Coalescing: Merging Adjacent Free Blocks
+
+Without merging, freeing many small blocks would fragment the heap into
+unusable slivers. Every `free()` call therefore **coalesces** the newly freed
+block with its immediate physical neighbors if they are also free.
+
+To merge with the *previous* block without scanning forward from `heap_start`,
+each block stores the size of its physical predecessor in the `prev_size` field
+of its header (**boundary tag**). This enables O(1) backward navigation:
+
+```text
+Next block:     current_addr + current_size       (forward)
+Previous block: current_addr - current.prev_size  (backward, O(1))
+```
+
+After merging, the combined block is re-inserted into the bin appropriate for
+its new, larger size.
+
+---
+
+## 2. Scope and Design Goals
 
 The heap manager is a small kernel allocator with these goals:
 
@@ -21,7 +242,7 @@ Non-goals in the current implementation:
 - NUMA-aware placement.
 - Background compaction/defragmentation.
 
-## 2. High-Level Model
+## 3. High-Level Model
 
 The heap is a contiguous virtual memory range:
 
@@ -31,19 +252,11 @@ The heap is a contiguous virtual memory range:
 - Hard limit: `MAX_HEAP_SIZE = 0x0100_0000` (16 MiB)
 
 The heap is represented as a sequence of variable-size blocks in physical
-layout order.
+layout order. Each block starts with a `HeapBlockHeader` followed by its
+payload. Free blocks additionally store intrusive free-list links inside their
+payload, enabling segregated free lists without external metadata allocations.
 
-Each block:
-
-- Starts with a header (`HeapBlockHeader`).
-- Contains payload immediately after the header.
-- Stores allocation state + block size in one packed field.
-- Stores `prev_size` to enable direct previous-neighbor lookup.
-
-Free blocks additionally store intrusive free-list links inside their payload.
-This enables segregated free lists without external metadata allocations.
-
-## 3. Block Header Format
+## 4. Block Header Format
 
 Header type:
 
@@ -56,15 +269,12 @@ Bit usage in `size_and_flags`:
 - Bit 0 (`IN_USE_MASK = 0x1`): allocation flag
 - Bits 1..N (`SIZE_MASK = !IN_USE_MASK`): block size in bytes
 
-The block size includes:
-
-- Header bytes
-- Payload bytes
+The block size includes header bytes and payload bytes.
 
 `prev_size` stores the full size of the physically previous block.
 For the first block in heap, `prev_size = 0`.
 
-### 3.1 Header Size and Alignment
+### 4.1 Header Size and Alignment
 
 - `HEADER_SIZE = size_of::<HeapBlockHeader>()`
 - With two `usize` fields this is typically 16 bytes on x86_64.
@@ -77,41 +287,38 @@ Allocation request handling:
 2. Add header: `n + HEADER_SIZE`
 3. Round up to `ALIGNMENT`
 
-So allocated block size is aligned and always includes header.
+So allocated block size is aligned and always includes the header.
 
-### 3.2 Boundary-Tag Role of `prev_size`
+### 4.2 Boundary-Tag Role of `prev_size`
 
 `prev_size` is a lightweight boundary tag. It allows this operation in O(1):
 
 - Given block at `addr`, previous block address is `addr - prev_size`
 
-That avoids reverse scans during coalescing and is central to the new design.
+That avoids reverse scans during coalescing.
 
-## 4. Free-List Node Format (Intrusive Metadata)
+## 5. Free-List Node Format (Intrusive Metadata)
 
 Free blocks store `FreeListNode` at payload start:
 
 - `prev: usize`
 - `next: usize`
 
-Important details:
+Both fields are block-header addresses. `0` denotes null.
 
-- These are block-header addresses, not payload addresses.
-- `0` denotes null.
-- Using `usize` keeps `HeapState` trivially `Send`, which is required because
-  `SpinLock<T>` only implements `Sync` for `T: Send`.
+Using `usize` keeps `HeapState` trivially `Send`, which is required because
+`SpinLock<T>` only implements `Sync` for `T: Send`.
 
-Intrusive node placement:
+Memory layout of a free block:
 
 ```text
-Free block memory layout:
 +------------------------+------------------------------+
 | HeapBlockHeader        | FreeListNode + free payload  |
 +------------------------+------------------------------+
 ^ block addr             ^ payload_ptr(block)
 ```
 
-## 5. Segregated Free-List Topology
+## 6. Segregated Free-List Topology
 
 `HeapState` owns:
 
@@ -124,14 +331,9 @@ Where:
 - `free_bins[i]` points to head block of bin `i` or `None`
 - `free_bin_bitmap` has bit `i` set iff bin `i` is non-empty
 
-This gives two-level selection:
+Within a chosen bin, blocks are linked as a doubly linked intrusive list.
 
-1. Compute starting size class
-2. Use bitmap to find first non-empty candidate bin at/above that class
-
-Within a chosen bin, blocks are linked as doubly linked intrusive list.
-
-## 6. Size-Class Mapping
+## 7. Size-Class Mapping
 
 `size_class_index(block_size)` maps block size to a bin index via a log2-style
 coarse grouping:
@@ -140,16 +342,10 @@ coarse grouping:
 - Compute class relative to `MIN_FREE_BLOCK_SIZE`
 - Clamp to `[0, FREE_BIN_COUNT - 1]`
 
-Consequences:
-
-- Nearby sizes are grouped.
-- Small blocks remain in lower bins.
-- Very large blocks collapse into highest bin.
-
 This is not a strict buddy allocator; it is a pragmatic bucketization for fast
 candidate selection.
 
-### 6.1 Practical Bin Ranges (for typical x86_64 values)
+### 7.1 Practical Bin Ranges (for typical x86_64 values)
 
 With typical values:
 
@@ -176,22 +372,10 @@ So bins represent power-of-two ranges:
 - ...
 
 For the current heap limit (`MAX_HEAP_SIZE = 16 MiB`), only lower bins are
-reachable in practice (up to the class containing `16 MiB`, i.e. around bin 19
-with these constants). Higher bins are harmlessly present but typically unused.
+reachable in practice (up to around bin 19). Higher bins are harmlessly present
+but typically unused.
 
-### 6.2 Why Bitmap + Bins Helps
-
-Without bins, allocator search starts at `heap_start` and touches many unrelated
-blocks. With bins:
-
-1. Requested size computes a start bin.
-2. `free_bin_bitmap` immediately skips empty bins.
-3. Allocator scans only linked free blocks in relevant bins.
-
-This removes full-heap traversal from the normal allocation path and keeps
-search localized to likely-fit block groups.
-
-## 7. Global State and Synchronization
+## 8. Global State and Synchronization
 
 Global container:
 
@@ -204,13 +388,14 @@ Global container:
 
 - `heap_start`
 - `heap_end` (exclusive)
+- `tail_block_addr` — cached address of last physical block, for O(1) growth
 - `free_bins`
 - `free_bin_bitmap`
 
 All heap metadata updates are serialized by `SpinLock`.
 The helper `with_heap(...)` acquires the lock and gives mutable access.
 
-## 8. Heap Memory Layout
+## 9. Heap Memory Layout
 
 At any time, the heap looks like this:
 
@@ -223,7 +408,7 @@ heap_start                                                               heap_en
 +--------+--------------------+--------+------------------+--------+----------------+
 ```
 
-Traversal by physical order:
+Forward traversal:
 
 ```text
 addr_0 = heap_start
@@ -232,13 +417,13 @@ addr_2 = addr_1 + size(addr_1)
 ...
 ```
 
-Backward neighbor from boundary tag:
+Backward neighbor via boundary tag:
 
 ```text
 prev_addr(current) = current - prev_size(current)
 ```
 
-## 9. Initialization (`init`)
+## 10. Initialization (`init`)
 
 `init(debug_output)` does:
 
@@ -246,18 +431,18 @@ prev_addr(current) = current - prev_size(current)
 2. Zero the initial heap range.
 3. Reset bin heads + bitmap in `HeapState`.
 4. Create one single free block covering the full initial region:
-- `in_use = false`
-- `size = INITIAL_HEAP_SIZE`
-- `prev_size = 0`
+   - `in_use = false`
+   - `size = INITIAL_HEAP_SIZE`
+   - `prev_size = 0`
 5. Insert that block into the matching size bin.
 6. Store debug flag and set initialized bit.
 
-After `init(debug_output)`, there is exactly one free block and exactly one bin
-bit set.
+After `init()`, there is exactly one free block and exactly one bin bit set.
+All other 31 bins remain `None`.
 
-## 10. Allocation Path (`malloc`)
+## 11. Allocation Path (`malloc`)
 
-### 10.1 Steps
+### 11.1 Steps
 
 `malloc(size)`:
 
@@ -270,20 +455,15 @@ bit set.
 6. Retry loop after successful growth.
 7. Return null on overflow or bounded-growth rejection.
 
-### 10.2 Candidate Search (`find_suitable_free_block`)
-
-Search is bin-first, not heap-linear:
+### 11.2 Candidate Search (`find_suitable_free_block`)
 
 1. Compute start class index from requested size.
 2. Mask bitmap with bins `>= start_idx`.
-3. Iterate set bits using trailing-zero extraction.
+3. Iterate set bits using trailing-zero extraction (`TZCNT`).
 4. Scan only blocks linked in each candidate bin.
 5. Unlink and return first block with sufficient size.
 
-Compared to prior full-heap first-fit scan, this removes the mandatory walk over
-allocated blocks and unrelated free blocks in other size regions.
-
-### 10.3 Block Split (`allocate_block`)
+### 11.3 Block Split (`allocate_block`)
 
 Given selected free block `old_size` and requested `size`:
 
@@ -298,81 +478,73 @@ Split behavior:
 4. Successor block (if any) gets updated `prev_size`.
 5. Tail is inserted into size-appropriate free bin.
 
-`MIN_SPLIT_SIZE = MIN_FREE_BLOCK_SIZE`, where:
+`MIN_SPLIT_SIZE = MIN_FREE_BLOCK_SIZE = align_up(HEADER_SIZE + FREE_NODE_SIZE, ALIGNMENT)`
 
-- `MIN_FREE_BLOCK_SIZE = align_up(HEADER_SIZE + FREE_NODE_SIZE, ALIGNMENT)`
+Every free block is therefore guaranteed to be large enough to host its
+intrusive links.
 
-So every free block is guaranteed to be large enough to host its intrusive
-links plus valid header/alignment constraints.
-
-## 11. Free Path (`free`)
+## 12. Free Path (`free`)
 
 `free(ptr)`:
 
 1. Return immediately for `ptr == null`.
-2. Validate pointer by exact payload-match walk (`find_block_by_payload_ptr`).
-3. Reject invalid pointer.
-4. Reject double free (`!header.in_use()`).
-5. Mark block free.
-6. Coalesce with adjacent free neighbors using boundary tags.
-7. Insert final coalesced block into matching bin.
+2. Validate pointer via `find_block_by_payload_ptr`.
+3. Reject invalid pointer or double free (`!header.in_use()`).
+4. Mark block free.
+5. Coalesce with adjacent free neighbors using boundary tags.
+6. Insert final coalesced block into matching bin.
 
-This keeps free-path metadata mutations explicit and local.
-
-## 12. Coalescing Algorithm (`coalesce_free_block`)
+## 13. Coalescing Algorithm (`coalesce_free_block`)
 
 Coalescing is neighbor-local and O(1) in adjacency operations.
 
-### 12.1 Previous Neighbor Merge
+### 13.1 Previous Neighbor Merge
 
 - Read `prev_size` from current block.
 - If valid and previous block exists and is free:
-- Unlink previous from its bin.
-- Expand previous block size by current size.
-- Use previous as new coalesced anchor.
+  - Unlink previous from its bin.
+  - Expand previous block size by current size.
+  - Use previous as new coalesced anchor.
 
-### 12.2 Next Neighbor Merge
+### 13.2 Next Neighbor Merge
 
 - Compute `next_addr = coalesced_addr + coalesced_size`.
 - If next block exists and is free:
-- Unlink next from bin.
-- Expand coalesced block by next size.
+  - Unlink next from bin.
+  - Expand coalesced block by next size.
 
-### 12.3 Boundary-Tag Repair
+### 13.3 Boundary-Tag Repair
 
-After merges, update successor block's `prev_size` to new final coalesced size.
+After merges, update successor block's `prev_size` to the new final coalesced
+size. This ensures boundary tags remain consistent for future backward merges.
 
-This ensures boundary tags remain consistent for future backward merges.
-
-## 13. Heap Growth (`grow_heap`)
+## 14. Heap Growth (`grow_heap`)
 
 When no fitting free block exists:
 
 1. Compute growth request with `compute_heap_growth_for_request(...)`
    (aligned to `HEAP_GROWTH`).
 2. Reject if it would exceed `MAX_HEAP_SIZE`.
-3. Determine last existing block size (needed for new block `prev_size`).
+3. Read tail block size in O(1) from cached `tail_block_addr`.
 4. Append one new free block at old `heap_end`.
 5. Set new block:
-- `in_use = false`
-- `size = amount`
-- `prev_size = size_of_previous_tail_block`
+   - `in_use = false`
+   - `size = amount`
+   - `prev_size = size_of_previous_tail_block`
 6. Advance `heap_end`.
 7. Coalesce appended block with free predecessor if applicable.
 8. Insert final block into bins.
 
-## 14. Pointer Conversion Helpers
+## 15. Pointer Conversion Helpers
 
-Internal helpers:
+- `header_at(addr)` → `*mut HeapBlockHeader`
+- `payload_ptr(block)` → payload pointer (`block + HEADER_SIZE`)
+- `free_node_ptr(block)` → intrusive node location in payload
+- `ptr_to_addr(block)` / `addr_to_ptr(addr)` → pointer/address bridges
 
-- `header_at(addr)` -> `*mut HeapBlockHeader`
-- `payload_ptr(block)` -> payload pointer (`block + HEADER_SIZE`)
-- `free_node_ptr(block)` -> intrusive node location in payload
-- `ptr_to_addr(block)` / `addr_to_ptr(addr)` -> pointer/address bridges
+These helpers centralize metadata addressing rules and keep call sites simple.
 
-These functions centralize metadata addressing rules and keep call sites simple.
-
-## 15. Logging Behavior
+## 16. Logging Behavior
 
 Heap logs use `logging::logln_with_options("heap", ..., serial_enabled, true)`.
 `serial_enabled` is controlled by `init(debug_output)`.
@@ -400,7 +572,7 @@ Rejected free log format:
 [HEAP] free rejected ptr=0x... reason=<invalid pointer|double free|corrupt block header>
 ```
 
-## 16. Self-Test (`run_self_test`)
+## 17. Self-Test (`run_self_test`)
 
 The runtime self-test validates:
 
@@ -408,14 +580,12 @@ The runtime self-test validates:
 2. Free + reuse through larger follow-up allocation.
 3. Rust allocator path via `Vec`.
 
-Notable behavior:
+The self-test does not reinitialize a live allocator. It only calls `init` when
+the allocator is not yet initialized.
 
-- The self-test does not reinitialize a live allocator state.
-- It only calls `init` when allocator is not yet initialized.
+## 18. Integration Test Coverage
 
-## 17. Integration Test Coverage
-
-`main64/kernel_rust/tests/heap_test.rs` covers allocator contracts including:
+`main64/kernel_rust/tests/heap_test.rs` covers:
 
 - Basic alloc/free round trip.
 - Reuse after free.
@@ -428,9 +598,7 @@ Notable behavior:
 - Global allocator and over-aligned layout behavior.
 - Explicit two-sided coalescing (`prev` + `next`) behavior.
 
-This protects the core invariants of split/coalesce/bin-link operations.
-
-## 18. Rust Global Allocator Integration
+## 19. Rust Global Allocator Integration
 
 `allocator.rs` registers:
 
@@ -438,11 +606,11 @@ This protects the core invariants of split/coalesce/bin-link operations.
 - `alloc` forwards to `heap::malloc`
 - `dealloc` forwards to `heap::free`
 
-Therefore Rust containers (`Vec`, `Box`, etc.) allocate from this heap.
-Over-aligned layouts are handled by allocator-side over-allocation and a stored
+Rust containers (`Vec`, `Box`, etc.) allocate from this heap.
+Over-aligned layouts are handled by allocator-side over-allocation with a stored
 back-reference to the raw heap pointer.
 
-## 19. Safety and Invariants
+## 20. Safety and Invariants
 
 Core physical layout invariants:
 
@@ -467,160 +635,328 @@ Core coalescing invariants:
 2. Coalescing unlinks neighbor blocks before merge.
 3. Successor `prev_size` is repaired after split/merge/grow transitions.
 
-Unsafe operations are localized to:
+Unsafe operations are localized to raw pointer arithmetic and dereference for
+in-place headers/nodes, and heap-memory initialization (`write_bytes`).
 
-- Raw pointer arithmetic and dereference for in-place headers/nodes.
-- Heap-memory initialization (`write_bytes`).
+Safety depends on exclusive lock ownership during metadata updates, validated
+block boundaries before dereference, and consistent boundary-tag maintenance.
 
-Safety depends on:
+## 21. Performance Characteristics
 
-- Exclusive lock ownership during metadata updates.
-- Validated block boundaries before dereference.
-- Consistent boundary-tag maintenance (`prev_size`).
-
-## 20. Performance Characteristics
-
-Approximate characteristics:
-
-- `malloc`: bitmap+bin search; avoids mandatory full-heap linear scan.
-- `free`: pointer validation scan + O(1) neighbor coalescing + O(1) bin updates.
+- `malloc`: bitmap+bin search via `TZCNT`; avoids full-heap linear scan.
+- `free`: O(1) pointer validation + O(1) neighbor coalescing + O(1) bin updates.
 - Metadata overhead per block:
-- Always: `HeapBlockHeader` (2 machine words)
-- Free-only: intrusive `FreeListNode` in payload start
+  - Always: `HeapBlockHeader` (2 machine words = 16 bytes on x86_64)
+  - Free-only: intrusive `FreeListNode` in payload start (2 machine words)
 
-Compared to the prior first-fit full scan design:
+## 22. Known Limitations
 
-- Better allocation scalability under mixed-size fragmentation.
-- Explicitly bounded candidate-set scan by size class.
-
-## 21. Known Limitations
-
-1. Growth is bounded by `MAX_HEAP_SIZE`.
+1. Growth is bounded by `MAX_HEAP_SIZE` (16 MiB).
 2. Single global lock (no per-CPU arenas).
 3. No lock-free fast paths.
-4. Pointer validation in `free` still uses a boundary walk.
-5. No canaries/poisoning/quarantine hardening.
-6. Bin strategy is coarse and may still degrade under adversarial patterns.
+4. No canaries/poisoning/quarantine hardening for heap corruption detection.
+5. Bin strategy is coarse and may still degrade under adversarial patterns.
 
-## 22. Worked Example
+## 23. Working Example
 
-Assume x86_64-like sizes:
+Assume x86_64 sizes: `HEADER_SIZE = 16`, `ALIGNMENT = 8`,
+`FREE_NODE_SIZE = 16`, `MIN_FREE_BLOCK_SIZE = 32`.
 
-- `HEADER_SIZE = 16`
-- `ALIGNMENT = 8`
-- `FREE_NODE_SIZE = 16`
-- `MIN_FREE_BLOCK_SIZE = align_up(16 + 16, 8) = 32`
+For readability, `heap_start = 0x1000` is used instead of the real kernel
+address. Each step shows the full state of heap blocks, free_bins, and bitmap.
 
-Request `malloc(50)`:
+---
 
-1. Full size = `50 + 16 = 66`
-2. Align to 8 -> `72`
-3. Choose bin class for 72-byte block
-4. Remove suitable free block from bin
-5. Split if remainder `>= 32`
-6. Return payload pointer
+### 23.1 Initial State (after `init(false)`)
 
-Block view:
+`init()` zeros the first 4096-byte page, creates a single free block covering
+the entire initial heap, and inserts it into Bin 7
+(`size_class_index(4096) = floor(log2(4096)) - 5 = 7`).
 
 ```text
-offset X:
-+--------------------------------+
-| header(size=72, in_use=1, ...) |
-+--------------------------------+
-| payload (50 used, padding 6)   |
-+--------------------------------+
+Heap layout:
+
+  0x1000                                                           0x2000
+  ┌────────────────────────────────────────────────────────────────┐
+  │                      FREE  (4096 bytes)                        │
+  └────────────────────────────────────────────────────────────────┘
+
+Block @ 0x1000:
+  ┌──────────────────────────────┐
+  │ Header                       │
+  │   size      = 4096           │
+  │   in_use    = false          │
+  │   prev_size = 0              │
+  ├──────────────────────────────┤
+  │ FreeListNode                 │
+  │   prev = 0  (start of list)  │
+  │   next = 0  (end of list)    │
+  └──────────────────────────────┘
+
+free_bins:
+  Bin 0..6:  None
+  Bin 7:     Some(0x1000) ──► [0x1000] ──► (null)
+  Bin 8..31: None
+
+Bitmap:
+  bit 7 set, all others 0
+  [ 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 0 0 0 0 0 0 ]
+    31                                              7             0
 ```
 
-If split occurred, remainder at `X + 72` is a valid free block with intrusive
-node at its payload start and is linked into its own size bin.
+---
 
-### 22.1 Detailed Bin-Aware Allocation Walkthrough
+### 23.2 Step A: `malloc(50)`
 
-This walkthrough shows exact bin/bitmap transitions.
+Requested 50 bytes. Full block size: `50 + 16 = 66`, aligned to 8 → **72**.
+`size_class_index(72) = 1` → allocator starts at Bin 1.
+Bins 1–6 are empty (bitmap check skips them instantly).
+Bin 7 is the first non-empty candidate.
 
-Initial state right after `init(false)`:
-
-- Heap contains one free block of `4096` bytes.
-- `size_class_index(4096)` -> `floor(log2(4096)) - 5 = 12 - 5 = 7`
-- So only Bin 7 is populated.
-- `free_bin_bitmap = 1 << 7`
-
-State:
+The 4096-byte block is removed from Bin 7 and split:
+- **Head** (72 bytes, `0x1000..0x1048`) → allocated, pointer returned to caller.
+- **Tail** (4024 bytes, `0x1048..0x2000`) → `size_class_index(4024) = 6` → Bin 6.
 
 ```text
-Bin 7: [block@heap_start size=4096]
-Bitmap: ...00010000000 (bit 7 set)
+Heap layout:
+
+  0x1000       0x1048                                             0x2000
+  ┌────────────┬──────────────────────────────────────────────────┐
+  │ ALLOCATED  │                 FREE  (4024 bytes)               │
+  │  72 bytes  │                                                  │
+  └────────────┴──────────────────────────────────────────────────┘
+       │
+       └── pointer returned to caller (payload at 0x1010)
+
+Block @ 0x1000 (allocated):
+  ┌──────────────────────────────┐
+  │ Header                       │
+  │   size      = 72             │
+  │   in_use    = true           │
+  │   prev_size = 0              │
+  ├──────────────────────────────┤
+  │ payload (56 bytes usable)    │ ◄── pointer returned to caller
+  └──────────────────────────────┘
+
+Block @ 0x1048 (free):
+  ┌──────────────────────────────┐
+  │ Header                       │
+  │   size      = 4024           │
+  │   in_use    = false          │
+  │   prev_size = 72             │
+  ├──────────────────────────────┤
+  │ FreeListNode                 │
+  │   prev = 0  (start of list)  │
+  │   next = 0  (end of list)    │
+  └──────────────────────────────┘
+
+free_bins:
+  Bin 0..5:  None
+  Bin 6:     Some(0x1048) ──► [0x1048] ──► (null)
+  Bin 7..31: None
+
+Bitmap:
+  bit 6 set, all others 0
+  [ 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 0 0 0 0 0 ]
+    31                                                6           0
 ```
 
-#### Step A: `malloc(50)`
+---
 
-1. Requested payload `50`
-2. Full block size: `50 + 16 = 66`, aligned to 8 -> `72`
-3. `size_class_index(72)` -> `floor(log2(72)) - 5 = 6 - 5 = 1`
-4. Start bin is Bin 1; allocator checks bitmap for bins `>= 1`
-5. Bin 1..6 are empty, Bin 7 is first non-empty candidate
-6. Remove `4096` block from Bin 7
-7. Split into:
-- allocated head: `72` bytes
-- free tail: `4096 - 72 = 4024` bytes
-8. Insert tail into its class:
-- `size_class_index(4024)` -> `floor(log2(4024)) - 5 = 11 - 5 = 6`
-- tail inserted into Bin 6
+### 23.3 Step B: `malloc(200)`
 
-State after Step A:
+Requested 200 bytes. Full block size: `200 + 16 = 216`, already aligned.
+`size_class_index(216) = 2` → allocator starts at Bin 2.
+Bins 2–5 are empty (bitmap check). Bin 6 is the first non-empty candidate.
+
+The 4024-byte block is removed from Bin 6 and split:
+- **Head** (216 bytes, `0x1048..0x1120`) → allocated, pointer returned to caller.
+- **Tail** (3808 bytes, `0x1120..0x2000`) → `size_class_index(3808) = 6` → Bin 6.
 
 ```text
-Allocated: [72]
-Bin 6: [4024]
-Bitmap: ...00001000000 (bit 6 set)
+Heap layout:
+
+  0x1000       0x1048        0x1120                               0x2000
+  ┌────────────┬─────────────┬────────────────────────────────────┐
+  │ ALLOCATED  │  ALLOCATED  │         FREE  (3808 bytes)         │
+  │  72 bytes  │  216 bytes  │                                    │
+  └────────────┴─────────────┴────────────────────────────────────┘
+                     │
+                     └── pointer returned to caller (payload at 0x1058)
+
+Block @ 0x1000 (allocated, unchanged):
+  ┌──────────────────────────────┐
+  │ Header                       │
+  │   size      = 72             │
+  │   in_use    = true           │
+  │   prev_size = 0              │
+  └──────────────────────────────┘
+
+Block @ 0x1048 (allocated):
+  ┌──────────────────────────────┐
+  │ Header                       │
+  │   size      = 216            │
+  │   in_use    = true           │
+  │   prev_size = 72             │
+  ├──────────────────────────────┤
+  │ payload (200 bytes usable)   │ ◄── pointer returned to caller
+  └──────────────────────────────┘
+
+Block @ 0x1120 (free):
+  ┌──────────────────────────────┐
+  │ Header                       │
+  │   size      = 3808           │
+  │   in_use    = false          │
+  │   prev_size = 216            │
+  ├──────────────────────────────┤
+  │ FreeListNode                 │
+  │   prev = 0  (start of list)  │
+  │   next = 0  (end of list)    │
+  └──────────────────────────────┘
+
+free_bins:
+  Bin 0..5:  None
+  Bin 6:     Some(0x1120) ──► [0x1120] ──► (null)
+  Bin 7..31: None
+
+Bitmap:
+  bit 6 set, all others 0
+  [ 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 0 0 0 0 0 ]
+    31                                                6           0
 ```
 
-#### Step B: `malloc(200)`
+---
 
-1. Requested payload `200`
-2. Full block size: `200 + 16 = 216` (already 8-byte aligned)
-3. `size_class_index(216)` -> `floor(log2(216)) - 5 = 7 - 5 = 2`
-4. Start at Bin 2; first non-empty bin from bitmap is again Bin 6
-5. Remove `4024` block from Bin 6
-6. Split into:
-- allocated head: `216`
-- free tail: `4024 - 216 = 3808`
-7. `size_class_index(3808)` -> `11 - 5 = 6`, insert tail back into Bin 6
+### 23.4 Step C: `free(first)` — freeing the 72-byte block at 0x1000
 
-State after Step B:
+The block at 0x1000 (size=72) is freed first. Coalescing checks both neighbors:
+
+- **Previous neighbor**: `prev_size = 0` → no predecessor → skip.
+- **Next neighbor**: `0x1000 + 72 = 0x1048` → `in_use = true` → skip.
+
+No merge is possible. The freed block is inserted as-is.
+`size_class_index(72) = 1` → Bin 1.
+
+**This is the first moment in the example where two bins are active at the
+same time**: Bin 1 holds the small free block at 0x1000, Bin 6 still holds
+the large free block at 0x1120.
 
 ```text
-Allocated: [72][216]
-Bin 6: [3808]
-Bitmap: ...00001000000 (bit 6 set)
+Heap layout:
+
+  0x1000       0x1048        0x1120                               0x2000
+  ┌────────────┬─────────────┬────────────────────────────────────┐
+  │    FREE    │  ALLOCATED  │         FREE  (3808 bytes)         │
+  │  72 bytes  │  216 bytes  │                                    │
+  └────────────┴─────────────┴────────────────────────────────────┘
+
+Block @ 0x1000 (free):
+  ┌──────────────────────────────┐
+  │ Header                       │
+  │   size      = 72             │
+  │   in_use    = false          │
+  │   prev_size = 0              │
+  ├──────────────────────────────┤
+  │ FreeListNode                 │
+  │   prev = 0  (start of list)  │
+  │   next = 0  (end of list)    │
+  └──────────────────────────────┘
+
+Block @ 0x1048 (allocated, unchanged):
+  ┌──────────────────────────────┐
+  │ Header                       │
+  │   size      = 216            │
+  │   in_use    = true           │
+  │   prev_size = 72             │
+  └──────────────────────────────┘
+
+Block @ 0x1120 (free, unchanged):
+  ┌──────────────────────────────┐
+  │ Header                       │
+  │   size      = 3808           │
+  │   in_use    = false          │
+  │   prev_size = 216            │
+  ├──────────────────────────────┤
+  │ FreeListNode                 │
+  │   prev = 0  (start of list)  │
+  │   next = 0  (end of list)    │
+  └──────────────────────────────┘
+
+free_bins:
+  Bin 0:     None
+  Bin 1:     Some(0x1000) ──► [0x1000] ──► (null)    ← newly inserted
+  Bin 2..5:  None
+  Bin 6:     Some(0x1120) ──► [0x1120] ──► (null)
+  Bin 7..31: None
+
+Bitmap:
+  bit 1 and bit 6 set
+  [ 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 0 0 0 1 0 ]
+    31                                                6         1 0
 ```
 
-#### Step C: `free` and Coalescing Effect on Bins
+---
 
-If the two allocated blocks are freed in order:
+### 23.5 Step D: `free(second)` — freeing the 216-byte block at 0x1048
 
-1. `free(second)` marks `216` block free, coalesces with following `3808`
-   block (which is free and currently in Bin 6), removes neighbor from Bin 6,
-   merges into `4024`, inserts merged block back into Bin 6.
-2. `free(first)` marks `72` block free, coalesces with next `4024` block,
-   removes it from Bin 6, merges to `4096`, inserts into Bin 7.
+The block at 0x1048 (size=216) is freed. Coalescing checks both neighbors:
 
-Final state returns to:
+- **Previous neighbor**: `0x1048 - prev_size(72) = 0x1000` → `in_use = false` → **merge!**
+  - Remove 0x1000 from Bin 1.
+  - New size: `72 + 216 = 288`. Coalesced block at 0x1000.
+- **Next neighbor**: `0x1000 + 288 = 0x1120` → `in_use = false` → **merge!**
+  - Remove 0x1120 from Bin 6.
+  - New size: `288 + 3808 = 4096`. Coalesced block stays at 0x1000.
+
+Both Bin 1 and Bin 6 are now empty. Insert merged block →
+`size_class_index(4096) = 7` → Bin 7.
+
+This step demonstrates **bi-directional coalescing**: a single `free()` call
+merges with both the predecessor and the successor, draining two bins at once
+and restoring the heap to one contiguous free block.
 
 ```text
-Bin 7: [4096]
-Bitmap: ...00010000000 (bit 7 set)
+Heap layout:
+
+  0x1000                                                           0x2000
+  ┌────────────────────────────────────────────────────────────────┐
+  │           FREE  (4096 bytes, fully restored)                   │
+  └────────────────────────────────────────────────────────────────┘
+       ▲              ▲                    ▲
+       │              │                    │
+    anchor        freed block         absorbed block
+   (0x1000)       (0x1048)             (0x1120)
+  merged ◄─────── triggers ──────────► merged into anchor
+
+Block @ 0x1000 (free, after bi-directional merge):
+  ┌──────────────────────────────┐
+  │ Header                       │
+  │   size      = 4096           │ ◄── 72 + 216 + 3808 = 4096
+  │   in_use    = false          │
+  │   prev_size = 0              │
+  ├──────────────────────────────┤
+  │ FreeListNode                 │
+  │   prev = 0  (start of list)  │
+  │   next = 0  (end of list)    │
+  └──────────────────────────────┘
+
+free_bins:
+  Bin 0..6:  None                     ← Bin 1 and Bin 6 both emptied
+  Bin 7:     Some(0x1000) ──► [0x1000] ──► (null)
+  Bin 8..31: None
+
+Bitmap:
+  bit 7 set, all others 0
+  [ 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 0 0 0 0 0 0 ]
+    31                                              7             0
 ```
 
-This sequence demonstrates the full lifecycle:
+Heap state is identical to the initial state after `init()`. The full lifecycle
+is complete: class selection, bitmap-based empty-bin skipping, splitting with
+re-insertion into a lower class, two bins active simultaneously, and finally
+bi-directional coalescing that drains both bins and restores the original block.
 
-- class selection,
-- bitmap skipping of empty bins,
-- split + reinsert into a lower/higher class,
-- coalescing with bin unlink/relink,
-- restoration of large-block class after merges.
-
-## 23. Files and Entry Points
+## 24. Files and Entry Points
 
 - Implementation: `main64/kernel_rust/src/memory/heap.rs`
 - Global allocator bridge: `main64/kernel_rust/src/allocator.rs`
