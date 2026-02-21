@@ -321,6 +321,15 @@ fn serial_debug_enabled() -> bool {
     HEAP.serial_debug_enabled.load(Ordering::Acquire)
 }
 
+/// Emits heap free-path diagnostics via the central logger.
+#[inline]
+fn log_free_diagnostic(args: core::fmt::Arguments<'_>) {
+    // Step 1: Keep free-path logging on the non-allocating logger primitives only.
+    // `logln_with_options` writes to serial and an in-memory fixed capture buffer,
+    // so this diagnostic path does not require heap allocations.
+    logging::logln_with_options("heap", args, serial_debug_enabled(), true);
+}
+
 /// Returns whether heap debug output to serial is enabled.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn debug_output_enabled() -> bool {
@@ -475,23 +484,16 @@ pub fn free(ptr: *mut u8) {
 
     match result {
         FreeResult::Freed { block_size } => {
-            logging::logln_with_options(
-                "heap",
-                format_args!("[HEAP] free ptr={:#x} block={}", ptr as usize, block_size),
-                serial_debug_enabled(),
-                true,
-            );
+            log_free_diagnostic(format_args!(
+                "[HEAP] free ptr={:#x} block={}",
+                ptr as usize, block_size
+            ));
         }
         FreeResult::Rejected { reason } => {
-            logging::logln_with_options(
-                "heap",
-                format_args!(
-                    "[HEAP] free rejected ptr={:#x} reason={}",
-                    ptr as usize, reason
-                ),
-                serial_debug_enabled(),
-                true,
-            );
+            log_free_diagnostic(format_args!(
+                "[HEAP] free rejected ptr={:#x} reason={}",
+                ptr as usize, reason
+            ));
         }
     }
 }

@@ -15,6 +15,7 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::panic::PanicInfo;
 use kaos_kernel::allocator::GLOBAL_ALLOCATOR;
 use kaos_kernel::arch::interrupts;
+use kaos_kernel::logging;
 use kaos_kernel::memory::{heap, pmm, vmm};
 use kaos_kernel::sync::spinlock::SpinLock;
 
@@ -467,6 +468,48 @@ fn test_heap_debug_output_toggle_round_trip() {
         !heap::debug_output_enabled(),
         "heap debug output should now be disabled"
     );
+}
+
+/// Contract: free-path logging with capture enabled remains allocator-safe.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "free-path logging with capture enabled remains allocator-safe".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_heap_free_logging_with_capture_enabled_remains_allocator_safe() {
+    heap::init(false);
+
+    // Step 1: Force the free() diagnostics path to emit through serial + capture.
+    let previous_debug = heap::set_debug_output(true);
+    logging::set_capture_enabled(true);
+
+    // Step 2: Allocate/free once to exercise the diagnostic path.
+    let ptr = heap::malloc(96);
+    assert!(
+        !ptr.is_null(),
+        "precondition: allocation before free-path diagnostic should succeed"
+    );
+    heap::free(ptr);
+
+    // Step 3: Verify allocator remains usable after the logged free() operation.
+    let ptr2 = heap::malloc(96);
+    assert!(
+        ptr2 == ptr,
+        "free-path logging must not corrupt allocator state or deadlock progress"
+    );
+    heap::free(ptr2);
+
+    // Step 4: Verify global allocator still works after the same path.
+    let mut values = Vec::new();
+    values.push(1_u8);
+    assert!(
+        values[0] == 1_u8,
+        "global allocator should remain usable after logged free-path execution"
+    );
+
+    // Step 5: Restore logging settings for isolation with later tests.
+    logging::set_capture_enabled(false);
+    let _ = heap::set_debug_output(previous_debug);
 }
 
 /// Contract: heap preserves interrupt state when disabled.
