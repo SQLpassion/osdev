@@ -195,8 +195,8 @@ extern "C" {
     static __bss_end: u8;
 }
 
-/// Size of a single page frame in bytes
-pub const PAGE_SIZE: u64 = 4096;
+/// Size of a single page frame in bytes.
+pub use crate::arch::constants::PAGE_SIZE_U64 as PAGE_SIZE;
 
 /// Physical address where the kernel is loaded (1 MB)
 const KERNEL_OFFSET: u64 = 0x100000;

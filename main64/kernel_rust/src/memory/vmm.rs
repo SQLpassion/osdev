@@ -45,14 +45,14 @@ use crate::sync::spinlock::SpinLock;
 use core::arch::asm;
 use core::sync::atomic::{AtomicBool, Ordering};
 
+use crate::arch::constants::PAGE_SIZE_U64;
 use crate::arch::interrupts;
 use crate::drivers::screen::Screen;
 use crate::logging;
 use crate::memory::pmm;
 
 const PT_ENTRIES: usize = 512;
-const SMALL_PAGE_SIZE: u64 = 4096;
-const PAGE_MASK: u64 = !(SMALL_PAGE_SIZE - 1);
+const PAGE_MASK: u64 = !(PAGE_SIZE_U64 - 1);
 
 /// Temporary kernel virtual address used as a one-page scratch mapping when
 /// cloning page-table roots.
@@ -113,7 +113,7 @@ pub const USER_STACK_SIZE: u64 = 0x0010_0000;
 pub const USER_STACK_BASE: u64 = USER_STACK_TOP - USER_STACK_SIZE;
 
 /// Optional guard page below the user stack.
-pub const USER_STACK_GUARD_BASE: u64 = USER_STACK_BASE - SMALL_PAGE_SIZE;
+pub const USER_STACK_GUARD_BASE: u64 = USER_STACK_BASE - PAGE_SIZE_U64;
 
 /// Optional guard page end (exclusive).
 pub const USER_STACK_GUARD_END: u64 = USER_STACK_BASE;
@@ -402,7 +402,7 @@ fn classify_user_region(virtual_address: u64) -> Option<UserRegion> {
 /// Converts a physical byte address to a page-frame number.
 #[inline]
 fn phys_to_pfn(addr: u64) -> u64 {
-    addr / SMALL_PAGE_SIZE
+    addr / PAGE_SIZE_U64
 }
 
 /// Reads the current CR3 value.
@@ -584,7 +584,7 @@ fn zero_phys_page(addr: u64) {
     // - Caller guarantees `addr` is writable and page-aligned.
     // - Writes exactly one 4 KiB page.
     unsafe {
-        core::ptr::write_bytes(addr as *mut u8, 0, SMALL_PAGE_SIZE as usize);
+        core::ptr::write_bytes(addr as *mut u8, 0, PAGE_SIZE_U64 as usize);
     }
 }
 
@@ -596,7 +596,7 @@ fn zero_virt_page(addr: u64) {
     // - Caller guarantees `addr` points to a currently mapped writable page.
     // - Writes exactly one 4 KiB page.
     unsafe {
-        core::ptr::write_bytes(addr as *mut u8, 0, SMALL_PAGE_SIZE as usize);
+        core::ptr::write_bytes(addr as *mut u8, 0, PAGE_SIZE_U64 as usize);
     }
 }
 
@@ -1308,13 +1308,13 @@ fn demand_map_user_stack_growth(
     // Step 1: find the first already-mapped stack page above the fault.
     // If none exists, grow at most up to `USER_STACK_TOP`.
     let mut upper_bound_exclusive = USER_STACK_TOP;
-    let mut probe_va = fault_page_va.saturating_add(SMALL_PAGE_SIZE);
+    let mut probe_va = fault_page_va.saturating_add(PAGE_SIZE_U64);
     while probe_va < USER_STACK_TOP {
         if is_leaf_present(probe_va) {
             upper_bound_exclusive = probe_va;
             break;
         }
-        probe_va = probe_va.saturating_add(SMALL_PAGE_SIZE);
+        probe_va = probe_va.saturating_add(PAGE_SIZE_U64);
     }
 
     // Step 2: map the missing range [fault_page_va, upper_bound_exclusive) as
@@ -1322,7 +1322,7 @@ fn demand_map_user_stack_growth(
     let mut map_va = fault_page_va;
     while map_va < upper_bound_exclusive {
         demand_map_leaf_page(map_va, true, true, true, fault_address_raw, error_code)?;
-        map_va = map_va.saturating_add(SMALL_PAGE_SIZE);
+        map_va = map_va.saturating_add(PAGE_SIZE_U64);
     }
 
     Ok(())
@@ -1518,7 +1518,7 @@ pub fn clone_kernel_pml4_for_user() -> u64 {
         core::ptr::copy_nonoverlapping(
             PML4_TABLE_ADDR as *const u8,
             TEMP_CLONE_PML4_VA as *mut u8,
-            SMALL_PAGE_SIZE as usize,
+            PAGE_SIZE_U64 as usize,
         );
     }
 
@@ -1595,8 +1595,8 @@ pub fn destroy_user_address_space_with_options(pml4_phys: u64, release_user_code
     destroy_user_address_space_with_page_counts(
         pml4_phys,
         release_user_code_pfns,
-        (USER_CODE_SIZE / SMALL_PAGE_SIZE) as usize,
-        (USER_STACK_SIZE / SMALL_PAGE_SIZE) as usize,
+        (USER_CODE_SIZE / PAGE_SIZE_U64) as usize,
+        (USER_STACK_SIZE / PAGE_SIZE_U64) as usize,
     );
 }
 
@@ -1624,8 +1624,8 @@ pub fn destroy_user_address_space_with_page_counts(
     }
 
     // Clamp caller-provided counts to configured region capacities.
-    let max_code_pages = (USER_CODE_SIZE / SMALL_PAGE_SIZE) as usize;
-    let max_stack_pages = (USER_STACK_SIZE / SMALL_PAGE_SIZE) as usize;
+    let max_code_pages = (USER_CODE_SIZE / PAGE_SIZE_U64) as usize;
+    let max_stack_pages = (USER_STACK_SIZE / PAGE_SIZE_U64) as usize;
     let code_pages = code_page_count.min(max_code_pages);
     let stack_pages = stack_page_count_from_top.min(max_stack_pages);
 
@@ -1637,15 +1637,15 @@ pub fn destroy_user_address_space_with_page_counts(
         let mut va = USER_CODE_BASE;
         for _ in 0..code_pages {
             unmap_page_and_prune_pagetable_hierarchy(va, release_user_code_pfns);
-            va += SMALL_PAGE_SIZE;
+            va += PAGE_SIZE_U64;
         }
 
         // Step 2: Drop mapped user-stack pages in the top-down stack window.
         // Stack pages are always process-owned, so leaf PFNs are always released.
-        let mut stack_va = USER_STACK_TOP - (stack_pages as u64 * SMALL_PAGE_SIZE);
+        let mut stack_va = USER_STACK_TOP - (stack_pages as u64 * PAGE_SIZE_U64);
         while stack_va < USER_STACK_TOP {
             unmap_page_and_prune_pagetable_hierarchy(stack_va, true);
-            stack_va += SMALL_PAGE_SIZE;
+            stack_va += PAGE_SIZE_U64;
         }
     });
 

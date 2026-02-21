@@ -16,6 +16,7 @@ extern crate alloc;
 use alloc::alloc as heap_alloc;
 use alloc::vec::Vec;
 
+use crate::arch::constants::PAGE_SIZE;
 use crate::arch::fpu;
 use crate::arch::gdt;
 use crate::arch::interrupts::{self, InterruptStackFrame, SavedRegisters};
@@ -30,7 +31,6 @@ pub type KernelTaskFn = extern "C" fn() -> !;
 
 const TASK_STACK_SIZE: usize = 64 * 1024;
 const STACK_ALIGNMENT: usize = 16;
-const PAGE_SIZE: usize = 4096;
 const KERNEL_CODE_SELECTOR: u64 = gdt::KERNEL_CODE_SELECTOR as u64;
 const KERNEL_DATA_SELECTOR: u64 = gdt::KERNEL_DATA_SELECTOR as u64;
 const USER_CODE_SELECTOR: u64 = gdt::USER_CODE_SELECTOR as u64;
