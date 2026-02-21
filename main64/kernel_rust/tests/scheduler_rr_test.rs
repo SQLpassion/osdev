@@ -1729,6 +1729,35 @@ fn test_wait_for_task_exit_returns_immediately_for_absent_task() {
     );
 }
 
+/// Contract: wait_for_task_exit returns immediately for absent task IDs even while scheduler is running.
+/// Given: A started scheduler with one runnable task and a task id that does not exist.
+/// When: `wait_for_task_exit` is called with that absent task id.
+/// Then: The function must return immediately without mutating the running task state.
+/// Failure Impact: Indicates a regression in absent-target fast-path handling and can introduce accidental blocking.
+#[test_case]
+fn test_wait_for_task_exit_immediate_return_keeps_running_task_state() {
+    sched::init();
+
+    let task_a = sched::spawn_kernel_task(dummy_task_a).expect("task A should spawn");
+    let frame_a = sched::task_frame_ptr(task_a).expect("task A frame should exist");
+
+    sched::start();
+    let mut bootstrap = SavedRegisters::default();
+    let current = sched::on_timer_tick(&mut bootstrap as *mut SavedRegisters);
+    assert!(current == frame_a, "first tick should select task A");
+    assert!(
+        sched::task_state(task_a) == Some(TaskState::Running),
+        "precondition: task A must be running before absent wait call"
+    );
+
+    sched::wait_for_task_exit(usize::MAX);
+
+    assert!(
+        sched::task_state(task_a) == Some(TaskState::Running),
+        "absent-target wait must return without blocking or altering running task state"
+    );
+}
+
 // ── Exit syscall integration test ───────────────────────────────────
 
 /// Contract: Exit syscall marks running task as zombie and returns SYSCALL_OK.

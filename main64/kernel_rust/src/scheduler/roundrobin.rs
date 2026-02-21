@@ -22,6 +22,8 @@ use crate::arch::gdt;
 use crate::arch::interrupts::{self, InterruptStackFrame, SavedRegisters};
 use crate::memory::vmm;
 use crate::sync::spinlock::SpinLock;
+use crate::sync::waitqueue::WaitQueue;
+use crate::sync::waitqueue_adapter;
 
 /// Entry point type for schedulable kernel tasks.
 ///
@@ -300,6 +302,9 @@ unsafe impl Send for SchedulerMetadata {}
 // - Raw pointers in slots point into heap-allocated stacks and are only
 //   read/written while holding the lock.
 static SCHED: SpinLock<SchedulerMetadata> = SpinLock::new(SchedulerMetadata::new());
+
+/// Wait queue for tasks blocked in `wait_for_task_exit`.
+static TASK_EXIT_WAITQUEUE: WaitQueue = WaitQueue::new();
 
 /// Architecture-specific callbacks used by scheduler core.
 ///
@@ -803,6 +808,11 @@ pub fn init() {
         }
     }
 
+    // Step 1: Drop stale exit-wait registrations from the previous scheduler epoch.
+    // This keeps task-id reuse deterministic after `init()` and prevents old
+    // waiter IDs from being spuriously unblocked in a fresh run.
+    TASK_EXIT_WAITQUEUE.wake_all(|_task_id| {});
+
     interrupts::register_irq_handler(interrupts::IRQ0_PIT_TIMER_VECTOR, timer_irq_handler);
 }
 
@@ -1068,20 +1078,25 @@ fn apply_selected_address_space(
 ///
 /// Zombie task stacks are moved to the pending-free list and will be
 /// deallocated after releasing the scheduler lock.
-fn reap_zombies(meta: &mut SchedulerMetadata, callbacks: SchedulerArchCallbacks) {
+fn reap_zombies(meta: &mut SchedulerMetadata, callbacks: SchedulerArchCallbacks) -> bool {
     let mut i = 0;
+    let mut removed_any = false;
 
     while i < meta.run_queue.len() {
         let slot = meta.run_queue[i];
 
         if meta.slots[slot].state == TaskState::Zombie {
-            remove_task(meta, slot, callbacks);
+            if remove_task(meta, slot, callbacks) {
+                removed_any = true;
+            }
             // `remove_task` shifts entries down; re-check the same index.
             continue;
         }
 
         i += 1;
     }
+
+    removed_any
 }
 
 /// Returns `bootstrap_frame` if set, otherwise falls back to `current_frame`.
@@ -1258,6 +1273,7 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
     // (`!meta.started`) returns before this binding is ever used or dropped.
     #[cfg_attr(not(debug_assertions), allow(unused_mut))]
     let mut stacks_to_free: Vec<(*mut u8, usize)>;
+    let removed_zombie_tasks: bool;
 
     let result = {
         let mut sched = SCHED.lock();
@@ -1271,7 +1287,7 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
         // stack (bootstrap or another task), so removing the zombie's slot
         // is safe.  Their stacks go to pending_free_stacks and will be
         // drained below, after the bootstrap frame detection.
-        reap_zombies(meta, callbacks);
+        removed_zombie_tasks = reap_zombies(meta, callbacks);
 
         if meta.run_queue.is_empty() {
             meta.running_slot = None;
@@ -1279,6 +1295,10 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
             let frame = bootstrap_or_current(meta, current_frame);
             drop(sched);
             free_pending_stacks(&stacks_to_free);
+
+            if removed_zombie_tasks {
+                waitqueue_adapter::wake_all_multi(&TASK_EXIT_WAITQUEUE);
+            }
 
             return frame;
         }
@@ -1316,6 +1336,10 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
             drop(sched);
             free_pending_stacks(&stacks_to_free);
 
+            if removed_zombie_tasks {
+                waitqueue_adapter::wake_all_multi(&TASK_EXIT_WAITQUEUE);
+            }
+
             return return_frame;
         }
 
@@ -1329,6 +1353,10 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
             drop(sched);
             free_pending_stacks(&stacks_to_free);
 
+            if removed_zombie_tasks {
+                waitqueue_adapter::wake_all_multi(&TASK_EXIT_WAITQUEUE);
+            }
+
             return frame;
         }
 
@@ -1337,6 +1365,10 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
 
     // Free stacks from previous tick after releasing the scheduler lock.
     free_pending_stacks(&stacks_to_free);
+
+    if removed_zombie_tasks {
+        waitqueue_adapter::wake_all_multi(&TASK_EXIT_WAITQUEUE);
+    }
 
     result
 }
@@ -1494,7 +1526,16 @@ pub fn terminate_task(task_id: usize) -> bool {
     // Snapshot callbacks before entering the scheduler lock to avoid
     // nested lock acquisition (`SCHED` -> `SCHED_ARCH_CALLBACKS`).
     let callbacks = arch_callbacks();
-    with_scheduler(|meta| remove_task(meta, task_id, callbacks))
+    let removed = with_scheduler(|meta| remove_task(meta, task_id, callbacks));
+
+    // Step 1: Wake tasks that are blocked in `wait_for_task_exit`.
+    // Wake-all is safe: each waiter re-checks its own task-id predicate and
+    // sleeps again when its target is still alive.
+    if removed {
+        waitqueue_adapter::wake_all_multi(&TASK_EXIT_WAITQUEUE);
+    }
+
+    removed
 }
 
 /// Waits cooperatively until `task_id` is no longer present in the scheduler.
@@ -1506,6 +1547,42 @@ pub fn terminate_task(task_id: usize) -> bool {
 /// - if `task_id` is already absent, this returns immediately,
 /// - otherwise this repeatedly yields so normal scheduler ticks can progress.
 pub fn wait_for_task_exit(task_id: usize) {
+    // Step 1: Fast path for already-absent targets.
+    if task_frame_ptr(task_id).is_none() {
+        return;
+    }
+
+    // Step 2: In scheduled task context, use wait-queue blocking instead of
+    // spin-yield polling to avoid burning CPU while waiting.
+    if is_running() {
+        if let Some(waiter_task_id) = current_task_id() {
+            // Self-wait cannot make progress through blocking because the target
+            // would be the currently blocked task itself. Keep the historical
+            // cooperative poll behavior for this edge case.
+            if waiter_task_id == task_id {
+                wait_for_task_exit_with(task_id, |id| task_frame_ptr(id).is_some(), yield_now);
+                return;
+            }
+
+            loop {
+                // Step 3: Atomically recheck liveness, register on queue, and block.
+                let outcome =
+                    waitqueue_adapter::sleep_if_multi(&TASK_EXIT_WAITQUEUE, waiter_task_id, || {
+                        task_frame_ptr(task_id).is_some()
+                    });
+
+                // Step 4: Predicate false means target already exited; return.
+                if !outcome.should_yield() {
+                    return;
+                }
+
+                // Step 5: Blocked (or queue OOM degradation) path yields once.
+                yield_now();
+            }
+        }
+    }
+
+    // Step 6: Fallback for non-scheduler contexts (boot/tests).
     wait_for_task_exit_with(task_id, |id| task_frame_ptr(id).is_some(), yield_now);
 }
 
