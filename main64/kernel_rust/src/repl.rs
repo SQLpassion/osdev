@@ -15,18 +15,27 @@ use crate::memory::vmm;
 use crate::process;
 use crate::scheduler;
 use crate::user_tasks;
+use core::arch::asm;
 use core::fmt::Write;
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 const PATTERN_DELAY_SPINS: usize = 500_000;
 const VGA_TEXT_COLS: usize = 80;
 const ATA_TEST_LBA: u32 = 2048;
 const ATA_SECTOR_SIZE: usize = 512;
 const ATA_TEST_MAX_INPUT: usize = ATA_SECTOR_SIZE - 2;
+const FPU_SMOKE_EXPECTED_A_BITS: u64 = 5.0f64.to_bits();
+const FPU_SMOKE_EXPECTED_B_BITS: u64 = 13.0f64.to_bits();
+const FPU_SMOKE_ITERATIONS: usize = 128;
 
 /// Kernel size stored by `KernelMain` so that the REPL task can display it
 /// in the welcome banner.  Written once before the scheduler starts, read
 /// only afterwards — no synchronization needed.
 static mut KERNEL_SIZE: u64 = 0;
+static FPU_SMOKE_DONE_A: AtomicBool = AtomicBool::new(false);
+static FPU_SMOKE_DONE_B: AtomicBool = AtomicBool::new(false);
+static FPU_SMOKE_RESULT_A: AtomicU64 = AtomicU64::new(0);
+static FPU_SMOKE_RESULT_B: AtomicU64 = AtomicU64::new(0);
 
 /// Store the kernel size for display in the welcome banner.
 ///
@@ -175,7 +184,7 @@ fn execute_command(line: &str) {
                 .unwrap();
                 writeln!(
                     screen,
-                    "                    (e.g. exec HELLO.BIN / exec READLINE.BIN)"
+                    "  fputest         - run scheduler FPU/SSE smoke tasks in foreground"
                 )
                 .unwrap();
                 writeln!(screen, "  shutdown        - shutdown the system").unwrap();
@@ -306,6 +315,9 @@ fn execute_command(line: &str) {
                 writeln!(screen, "Usage: exec <8.3-file>").unwrap();
             }),
         },
+        "fputest" => {
+            run_fpu_scheduler_smoke_test();
+        }
         _ => {
             with_screen(|screen| {
                 writeln!(screen, "Unknown command: {}", cmd).unwrap();
@@ -485,6 +497,135 @@ fn print_ata_payload_from_sector(sector: &[u8; ATA_SECTOR_SIZE], label: &str) {
             writeln!(screen, "{} contains non-UTF8 bytes.", label).unwrap();
         }
     });
+}
+
+/// Runs a foreground scheduler smoke test with two FPU-heavy kernel tasks.
+///
+/// This is intended for real hardware validation from the REPL:
+/// - each task executes explicit SSE instructions in a loop,
+/// - tasks yield repeatedly to force context switches,
+/// - both tasks exit, then the REPL validates deterministic results.
+fn run_fpu_scheduler_smoke_test() {
+    // Step 1: Reset shared completion/result slots before spawning tasks.
+    FPU_SMOKE_DONE_A.store(false, Ordering::Release);
+    FPU_SMOKE_DONE_B.store(false, Ordering::Release);
+    FPU_SMOKE_RESULT_A.store(0, Ordering::Release);
+    FPU_SMOKE_RESULT_B.store(0, Ordering::Release);
+
+    // Step 2: Spawn both worker tasks and keep handles for foreground waiting.
+    let task_a = match scheduler::spawn_kernel_task(fpu_smoke_task_a) {
+        Ok(id) => id,
+        Err(err) => {
+            with_screen(|screen| {
+                writeln!(screen, "fputest spawn A failed: {:?}", err).unwrap();
+            });
+            return;
+        }
+    };
+
+    let task_b = match scheduler::spawn_kernel_task(fpu_smoke_task_b) {
+        Ok(id) => id,
+        Err(err) => {
+            let _ = scheduler::terminate_task(task_a);
+            with_screen(|screen| {
+                writeln!(screen, "fputest spawn B failed: {:?}", err).unwrap();
+            });
+            return;
+        }
+    };
+
+    // Step 3: Wait in foreground until both tasks exit.
+    scheduler::wait_for_task_exit(task_a);
+    scheduler::wait_for_task_exit(task_b);
+
+    // Step 4: Read back completion flags and computed values.
+    let done_a = FPU_SMOKE_DONE_A.load(Ordering::Acquire);
+    let done_b = FPU_SMOKE_DONE_B.load(Ordering::Acquire);
+    let result_a = FPU_SMOKE_RESULT_A.load(Ordering::Acquire);
+    let result_b = FPU_SMOKE_RESULT_B.load(Ordering::Acquire);
+    let pass = done_a
+        && done_b
+        && result_a == FPU_SMOKE_EXPECTED_A_BITS
+        && result_b == FPU_SMOKE_EXPECTED_B_BITS;
+
+    with_screen(|screen| {
+        if pass {
+            writeln!(screen, "fputest passed (task A=5.0, task B=13.0)").unwrap();
+        } else {
+            writeln!(screen, "fputest FAILED").unwrap();
+            writeln!(
+                screen,
+                "  done_a={} done_b={} result_a=0x{:016x} result_b=0x{:016x}",
+                done_a, done_b, result_a, result_b
+            )
+            .unwrap();
+        }
+    });
+}
+
+fn run_sse_pythagoras(a: f64, b: f64) -> f64 {
+    let mut c = 0.0f64;
+
+    // Decision note:
+    // This could be written as pure Rust (`(a * a + b * b).sqrt()`), and that
+    // would usually compile to SSE2 on x86_64.  We intentionally keep explicit
+    // asm here so the REPL hardware smoke test executes a predictable SSE
+    // instruction sequence regardless of optimization/codegen differences.
+    // That makes #NM/lazy-FPU behavior easier to validate on real machines.
+    //
+    // Execute explicit SSE arithmetic:
+    // c = sqrt((a*a) + (b*b))
+    // SAFETY:
+    // - This requires `unsafe` because inline assembly is outside Rust's
+    //   static safety model.
+    // - `a`, `b`, and `c` are valid stack locals for 8-byte loads/stores.
+    unsafe {
+        asm!(
+            "movsd xmm0, [{a_ptr}]",
+            "mulsd xmm0, xmm0",
+            "movsd xmm1, [{b_ptr}]",
+            "mulsd xmm1, xmm1",
+            "addsd xmm0, xmm1",
+            "sqrtsd xmm0, xmm0",
+            "movsd [{c_ptr}], xmm0",
+            a_ptr = in(reg) &a,
+            b_ptr = in(reg) &b,
+            c_ptr = in(reg) &mut c,
+            options(nostack),
+        );
+    }
+
+    c
+}
+
+extern "C" fn fpu_smoke_task_a() -> ! {
+    let mut result = 0.0f64;
+
+    // Run multiple iterations with cooperative yields so the scheduler must
+    // preserve FPU/SSE state across frequent task switches.
+    for _ in 0..FPU_SMOKE_ITERATIONS {
+        result = run_sse_pythagoras(3.0, 4.0);
+        scheduler::yield_now();
+    }
+
+    FPU_SMOKE_RESULT_A.store(result.to_bits(), Ordering::Release);
+    FPU_SMOKE_DONE_A.store(true, Ordering::Release);
+    scheduler::exit_current_task();
+}
+
+extern "C" fn fpu_smoke_task_b() -> ! {
+    let mut result = 0.0f64;
+
+    // Use different operands than task A to detect accidental state leakage
+    // between two FPU-using tasks.
+    for _ in 0..FPU_SMOKE_ITERATIONS {
+        result = run_sse_pythagoras(5.0, 12.0);
+        scheduler::yield_now();
+    }
+
+    FPU_SMOKE_RESULT_B.store(result.to_bits(), Ordering::Release);
+    FPU_SMOKE_DONE_B.store(true, Ordering::Release);
+    scheduler::exit_current_task();
 }
 
 /// Generic VGA progress-bar task used to visualize task switching on live screen output.

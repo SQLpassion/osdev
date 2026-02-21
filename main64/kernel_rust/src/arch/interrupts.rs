@@ -116,7 +116,7 @@ extern "C" {
     fn irq15_secondary_ata_stub();
     fn isr0_divide_by_zero_stub();
     fn isr6_invalid_opcode_stub();
-    fn isr7_device_not_available_stub();
+    fn isr7_nm_stub();
     fn isr8_double_fault_stub();
     fn isr13_general_protection_fault_stub();
     fn isr14_page_fault_stub();
@@ -284,7 +284,7 @@ fn init_idt() {
         idt[EXCEPTION_INVALID_OPCODE as usize]
             .set_handler(isr6_invalid_opcode_stub as *const () as usize);
         idt[EXCEPTION_DEVICE_NOT_AVAILABLE as usize]
-            .set_handler(isr7_device_not_available_stub as *const () as usize);
+            .set_handler(isr7_nm_stub as *const () as usize);
         // Route double-fault onto IST1 to avoid cascading failures on a broken current stack.
         idt[EXCEPTION_DOUBLE_FAULT as usize].set_handler_with_dpl_and_ist(
             isr8_double_fault_stub as *const () as usize,
@@ -336,6 +336,24 @@ fn init_idt() {
 #[no_mangle]
 pub extern "C" fn page_fault_handler_rust(faulting_address: u64, error_code: u64) {
     crate::memory::vmm::handle_page_fault(faulting_address, error_code);
+}
+
+/// Entry point for the `#NM` (Device Not Available, vector 7) exception.
+///
+/// Called by `isr7_nm_stub` after all GPRs have been saved on the kernel stack.
+/// Delegates to the scheduler's FPU trap handler which clears `CR0.TS` and
+/// restores the current task's FPU state via `FXRSTOR64`.
+///
+/// After this returns the stub re-executes `iretq`, which re-runs the faulting
+/// FPU/SSE instruction — this time successfully because `CR0.TS` is clear.
+///
+/// # Safety
+///
+/// Must only be entered from `isr7_nm_stub`.  Interrupts are disabled on entry
+/// (the stub executes `cli`).
+#[no_mangle]
+pub extern "C" fn nm_rust_handler() {
+    crate::scheduler::handle_fpu_trap();
 }
 
 /// Returns whether a CPU exception vector pushes an error code on entry.

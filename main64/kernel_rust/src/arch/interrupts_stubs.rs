@@ -1,7 +1,7 @@
 use core::arch::global_asm;
 
 use super::{
-    EXCEPTION_DEVICE_NOT_AVAILABLE, EXCEPTION_DIVIDE_ERROR, EXCEPTION_DOUBLE_FAULT,
+    EXCEPTION_DIVIDE_ERROR, EXCEPTION_DOUBLE_FAULT,
     EXCEPTION_GENERAL_PROTECTION, EXCEPTION_INVALID_OPCODE, IRQ0_PIT_TIMER_VECTOR,
     IRQ10_FREE_VECTOR, IRQ11_FREE_VECTOR, IRQ12_PS2_MOUSE_VECTOR, IRQ13_FPU_VECTOR,
     IRQ14_PRIMARY_ATA_VECTOR, IRQ15_SECONDARY_ATA_VECTOR, IRQ1_KEYBOARD_VECTOR,
@@ -173,9 +173,64 @@ irq_stub_asm!(irq15_secondary_ata_stub, IRQ15_SECONDARY_ATA_VECTOR);
 
 isr_stub_without_error_code_asm!(isr0_divide_by_zero_stub, EXCEPTION_DIVIDE_ERROR);
 isr_stub_without_error_code_asm!(isr6_invalid_opcode_stub, EXCEPTION_INVALID_OPCODE);
-isr_stub_without_error_code_asm!(
-    isr7_device_not_available_stub,
-    EXCEPTION_DEVICE_NOT_AVAILABLE
+
+// Vector 7 (#NM — Device Not Available) is handled by the lazy FPU switcher.
+// Unlike other exception stubs this one must *return* (via iretq) so that
+// the CPU can re-execute the faulting FPU/SSE instruction after the handler
+// has restored the task's FPU state and cleared CR0.TS.
+//
+// Stack layout on entry (from the CPU's perspective, growing downward):
+//   [RSP+40]  SS
+//   [RSP+32]  RSP (user/kernel)
+//   [RSP+24]  RFLAGS
+//   [RSP+16]  CS
+//   [RSP+ 8]  RIP  (address of the faulting FPU instruction)
+//   [RSP+ 0]  ← exception entry point (no error code for #NM)
+//
+// The stub saves all 15 caller-/callee-saved GPRs, calls nm_rust_handler
+// (which clears CR0.TS and restores the task's FPU state), then restores the
+// GPRs and executes iretq.  No EOI is sent to the PIC because #NM is a
+// CPU exception, not a hardware IRQ.
+global_asm!(
+    r#"
+    .section .text
+    .global isr7_nm_stub
+    .type isr7_nm_stub, @function
+isr7_nm_stub:
+    cli
+    push rax
+    push rcx
+    push rdx
+    push rbx
+    push rbp
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+    call nm_rust_handler
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rbp
+    pop rbx
+    pop rdx
+    pop rcx
+    pop rax
+    iretq
+"#,
 );
 isr_stub_with_error_code_asm!(isr8_double_fault_stub, EXCEPTION_DOUBLE_FAULT);
 isr_stub_with_error_code_asm!(

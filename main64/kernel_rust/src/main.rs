@@ -23,6 +23,7 @@ mod sync;
 mod syscall;
 mod user_tasks;
 
+use crate::arch::fpu;
 use crate::arch::gdt;
 use crate::arch::interrupts;
 use crate::memory::heap;
@@ -82,6 +83,12 @@ pub extern "C" fn KernelMain(kernel_size: u64) -> ! {
     // Initialize GDT/TSS so ring-3 transitions have a valid architectural base.
     gdt::init();
     debugln!("GDT/TSS initialized");
+
+    // Initialize the FPU subsystem and capture the default FPU state template.
+    // Must run after GDT (needs ring-0 context) and before IDT (the #NM handler
+    // installed by interrupts::init() relies on fpu::init() having run).
+    fpu::init();
+    debugln!("FPU/SSE subsystem initialized");
 
     // Initialize the Physical Memory Manager
     pmm::init(true);

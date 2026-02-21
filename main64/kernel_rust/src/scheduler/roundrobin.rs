@@ -16,6 +16,7 @@ extern crate alloc;
 use alloc::alloc as heap_alloc;
 use alloc::vec::Vec;
 
+use crate::arch::fpu;
 use crate::arch::gdt;
 use crate::arch::interrupts::{self, InterruptStackFrame, SavedRegisters};
 use crate::memory::vmm;
@@ -158,35 +159,17 @@ struct TaskEntry {
 
     /// Size of the heap-allocated kernel stack in bytes.
     stack_size: usize,
-    // TODO: FPU/SSE/AVX State Management
-    //
-    // Currently, no FPU state is preserved across context switches.
-    // If user tasks use floating-point operations, this will cause register
-    // corruption and undefined behavior.
-    //
-    // Possible solutions:
-    // 1. **Lazy FPU switching** (recommended for efficiency):
-    //    - Set CR0.TS (Task Switched) bit on every task switch
-    //    - Trap #NM (Device Not Available) on first FP instruction
-    //    - Save previous task's FPU state, restore current task's state
-    //    - Clear CR0.TS to allow FPU access
-    //    - Requires: 512-byte XSAVE area per task (aligned to 64 bytes)
-    //
-    // 2. **Eager FPU save/restore**:
-    //    - Save FPU state on every context switch using XSAVE
-    //    - Restore FPU state before resuming task using XRSTOR
-    //    - Simpler but higher overhead (512 bytes copied every switch)
-    //    - Requires: 512-byte XSAVE area per task (aligned to 64 bytes)
-    //
-    // 3. **Disable FPU in user mode**:
-    //    - Set CR0.EM (Emulation) bit to trap all FP instructions
-    //    - Generate #UD (Invalid Opcode) on FP use
-    //    - Prevents silent corruption but limits user-mode capabilities
-    //
-    // When implementing, add:
-    // - `fpu_state: Option<Box<FpuState>>` (lazily allocated)
-    // - Or: `fpu_state: [u8; 512]` (aligned, always allocated)
-    // - Or: `fpu_state_ptr: *mut FpuState` (external allocation)
+
+    /// Per-task FXSAVE64/FXRSTOR64 buffer for lazy FPU state switching.
+    ///
+    /// Allocated at spawn time (not lazily) to avoid heap allocation from the
+    /// `#NM` exception context.  Freed by `remove_task`.  The buffer is
+    /// initialised with a clean FPU state (equivalent to `FNINIT`) so tasks
+    /// that never use FPU/SSE start from a well-defined state rather than
+    /// inheriting random register contents.
+    ///
+    /// Raw pointer instead of `Box<FpuState>` because `TaskEntry: Copy`.
+    fpu_state: *mut fpu::FpuState,
 }
 
 impl TaskEntry {
@@ -203,6 +186,7 @@ impl TaskEntry {
             release_user_code_pfns: false,
             stack_base: ptr::null_mut(),
             stack_size: 0,
+            fpu_state: ptr::null_mut(),
         }
     }
 
@@ -270,6 +254,17 @@ struct SchedulerMetadata {
     /// The stacks are freed on the next [`on_timer_tick`] call.
     /// Drained via `core::mem::take` inside the scheduler lock.
     pending_free_stacks: Vec<(*mut u8, usize)>,
+
+    /// Slot index of the task whose FPU/SSE state is currently live in the
+    /// CPU's XMM/x87 registers.
+    ///
+    /// `None` means no task owns the FPU (initial state after boot or after
+    /// a context switch before any FPU instruction has been executed).
+    ///
+    /// Set to `Some(slot)` by [`handle_fpu_trap`] when the `#NM` handler
+    /// restores a task's state.  Cleared to `None` by `select_next_task`
+    /// after saving the outgoing owner's state via `FXSAVE64`.
+    fpu_owner: Option<usize>,
 }
 
 impl SchedulerMetadata {
@@ -288,6 +283,7 @@ impl SchedulerMetadata {
             slots: Vec::new(),
             tick_count: 0,
             pending_free_stacks: Vec::new(),
+            fpu_owner: None,
         }
     }
 }
@@ -652,6 +648,28 @@ fn remove_task(meta: &mut SchedulerMetadata, task_id: usize) -> bool {
         }
     }
 
+    // Free the FPU state buffer immediately.
+    // Unlike the task stack, the FPU buffer is not an execution stack — the CPU
+    // is never "running on" it — so it is always safe to free here, even from
+    // inside an IRQ handler.  Nesting the heap spinlock inside the scheduler
+    // spinlock is safe on this single-core kernel because the scheduler lock
+    // already has interrupts disabled (CLI).
+    //
+    // Clear fpu_owner if this task was the FPU owner so select_next_task does
+    // not try to FXSAVE into a freed buffer.
+    if meta.fpu_owner == Some(task_id) {
+        meta.fpu_owner = None;
+    }
+    // SAFETY:
+    // - This requires `unsafe` because it frees a raw heap allocation.
+    // - `fpu_state` was returned by `fpu::FpuState::allocate_default` and is
+    //   not used after this call (the slot is cleared below).
+    unsafe {
+        fpu::FpuState::deallocate(meta.slots[task_id].fpu_state);
+    }
+
+    meta.slots[task_id].fpu_state = ptr::null_mut();
+
     // Move the stack to the pending-free list instead of freeing it now.
     // This keeps the stack range visible to `frame_within_any_task_stack`
     // until the next timer tick, preventing stale task frames from being
@@ -707,11 +725,7 @@ fn remove_task(meta: &mut SchedulerMetadata, task_id: usize) -> bool {
     // last `used` slot) have no `run_queue` entry and no `running_slot` claim,
     // so truncating them is safe. The Vec may still retain unused holes in the
     // interior, but those will be filled by the first-fit search in `spawn_internal`.
-    let live_end = meta
-        .slots
-        .iter()
-        .rposition(|s| s.used)
-        .map_or(0, |i| i + 1);
+    let live_end = meta.slots.iter().rposition(|s| s.used).map_or(0, |i| i + 1);
     meta.slots.truncate(live_end);
 
     // Final step: release user address-space resources if cleanup is safe.
@@ -738,13 +752,26 @@ pub fn init() {
         stacks_to_free = core::mem::take(&mut meta.pending_free_stacks);
 
         // Collect stacks from all active slots into stacks_to_free.
+        // Free FPU state buffers immediately (safe to do under the spinlock).
         // Use try_reserve(1) to avoid a potential panic (via the alloc-error
         // handler) inside the spinlock, where interrupts are already disabled.
         // An OOM here leaks one 64 KiB stack per failed reservation, but that
         // is far safer than a panic with interrupts disabled.
-        for slot in meta.slots.iter() {
-            if slot.used && !slot.stack_base.is_null() && stacks_to_free.try_reserve(1).is_ok() {
-                stacks_to_free.push((slot.stack_base, slot.stack_size));
+        for slot in meta.slots.iter_mut() {
+            if slot.used {
+                // SAFETY:
+                // - This requires `unsafe` because it frees a raw heap allocation.
+                // - `fpu_state` was returned by `fpu::FpuState::allocate_default`.
+                // - We are resetting the scheduler; no task will access this buffer.
+                unsafe {
+                    fpu::FpuState::deallocate(slot.fpu_state);
+                }
+
+                slot.fpu_state = ptr::null_mut();
+
+                if !slot.stack_base.is_null() && stacks_to_free.try_reserve(1).is_ok() {
+                    stacks_to_free.push((slot.stack_base, slot.stack_size));
+                }
             }
         }
 
@@ -845,11 +872,19 @@ fn spawn_internal(kind: SpawnKind) -> Result<usize, SpawnError> {
 
     pre_check?;
 
-    // Allocate the stack outside the scheduler lock to avoid nesting
-    // the scheduler spinlock with the heap spinlock.
+    // Allocate the stack and FPU state outside the scheduler lock to avoid
+    // nesting the scheduler spinlock with the heap spinlock.
     let stack_ptr = allocate_task_stack();
 
     if stack_ptr.is_null() {
+        return Err(SpawnError::StackAllocationFailed);
+    }
+
+    let fpu_ptr = fpu::FpuState::allocate_default();
+    if fpu_ptr.is_null() {
+        // SAFETY: `stack_ptr` was returned by `allocate_task_stack` and has
+        // not been stored anywhere yet.
+        unsafe { free_task_stack(stack_ptr) };
         return Err(SpawnError::StackAllocationFailed);
     }
 
@@ -916,6 +951,7 @@ fn spawn_internal(kind: SpawnKind) -> Result<usize, SpawnError> {
             release_user_code_pfns,
             stack_base: stack_ptr,
             stack_size: TASK_STACK_SIZE,
+            fpu_state: fpu_ptr,
         };
 
         if is_new_slot {
@@ -929,13 +965,15 @@ fn spawn_internal(kind: SpawnKind) -> Result<usize, SpawnError> {
         Ok(slot_idx)
     });
 
-    // If spawn failed after we already allocated the stack, free it.
+    // If spawn failed after we already allocated the stack and FPU buffer, free them.
     if result.is_err() {
-        // SAFETY: `stack_ptr` was returned by `allocate_task_stack` and has
+        // SAFETY:
         // - This requires `unsafe` because it performs operations that Rust marks as potentially violating memory or concurrency invariants.
-        // not been stored in any task slot (spawn failed).
+        // - `stack_ptr` and `fpu_ptr` were returned by their respective allocators
+        //   and have not been stored in any task slot (spawn failed).
         unsafe {
             free_task_stack(stack_ptr);
+            fpu::FpuState::deallocate(fpu_ptr);
         }
     }
 
@@ -1091,6 +1129,27 @@ fn select_next_task(
             && meta.slots[previous_slot].state == TaskState::Running
         {
             meta.slots[previous_slot].state = TaskState::Ready;
+
+            // Lazy FPU: if the outgoing task was the FPU owner, save its state.
+            //
+            // FXSAVE64 does not check CR0.TS, so it is safe to call here
+            // regardless of the current CR0.TS value.  The CPU FPU registers
+            // still contain the outgoing task's live state at this point
+            // because hardware interrupts only save GPRs, not FPU registers.
+            if meta.fpu_owner == Some(previous_slot) {
+                let fpu_ptr = meta.slots[previous_slot].fpu_state;
+
+                if !fpu_ptr.is_null() {
+                    // SAFETY:
+                    // - This requires `unsafe` because it executes privileged
+                    //   inline assembly (FXSAVE64) and accesses a raw pointer.
+                    // - `fpu_ptr` is a valid, 16-byte-aligned 512-byte buffer.
+                    // - The outgoing task's FPU state is live in the CPU registers.
+                    unsafe { (*fpu_ptr).save() };
+                }
+
+                meta.fpu_owner = None;
+            }
         }
     }
 
@@ -1142,6 +1201,15 @@ fn select_next_task(
     }
 
     meta.tick_count = meta.tick_count.wrapping_add(1);
+
+    // Set CR0.TS before switching to any context (task or bootstrap).
+    // This ensures the next FPU/SSE instruction raises #NM so the lazy
+    // switcher can restore the correct state.  FXSAVE64 (called above for
+    // the outgoing owner) does not check CR0.TS and is unaffected by this.
+    // SAFETY:
+    // - This requires `unsafe` because it modifies a privileged control register.
+    // - Valid only in ring 0; the scheduler always runs in ring 0.
+    unsafe { fpu::set_ts() };
 
     if let Some(pos) = selected_pos {
         // Step 2: Persist scheduler-visible running state for the selected slot.
@@ -1319,6 +1387,58 @@ pub fn current_task_id() -> Option<usize> {
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn slot_table_len() -> usize {
     with_sched(|meta| meta.slots.len())
+}
+
+/// Lazy FPU state restore — called from the `#NM` (vector 7) exception handler.
+///
+/// When `CR0.TS` is set by [`select_next_task`] the next FPU/SSE instruction
+/// executed by a task raises `#NM`.  This function:
+///
+/// 1. Clears `CR0.TS` so `FXRSTOR64` itself does not raise a recursive `#NM`.
+/// 2. Restores the current task's saved FPU state via `FXRSTOR64`.
+/// 3. Records the task as the new FPU owner so the *next* context switch knows
+///    whose state to save.
+///
+/// After returning the `isr7_nm_stub` executes `iretq`, which re-runs the
+/// faulting FPU/SSE instruction — this time successfully.
+///
+/// If called with no task running (bootstrap / idle context), only `CLTS` is
+/// issued; no state is restored.
+pub fn handle_fpu_trap() {
+    let mut sched = SCHED.lock();
+    let meta = &mut *sched;
+
+    // Step 1: Clear CR0.TS so FXRSTOR64 does not raise a recursive #NM.
+    // Must happen before FXRSTOR64 (FXRSTOR64 faults if CR0.TS = 1).
+    // SAFETY:
+    // - This requires `unsafe` because it executes a privileged CPU instruction.
+    // - `CLTS` is valid in ring 0 and clears CR0.TS atomically.
+    unsafe { fpu::clear_ts() };
+
+    let running_slot = match meta.running_slot {
+        Some(slot) => slot,
+        None => {
+            // #NM fired in the bootstrap/idle context (e.g. inside the hlt loop).
+            // CR0.TS is already cleared above; nothing more to do.
+            return;
+        }
+    };
+
+    // Step 2: Restore the task's saved FPU state.
+    let fpu_ptr = meta.slots[running_slot].fpu_state;
+    if !fpu_ptr.is_null() {
+        // SAFETY:
+        // - This requires `unsafe` because it executes privileged inline
+        //   assembly (FXRSTOR64) and dereferences a raw pointer.
+        // - `fpu_ptr` is a valid, 16-byte-aligned 512-byte buffer holding a
+        //   well-formed FXSAVE64 image (written by a prior save or initialised
+        //   by `allocate_default`).
+        // - CR0.TS has been cleared above, so FXRSTOR64 will not fault.
+        unsafe { (*fpu_ptr).restore() };
+    }
+
+    // Step 3: Record this task as the FPU owner.
+    meta.fpu_owner = Some(running_slot);
 }
 
 /// Marks the task in `task_id` as [`TaskState::Blocked`].
