@@ -14,7 +14,7 @@ know the concept, skip ahead to [Section 2](#2-scope-and-design-goals).
 ### 1.1 The Basic Principle
 
 The heap is a large contiguous block of memory. The allocator divides it into
-variable-sized **blocks**. Each block has a small **header** (16 bytes) at its
+variable-sized **blocks**. Each block has a small **header** (24 bytes) at its
 start, followed by the usable **payload**:
 
 ```text
@@ -24,13 +24,14 @@ heap_start                                                         heap_end
 +--------+-------------------+--------+------------------+--------+--------...
 | Hdr A  | Payload A         | Hdr B  | Payload B        | Hdr C  | ...
 +--------+-------------------+--------+------------------+--------+--------...
-  16 B     e.g. 100 B          16 B     e.g. 200 B
+  24 B     e.g. 100 B          24 B     e.g. 200 B
 ```
 
-The header stores two pieces of information:
+The header stores three pieces of information:
 
 - **Is the block in use?** (1 bit, packed into the size field)
 - **How large is the block?** (block size in bytes, including the header)
+- **Address-bound validation magic** (used to harden `free(ptr)` validation)
 
 When you call `malloc(100)`, the allocator finds a free block large enough to
 hold 100 bytes of payload, marks it as in-use, and returns a pointer to the
@@ -50,7 +51,7 @@ Instead of one list of all free blocks, the allocator maintains **32 separate
 lists** (called *bins*), each responsible for a different size range:
 
 ```text
-Bin  0: blocks  32 –  63 bytes
+Bin  0: blocks  40 –  63 bytes
 Bin  1: blocks  64 – 127 bytes
 Bin  2: blocks 128 – 255 bytes
 Bin  3: blocks 256 – 511 bytes
@@ -263,6 +264,7 @@ Header type:
 - `HeapBlockHeader`
 - `size_and_flags: usize`
 - `prev_size: usize`
+- `magic: usize`
 
 Bit usage in `size_and_flags`:
 
@@ -274,10 +276,14 @@ The block size includes header bytes and payload bytes.
 `prev_size` stores the full size of the physically previous block.
 For the first block in heap, `prev_size = 0`.
 
+`magic` stores an address-bound value derived from the header address. This is
+used by `find_block_by_payload_ptr` to reject forged/corrupt headers when
+validating `free(ptr)`.
+
 ### 4.1 Header Size and Alignment
 
 - `HEADER_SIZE = size_of::<HeapBlockHeader>()`
-- With two `usize` fields this is typically 16 bytes on x86_64.
+- With three `usize` fields this is typically 24 bytes on x86_64.
 - `ALIGNMENT = align_of::<usize>()`
 - On x86_64 this is typically 8 bytes.
 
@@ -349,18 +355,18 @@ candidate selection.
 
 With typical values:
 
-- `HEADER_SIZE = 16`
+- `HEADER_SIZE = 24`
 - `FREE_NODE_SIZE = 16`
 - `ALIGNMENT = 8`
-- `MIN_FREE_BLOCK_SIZE = 32`
+- `MIN_FREE_BLOCK_SIZE = 40`
 
-the class base is `log2(32) = 5`, and bin index is:
+the class base is `floor(log2(40)) = 5`, and bin index is:
 
 `bin = floor(log2(block_size)) - 5` (clamped to `0..31`)
 
 So bins represent power-of-two ranges:
 
-- Bin 0: `32..63`
+- Bin 0: `40..63`
 - Bin 1: `64..127`
 - Bin 2: `128..255`
 - Bin 3: `256..511`
@@ -434,6 +440,7 @@ prev_addr(current) = current - prev_size(current)
    - `in_use = false`
    - `size = INITIAL_HEAP_SIZE`
    - `prev_size = 0`
+   - `magic = header_magic_for_addr(heap_start)`
 5. Insert that block into the matching size bin.
 6. Store debug flag and set initialized bit.
 
@@ -493,6 +500,13 @@ intrusive links.
 4. Mark block free.
 5. Coalesce with adjacent free neighbors using boundary tags.
 6. Insert final coalesced block into matching bin.
+
+`find_block_by_payload_ptr` remains O(1) and now validates:
+
+1. `block_addr = ptr - HEADER_SIZE` stays in heap bounds.
+2. Header magic matches `header_magic_for_addr(block_addr)`.
+3. Header size is structurally plausible (`>= HEADER_SIZE`, aligned, in-bounds).
+4. Successor boundary tag is locally consistent (`next.prev_size == block_size`), if a successor exists.
 
 ## 13. Coalescing Algorithm (`coalesce_free_block`)
 
@@ -572,6 +586,8 @@ Rejected free log format:
 [HEAP] free rejected ptr=0x... reason=<invalid pointer|double free|corrupt block header>
 ```
 
+Note: header-magic mismatches are classified as `invalid pointer`.
+
 ## 17. Self-Test (`run_self_test`)
 
 The runtime self-test validates:
@@ -593,6 +609,7 @@ the allocator is not yet initialized.
 - Growth for large allocations and multi-growth cases.
 - Overflow request rejection and post-failure usability.
 - Invalid free rejection.
+- Free rejection when header magic is corrupted.
 - Double free rejection.
 - Self-test non-destructiveness.
 - Global allocator and over-aligned layout behavior.
@@ -620,6 +637,7 @@ Core physical layout invariants:
 4. Traversal partitions the managed heap exactly up to `heap_end`.
 5. `heap_end` always points to first byte past last block.
 6. For any non-first block, `prev_size` equals size of physical predecessor.
+7. Every block header stores `magic == header_magic_for_addr(block_addr)`.
 
 Core free-list invariants:
 
@@ -646,7 +664,7 @@ block boundaries before dereference, and consistent boundary-tag maintenance.
 - `malloc`: bitmap+bin search via `TZCNT`; avoids full-heap linear scan.
 - `free`: O(1) pointer validation + O(1) neighbor coalescing + O(1) bin updates.
 - Metadata overhead per block:
-  - Always: `HeapBlockHeader` (2 machine words = 16 bytes on x86_64)
+  - Always: `HeapBlockHeader` (3 machine words = 24 bytes on x86_64)
   - Free-only: intrusive `FreeListNode` in payload start (2 machine words)
 
 ## 22. Known Limitations
@@ -654,13 +672,13 @@ block boundaries before dereference, and consistent boundary-tag maintenance.
 1. Growth is bounded by `MAX_HEAP_SIZE` (16 MiB).
 2. Single global lock (no per-CPU arenas).
 3. No lock-free fast paths.
-4. No canaries/poisoning/quarantine hardening for heap corruption detection.
+4. No poisoning/quarantine hardening for heap corruption detection.
 5. Bin strategy is coarse and may still degrade under adversarial patterns.
 
 ## 23. Working Example
 
-Assume x86_64 sizes: `HEADER_SIZE = 16`, `ALIGNMENT = 8`,
-`FREE_NODE_SIZE = 16`, `MIN_FREE_BLOCK_SIZE = 32`.
+Assume x86_64 sizes: `HEADER_SIZE = 24`, `ALIGNMENT = 8`,
+`FREE_NODE_SIZE = 16`, `MIN_FREE_BLOCK_SIZE = 40`.
 
 For readability, `heap_start = 0x1000` is used instead of the real kernel
 address. Each step shows the full state of heap blocks, free_bins, and bitmap.
@@ -708,42 +726,42 @@ Bitmap:
 
 ### 23.2 Step A: `malloc(50)`
 
-Requested 50 bytes. Full block size: `50 + 16 = 66`, aligned to 8 → **72**.
-`size_class_index(72) = 1` → allocator starts at Bin 1.
+Requested 50 bytes. Full block size: `50 + 24 = 74`, aligned to 8 → **80**.
+`size_class_index(80) = 1` → allocator starts at Bin 1.
 Bins 1–6 are empty (bitmap check skips them instantly).
 Bin 7 is the first non-empty candidate.
 
 The 4096-byte block is removed from Bin 7 and split:
-- **Head** (72 bytes, `0x1000..0x1048`) → allocated, pointer returned to caller.
-- **Tail** (4024 bytes, `0x1048..0x2000`) → `size_class_index(4024) = 6` → Bin 6.
+- **Head** (80 bytes, `0x1000..0x1050`) → allocated, pointer returned to caller.
+- **Tail** (4016 bytes, `0x1050..0x2000`) → `size_class_index(4016) = 6` → Bin 6.
 
 ```text
 Heap layout:
 
-  0x1000       0x1048                                             0x2000
+  0x1000       0x1050                                             0x2000
   ┌────────────┬──────────────────────────────────────────────────┐
-  │ ALLOCATED  │                 FREE  (4024 bytes)               │
-  │  72 bytes  │                                                  │
+  │ ALLOCATED  │                 FREE  (4016 bytes)               │
+  │  80 bytes  │                                                  │
   └────────────┴──────────────────────────────────────────────────┘
        │
-       └── pointer returned to caller (payload at 0x1010)
+       └── pointer returned to caller (payload at 0x1018)
 
 Block @ 0x1000 (allocated):
   ┌──────────────────────────────┐
   │ Header                       │
-  │   size      = 72             │
+  │   size      = 80             │
   │   in_use    = true           │
   │   prev_size = 0              │
   ├──────────────────────────────┤
   │ payload (56 bytes usable)    │ ◄── pointer returned to caller
   └──────────────────────────────┘
 
-Block @ 0x1048 (free):
+Block @ 0x1050 (free):
   ┌──────────────────────────────┐
   │ Header                       │
-  │   size      = 4024           │
+  │   size      = 4016           │
   │   in_use    = false          │
-  │   prev_size = 72             │
+  │   prev_size = 80             │
   ├──────────────────────────────┤
   │ FreeListNode                 │
   │   prev = 0  (start of list)  │
@@ -752,7 +770,7 @@ Block @ 0x1048 (free):
 
 free_bins:
   Bin 0..5:  None
-  Bin 6:     Some(0x1048) ──► [0x1048] ──► (null)
+  Bin 6:     Some(0x1050) ──► [0x1050] ──► (null)
   Bin 7..31: None
 
 Bitmap:
@@ -765,49 +783,49 @@ Bitmap:
 
 ### 23.3 Step B: `malloc(200)`
 
-Requested 200 bytes. Full block size: `200 + 16 = 216`, already aligned.
-`size_class_index(216) = 2` → allocator starts at Bin 2.
+Requested 200 bytes. Full block size: `200 + 24 = 224`, already aligned.
+`size_class_index(224) = 2` → allocator starts at Bin 2.
 Bins 2–5 are empty (bitmap check). Bin 6 is the first non-empty candidate.
 
-The 4024-byte block is removed from Bin 6 and split:
-- **Head** (216 bytes, `0x1048..0x1120`) → allocated, pointer returned to caller.
-- **Tail** (3808 bytes, `0x1120..0x2000`) → `size_class_index(3808) = 6` → Bin 6.
+The 4016-byte block is removed from Bin 6 and split:
+- **Head** (224 bytes, `0x1050..0x1130`) → allocated, pointer returned to caller.
+- **Tail** (3792 bytes, `0x1130..0x2000`) → `size_class_index(3792) = 6` → Bin 6.
 
 ```text
 Heap layout:
 
-  0x1000       0x1048        0x1120                               0x2000
+  0x1000       0x1050        0x1130                               0x2000
   ┌────────────┬─────────────┬────────────────────────────────────┐
-  │ ALLOCATED  │  ALLOCATED  │         FREE  (3808 bytes)         │
-  │  72 bytes  │  216 bytes  │                                    │
+  │ ALLOCATED  │  ALLOCATED  │         FREE  (3792 bytes)         │
+  │  80 bytes  │  224 bytes  │                                    │
   └────────────┴─────────────┴────────────────────────────────────┘
                      │
-                     └── pointer returned to caller (payload at 0x1058)
+                     └── pointer returned to caller (payload at 0x1068)
 
 Block @ 0x1000 (allocated, unchanged):
   ┌──────────────────────────────┐
   │ Header                       │
-  │   size      = 72             │
+  │   size      = 80             │
   │   in_use    = true           │
   │   prev_size = 0              │
   └──────────────────────────────┘
 
-Block @ 0x1048 (allocated):
+Block @ 0x1050 (allocated):
   ┌──────────────────────────────┐
   │ Header                       │
-  │   size      = 216            │
+  │   size      = 224            │
   │   in_use    = true           │
-  │   prev_size = 72             │
+  │   prev_size = 80             │
   ├──────────────────────────────┤
   │ payload (200 bytes usable)   │ ◄── pointer returned to caller
   └──────────────────────────────┘
 
-Block @ 0x1120 (free):
+Block @ 0x1130 (free):
   ┌──────────────────────────────┐
   │ Header                       │
-  │   size      = 3808           │
+  │   size      = 3792           │
   │   in_use    = false          │
-  │   prev_size = 216            │
+  │   prev_size = 224            │
   ├──────────────────────────────┤
   │ FreeListNode                 │
   │   prev = 0  (start of list)  │
@@ -816,7 +834,7 @@ Block @ 0x1120 (free):
 
 free_bins:
   Bin 0..5:  None
-  Bin 6:     Some(0x1120) ──► [0x1120] ──► (null)
+  Bin 6:     Some(0x1130) ──► [0x1130] ──► (null)
   Bin 7..31: None
 
 Bitmap:
@@ -827,33 +845,33 @@ Bitmap:
 
 ---
 
-### 23.4 Step C: `free(first)` — freeing the 72-byte block at 0x1000
+### 23.4 Step C: `free(first)` — freeing the 80-byte block at 0x1000
 
-The block at 0x1000 (size=72) is freed first. Coalescing checks both neighbors:
+The block at 0x1000 (size=80) is freed first. Coalescing checks both neighbors:
 
 - **Previous neighbor**: `prev_size = 0` → no predecessor → skip.
-- **Next neighbor**: `0x1000 + 72 = 0x1048` → `in_use = true` → skip.
+- **Next neighbor**: `0x1000 + 80 = 0x1050` → `in_use = true` → skip.
 
 No merge is possible. The freed block is inserted as-is.
-`size_class_index(72) = 1` → Bin 1.
+`size_class_index(80) = 1` → Bin 1.
 
 **This is the first moment in the example where two bins are active at the
 same time**: Bin 1 holds the small free block at 0x1000, Bin 6 still holds
-the large free block at 0x1120.
+the large free block at 0x1130.
 
 ```text
 Heap layout:
 
-  0x1000       0x1048        0x1120                               0x2000
+  0x1000       0x1050        0x1130                               0x2000
   ┌────────────┬─────────────┬────────────────────────────────────┐
-  │    FREE    │  ALLOCATED  │         FREE  (3808 bytes)         │
-  │  72 bytes  │  216 bytes  │                                    │
+  │    FREE    │  ALLOCATED  │         FREE  (3792 bytes)         │
+  │  80 bytes  │  224 bytes  │                                    │
   └────────────┴─────────────┴────────────────────────────────────┘
 
 Block @ 0x1000 (free):
   ┌──────────────────────────────┐
   │ Header                       │
-  │   size      = 72             │
+  │   size      = 80             │
   │   in_use    = false          │
   │   prev_size = 0              │
   ├──────────────────────────────┤
@@ -862,20 +880,20 @@ Block @ 0x1000 (free):
   │   next = 0  (end of list)    │
   └──────────────────────────────┘
 
-Block @ 0x1048 (allocated, unchanged):
+Block @ 0x1050 (allocated, unchanged):
   ┌──────────────────────────────┐
   │ Header                       │
-  │   size      = 216            │
+  │   size      = 224            │
   │   in_use    = true           │
-  │   prev_size = 72             │
+  │   prev_size = 80             │
   └──────────────────────────────┘
 
-Block @ 0x1120 (free, unchanged):
+Block @ 0x1130 (free, unchanged):
   ┌──────────────────────────────┐
   │ Header                       │
-  │   size      = 3808           │
+  │   size      = 3792           │
   │   in_use    = false          │
-  │   prev_size = 216            │
+  │   prev_size = 224            │
   ├──────────────────────────────┤
   │ FreeListNode                 │
   │   prev = 0  (start of list)  │
@@ -886,7 +904,7 @@ free_bins:
   Bin 0:     None
   Bin 1:     Some(0x1000) ──► [0x1000] ──► (null)    ← newly inserted
   Bin 2..5:  None
-  Bin 6:     Some(0x1120) ──► [0x1120] ──► (null)
+  Bin 6:     Some(0x1130) ──► [0x1130] ──► (null)
   Bin 7..31: None
 
 Bitmap:
@@ -897,16 +915,16 @@ Bitmap:
 
 ---
 
-### 23.5 Step D: `free(second)` — freeing the 216-byte block at 0x1048
+### 23.5 Step D: `free(second)` — freeing the 224-byte block at 0x1050
 
-The block at 0x1048 (size=216) is freed. Coalescing checks both neighbors:
+The block at 0x1050 (size=224) is freed. Coalescing checks both neighbors:
 
-- **Previous neighbor**: `0x1048 - prev_size(72) = 0x1000` → `in_use = false` → **merge!**
+- **Previous neighbor**: `0x1050 - prev_size(80) = 0x1000` → `in_use = false` → **merge!**
   - Remove 0x1000 from Bin 1.
-  - New size: `72 + 216 = 288`. Coalesced block at 0x1000.
-- **Next neighbor**: `0x1000 + 288 = 0x1120` → `in_use = false` → **merge!**
-  - Remove 0x1120 from Bin 6.
-  - New size: `288 + 3808 = 4096`. Coalesced block stays at 0x1000.
+  - New size: `80 + 224 = 304`. Coalesced block at 0x1000.
+- **Next neighbor**: `0x1000 + 304 = 0x1130` → `in_use = false` → **merge!**
+  - Remove 0x1130 from Bin 6.
+  - New size: `304 + 3792 = 4096`. Coalesced block stays at 0x1000.
 
 Both Bin 1 and Bin 6 are now empty. Insert merged block →
 `size_class_index(4096) = 7` → Bin 7.
@@ -924,14 +942,14 @@ Heap layout:
   └────────────────────────────────────────────────────────────────┘
        ▲              ▲                    ▲
        │              │                    │
-    anchor        freed block         absorbed block
-   (0x1000)       (0x1048)             (0x1120)
+   anchor        freed block         absorbed block
+   (0x1000)       (0x1050)             (0x1130)
   merged ◄─────── triggers ──────────► merged into anchor
 
 Block @ 0x1000 (free, after bi-directional merge):
   ┌──────────────────────────────┐
   │ Header                       │
-  │   size      = 4096           │ ◄── 72 + 216 + 3808 = 4096
+  │   size      = 4096           │ ◄── 80 + 224 + 3792 = 4096
   │   in_use    = false          │
   │   prev_size = 0              │
   ├──────────────────────────────┤

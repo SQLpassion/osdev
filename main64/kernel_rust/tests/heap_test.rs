@@ -298,6 +298,70 @@ fn test_heap_rejects_invalid_free_and_remains_usable() {
     heap::free(ptr2);
 }
 
+/// Contract: heap rejects free when header magic is corrupted.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "heap rejects free when header magic is corrupted".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_heap_rejects_free_with_corrupted_header_magic() {
+    heap::init(false);
+    let ptr1 = heap::malloc(64);
+    let ptr2 = heap::malloc(64);
+    assert!(!ptr1.is_null() && !ptr2.is_null(), "allocations should succeed");
+
+    // Step 1: Infer header size from two adjacent equal-size allocations.
+    let block_stride = (ptr2 as usize).saturating_sub(ptr1 as usize);
+    let header_size = block_stride.saturating_sub(64);
+    assert!(
+        header_size >= 3 * core::mem::size_of::<usize>() && header_size.is_multiple_of(8),
+        "derived header size should include size/prev/magic fields and alignment"
+    );
+
+    // Step 2: Corrupt the first block header magic so `free(ptr1)` must be rejected.
+    let header_addr = (ptr1 as usize).saturating_sub(header_size);
+    let magic_addr = header_addr + (2 * core::mem::size_of::<usize>());
+    // SAFETY:
+    // - This requires `unsafe` because raw pointer reads/writes are used directly.
+    // - `header_addr` and `magic_addr` are derived from a live allocation header.
+    // - We only toggle one bit in the magic word and restore it later in this test.
+    let original_magic = unsafe {
+        let magic_ptr = magic_addr as *mut usize;
+        let value = core::ptr::read_volatile(magic_ptr);
+        core::ptr::write_volatile(magic_ptr, value ^ 0x1);
+        value
+    };
+
+    heap::free(ptr1);
+
+    // Step 3: The corrupted block must still be considered allocated and not reusable.
+    let ptr3 = heap::malloc(64);
+    assert!(!ptr3.is_null(), "heap should remain usable after rejected free");
+    assert!(
+        ptr3 != ptr1,
+        "corrupted header must prevent `ptr1` from being freed and reused"
+    );
+
+    // Step 4: Restore magic and verify the original block can be freed and reused again.
+    // SAFETY:
+    // - This requires `unsafe` because raw pointer writes are used directly.
+    // - The same header location is still valid because `ptr1` was never freed.
+    unsafe {
+        core::ptr::write_volatile(magic_addr as *mut usize, original_magic);
+    }
+
+    heap::free(ptr1);
+    let ptr4 = heap::malloc(64);
+    assert!(
+        ptr4 == ptr1,
+        "restoring magic should allow normal free/reuse behavior again"
+    );
+
+    heap::free(ptr2);
+    heap::free(ptr3);
+    heap::free(ptr4);
+}
+
 /// Contract: heap rejects double free and remains usable.
 /// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
 /// When: The exact operation sequence in this function is executed against that state.

@@ -4,7 +4,7 @@
 //! - Contiguous heap region with variable-sized blocks.
 //! - Segregated free-list strategy with intrusive free nodes in free blocks.
 //! - One header per block (`HeapBlockHeader`) storing `size`, `in_use` flag,
-//!   and `prev_size` for O(1) neighbor lookup.
+//!   `prev_size`, and an address-bound magic value for robust pointer validation.
 //! - Block splitting on allocation and O(1) adjacent coalescing on free.
 //! - Backed by a global spinlock for synchronized access.
 //!
@@ -63,6 +63,9 @@ const IN_USE_MASK: usize = 0x1;
 /// Remaining bits encode block size.
 const SIZE_MASK: usize = !IN_USE_MASK;
 
+/// Per-header salt used to derive an address-bound validation magic.
+const HEADER_MAGIC_SALT: usize = 0x4B41_4F53_4845_4150;
+
 /// Per-block metadata stored directly in heap memory.
 #[repr(C)]
 struct HeapBlockHeader {
@@ -71,6 +74,9 @@ struct HeapBlockHeader {
 
     /// Full size of the physically previous block.
     prev_size: usize,
+
+    /// Address-bound header magic used to reject forged payload pointers.
+    magic: usize,
 }
 
 impl HeapBlockHeader {
@@ -113,6 +119,18 @@ impl HeapBlockHeader {
     #[inline]
     fn set_prev_size(&mut self, size: usize) {
         self.prev_size = size;
+    }
+
+    /// Returns whether the stored header magic matches the expected value.
+    #[inline]
+    fn has_valid_magic(&self, addr: usize) -> bool {
+        self.magic == header_magic_for_addr(addr)
+    }
+
+    /// Stores the expected header magic for this header address.
+    #[inline]
+    fn set_magic_for_addr(&mut self, addr: usize) {
+        self.magic = header_magic_for_addr(addr);
     }
 }
 
@@ -219,6 +237,12 @@ fn free_node_ptr(block: *mut HeapBlockHeader) -> *mut FreeListNode {
     payload_ptr(block).cast::<FreeListNode>()
 }
 
+/// Computes a deterministic, address-bound header magic.
+#[inline]
+fn header_magic_for_addr(addr: usize) -> usize {
+    HEADER_MAGIC_SALT ^ addr.rotate_left(17) ^ addr.rotate_right(13)
+}
+
 /// Converts a nullable raw block pointer to an address (`0` means null).
 #[inline]
 fn ptr_to_addr(block: *mut HeapBlockHeader) -> usize {
@@ -277,6 +301,7 @@ pub fn init(debug_output: bool) -> usize {
             header.set_in_use(false);
             header.set_size(INITIAL_HEAP_SIZE);
             header.set_prev_size(0);
+            header.set_magic_for_addr(heap_start);
         }
 
         insert_free_block(state, header_at(heap_start));
@@ -597,7 +622,7 @@ fn find_suitable_free_block(
 /// Validation steps:
 /// 1. Back-compute the expected block address.
 /// 2. Verify the address lies within the managed heap arena.
-/// 3. Read the header and reject structurally implausible sizes.
+/// 3. Read the header and verify magic, size, and local boundary-tag consistency.
 ///
 /// The caller still checks `header.in_use()` to catch double-free.
 fn find_block_by_payload_ptr(state: &HeapState, ptr: *mut u8) -> Option<*mut HeapBlockHeader> {
@@ -611,14 +636,19 @@ fn find_block_by_payload_ptr(state: &HeapState, ptr: *mut u8) -> Option<*mut Hea
         return None;
     }
 
-    // Step 3: read header and reject structurally implausible blocks.
+    // Step 3: read header and reject forged/corrupt metadata before trusting size.
     // SAFETY:
     // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
     // - `block_addr` is within `[heap_start, heap_end)`, which is valid mapped heap memory.
     let header = unsafe { &*header_at(block_addr) };
+
+    if !header.has_valid_magic(block_addr) {
+        return None;
+    }
+
     let block_size = header.size();
 
-    if block_size < HEADER_SIZE {
+    if block_size < HEADER_SIZE || !block_size.is_multiple_of(ALIGNMENT) {
         return None;
     }
 
@@ -626,6 +656,18 @@ fn find_block_by_payload_ptr(state: &HeapState, ptr: *mut u8) -> Option<*mut Hea
 
     if block_end > state.heap_end {
         return None;
+    }
+
+    // Step 4: when a physical successor exists, `prev_size` must match this block size.
+    let next_addr = block_end;
+    if next_addr < state.heap_end {
+        // SAFETY:
+        // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
+        // - `next_addr` points to the immediate physical successor header in-bounds.
+        let next_header = unsafe { &*header_at(next_addr) };
+        if next_header.prev_size() != block_size {
+            return None;
+        }
     }
 
     Some(header_at(block_addr))
@@ -669,6 +711,7 @@ fn allocate_block(state: &mut HeapState, block: *mut HeapBlockHeader, size: usiz
             tail_header.set_in_use(false);
             tail_header.set_size(old_size - size);
             tail_header.set_prev_size(size);
+            tail_header.set_magic_for_addr(tail_addr);
 
             // Step 2: Repair successor boundary-tag and insert split remainder.
             update_next_prev_size(state, tail_addr, tail_header.size());
@@ -804,6 +847,7 @@ fn grow_heap(state: &mut HeapState, amount: usize) -> bool {
         header.set_in_use(false);
         header.set_size(amount);
         header.set_prev_size(prev_block_size);
+        header.set_magic_for_addr(old_end);
     }
 
     state.heap_end = new_end;
