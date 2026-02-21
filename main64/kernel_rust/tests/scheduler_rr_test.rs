@@ -909,14 +909,14 @@ fn test_scheduler_switches_cr3_between_kernel_and_user_tasks_when_enabled() {
         "first tick should pick kernel task"
     );
     assert!(
-        vmm::get_pml4_address() == kernel_cr3,
+        vmm::get_active_cr3() == kernel_cr3,
         "kernel task selection should keep kernel CR3 active"
     );
 
     current = sched::on_timer_tick(current);
     assert!(current == user_frame, "second tick should pick user task");
     assert!(
-        vmm::get_pml4_address() == user_cr3,
+        vmm::get_active_cr3() == user_cr3,
         "user task selection should switch active CR3 to user CR3"
     );
 
@@ -926,7 +926,7 @@ fn test_scheduler_switches_cr3_between_kernel_and_user_tasks_when_enabled() {
         "third tick should wrap back to kernel task"
     );
     assert!(
-        vmm::get_pml4_address() == kernel_cr3,
+        vmm::get_active_cr3() == kernel_cr3,
         "switching back to kernel task should restore kernel CR3"
     );
 
@@ -955,7 +955,7 @@ fn test_reaping_user_task_destroys_its_address_space() {
 
     current = sched::on_timer_tick(current);
     assert!(
-        vmm::get_pml4_address() == user_cr3,
+        vmm::get_active_cr3() == user_cr3,
         "user task selection should activate its CR3"
     );
 
@@ -967,7 +967,7 @@ fn test_reaping_user_task_destroys_its_address_space() {
         "zombie user task should be reaped on next tick"
     );
     assert!(
-        vmm::get_pml4_address() == kernel_cr3,
+        vmm::get_active_cr3() == kernel_cr3,
         "reap path should switch back to kernel CR3 before destroying owned CR3"
     );
 

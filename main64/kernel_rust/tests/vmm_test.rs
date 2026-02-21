@@ -328,7 +328,7 @@ fn test_with_address_space_switches_cr3_for_closure_and_restores_previous_cr3() 
 
     let token = vmm::with_address_space(user_cr3, || {
         assert!(
-            vmm::get_pml4_address() == user_cr3,
+            vmm::get_active_cr3() == user_cr3,
             "closure must observe target CR3 as active address space"
         );
         0xC0DEu64
@@ -339,8 +339,46 @@ fn test_with_address_space_switches_cr3_for_closure_and_restores_previous_cr3() 
     );
 
     assert!(
-        vmm::get_pml4_address() == kernel_cr3,
+        vmm::get_active_cr3() == kernel_cr3,
         "with_address_space must restore the previous CR3 after closure returns"
+    );
+
+    pmm::with_pmm(|mgr| assert!(mgr.release_pfn(user_cr3 / pmm::PAGE_SIZE)));
+}
+
+/// Contract: kernel pml4 accessor stays stable across temporary address-space switches.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "kernel pml4 accessor stays stable across temporary address-space switches".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_kernel_pml4_accessor_remains_kernel_root_across_with_address_space() {
+    let kernel_cr3 = vmm::get_pml4_address();
+    let user_cr3 = vmm::clone_kernel_pml4_for_user();
+    assert!(user_cr3 != 0, "cloned user CR3 must be non-zero");
+    assert!(
+        vmm::get_active_cr3() == kernel_cr3,
+        "active CR3 should start at kernel root in this test context"
+    );
+
+    vmm::with_address_space(user_cr3, || {
+        assert!(
+            vmm::get_active_cr3() == user_cr3,
+            "temporary switch must activate the requested user CR3"
+        );
+        assert!(
+            vmm::get_pml4_address() == kernel_cr3,
+            "kernel root accessor must stay stable during temporary user switch"
+        );
+    });
+
+    assert!(
+        vmm::get_active_cr3() == kernel_cr3,
+        "active CR3 must restore to kernel root after temporary switch"
+    );
+    assert!(
+        vmm::get_pml4_address() == kernel_cr3,
+        "kernel root accessor must still return the canonical kernel CR3"
     );
 
     pmm::with_pmm(|mgr| assert!(mgr.release_pfn(user_cr3 / pmm::PAGE_SIZE)));

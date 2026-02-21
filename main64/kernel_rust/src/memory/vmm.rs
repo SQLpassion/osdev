@@ -474,7 +474,7 @@ unsafe fn enable_global_pages() {
 }
 
 struct VmmState {
-    pml4_physical: u64,
+    kernel_pml4_physical: u64,
     serial_debug_enabled: bool,
 }
 
@@ -492,7 +492,7 @@ impl GlobalVmm {
     const fn new() -> Self {
         Self {
             inner: SpinLock::new(VmmState {
-                pml4_physical: 0,
+                kernel_pml4_physical: 0,
                 serial_debug_enabled: false,
             }),
             initialized: AtomicBool::new(false),
@@ -636,7 +636,7 @@ fn read_virt_u8(addr: u64) -> u8 {
 fn set_vmm_state_unchecked(pml4_physical: u64, debug_enabled: bool) {
     // Initialization-only write path before `initialized=true` is published.
     let mut state = VMM.inner.lock();
-    state.pml4_physical = pml4_physical;
+    state.kernel_pml4_physical = pml4_physical;
     state.serial_debug_enabled = debug_enabled;
 }
 
@@ -837,10 +837,22 @@ pub fn init(debug_output: bool) {
     }
 }
 
-/// Returns the currently active kernel PML4 physical address.
+/// Returns the kernel address-space root (kernel PML4 physical address).
+///
+/// This value is initialized once during `init()` and remains the canonical
+/// kernel CR3 root even when the CPU temporarily runs in a user address space.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn get_pml4_address() -> u64 {
-    with_vmm(|state| state.pml4_physical)
+    with_vmm(|state| state.kernel_pml4_physical)
+}
+
+/// Returns the currently active CPU CR3 value.
+///
+/// Unlike `get_pml4_address()`, this reflects transient switches performed by
+/// `with_address_space()` and scheduler user-task context switches.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn get_active_cr3() -> u64 {
+    read_cr3()
 }
 
 /// Executes `f` while `pml4_phys` is active in CR3, then restores previous state.
@@ -900,11 +912,6 @@ pub fn with_address_space<R>(pml4_phys: u64, f: impl FnOnce() -> R) -> R {
 pub unsafe fn switch_page_directory(pml4_phys: u64) {
     // CPU state update.
     write_cr3(pml4_phys);
-
-    // Mirror the active root in software state for diagnostics/helpers.
-    with_vmm(|state| {
-        state.pml4_physical = pml4_phys;
-    });
 }
 
 /// Builds any missing intermediate page tables (PML4/PDP/PD) for `virtual_address`.

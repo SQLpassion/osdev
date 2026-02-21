@@ -319,7 +319,7 @@ static TASK_EXIT_WAITQUEUE: WaitQueue = WaitQueue::new();
 /// behavior replaceable in tests without modifying scheduler internals.
 #[derive(Clone, Copy)]
 pub struct SchedulerArchCallbacks {
-    /// Returns the currently active kernel address-space root (CR3).
+    /// Returns the canonical kernel address-space root (CR3).
     pub read_kernel_cr3: fn() -> u64,
     /// Programs TSS.RSP0 before resuming a user-mode task.
     pub set_kernel_rsp0: fn(u64),
