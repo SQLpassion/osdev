@@ -10,6 +10,7 @@ use core::panic::PanicInfo;
 use kaos_kernel::io::fat12::{
     normalize_8_3_name, parse_root_directory, read_file, Fat12Error, RootDirectoryRecord,
 };
+use kaos_kernel::memory::{heap, pmm, vmm};
 use kaos_kernel::process;
 
 const ROOT_DIR_BYTES: usize = 224 * 32;
@@ -28,6 +29,14 @@ const EXPECTED_READLINE_BIN_BYTES: &[u8] =
 #[link_section = ".text.boot"]
 pub extern "C" fn KernelMain(_kernel_size: u64) -> ! {
     kaos_kernel::drivers::serial::init();
+
+    // Step 1: Bring up memory management so FAT12 Vec allocations use a valid heap.
+    pmm::init(false);
+    kaos_kernel::arch::interrupts::init();
+    vmm::init(false);
+    heap::init(false);
+
+    // Step 2: Run the FAT12 contract suite with allocator + paging fully initialized.
     test_main();
     loop {
         core::hint::spin_loop();

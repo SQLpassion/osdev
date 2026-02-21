@@ -428,10 +428,14 @@ fn test_heap_self_test_is_non_destructive_for_live_allocations() {
 #[test_case]
 fn test_heap_growth_is_bounded_and_reports_oom() {
     heap::init(false);
-    let ptr = heap::malloc(32 * 1024 * 1024);
+    let cap = heap::max_heap_size();
+    let request = cap
+        .checked_add(4096)
+        .expect("heap cap + one page should fit usize for this target");
+    let ptr = heap::malloc(request);
     assert!(
         ptr.is_null(),
-        "allocation beyond configured heap limit should fail"
+        "allocation beyond system-derived heap limit should fail"
     );
 
     let small = heap::malloc(64);
@@ -440,6 +444,32 @@ fn test_heap_growth_is_bounded_and_reports_oom() {
         "heap should remain usable after OOM failure"
     );
     heap::free(small);
+}
+
+/// Contract: heap exposes a system-derived cap.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "heap exposes a system-derived cap".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_heap_exposes_system_derived_cap() {
+    heap::init(false);
+    let cap = heap::max_heap_size();
+    let free_bytes = (pmm::free_frame_count().saturating_mul(pmm::PAGE_SIZE)) as usize;
+    assert!(
+        cap >= 4096,
+        "system-derived heap cap must permit at least the initial heap page"
+    );
+    assert!(
+        cap.is_multiple_of(4096),
+        "system-derived heap cap should track page granularity"
+    );
+    if free_bytes > 4096 {
+        assert!(
+            cap < free_bytes,
+            "system-derived heap cap must keep PMM headroom outside heap growth"
+        );
+    }
 }
 
 /// Contract: heap debug output toggle round trip.

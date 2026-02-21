@@ -20,6 +20,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::drivers::screen::Screen;
 use crate::logging;
+use crate::memory::pmm;
 use crate::sync::spinlock::SpinLock;
 
 /// Size of one block header in bytes.
@@ -54,8 +55,8 @@ const INITIAL_HEAP_SIZE: usize = 0x1000;
 /// Increment used when extending the heap arena.
 const HEAP_GROWTH: usize = 0x1000;
 
-/// Hard upper bound for total managed heap bytes.
-const MAX_HEAP_SIZE: usize = 0x0100_0000; // 16 MiB
+/// Minimum PMM headroom kept outside the heap cap for non-heap consumers.
+const SYSTEM_HEAP_RESERVE_MIN_BYTES: usize = 8 * 1024 * 1024;
 
 /// LSB encodes allocation state in `size_and_flags`.
 const IN_USE_MASK: usize = 0x1;
@@ -149,6 +150,9 @@ struct HeapState {
     /// End address (exclusive) of the managed heap region.
     heap_end: usize,
 
+    /// Hard upper bound for total managed heap bytes derived from system memory.
+    max_heap_size: usize,
+
     /// Address of the last physical block in the heap (the one whose end == `heap_end`).
     ///
     /// Maintained by `init`, `grow_heap`, `allocate_block`, and `free` so that
@@ -167,6 +171,7 @@ impl HeapState {
         Self {
             heap_start: 0,
             heap_end: 0,
+            max_heap_size: INITIAL_HEAP_SIZE,
             tail_block_addr: 0,
             free_bins: [None; FREE_BIN_COUNT],
             free_bin_bitmap: 0,
@@ -217,6 +222,30 @@ fn compute_aligned_heapblock_size(requested_size: usize) -> Option<usize> {
     requested_size
         .checked_add(HEADER_SIZE)
         .and_then(|v| align_up_checked(v, ALIGNMENT))
+}
+
+/// Computes the heap cap strictly from current PMM free capacity.
+fn compute_system_heap_cap() -> usize {
+    // Step 1: PMM may be unavailable in early bring-up contexts.
+    // In that case, keep the heap at its initial single-page size.
+    if !pmm::is_initialized() {
+        return INITIAL_HEAP_SIZE;
+    }
+
+    // Step 2: Convert free frame count into bytes with checked arithmetic.
+    let free_frames = pmm::free_frame_count();
+    let free_bytes = free_frames.saturating_mul(pmm::PAGE_SIZE) as usize;
+
+    // Step 3: Keep explicit PMM headroom for page tables, user mappings, and
+    // non-heap PMM clients so heap growth cannot consume the entire frame pool.
+    let reserve_bytes = SYSTEM_HEAP_RESERVE_MIN_BYTES.max(free_bytes / 8);
+    let capped_bytes = free_bytes.saturating_sub(reserve_bytes);
+
+    // Step 4: Enforce allocator invariants:
+    // - cap never drops below initial arena size
+    // - cap remains page-granular to match growth/page-fault semantics
+    let with_floor = capped_bytes.max(INITIAL_HEAP_SIZE);
+    align_up_checked(with_floor, HEAP_GROWTH).unwrap_or(with_floor)
 }
 
 /// Reinterprets an address as a mutable block-header pointer.
@@ -276,6 +305,7 @@ fn with_heap<R>(f: impl FnOnce(&mut HeapState) -> R) -> R {
 pub fn init(debug_output: bool) -> usize {
     let heap_start = HEAP_START_OFFSET;
     let heap_end = HEAP_START_OFFSET + INITIAL_HEAP_SIZE;
+    let max_heap_size = compute_system_heap_cap();
 
     // SAFETY:
     // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
@@ -290,6 +320,7 @@ pub fn init(debug_output: bool) -> usize {
         // Step 1: Reset heap bounds and free-list metadata for a clean init state.
         state.heap_start = heap_start;
         state.heap_end = heap_end;
+        state.max_heap_size = max_heap_size;
         state.reset_free_bins();
 
         // Step 2: Create a single initial free block spanning the full initial arena.
@@ -313,6 +344,15 @@ pub fn init(debug_output: bool) -> usize {
     HEAP.serial_debug_enabled
         .store(debug_output, Ordering::Release);
     HEAP.initialized.store(true, Ordering::Release);
+
+    // Step 4: Emit the derived system cap once so OOM behavior is auditable.
+    logging::logln_with_options(
+        "heap",
+        format_args!("[HEAP] init cap={} bytes", max_heap_size),
+        serial_debug_enabled(),
+        true,
+    );
+
     INITIAL_HEAP_SIZE
 }
 
@@ -345,6 +385,12 @@ pub fn set_debug_output(enabled: bool) -> bool {
 /// Returns whether the heap manager has been initialized.
 pub fn is_initialized() -> bool {
     HEAP.initialized.load(Ordering::Acquire)
+}
+
+/// Returns the current heap growth cap in bytes.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn max_heap_size() -> usize {
+    with_heap(|state| state.max_heap_size)
 }
 
 /// Public alignment constant for components that prefer const access.
@@ -809,11 +855,11 @@ fn grow_heap(state: &mut HeapState, amount: usize) -> bool {
     }
 
     let current_size = state.heap_end.saturating_sub(state.heap_start);
-    if current_size >= MAX_HEAP_SIZE {
+    if current_size >= state.max_heap_size {
         return false;
     }
 
-    let remaining = MAX_HEAP_SIZE - current_size;
+    let remaining = state.max_heap_size - current_size;
     if amount > remaining {
         return false;
     }

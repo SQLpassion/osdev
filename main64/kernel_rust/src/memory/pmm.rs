@@ -371,6 +371,12 @@ pub fn init(debug_output: bool) {
     PMM.initialized.store(true, Ordering::Release);
 }
 
+/// Returns whether the global PMM has been initialized.
+#[inline]
+pub fn is_initialized() -> bool {
+    PMM.initialized.load(Ordering::Acquire)
+}
+
 /// Executes a closure with a mutable reference to the PMM instance.
 ///
 /// This function is thread-safe: it acquires a spinlock that disables
@@ -382,6 +388,11 @@ pub fn with_pmm<R>(f: impl FnOnce(&mut PhysicalMemoryManager) -> R) -> R {
     );
     let mut guard = PMM.inner.lock();
     f(&mut guard)
+}
+
+/// Returns the current number of free physical frames across all PMM regions.
+pub fn free_frame_count() -> u64 {
+    with_pmm(|mgr| mgr.total_free_frames())
 }
 
 /// Physical memory manager for allocating and freeing page frames.
@@ -640,6 +651,12 @@ impl PhysicalMemoryManager {
         }
 
         false
+    }
+
+    /// Returns the sum of currently free frames across all regions.
+    pub fn total_free_frames(&mut self) -> u64 {
+        let regions = self.regions();
+        regions.iter().map(|r| r.frames_free).sum()
     }
 }
 
