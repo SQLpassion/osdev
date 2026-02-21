@@ -10,6 +10,14 @@ use super::{
     IRQ9_ACPI_OR_LEGACY_VECTOR,
 };
 
+/// Number of general-purpose registers saved by IRQ/ISR stubs.
+const STUB_SAVED_GPR_COUNT: usize = 15;
+
+/// Stack byte offset from `rsp` to the CPU-pushed exception error code
+/// after all general-purpose registers were pushed by the stub.
+const STUB_ERROR_CODE_STACK_OFFSET: usize =
+    STUB_SAVED_GPR_COUNT * core::mem::size_of::<u64>();
+
 macro_rules! irq_stub_asm {
     ($name:ident, $vector:expr) => {
         global_asm!(
@@ -140,7 +148,7 @@ macro_rules! isr_stub_with_error_code_asm {
                 "    push r14\n",
                 "    push r15\n",
                 "    mov edi, {vector}\n",
-                "    mov rsi, [rsp + 120]\n",
+                "    mov rsi, [rsp + {error_code_stack_offset}]\n",
                 "    mov rdx, rsp\n",
                 "    and rsp, -16\n",
                 "    call exception_handler_rust\n",
@@ -150,6 +158,7 @@ macro_rules! isr_stub_with_error_code_asm {
                 "    jmp 1b\n",
             ),
             vector = const $vector,
+            error_code_stack_offset = const STUB_ERROR_CODE_STACK_OFFSET,
         );
     };
 }
@@ -261,7 +270,7 @@ isr14_page_fault_stub:
     push r15
 
     mov rdi, cr2
-    mov rsi, [rsp + 120]
+    mov rsi, [rsp + {error_code_stack_offset}]
     sub rsp, 8
     call page_fault_handler_rust
     add rsp, 8
@@ -284,6 +293,7 @@ isr14_page_fault_stub:
     add rsp, 8
     iretq
 "#,
+    error_code_stack_offset = const STUB_ERROR_CODE_STACK_OFFSET,
 );
 
 global_asm!(
