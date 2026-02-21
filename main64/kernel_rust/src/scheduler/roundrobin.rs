@@ -362,7 +362,7 @@ const fn align_down(value: usize, align: usize) -> usize {
 }
 
 /// Executes `f` while holding the scheduler spinlock.
-fn with_sched<R>(f: impl FnOnce(&mut SchedulerMetadata) -> R) -> R {
+fn with_scheduler<R>(f: impl FnOnce(&mut SchedulerMetadata) -> R) -> R {
     let mut sched = SCHED.lock();
     f(&mut sched)
 }
@@ -582,7 +582,11 @@ fn frame_within_any_task_stack(meta: &SchedulerMetadata, frame_ptr: *const Saved
 /// Actual deallocation happens on the next [`on_timer_tick`] or in [`init`].
 ///
 /// Returns `true` when an active task was removed.
-fn remove_task(meta: &mut SchedulerMetadata, task_id: usize) -> bool {
+fn remove_task(
+    meta: &mut SchedulerMetadata,
+    task_id: usize,
+    callbacks: SchedulerArchCallbacks,
+) -> bool {
     // Step 1: reject invalid or already-free task IDs.
     if task_id >= meta.slots.len() || !meta.slots[task_id].used {
         return false;
@@ -619,7 +623,7 @@ fn remove_task(meta: &mut SchedulerMetadata, task_id: usize) -> bool {
                 // - Switching away avoids releasing an address space that is
                 //   currently active in CR3.
                 unsafe {
-                    (arch_callbacks().switch_cr3)(kernel_cr3);
+                    (callbacks.switch_cr3)(kernel_cr3);
                 }
 
                 set_active_cr3(kernel_cr3);
@@ -747,7 +751,7 @@ pub fn init() {
     // inside the spinlock (where interrupts are disabled).
     let mut stacks_to_free: Vec<(*mut u8, usize)> = Vec::new();
 
-    with_sched(|meta| {
+    with_scheduler(|meta| {
         // Start with any pending-free stacks (no allocation via mem::take).
         stacks_to_free = core::mem::take(&mut meta.pending_free_stacks);
 
@@ -804,7 +808,7 @@ pub fn init() {
 
 /// Starts scheduling if initialized and at least one task is available.
 pub fn start() {
-    with_sched(|meta| {
+    with_scheduler(|meta| {
         if meta.initialized && !meta.run_queue.is_empty() {
             meta.started = true;
             meta.bootstrap_frame = ptr::null_mut();
@@ -863,7 +867,7 @@ pub fn spawn_user_task_owning_code(
 fn spawn_internal(kind: SpawnKind) -> Result<usize, SpawnError> {
     // Pre-check: reject early if scheduler is not initialized,
     // before performing the (expensive) heap allocation.
-    let pre_check = with_sched(|meta| {
+    let pre_check = with_scheduler(|meta| {
         if !meta.initialized {
             return Err(SpawnError::NotInitialized);
         }
@@ -888,7 +892,7 @@ fn spawn_internal(kind: SpawnKind) -> Result<usize, SpawnError> {
         return Err(SpawnError::StackAllocationFailed);
     }
 
-    let result = with_sched(|meta| {
+    let result = with_scheduler(|meta| {
         // Re-check under lock — state may have changed between pre-check and now.
         if !meta.initialized {
             return Err(SpawnError::NotInitialized);
@@ -992,7 +996,7 @@ pub fn request_stop() {
 /// Returns whether the scheduler is currently active.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn is_running() -> bool {
-    with_sched(|meta| meta.started)
+    with_scheduler(|meta| meta.started)
 }
 
 /// Replace architecture callback set used by scheduler core.
@@ -1023,7 +1027,11 @@ fn timer_irq_handler(_vector: u8, frame: &mut SavedRegisters) -> *mut SavedRegis
 }
 
 /// Switches CR3 to the selected task context.
-fn apply_selected_address_space(meta: &mut SchedulerMetadata, selected_slot: usize) {
+fn apply_selected_address_space(
+    meta: &mut SchedulerMetadata,
+    selected_slot: usize,
+    callbacks: SchedulerArchCallbacks,
+) {
     let target_cr3 = if meta.slots[selected_slot].is_user {
         meta.slots[selected_slot].cr3
     } else {
@@ -1046,7 +1054,7 @@ fn apply_selected_address_space(meta: &mut SchedulerMetadata, selected_slot: usi
     // - `target_cr3` originates from scheduler-controlled task metadata.
     // - Backend callback defines platform-specific switch operation.
     unsafe {
-        (arch_callbacks().switch_cr3)(target_cr3);
+        (callbacks.switch_cr3)(target_cr3);
     }
 
     set_active_cr3(target_cr3);
@@ -1060,14 +1068,14 @@ fn apply_selected_address_space(meta: &mut SchedulerMetadata, selected_slot: usi
 ///
 /// Zombie task stacks are moved to the pending-free list and will be
 /// deallocated after releasing the scheduler lock.
-fn reap_zombies(meta: &mut SchedulerMetadata) {
+fn reap_zombies(meta: &mut SchedulerMetadata, callbacks: SchedulerArchCallbacks) {
     let mut i = 0;
 
     while i < meta.run_queue.len() {
         let slot = meta.run_queue[i];
 
         if meta.slots[slot].state == TaskState::Zombie {
-            remove_task(meta, slot);
+            remove_task(meta, slot, callbacks);
             // `remove_task` shifts entries down; re-check the same index.
             continue;
         }
@@ -1120,6 +1128,7 @@ fn select_next_task(
     meta: &mut SchedulerMetadata,
     detected_slot: Option<usize>,
     current_frame: *mut SavedRegisters,
+    callbacks: SchedulerArchCallbacks,
 ) -> *mut SavedRegisters {
     // Step 1: Close out the previous running mark before selecting the next slot.
     // Keep explicit non-running states (Blocked/Zombie) untouched.
@@ -1218,10 +1227,10 @@ fn select_next_task(
         meta.running_slot = Some(selected_slot);
 
         if meta.slots[selected_slot].is_user {
-            (arch_callbacks().set_kernel_rsp0)(meta.slots[selected_slot].kernel_rsp_top);
+            (callbacks.set_kernel_rsp0)(meta.slots[selected_slot].kernel_rsp_top);
         }
 
-        apply_selected_address_space(meta, selected_slot);
+        apply_selected_address_space(meta, selected_slot, callbacks);
 
         selected_frame
     } else {
@@ -1237,6 +1246,10 @@ fn select_next_task(
 /// The function saves current context (when known), selects the next runnable
 /// task in round-robin order, and returns the frame pointer to resume.
 pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters {
+    // Snapshot architecture callbacks before taking `SCHED` so the timer path
+    // does not nest `SCHED_ARCH_CALLBACKS` under the scheduler lock.
+    let callbacks = arch_callbacks();
+
     // Stacks to free after releasing the scheduler lock.
     // Populated via `core::mem::take` which swaps `pending_free_stacks` with an
     // empty Vec — zero allocation on the take, and deallocation happens outside
@@ -1258,7 +1271,7 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
         // stack (bootstrap or another task), so removing the zombie's slot
         // is safe.  Their stacks go to pending_free_stacks and will be
         // drained below, after the bootstrap frame detection.
-        reap_zombies(meta);
+        reap_zombies(meta, callbacks);
 
         if meta.run_queue.is_empty() {
             meta.running_slot = None;
@@ -1319,7 +1332,7 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
             return frame;
         }
 
-        select_next_task(meta, detected_slot, current_frame)
+        select_next_task(meta, detected_slot, current_frame, callbacks)
     };
 
     // Free stacks from previous tick after releasing the scheduler lock.
@@ -1343,7 +1356,7 @@ fn free_pending_stacks(stacks: &[(*mut u8, usize)]) {
 ///
 /// Primarily intended for integration tests and diagnostics.
 pub fn task_frame_ptr(task_id: usize) -> Option<*mut SavedRegisters> {
-    with_sched(|meta| {
+    with_scheduler(|meta| {
         if task_id >= meta.slots.len() || !meta.slots[task_id].used {
             None
         } else {
@@ -1357,7 +1370,7 @@ pub fn task_frame_ptr(task_id: usize) -> Option<*mut SavedRegisters> {
 /// Intended for tests that validate kernel/user frame construction semantics.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn task_iret_frame(task_id: usize) -> Option<InterruptStackFrame> {
-    with_sched(|meta| {
+    with_scheduler(|meta| {
         if task_id >= meta.slots.len() || !meta.slots[task_id].used {
             return None;
         }
@@ -1373,7 +1386,7 @@ pub fn task_iret_frame(task_id: usize) -> Option<InterruptStackFrame> {
 
 /// Returns the slot index of the currently running task, if any.
 pub fn current_task_id() -> Option<usize> {
-    with_sched(|meta| meta.running_slot)
+    with_scheduler(|meta| meta.running_slot)
 }
 
 /// Returns the current length of the internal slot table.
@@ -1386,7 +1399,7 @@ pub fn current_task_id() -> Option<usize> {
 /// Primarily intended for integration tests that verify the Vec-shrink contract.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn slot_table_len() -> usize {
-    with_sched(|meta| meta.slots.len())
+    with_scheduler(|meta| meta.slots.len())
 }
 
 /// Lazy FPU state restore — called from the `#NM` (vector 7) exception handler.
@@ -1446,7 +1459,7 @@ pub fn handle_fpu_trap() {
 /// A blocked task is skipped by the round-robin selector until it is
 /// unblocked via [`unblock_task`].
 pub fn block_task(task_id: usize) {
-    with_sched(|meta| {
+    with_scheduler(|meta| {
         if task_id < meta.slots.len()
             && meta.slots[task_id].used
             && meta.slots[task_id].state != TaskState::Blocked
@@ -1461,7 +1474,7 @@ pub fn block_task(task_id: usize) {
 /// Safe to call from IRQ context (the scheduler spinlock handles
 /// interrupt masking internally).
 pub fn unblock_task(task_id: usize) {
-    with_sched(|meta| {
+    with_scheduler(|meta| {
         if task_id < meta.slots.len()
             && meta.slots[task_id].used
             && meta.slots[task_id].state == TaskState::Blocked
@@ -1478,7 +1491,10 @@ pub fn unblock_task(task_id: usize) {
 ///
 /// Returns `true` if the task existed and was removed.
 pub fn terminate_task(task_id: usize) -> bool {
-    with_sched(|meta| remove_task(meta, task_id))
+    // Snapshot callbacks before entering the scheduler lock to avoid
+    // nested lock acquisition (`SCHED` -> `SCHED_ARCH_CALLBACKS`).
+    let callbacks = arch_callbacks();
+    with_scheduler(|meta| remove_task(meta, task_id, callbacks))
 }
 
 /// Waits cooperatively until `task_id` is no longer present in the scheduler.
@@ -1523,7 +1539,7 @@ pub fn wait_for_task_exit_with<FAlive, FYield>(
 /// kernel stack.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn set_task_user_context(task_id: usize, cr3: u64, user_rsp: u64, kernel_rsp_top: u64) -> bool {
-    with_sched(|meta| {
+    with_scheduler(|meta| {
         if task_id >= meta.slots.len() || !meta.slots[task_id].used {
             return false;
         }
@@ -1540,7 +1556,7 @@ pub fn set_task_user_context(task_id: usize, cr3: u64, user_rsp: u64, kernel_rsp
 /// Returns whether `task_id` is configured as a user-mode task.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn is_user_task(task_id: usize) -> bool {
-    with_sched(|meta| {
+    with_scheduler(|meta| {
         task_id < meta.slots.len() && meta.slots[task_id].used && meta.slots[task_id].is_user
     })
 }
@@ -1548,7 +1564,7 @@ pub fn is_user_task(task_id: usize) -> bool {
 /// Returns task context tuple `(cr3, user_rsp, kernel_rsp_top)` for `task_id`.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn task_context(task_id: usize) -> Option<(u64, u64, u64)> {
-    with_sched(|meta| {
+    with_scheduler(|meta| {
         if task_id >= meta.slots.len() || !meta.slots[task_id].used {
             None
         } else {
@@ -1561,7 +1577,7 @@ pub fn task_context(task_id: usize) -> Option<(u64, u64, u64)> {
 /// Returns the lifecycle state of `task_id`, or `None` if the slot is unused.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn task_state(task_id: usize) -> Option<TaskState> {
-    with_sched(|meta| {
+    with_scheduler(|meta| {
         if task_id >= meta.slots.len() || !meta.slots[task_id].used {
             None
         } else {
@@ -1581,7 +1597,7 @@ pub fn task_state(task_id: usize) -> Option<TaskState> {
 ///
 /// Panics if called outside a scheduled task context.
 pub fn mark_current_as_zombie() {
-    with_sched(|meta| {
+    with_scheduler(|meta| {
         let slot = meta
             .running_slot
             .expect("mark_current_as_zombie called outside scheduled task");

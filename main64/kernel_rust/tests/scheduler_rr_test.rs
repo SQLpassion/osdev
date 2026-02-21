@@ -372,6 +372,66 @@ fn test_scheduler_uses_configured_arch_callbacks() {
     sched::reset_arch_callbacks_to_default();
 }
 
+/// Contract: terminating active user task switches back to kernel CR3 via configured callback.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "terminating active user task switches back to kernel CR3 via configured callback".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_terminate_active_user_task_switches_to_kernel_cr3_via_callback() {
+    let kernel_cr3 = vmm::get_pml4_address();
+    let user_cr3 = vmm::clone_kernel_pml4_for_user();
+
+    TEST_ARCH_KERNEL_CR3.store(kernel_cr3, Ordering::Release);
+    TEST_ARCH_LAST_SWITCH_CR3.store(0, Ordering::Release);
+
+    sched::set_arch_callbacks(SchedulerArchCallbacks {
+        read_kernel_cr3: test_arch_read_kernel_cr3,
+        set_kernel_rsp0: test_arch_set_kernel_rsp0,
+        switch_cr3: test_arch_switch_cr3,
+    });
+
+    sched::init();
+
+    let user_task = sched::spawn_user_task(vmm::USER_CODE_BASE, vmm::USER_STACK_TOP - 16, user_cr3)
+        .expect("user task spawn should succeed");
+
+    sched::start();
+
+    let mut bootstrap = SavedRegisters::default();
+    let mut current = &mut bootstrap as *mut SavedRegisters;
+
+    // Step 1: Select the user task so scheduler-tracked active CR3 becomes `user_cr3`.
+    current = sched::on_timer_tick(current);
+    assert!(
+        TEST_ARCH_LAST_SWITCH_CR3.load(Ordering::Acquire) == user_cr3,
+        "selecting user task must switch to user CR3 via callback"
+    );
+
+    // Step 2: Terminate the active user task; teardown must switch back to kernel CR3.
+    assert!(
+        sched::terminate_task(user_task),
+        "terminate_task must remove the active user task"
+    );
+    assert!(
+        TEST_ARCH_LAST_SWITCH_CR3.load(Ordering::Acquire) == kernel_cr3,
+        "terminate path must switch away from user CR3 to kernel CR3 via callback"
+    );
+
+    // Drive one tick so the scheduler drains deferred frees with no active tasks.
+    let _ = sched::on_timer_tick(current);
+
+    // User PML4 root should already be released by scheduler teardown.
+    pmm::with_pmm(|mgr| {
+        assert!(
+            !mgr.release_pfn(user_cr3 / pmm::PAGE_SIZE),
+            "user CR3 root must already be released by terminate path"
+        )
+    });
+
+    sched::reset_arch_callbacks_to_default();
+}
+
 /// Contract: block and unblock influence next round-robin selections.
 /// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
 /// When: The exact operation sequence in this function is executed against that state.
