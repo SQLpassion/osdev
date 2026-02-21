@@ -239,7 +239,14 @@ struct SchedulerMetadata {
     /// The Vec grows when all existing slots are occupied. After a task exits,
     /// any trailing `used=false` entries are trimmed by `remove_task` so that
     /// the Vec length reflects the number of live tasks after every removal.
-    /// Interior unused holes remain and are filled by first-fit search.
+    ///
+    /// Trade-off (explicit):
+    /// - This is intentionally a `Vec + used-flag` design, not a dedicated
+    ///   slot allocator/free-list.
+    /// - Interior unused holes are reused by first-fit spawn, but they are not
+    ///   compacted out of `slots`.
+    /// - Under churny spawn/despawn patterns, `slots.len()` follows a high-water
+    ///   mark and only shrinks when trailing slots become unused.
     slots: Vec<TaskEntry>,
 
     /// Total number of timer ticks processed while scheduler is started.
@@ -726,14 +733,19 @@ fn remove_task(
         meta.current_queue_pos = meta.run_queue.len() - 1;
     }
 
-    // Step 6: trim trailing unused slots to prevent unbounded Vec growth.
+    // Step 6: trim trailing unused slots to prevent unbounded Vec growth at
+    // the tail.
     //
     // Only trailing entries can be removed safely: `run_queue` stores slot
     // indices, so removing from the middle or from an index that is still live
     // would invalidate those references. Unused entries at the tail (beyond the
     // last `used` slot) have no `run_queue` entry and no `running_slot` claim,
-    // so truncating them is safe. The Vec may still retain unused holes in the
-    // interior, but those will be filled by the first-fit search in `spawn_internal`.
+    // so truncating them is safe.
+    //
+    // Trade-off (explicit): the Vec may still retain interior holes forever
+    // under churny ID patterns. These holes are reused by first-fit in
+    // `spawn_internal`, but they do not reduce `slots.len()` until they are
+    // part of the trailing unused suffix.
     let live_end = meta.slots.iter().rposition(|s| s.used).map_or(0, |i| i + 1);
     meta.slots.truncate(live_end);
 
@@ -1427,6 +1439,10 @@ pub fn current_task_id() -> Option<usize> {
 /// this value reflects the number of slots up to and including the last live
 /// task. It shrinks when the highest-index tasks exit and grows when new tasks
 /// are spawned beyond the current length.
+///
+/// Trade-off (explicit):
+/// - This is not equal to "number of live tasks" when interior holes exist.
+/// - `slots` is a high-water-mark table with hole reuse, not a compact vector.
 ///
 /// Primarily intended for integration tests that verify the Vec-shrink contract.
 #[cfg_attr(not(test), allow(dead_code))]

@@ -1320,3 +1320,25 @@ KernelMain(kernel_size)
 | `src/sync/waitqueue_adapter.rs` | `sleep_if_multi/single`, `wake_all_multi/single` — couples wait queues to scheduler state transitions |
 | `src/drivers/keyboard.rs` | PS/2 keyboard driver: top-half `handle_irq`, bottom-half `keyboard_worker_task`, consumer API `read_char_blocking` / `read_line` |
 | `src/main.rs` | `KernelMain` boot sequence, `idle_loop`, `repl_task`, `command_prompt_loop` |
+
+---
+
+## 23. Task-Slot Storage Trade-Off
+
+`SchedulerMetadata::slots` is intentionally implemented as `Vec<TaskEntry>`
+with a per-entry `used` flag, not as a dedicated slot allocator.
+
+Consequences:
+
+- Spawn reuses free interior slots via first-fit search.
+- Remove trims only trailing unused entries (`truncate` at last live slot).
+- Interior holes are not compacted out of `slots`.
+- Under heavy spawn/despawn churn, `slots.len()` can track a high-water mark
+  even when many interior slots are free.
+
+This is a deliberate simplicity trade-off:
+
+- Pros: stable slot indices, straightforward `run_queue` handling, low mutation
+  complexity in scheduler hot paths.
+- Cons: metadata capacity can remain above live-task count until tail slots are
+  released.
