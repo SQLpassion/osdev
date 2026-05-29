@@ -17,7 +17,7 @@
         {
             "label": "Build & Debug KAOS Rust",
             "type": "shell",
-            "command": "${workspaceFolder}/main64/build_kernel_debug.sh && qemu-img convert -O qcow2 ${workspaceFolder}/main64/kaos64_rust.img ${workspaceFolder}/main64/kaos64.qcow2 && cp ${workspaceFolder}/main64/kaos64.qcow2 \"$HOME/Library/Containers/com.utmapp.UTM/Data/Documents/KAOS x64.utm/Data/kaos64.qcow2\" && qemu-system-x86_64 -drive format=raw,file=${workspaceFolder}/main64/kaos64_rust.img -s -S",
+            "command": "${workspaceFolder}/main64/build_kernel_debug.sh && qemu-img convert -O qcow2 ${workspaceFolder}/main64/kaos64_rust.img ${workspaceFolder}/main64/kaos64.qcow2 && cp ${workspaceFolder}/main64/kaos64.qcow2 \"$HOME/Library/Containers/com.utmapp.UTM/Data/Documents/KAOS x64.utm/Data/kaos64.qcow2\" && qemu-system-x86_64 -drive format=raw,file=${workspaceFolder}/main64/kaos64_rust.img -gdb tcp::12345 -S",
             "options": {
                 "cwd": "${workspaceFolder}/main64"
             },

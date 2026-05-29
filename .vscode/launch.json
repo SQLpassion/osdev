@@ -9,7 +9,7 @@
       "cwd": "${workspaceFolder}",
       "MIMode": "gdb",
       "miDebuggerPath": "rust-gdb",
-      "miDebuggerServerAddress": "localhost:1234",
+      "miDebuggerServerAddress": "localhost:12345",
       "preLaunchTask": "Build & Debug KAOS Rust",
       "stopAtEntry": true,
       "externalConsole": false,
