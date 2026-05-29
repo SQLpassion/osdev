@@ -33,6 +33,7 @@
 # Building on Mac OS
 #####################
 - Open Terminal:
+    ./build_kernel_debug.sh && qemu-system-x86_64 -drive format=raw,file=../kaos64_rust.img --serial stdio
     docker run --rm -it -v $HOME/dev/GitHub/SQLpassion/osdev:/src sqlpassion/kaos-buildenv /bin/sh /src/main64/clean.sh
     docker run --rm -it -v $HOME/dev/GitHub/SQLpassion/osdev:/src sqlpassion/kaos-buildenv /bin/sh /src/main64/build.sh
 - Write the final FAT12 image to a .qcow2 file for UTM (Apple Silicon):
