@@ -160,3 +160,43 @@ impl PortWord {
         outw(self.port, value)
     }
 }
+
+/// Typed wrapper for a specific I/O port (double-word-sized)
+#[derive(Debug, Clone, Copy)]
+pub struct PortLong {
+    port: u16,
+}
+
+impl PortLong {
+    /// Create a new port wrapper
+    pub const fn new(port: u16) -> Self {
+        Self { port }
+    }
+
+    /// Read from this port
+    ///
+    /// # Safety
+    /// Port I/O is inherently unsafe.
+    #[inline]
+    pub unsafe fn read(&self) -> u32 {
+        // SAFETY:
+        // - Port I/O is a privileged instruction that can affect hardware state.
+        // - The caller must ensure that the port is a valid 32-bit I/O port and
+        //   that concurrent access is properly synchronized.
+        unsafe { inl(self.port) }
+    }
+
+    /// Write to this port
+    ///
+    /// # Safety
+    /// Port I/O is inherently unsafe.
+    #[inline]
+    pub unsafe fn write(&self, value: u32) {
+        // SAFETY:
+        // - Port I/O is a privileged instruction that can affect hardware state.
+        // - The caller must ensure that writing to the port is safe in this context
+        //   and that concurrent access is properly synchronized.
+        unsafe { outl(self.port, value) }
+    }
+}
+

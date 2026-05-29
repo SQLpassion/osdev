@@ -106,6 +106,10 @@ pub extern "C" fn KernelMain(kernel_size: u64) -> ! {
     heap::init(true);
     debugln!("Heap Manager initialized");
 
+    // Initialize the PCI subsystem (scans the PCI bus)
+    drivers::pci::init();
+    debugln!("PCI subsystem initialized");
+
     // Initialize the ATA PIO driver
     drivers::ata::init();
     debugln!("ATA PIO driver initialized");

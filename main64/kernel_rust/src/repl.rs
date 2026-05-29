@@ -6,6 +6,7 @@
 use crate::arch::power;
 use crate::drivers::ata;
 use crate::drivers::keyboard;
+use crate::drivers::pci;
 use crate::drivers::screen::{with_screen, Color, Screen};
 use crate::io::fat12;
 use crate::memory::bios;
@@ -172,6 +173,7 @@ fn execute_command(line: &str) {
                 )
                 .unwrap();
                 writeln!(screen, "  dir             - list FAT12 root directory").unwrap();
+                writeln!(screen, "  pci             - print discovered PCI devices").unwrap();
                 writeln!(
                     screen,
                     "  cat <file>      - print FAT12 file content (8.3 name)"
@@ -287,6 +289,63 @@ fn execute_command(line: &str) {
         }
         "dir" => {
             fat12::print_root_directory();
+        }
+        "pci" => {
+            let devices = pci::get_devices();
+            with_screen(|screen| {
+                writeln!(screen, "--- PCI Bus Scan ({} devices found) ---", devices.len()).unwrap();
+                for dev in devices.iter() {
+                    let vendor_name = pci::vendor_to_str(dev.vendor_id);
+                    let device_name = pci::device_to_str(dev.vendor_id, dev.device_id);
+                    let class_name = pci::class_to_str(dev.class_code, dev.subclass);
+
+                    writeln!(
+                        screen,
+                        "PCI {:02x}:{:02x}.{} | {} ({:04x}): {} ({:04x})",
+                        dev.bus,
+                        dev.device,
+                        dev.function,
+                        vendor_name,
+                        dev.vendor_id,
+                        device_name,
+                        dev.device_id
+                    )
+                    .unwrap();
+                    writeln!(
+                        screen,
+                        "  Class: {} ({:02x}:{:02x}) | IRQ: {}",
+                        class_name,
+                        dev.class_code,
+                        dev.subclass,
+                        dev.interrupt_line
+                    )
+                    .unwrap();
+                    for (i, bar) in dev.bars.iter().enumerate() {
+                        match bar.bar_type {
+                            pci::BarType::Io { port, size } => {
+                                writeln!(screen, "  BAR {}: I/O Port {:#x} (size {})", i, port, size).unwrap();
+                            }
+                            pci::BarType::Memory32 { address, size, prefetchable } => {
+                                writeln!(
+                                    screen,
+                                    "  BAR {}: 32-bit Mem {:#010x} (size {}, pref: {})",
+                                    i, address, size, prefetchable
+                                )
+                                .unwrap();
+                            }
+                            pci::BarType::Memory64 { address, size, prefetchable } => {
+                                writeln!(
+                                    screen,
+                                    "  BAR {}: 64-bit Mem {:#018x} (size {}, pref: {})",
+                                    i, address, size, prefetchable
+                                )
+                                .unwrap();
+                            }
+                            pci::BarType::None => {}
+                        }
+                    }
+                }
+            });
         }
         "cat" => match (parts.next(), parts.next()) {
             (Some(file_name), None) => match fat12::read_file(file_name) {

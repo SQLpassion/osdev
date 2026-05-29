@@ -58,3 +58,4 @@ dkms.conf
 *.generated
 main64/kernel_rust/target/*
 main64/user_programs/*/target/*
+.antigravitycli
