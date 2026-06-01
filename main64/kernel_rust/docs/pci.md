@@ -15,6 +15,61 @@ The kernel accesses the configuration space of any device using Port I/O through
 - `CONFIG_ADDRESS` (Port `0xCF8`, 32-bit write-only): Used to specify the target bus, device, function, and register offset.
 - `CONFIG_DATA` (Port `0xCFC`, 32-bit read/write): Used to transmit or receive the 32-bit data to/from the selected configuration register.
 
+### 1.1 Programming Port I/O Configuration Space Accesses
+In the Rust kernel, accessing configuration space is abstracted via low-level functions that read or write double words (32-bit), words (16-bit), or bytes (8-bit) using `PortLong` wrappers.
+
+The exact low-level programming interface signatures and implementation logic are defined as follows:
+
+```rust
+/// Read a 32-bit double word from the PCI configuration space.
+///
+/// # Safety
+/// This operation uses Port I/O which is hardware-sensitive and inherently unsafe.
+pub unsafe fn pci_config_read(bus: u8, slot: u8, func: u8, offset: u8) -> u32 {
+    let address = (1 << 31)
+        | ((bus as u32) << 16)
+        | ((slot as u32) << 11)
+        | ((func as u32) << 8)
+        | ((offset & 0xFC) as u32);
+    
+    let address_port = PortLong::new(PCI_CONFIG_ADDRESS);
+    let data_port = PortLong::new(PCI_CONFIG_DATA);
+
+    // SAFETY:
+    // - Writing to the PCI address port and reading from the data port is safe
+    //   when the CPU is in Ring 0 and interrupts are disabled or synchronized.
+    // - The address is formed strictly in accordance with the PCI Local Bus Specification.
+    unsafe {
+        address_port.write(address);
+        data_port.read()
+    }
+}
+
+/// Write a 32-bit double word to the PCI configuration space.
+///
+/// # Safety
+/// This operation uses Port I/O which is hardware-sensitive and inherently unsafe.
+pub unsafe fn pci_config_write(bus: u8, slot: u8, func: u8, offset: u8, val: u32) {
+    let address = (1 << 31)
+        | ((bus as u32) << 16)
+        | ((slot as u32) << 11)
+        | ((func as u32) << 8)
+        | ((offset & 0xFC) as u32);
+    
+    let address_port = PortLong::new(PCI_CONFIG_ADDRESS);
+    let data_port = PortLong::new(PCI_CONFIG_DATA);
+
+    // SAFETY:
+    // - Writing to the PCI address and data ports is safe when the CPU is in
+    //   Ring 0 and interrupts are disabled or synchronized.
+    // - The address is formed strictly in accordance with the PCI Local Bus Specification.
+    unsafe {
+        address_port.write(address);
+        data_port.write(val);
+    }
+}
+```
+
 ---
 
 ## 2. Mental Model
@@ -115,7 +170,10 @@ To understand what the BDF metadata fields represent, let's look at each registe
   - `0x7010`: Intel 82371SB PIIX3 IDE Interface
 
 ### 5.2 Command & Status (Offset `0x04`)
-- **Command (16-bit)**: Provides control over a device's ability to generate and respond to PCI cycles. For example, setting Bit 0 enables Response to I/O Space, while setting Bit 1 enables Response to Memory Space (MMIO).
+- **Command (16-bit)**: Provides control over a device's ability to generate and respond to PCI cycles. 
+  - **Bit 0 (I/O Space)**: Enables response to standard Port I/O accesses.
+  - **Bit 1 (Memory Space)**: Enables response to Memory-Mapped I/O (MMIO) accesses.
+  - **Bit 2 (Bus Master)**: Permits the device to act as a bus master to perform DMA (Direct Memory Access) transfers.
 - **Status (16-bit)**: Records status information for PCI bus-related events.
 
 ### 5.3 Class Code, Subclass, Prog IF & Revision ID (Offset `0x08`)
@@ -190,7 +248,38 @@ Memory Space BAR Layout:
 ### 6.1 64-bit Memory BARs
 When type bits are `10`, the BAR is a 64-bit Memory BAR. In this configuration, the current BAR contains the lower 32 bits of the address, and the next adjacent BAR (e.g. `BAR + 1`) contains the upper 32 bits. When iterating through BARs, the driver must combine both registers and **skip the next index** during scanning to prevent double-processing.
 
-### 6.2 BAR Sizing Algorithm
+### 6.2 BAR Representation in the Rust Kernel Programming Interface
+In the kernel driver, Base Address Registers are parsed into type-safe data structures:
+
+```rust
+/// Types of Base Address Registers (BARs) that a PCI device can expose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BarType {
+    None,
+    Io {
+        port: u16,
+        size: u32,
+    },
+    Memory32 {
+        address: u32,
+        size: u32,
+        prefetchable: bool,
+    },
+    Memory64 {
+        address: u64,
+        size: u64,
+        prefetchable: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PciBar {
+    pub bar_type: BarType,
+    pub raw_value: u32,
+}
+```
+
+### 6.3 BAR Sizing Algorithm
 At boot, BAR register values hold physical base addresses, but their size requirements are unknown. The kernel determines the size of each BAR dynamically using the following specification-compliant algorithm:
 
 ```
@@ -246,9 +335,9 @@ To make debug logs and console command reports intuitive for kernel developers, 
 
 ---
 
-## 9. Driver Integration (Querying Devices)
+## 9. Driver Integration & Programming Interface
 
-Drivers utilize specific lookup APIs to bind themselves to discovered devices:
+Drivers utilize specific lookup APIs to bind themselves to discovered devices and interact with hardware:
 
 ### 9.1 Lookup by Vendor & Device ID (`pci::find_device`)
 Used when a driver is tailored to a very specific chip model (vendor-specific driver):
@@ -284,6 +373,53 @@ A generic **AHCI storage driver** queries the PCI bus to find any compliant SATA
 if let Some(sata_ctrl) = pci::find_by_class(0x01, 0x06) {
     debugln!("AHCI-compliant SATA controller found at BDF {:02x}:{:02x}.{}", sata_ctrl.bus, sata_ctrl.device, sata_ctrl.function);
     // Parse AHCI HBA capability registers...
+}
+```
+
+### 9.3 Dynamic Driver Binding Flow (Programming Steps)
+To implement a PCI-based device driver, developers should follow this sequential programming pattern:
+
+```
+  Step 1: Locate device in database using pci::find_device or pci::find_by_class.
+  Step 2: Enable memory/port accesses & DMA by configuring the PCI Command register.
+  Step 3: Retrieve physical addresses from PciDevice.bars and register with Virtual Memory.
+  Step 4: Register driver Interrupt Service Routine (ISR) using dev.interrupt_line.
+```
+
+Here is a concrete case study illustrating how an Intel **e1000** Ethernet NIC initialization driver executes this sequence:
+
+```rust
+pub fn init_e1000_nic() -> Result<(), &'static str> {
+    // Step 1: Query the boot-time cached PCI database
+    let nic = match pci::find_device(0x8086, 0x100E) {
+        Some(device) => device,
+        None => return Err("e1000 NIC hardware not detected"),
+    };
+
+    // Step 2: Configure device Command Register
+    // Enable MMIO (Bit 1) & Bus Mastering (Bit 2) for packet DMA
+    unsafe {
+        let mut command = pci::pci_config_read_u16(nic.bus, nic.device, nic.function, 0x04);
+        command |= 0x0006; 
+        pci::pci_config_write(nic.bus, nic.device, nic.function, 0x04, command as u32);
+    }
+
+    // Step 3: Match and Map MMIO base address from BAR 0
+    let io_base = match nic.bars[0].bar_type {
+        BarType::Memory32 { address, size, .. } => {
+            // Map the physical BAR physical space to kernel Virtual Address Space
+            unsafe { vmm::map_physical_to_kernel(address as u64, size as u64) }
+        }
+        _ => return Err("e1000 BAR 0 is not a standard 32-bit MMIO region"),
+    };
+
+    // Step 4: Map legacy Interrupt Line if active
+    let irq_vector = nic.interrupt_line;
+    if irq_vector != 0 && irq_vector != 0xFF {
+        interrupts::register_handler(irq_vector, e1000_interrupt_handler);
+    }
+
+    Ok(())
 }
 ```
 
@@ -342,7 +478,17 @@ The PCI subsystem scans the PCI bus during early kernel boot after the Heap Mana
 
 ---
 
-## 12. ASCII Overview of the PCI Subsystem
+## 12. Safety, Synchronization, and Thread Safety Invariants
+
+Operating a PCI subsystem in Ring 0 requires rigorous synchronization and architectural constraints to guarantee kernel stability:
+
+* **Lock Integrity & Reentrancy**: The global PCI device database `PCI_DEVICES` is protected by a kernel `SpinLock`. Read operations and device lookups acquire the spinlock, perform the search and copy/clone operations, and immediately release it to prevent locks from hanging or inducing deadlocks under preemption.
+* **Unsafe Port I/O Boundaries**: Low-level read/write commands (`pci_config_read`, `pci_config_write`) directly invoke port instructions (`outd`/`ind`), which are marked `unsafe`. These functions depend on the caller maintaining aligned offsets and valid BDF indices to prevent hardware-level faults.
+* **DMA Coherency Requirements**: Drivers using the Bus Mastering capability to transfer data asynchronously via DMA must establish non-cacheable mapping zones or use volatile memory operators (`read_volatile`, `write_volatile`) to avoid stale data reads caused by CPU-level L1/L2 cache mismatches.
+
+---
+
+## 13. ASCII Overview of the PCI Subsystem
 
 ```
 +--------------------+
