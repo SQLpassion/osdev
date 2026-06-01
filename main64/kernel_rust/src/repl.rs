@@ -173,7 +173,9 @@ fn execute_command(line: &str) {
                 )
                 .unwrap();
                 writeln!(screen, "  dir             - list FAT12 root directory").unwrap();
-                writeln!(screen, "  pci             - print discovered PCI devices").unwrap();
+                writeln!(screen, "  pci [filter]    - print discovered PCI devices").unwrap();
+                writeln!(screen, "                    (filters: --ethernet, --network, --storage,").unwrap();
+                writeln!(screen, "                    --sata, --ide, --display, --vga, --bridge)").unwrap();
                 writeln!(
                     screen,
                     "  cat <file>      - print FAT12 file content (8.3 name)"
@@ -291,10 +293,94 @@ fn execute_command(line: &str) {
             fat12::print_root_directory();
         }
         "pci" => {
-            let devices = pci::get_devices();
+            let mut devices = pci::get_devices();
+
+            // If a category filter argument is provided, validate it and apply it.
+            // Invalid filters print an error message showing the supported list.
+            if let Some(filter) = parts.next() {
+                if filter.eq_ignore_ascii_case("--ethernet")
+                    || filter.eq_ignore_ascii_case("--network")
+                    || filter.eq_ignore_ascii_case("--storage")
+                    || filter.eq_ignore_ascii_case("--sata")
+                    || filter.eq_ignore_ascii_case("--ide")
+                    || filter.eq_ignore_ascii_case("--display")
+                    || filter.eq_ignore_ascii_case("--vga")
+                    || filter.eq_ignore_ascii_case("--bridge")
+                {
+                    devices = pci::filter_by_category(&devices, filter);
+                } else {
+                    with_screen(|screen| {
+                        writeln!(screen, "Unknown filter: {}", filter).unwrap();
+                        writeln!(screen, "Supported filters: --ethernet, --network, --storage, --sata, --ide, --display, --vga, --bridge").unwrap();
+                    });
+                    return;
+                }
+            }
+
+            let mut line_count = 1; // 1 for the header line
+
+            // Print the initial scan header
             with_screen(|screen| {
                 writeln!(screen, "--- PCI Bus Scan ({} devices found) ---", devices.len()).unwrap();
-                for dev in devices.iter() {
+            });
+
+            let mut quit = false;
+
+            // Iterate over all discovered PCI devices
+            for dev in devices.iter() {
+                if quit {
+                    break;
+                }
+
+                // Calculate how many lines this specific device will print
+                let mut dev_lines = 2; // Header + Class line
+                for bar in dev.bars.iter() {
+                    if bar.bar_type != pci::BarType::None {
+                        dev_lines += 1;
+                    }
+                }
+
+                // Check if adding the new lines would exceed the 25-line VGA screen height.
+                // We perform the pagination check and block for key input outside of the
+                // screen spinlock to prevent lock deadlock or system hanging.
+                if line_count + dev_lines >= 25 {
+                    with_screen(|screen| {
+                        write!(screen, "-- Press SPACE for more, 'q' to quit --").unwrap();
+                    });
+
+                    loop {
+                        let ch = keyboard::read_char_blocking();
+                        if ch == b' ' {
+                            // Backspace the 39-character pagination prompt from the screen buffer
+                            with_screen(|screen| {
+                                for _ in 0..39 {
+                                    screen.print_char(0x08);
+                                }
+                            });
+                            break;
+                        } else if ch == b'q' || ch == b'Q' {
+                            // Backspace the prompt and print a terminating newline
+                            with_screen(|screen| {
+                                for _ in 0..39 {
+                                    screen.print_char(0x08);
+                                }
+                                writeln!(screen).unwrap();
+                            });
+                            quit = true;
+                            break;
+                        }
+                    }
+
+                    if quit {
+                        break;
+                    }
+
+                    // Reset line count for the next page segment
+                    line_count = 0;
+                }
+
+                // Safe-locked printing of device details to the active VGA screen
+                with_screen(|screen| {
                     let vendor_name = pci::vendor_to_str(dev.vendor_id);
                     let device_name = pci::device_to_str(dev.vendor_id, dev.device_id);
                     let class_name = pci::class_to_str(dev.class_code, dev.subclass);
@@ -344,8 +430,11 @@ fn execute_command(line: &str) {
                             pci::BarType::None => {}
                         }
                     }
-                }
-            });
+                });
+
+                // Update current page line consumption
+                line_count += dev_lines;
+            }
         }
         "cat" => match (parts.next(), parts.next()) {
             (Some(file_name), None) => match fat12::read_file(file_name) {

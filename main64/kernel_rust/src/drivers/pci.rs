@@ -367,6 +367,33 @@ pub fn find_by_class(class_code: u8, subclass: u8) -> Option<PciDevice> {
     devices.iter().find(|d| d.class_code == class_code && d.subclass == subclass).cloned()
 }
 
+/// Filter a slice of PCI devices based on a category filter string.
+/// Supported filters (case-insensitive):
+/// - "--ethernet", "--network" -> Class 0x02
+/// - "--storage", "--sata", "--ide" -> Class 0x01
+/// - "--display", "--vga" -> Class 0x03
+/// - "--bridge" -> Class 0x06
+pub fn filter_by_category(devices: &[PciDevice], filter: &str) -> Vec<PciDevice> {
+    let filter_lower = filter.trim();
+    devices.iter().filter(|d| {
+        // Class 0x02 corresponds to Network Controller
+        if filter_lower.eq_ignore_ascii_case("--ethernet") || filter_lower.eq_ignore_ascii_case("--network") {
+            d.class_code == 0x02
+        // Class 0x01 corresponds to Mass Storage Controller
+        } else if filter_lower.eq_ignore_ascii_case("--storage") || filter_lower.eq_ignore_ascii_case("--sata") || filter_lower.eq_ignore_ascii_case("--ide") {
+            d.class_code == 0x01
+        // Class 0x03 corresponds to Display Controller
+        } else if filter_lower.eq_ignore_ascii_case("--display") || filter_lower.eq_ignore_ascii_case("--vga") {
+            d.class_code == 0x03
+        // Class 0x06 corresponds to Bridge Device
+        } else if filter_lower.eq_ignore_ascii_case("--bridge") {
+            d.class_code == 0x06
+        } else {
+            false
+        }
+    }).cloned().collect()
+}
+
 /// Print all discovered PCI devices to the screen or debug output.
 pub fn print_devices() {
     let devices = PCI_DEVICES.lock();
