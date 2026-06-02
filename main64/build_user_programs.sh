@@ -56,3 +56,24 @@ llvm-objcopy -O binary "$INPUT_ELF" readline.bin 2>/dev/null || \
 
 echo "-> Built: $READLINE_DIR/readline.bin"
 ls -la readline.bin
+
+FILEDEMO_DIR="$SCRIPT_DIR/user_programs/filedemo"
+echo ""
+echo "-> Building filedemo user program..."
+
+cd "$FILEDEMO_DIR"
+
+if [ "$PROFILE" = "release" ]; then
+    cargo +nightly build --release --target x86_64-unknown-none -Z build-std=core
+    INPUT_ELF="target/x86_64-unknown-none/release/filedemo"
+else
+    cargo +nightly build --target x86_64-unknown-none
+    INPUT_ELF="target/x86_64-unknown-none/debug/filedemo"
+fi
+
+llvm-objcopy -O binary "$INPUT_ELF" filedemo.bin 2>/dev/null || \
+    rust-objcopy -O binary "$INPUT_ELF" filedemo.bin 2>/dev/null || \
+    objcopy -O binary "$INPUT_ELF" filedemo.bin
+
+echo "-> Built: $FILEDEMO_DIR/filedemo.bin"
+ls -la filedemo.bin

@@ -21,6 +21,10 @@
         {
           "description": "Load Rust kernel symbols at virtual address",
           "text": "-interpreter-exec console \"add-symbol-file ${workspaceFolder}/main64/kernel_rust/target/x86_64-unknown-none/debug/kaos_kernel 0xFFFF800000100000\""
+        },
+        {
+          "description": "Load FILEDEMO user program symbols at virtual address",
+          "text": "-interpreter-exec console \"add-symbol-file ${workspaceFolder}/main64/user_programs/filedemo/target/x86_64-unknown-none/debug/filedemo 0x0000700000000000\""
         }
       ]
     }

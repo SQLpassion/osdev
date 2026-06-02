@@ -727,7 +727,7 @@ fn deallocate_cluster_chain(fat: &mut [u8], start_cluster: u16) -> Result<(), Fa
             let _ = drivers::ata::write_sectors(&empty_sector, cluster_lba, 1);
         }
 
-        if next_cluster >= FAT12_EOF_MIN || next_cluster < FAT12_MIN_DATA_CLUSTER {
+        if !(FAT12_MIN_DATA_CLUSTER..FAT12_EOF_MIN).contains(&next_cluster) {
             break;
         }
 
@@ -832,6 +832,7 @@ pub enum FileMode {
 /// File descriptor instance inside the active FD table.
 pub struct FileDescriptor {
     pub fd: usize,
+    #[allow(dead_code)]
     pub file_name: [u8; 11],
     pub mode: FileMode,
     pub start_cluster: u16,
@@ -1007,7 +1008,7 @@ pub fn read_file_fd(fd: usize, buffer: &mut [u8]) -> Result<usize, Fat12Error> {
 
     for _ in 0..cluster_offset {
         current_cluster = fat12_next_cluster(&fat, current_cluster)?;
-        if current_cluster >= FAT12_EOF_MIN || current_cluster < FAT12_MIN_DATA_CLUSTER {
+        if !(FAT12_MIN_DATA_CLUSTER..FAT12_EOF_MIN).contains(&current_cluster) {
             return Err(Fat12Error::CorruptFatChain);
         }
     }
@@ -1029,7 +1030,7 @@ pub fn read_file_fd(fd: usize, buffer: &mut [u8]) -> Result<usize, Fat12Error> {
 
         if bytes_read < bytes_to_read {
             current_cluster = fat12_next_cluster(&fat, current_cluster)?;
-            if current_cluster >= FAT12_EOF_MIN || current_cluster < FAT12_MIN_DATA_CLUSTER {
+            if !(FAT12_MIN_DATA_CLUSTER..FAT12_EOF_MIN).contains(&current_cluster) {
                 return Err(Fat12Error::CorruptFatChain);
             }
         }
@@ -1066,7 +1067,7 @@ pub fn write_file_fd(fd: usize, buffer: &[u8]) -> Result<usize, Fat12Error> {
     } else {
         for _ in 0..cluster_offset {
             let mut next = fat12_next_cluster(&fat, current_cluster)?;
-            if next >= FAT12_EOF_MIN || next < FAT12_MIN_DATA_CLUSTER {
+            if !(FAT12_MIN_DATA_CLUSTER..FAT12_EOF_MIN).contains(&next) {
                 next = allocate_new_cluster(&mut fat, current_cluster)?;
             }
             current_cluster = next;
@@ -1093,7 +1094,7 @@ pub fn write_file_fd(fd: usize, buffer: &[u8]) -> Result<usize, Fat12Error> {
 
         if bytes_written < bytes_to_write {
             let mut next = fat12_next_cluster(&fat, current_cluster)?;
-            if next >= FAT12_EOF_MIN || next < FAT12_MIN_DATA_CLUSTER {
+            if !(FAT12_MIN_DATA_CLUSTER..FAT12_EOF_MIN).contains(&next) {
                 next = allocate_new_cluster(&mut fat, current_cluster)?;
             }
             current_cluster = next;

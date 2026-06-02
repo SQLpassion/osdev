@@ -313,7 +313,7 @@ pub fn init() {
                 // Step 8: Parse all Base Address Registers (BARs).
                 let mut bars = [PciBar { bar_type: BarType::None, raw_value: 0 }; 6];
                 let mut skip_next = false;
-                for bar_idx in 0..6 {
+                for (bar_idx, bar_slot) in bars.iter_mut().enumerate() {
                     if skip_next {
                         skip_next = false;
                         continue;
@@ -321,7 +321,7 @@ pub fn init() {
 
                     // Read the BAR details and size it.
                     let bar = read_bar(bus, slot, func, bar_idx);
-                    bars[bar_idx] = bar;
+                    *bar_slot = bar;
 
                     // If it's a 64-bit Memory BAR, we need to skip the next slot as it's part of the same BAR.
                     if let BarType::Memory64 { .. } = bar.bar_type {
