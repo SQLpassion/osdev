@@ -432,3 +432,50 @@ fn test_read_file_reports_corrupt_fat_chain_for_cluster_0_target() {
         result
     );
 }
+
+/// Contract: writing a new file, reading its contents back, and deleting it succeeds.
+#[test_case]
+fn test_fat12_write_read_delete_lifecycle() {
+    kaos_kernel::drivers::ata::init();
+
+    let test_filename = "testwr.txt";
+    let test_data = b"Hello Klaus Aschenbrenner from Rust kernel space!";
+
+    // Step 1: Open the file in Write mode (truncate or create)
+    let fd = kaos_kernel::io::fat12::open_file(test_filename, kaos_kernel::io::fat12::FileMode::Write)
+        .expect("failed to open testwr.txt in Write mode");
+    assert!(fd > 0, "file descriptor must be positive");
+
+    // Step 2: Write test data
+    let written = kaos_kernel::io::fat12::write_file_fd(fd, test_data)
+        .expect("failed to write test data");
+    assert_eq!(written, test_data.len(), "written byte count mismatch");
+
+    // Step 3: Close the file descriptor
+    kaos_kernel::io::fat12::close_file(fd).expect("failed to close file descriptor");
+
+    // Step 4: Open the file in Read mode
+    let fd_read = kaos_kernel::io::fat12::open_file(test_filename, kaos_kernel::io::fat12::FileMode::Read)
+        .expect("failed to open testwr.txt in Read mode");
+
+    // Step 5: Read the data back
+    let mut read_buffer = [0u8; 100];
+    let read_bytes = kaos_kernel::io::fat12::read_file_fd(fd_read, &mut read_buffer)
+        .expect("failed to read test data back");
+    assert_eq!(read_bytes, test_data.len(), "read byte count mismatch");
+    assert_eq!(&read_buffer[..read_bytes], test_data, "read data mismatch");
+
+    // Step 6: Close the read descriptor
+    kaos_kernel::io::fat12::close_file(fd_read).expect("failed to close read descriptor");
+
+    // Step 7: Delete the file
+    kaos_kernel::io::fat12::delete_file(test_filename).expect("failed to delete testwr.txt");
+
+    // Step 8: Verify the file is no longer present
+    let open_result = kaos_kernel::io::fat12::open_file(test_filename, kaos_kernel::io::fat12::FileMode::Read);
+    assert!(
+        matches!(open_result, Err(kaos_kernel::io::fat12::Fat12Error::NotFound)),
+        "file must be absent after deletion, got {:?}",
+        open_result
+    );
+}

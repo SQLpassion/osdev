@@ -616,3 +616,543 @@ pub fn print_root_directory() {
         screen.print_char(b'\n');
     });
 }
+
+/// Write the fixed-size FAT12 root directory area to disk.
+///
+/// For standard FAT12 this is always 14 sectors at LBA 19.
+pub fn write_root_directory_to_disk(buffer: &[u8]) -> Result<(), Fat12Error> {
+    assert_eq!(buffer.len(), ROOT_DIRECTORY_SECTORS as usize * BYTES_PER_SECTOR);
+    drivers::ata::write_sectors(buffer, ROOT_DIRECTORY_LBA, ROOT_DIRECTORY_SECTORS)?;
+    Ok(())
+}
+
+/// Write the FAT table from memory back to the disk.
+///
+/// Under FAT12 specifications, both FAT#1 (LBA 1) and FAT#2 (LBA 10) are
+/// mirrors and must be written simultaneously.
+pub fn write_fat_to_disk(fat_buffer: &[u8]) -> Result<(), Fat12Error> {
+    assert_eq!(fat_buffer.len(), SECTORS_PER_FAT as usize * BYTES_PER_SECTOR);
+    // Write FAT#1
+    drivers::ata::write_sectors(fat_buffer, FAT1_LBA, SECTORS_PER_FAT as u8)?;
+    // Write FAT#2 (LBA 10 = FAT1_LBA + SECTORS_PER_FAT)
+    let fat2_lba = FAT1_LBA + SECTORS_PER_FAT;
+    drivers::ata::write_sectors(fat_buffer, fat2_lba, SECTORS_PER_FAT as u8)?;
+    Ok(())
+}
+
+/// Encode next cluster ID in FAT12 table for the given cluster.
+///
+/// Packs a 12-bit entry value into 3 bytes at calculated offset.
+/// SAFETY:
+/// - Accesses are bounds-checked against the FAT slice length.
+fn fat12_write_cluster_entry(fat: &mut [u8], cluster: u16, next_cluster_val: u16) -> Result<(), Fat12Error> {
+    let offset = cluster as usize + (cluster as usize / 2);
+    if offset + 1 >= fat.len() {
+        return Err(Fat12Error::CorruptFatChain);
+    }
+    let val_masked = next_cluster_val & 0x0FFF;
+
+    let byte0 = fat[offset];
+    let byte1 = fat[offset + 1];
+    let mut pair = u16::from_le_bytes([byte0, byte1]);
+
+    if cluster & 1 == 0 {
+        pair = (pair & 0xF000) | val_masked;
+    } else {
+        pair = (pair & 0x000F) | (val_masked << 4);
+    }
+
+    let le_bytes = pair.to_le_bytes();
+    fat[offset] = le_bytes[0];
+    fat[offset + 1] = le_bytes[1];
+    Ok(())
+}
+
+/// Scans the FAT for the next available unallocated cluster.
+///
+/// Unallocated clusters have an entry value of `0x000` in the FAT table.
+fn find_next_free_cluster(fat: &[u8]) -> Option<u16> {
+    // Standard data clusters on 1.44MB Floppy start at 2 up to 2847.
+    for cluster in 2..2848 {
+        if let Ok(next) = fat12_next_cluster(fat, cluster) {
+            if next == 0 {
+                return Some(cluster);
+            }
+        }
+    }
+    None
+}
+
+/// Allocates a new cluster for the file and links it to `current_cluster`.
+///
+/// Zeroes the disk sector to prevent old data leakage (security zeroing).
+fn allocate_new_cluster(fat: &mut [u8], current_cluster: u16) -> Result<u16, Fat12Error> {
+    let new_cluster = find_next_free_cluster(fat).ok_or(Fat12Error::CorruptFatChain)?;
+
+    // Link current cluster if valid
+    if current_cluster >= FAT12_MIN_DATA_CLUSTER {
+        fat12_write_cluster_entry(fat, current_cluster, new_cluster)?;
+    }
+
+    // Set EOF marker
+    fat12_write_cluster_entry(fat, new_cluster, 0xFFF)?;
+
+    // Security Zeroing: overwrite sector of the new cluster with zero bytes
+    let cluster_lba = cluster_to_lba(new_cluster)?;
+    let empty_sector = [0u8; BYTES_PER_SECTOR];
+    drivers::ata::write_sectors(&empty_sector, cluster_lba, 1)?;
+
+    Ok(new_cluster)
+}
+
+/// Deallocates the cluster chain beginning at `start_cluster`.
+///
+/// Sets FAT entries to `0x000` and zero-initializes sectors.
+fn deallocate_cluster_chain(fat: &mut [u8], start_cluster: u16) -> Result<(), Fat12Error> {
+    if start_cluster < FAT12_MIN_DATA_CLUSTER {
+        return Ok(());
+    }
+
+    let mut current_cluster = start_cluster;
+    let empty_sector = [0u8; BYTES_PER_SECTOR];
+
+    loop {
+        let next_cluster = fat12_next_cluster(fat, current_cluster)?;
+
+        // Free the current cluster
+        fat12_write_cluster_entry(fat, current_cluster, 0x000)?;
+
+        // Clear sector on disk
+        if let Ok(cluster_lba) = cluster_to_lba(current_cluster) {
+            let _ = drivers::ata::write_sectors(&empty_sector, cluster_lba, 1);
+        }
+
+        if next_cluster >= FAT12_EOF_MIN || next_cluster < FAT12_MIN_DATA_CLUSTER {
+            break;
+        }
+
+        current_cluster = next_cluster;
+    }
+
+    Ok(())
+}
+
+/// Returns index of the first free directory slot in the root directory.
+fn find_free_directory_slot(root_dir: &[u8]) -> Result<usize, Fat12Error> {
+    let entry_count = core::cmp::min(ROOT_DIRECTORY_ENTRIES, root_dir.len() / DIRECTORY_ENTRY_SIZE);
+    for entry_idx in 0..entry_count {
+        let start = entry_idx * DIRECTORY_ENTRY_SIZE;
+        let first_char = root_dir[start];
+        if first_char == 0x00 || first_char == 0xE5 {
+            return Ok(entry_idx);
+        }
+    }
+    Err(Fat12Error::NotFound)
+}
+
+/// Formats and updates the system RTC date/time from BIB into FAT timestamp structure.
+fn get_current_fat_date_time() -> (u16, u16) {
+    // SAFETY:
+    // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
+    // - `BIB_OFFSET` points to bootloader-populated BIOS info in low memory.
+    let bib = unsafe { &*(crate::memory::bios::BIB_OFFSET as *const crate::memory::bios::BiosInformationBlock) };
+
+    let year = if bib.year >= 1980 { (bib.year - 1980) as u16 } else { 0 };
+    let month = (bib.month as u16).clamp(1, 12);
+    let day = (bib.day as u16).clamp(1, 31);
+    let fat_date = (year << 9) | (month << 5) | day;
+
+    let hour = (bib.hour as u16).clamp(0, 23);
+    let minute = (bib.minute as u16).clamp(0, 59);
+    let second = (bib.second as u16).clamp(0, 59) / 2;
+    let fat_time = (hour << 11) | (minute << 5) | second;
+
+    (fat_date, fat_time)
+}
+
+/// Creates a new directory entry at `entry_idx`.
+fn create_directory_entry(root_dir: &mut [u8], entry_idx: usize, normalized_name: &[u8; 11], first_cluster: u16) {
+    let start = entry_idx * DIRECTORY_ENTRY_SIZE;
+    let entry_bytes = &mut root_dir[start..start + DIRECTORY_ENTRY_SIZE];
+
+    entry_bytes.fill(0);
+    entry_bytes[0..11].copy_from_slice(normalized_name);
+    entry_bytes[ATTR_OFFSET] = 0x00; // Archive / Normal file
+
+    let first_cluster_bytes = first_cluster.to_le_bytes();
+    entry_bytes[FIRST_CLUSTER_OFFSET] = first_cluster_bytes[0];
+    entry_bytes[FIRST_CLUSTER_OFFSET + 1] = first_cluster_bytes[1];
+
+    let (date, time) = get_current_fat_date_time();
+    let date_bytes = date.to_le_bytes();
+    let time_bytes = time.to_le_bytes();
+
+    entry_bytes[14..16].copy_from_slice(&time_bytes);
+    entry_bytes[16..18].copy_from_slice(&date_bytes);
+    entry_bytes[18..20].copy_from_slice(&date_bytes);
+    entry_bytes[22..24].copy_from_slice(&time_bytes);
+    entry_bytes[24..26].copy_from_slice(&date_bytes);
+}
+
+/// Updates size and first cluster field in the directory entry.
+fn update_file_entry(root_dir: &mut [u8], entry_idx: usize, file_size: u32, first_cluster: u16) {
+    let start = entry_idx * DIRECTORY_ENTRY_SIZE;
+    let entry_bytes = &mut root_dir[start..start + DIRECTORY_ENTRY_SIZE];
+
+    let first_cluster_bytes = first_cluster.to_le_bytes();
+    entry_bytes[FIRST_CLUSTER_OFFSET] = first_cluster_bytes[0];
+    entry_bytes[FIRST_CLUSTER_OFFSET + 1] = first_cluster_bytes[1];
+
+    let size_bytes = file_size.to_le_bytes();
+    entry_bytes[FILE_SIZE_OFFSET..FILE_SIZE_OFFSET + 4].copy_from_slice(&size_bytes);
+
+    let (date, time) = get_current_fat_date_time();
+    let date_bytes = date.to_le_bytes();
+    let time_bytes = time.to_le_bytes();
+
+    entry_bytes[18..20].copy_from_slice(&date_bytes);
+    entry_bytes[22..24].copy_from_slice(&time_bytes);
+    entry_bytes[24..26].copy_from_slice(&date_bytes);
+}
+
+/// Sets first char of file name to 0xE5 (deleted marker).
+fn delete_file_entry(root_dir: &mut [u8], entry_idx: usize) {
+    let start = entry_idx * DIRECTORY_ENTRY_SIZE;
+    root_dir[start] = 0xE5;
+}
+
+/// File opening mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileMode {
+    Read,
+    Write,
+    Append,
+}
+
+/// File descriptor instance inside the active FD table.
+pub struct FileDescriptor {
+    pub fd: usize,
+    pub file_name: [u8; 11],
+    pub mode: FileMode,
+    pub start_cluster: u16,
+    pub current_cluster: u16,
+    pub current_offset: u32,
+    pub file_size: u32,
+    pub root_entry_index: usize,
+}
+
+static FILE_DESCRIPTORS: crate::sync::spinlock::SpinLock<Vec<FileDescriptor>> =
+    crate::sync::spinlock::SpinLock::new(Vec::new());
+
+/// Open a file in FAT12. Returns the file descriptor ID on success.
+pub fn open_file(file_name: &str, mode: FileMode) -> Result<usize, Fat12Error> {
+    let normalized_name = normalize_8_3_name(file_name)?;
+    let mut root_dir = read_root_directory_from_disk()?;
+    let mut fat = read_fat_from_disk()?;
+
+    let mut entry_index = None;
+    for entry_idx in 0..ROOT_DIRECTORY_ENTRIES {
+        let start = entry_idx * DIRECTORY_ENTRY_SIZE;
+        let entry_bytes = &root_dir[start..start + DIRECTORY_ENTRY_SIZE];
+        let entry = RawRootDirectoryEntry {
+            bytes: {
+                let mut b = [0u8; DIRECTORY_ENTRY_SIZE];
+                b.copy_from_slice(entry_bytes);
+                b
+            }
+        };
+
+        match entry.state() {
+            EntryState::End => break,
+            EntryState::Skip => continue,
+            EntryState::Active => {
+                if entry.short_name_raw() == normalized_name {
+                    entry_index = Some((entry_idx, entry.first_cluster(), entry.file_size(), entry.attributes()));
+                    break;
+                }
+            }
+        }
+    }
+
+    let mut fds = FILE_DESCRIPTORS.lock();
+    let next_fd = fds.iter().map(|fd| fd.fd).max().unwrap_or(0) + 1;
+
+    match mode {
+        FileMode::Read => {
+            let (idx, first_cluster, size, attr) = entry_index.ok_or(Fat12Error::NotFound)?;
+            if attr & ATTR_DIRECTORY != 0 {
+                return Err(Fat12Error::IsDirectory);
+            }
+
+            let fd_entry = FileDescriptor {
+                fd: next_fd,
+                file_name: normalized_name,
+                mode,
+                start_cluster: first_cluster,
+                current_cluster: first_cluster,
+                current_offset: 0,
+                file_size: size,
+                root_entry_index: idx,
+            };
+            fds.push(fd_entry);
+            Ok(next_fd)
+        }
+        FileMode::Write => {
+            let (idx, start_cluster) = if let Some((idx, first_cluster, _, _)) = entry_index {
+                deallocate_cluster_chain(&mut fat, first_cluster)?;
+                update_file_entry(&mut root_dir, idx, 0, 0);
+                (idx, 0)
+            } else {
+                let idx = find_free_directory_slot(&root_dir)?;
+                create_directory_entry(&mut root_dir, idx, &normalized_name, 0);
+                (idx, 0)
+            };
+
+            write_root_directory_to_disk(&root_dir)?;
+            write_fat_to_disk(&fat)?;
+
+            let fd_entry = FileDescriptor {
+                fd: next_fd,
+                file_name: normalized_name,
+                mode,
+                start_cluster,
+                current_cluster: start_cluster,
+                current_offset: 0,
+                file_size: 0,
+                root_entry_index: idx,
+            };
+            fds.push(fd_entry);
+            Ok(next_fd)
+        }
+        FileMode::Append => {
+            let (idx, start_cluster, size) = if let Some((idx, first_cluster, size, _)) = entry_index {
+                (idx, first_cluster, size)
+            } else {
+                let idx = find_free_directory_slot(&root_dir)?;
+                create_directory_entry(&mut root_dir, idx, &normalized_name, 0);
+                write_root_directory_to_disk(&root_dir)?;
+                (idx, 0, 0)
+            };
+
+            let fd_entry = FileDescriptor {
+                fd: next_fd,
+                file_name: normalized_name,
+                mode,
+                start_cluster,
+                current_cluster: start_cluster,
+                current_offset: size,
+                file_size: size,
+                root_entry_index: idx,
+            };
+            fds.push(fd_entry);
+            Ok(next_fd)
+        }
+    }
+}
+
+/// Closes the active file descriptor.
+pub fn close_file(fd: usize) -> Result<(), Fat12Error> {
+    let mut fds = FILE_DESCRIPTORS.lock();
+    if let Some(pos) = fds.iter().position(|entry| entry.fd == fd) {
+        fds.remove(pos);
+        Ok(())
+    } else {
+        Err(Fat12Error::NotFound)
+    }
+}
+
+/// Seeks to a specific offset within the file descriptor.
+pub fn seek_file(fd: usize, offset: u32) -> Result<(), Fat12Error> {
+    let mut fds = FILE_DESCRIPTORS.lock();
+    if let Some(entry) = fds.iter_mut().find(|e| e.fd == fd) {
+        if offset > entry.file_size {
+            return Err(Fat12Error::UnexpectedEof);
+        }
+        entry.current_offset = offset;
+        Ok(())
+    } else {
+        Err(Fat12Error::NotFound)
+    }
+}
+
+/// Returns whether the file offset has reached the end of the file.
+pub fn eof_file(fd: usize) -> Result<bool, Fat12Error> {
+    let fds = FILE_DESCRIPTORS.lock();
+    if let Some(entry) = fds.iter().find(|e| e.fd == fd) {
+        Ok(entry.current_offset >= entry.file_size)
+    } else {
+        Err(Fat12Error::NotFound)
+    }
+}
+
+/// Reads data from a file descriptor into `buffer`.
+pub fn read_file_fd(fd: usize, buffer: &mut [u8]) -> Result<usize, Fat12Error> {
+    let mut fds = FILE_DESCRIPTORS.lock();
+    let entry = fds.iter_mut().find(|e| e.fd == fd).ok_or(Fat12Error::NotFound)?;
+
+    if entry.current_offset >= entry.file_size {
+        return Ok(0);
+    }
+
+    let bytes_to_read = core::cmp::min(buffer.len(), (entry.file_size - entry.current_offset) as usize);
+    if bytes_to_read == 0 {
+        return Ok(0);
+    }
+
+    let fat = read_fat_from_disk()?;
+    let cluster_offset = (entry.current_offset as usize) / BYTES_PER_SECTOR;
+    let byte_offset = (entry.current_offset as usize) % BYTES_PER_SECTOR;
+
+    let mut current_cluster = entry.start_cluster;
+
+    for _ in 0..cluster_offset {
+        current_cluster = fat12_next_cluster(&fat, current_cluster)?;
+        if current_cluster >= FAT12_EOF_MIN || current_cluster < FAT12_MIN_DATA_CLUSTER {
+            return Err(Fat12Error::CorruptFatChain);
+        }
+    }
+
+    let mut bytes_read = 0;
+    let mut temp_buffer = [0u8; BYTES_PER_SECTOR];
+
+    while bytes_read < bytes_to_read {
+        let cluster_lba = cluster_to_lba(current_cluster)?;
+        drivers::ata::read_sectors(&mut temp_buffer, cluster_lba, 1)?;
+
+        let chunk_offset = if bytes_read == 0 { byte_offset } else { 0 };
+        let chunk_len = core::cmp::min(bytes_to_read - bytes_read, BYTES_PER_SECTOR - chunk_offset);
+
+        buffer[bytes_read..bytes_read + chunk_len].copy_from_slice(&temp_buffer[chunk_offset..chunk_offset + chunk_len]);
+
+        bytes_read += chunk_len;
+        entry.current_offset += chunk_len as u32;
+
+        if bytes_read < bytes_to_read {
+            current_cluster = fat12_next_cluster(&fat, current_cluster)?;
+            if current_cluster >= FAT12_EOF_MIN || current_cluster < FAT12_MIN_DATA_CLUSTER {
+                return Err(Fat12Error::CorruptFatChain);
+            }
+        }
+    }
+
+    entry.current_cluster = current_cluster;
+    Ok(bytes_read)
+}
+
+/// Writes data from `buffer` into a file descriptor.
+pub fn write_file_fd(fd: usize, buffer: &[u8]) -> Result<usize, Fat12Error> {
+    let mut fds = FILE_DESCRIPTORS.lock();
+    let entry = fds.iter_mut().find(|e| e.fd == fd).ok_or(Fat12Error::NotFound)?;
+
+    if entry.mode == FileMode::Read {
+        return Err(Fat12Error::IsDirectory);
+    }
+
+    let bytes_to_write = buffer.len();
+    if bytes_to_write == 0 {
+        return Ok(0);
+    }
+
+    let mut root_dir = read_root_directory_from_disk()?;
+    let mut fat = read_fat_from_disk()?;
+
+    let mut current_cluster = entry.start_cluster;
+    let cluster_offset = (entry.current_offset as usize) / BYTES_PER_SECTOR;
+    let byte_offset = (entry.current_offset as usize) % BYTES_PER_SECTOR;
+
+    if current_cluster == 0 {
+        current_cluster = allocate_new_cluster(&mut fat, 0)?;
+        entry.start_cluster = current_cluster;
+    } else {
+        for _ in 0..cluster_offset {
+            let mut next = fat12_next_cluster(&fat, current_cluster)?;
+            if next >= FAT12_EOF_MIN || next < FAT12_MIN_DATA_CLUSTER {
+                next = allocate_new_cluster(&mut fat, current_cluster)?;
+            }
+            current_cluster = next;
+        }
+    }
+
+    let mut bytes_written = 0;
+    let mut temp_buffer = [0u8; BYTES_PER_SECTOR];
+
+    while bytes_written < bytes_to_write {
+        let cluster_lba = cluster_to_lba(current_cluster)?;
+        let chunk_offset = if bytes_written == 0 { byte_offset } else { 0 };
+        let chunk_len = core::cmp::min(bytes_to_write - bytes_written, BYTES_PER_SECTOR - chunk_offset);
+
+        if chunk_len < BYTES_PER_SECTOR {
+            drivers::ata::read_sectors(&mut temp_buffer, cluster_lba, 1)?;
+        }
+
+        temp_buffer[chunk_offset..chunk_offset + chunk_len].copy_from_slice(&buffer[bytes_written..bytes_written + chunk_len]);
+        drivers::ata::write_sectors(&temp_buffer, cluster_lba, 1)?;
+
+        bytes_written += chunk_len;
+        entry.current_offset += chunk_len as u32;
+
+        if bytes_written < bytes_to_write {
+            let mut next = fat12_next_cluster(&fat, current_cluster)?;
+            if next >= FAT12_EOF_MIN || next < FAT12_MIN_DATA_CLUSTER {
+                next = allocate_new_cluster(&mut fat, current_cluster)?;
+            }
+            current_cluster = next;
+        }
+    }
+
+    entry.current_cluster = current_cluster;
+    if entry.current_offset > entry.file_size {
+        entry.file_size = entry.current_offset;
+    }
+
+    update_file_entry(&mut root_dir, entry.root_entry_index, entry.file_size, entry.start_cluster);
+    write_root_directory_to_disk(&root_dir)?;
+    write_fat_to_disk(&fat)?;
+
+    Ok(bytes_written)
+}
+
+/// Deletes a file by its 8.3 name.
+pub fn delete_file(file_name: &str) -> Result<(), Fat12Error> {
+    let normalized_name = normalize_8_3_name(file_name)?;
+    let mut root_dir = read_root_directory_from_disk()?;
+    let mut fat = read_fat_from_disk()?;
+
+    let mut entry_index = None;
+    for entry_idx in 0..ROOT_DIRECTORY_ENTRIES {
+        let start = entry_idx * DIRECTORY_ENTRY_SIZE;
+        let entry_bytes = &root_dir[start..start + DIRECTORY_ENTRY_SIZE];
+        let entry = RawRootDirectoryEntry {
+            bytes: {
+                let mut b = [0u8; DIRECTORY_ENTRY_SIZE];
+                b.copy_from_slice(entry_bytes);
+                b
+            }
+        };
+
+        match entry.state() {
+            EntryState::End => break,
+            EntryState::Skip => continue,
+            EntryState::Active => {
+                if entry.short_name_raw() == normalized_name {
+                    entry_index = Some((entry_idx, entry.first_cluster(), entry.attributes()));
+                    break;
+                }
+            }
+        }
+    }
+
+    let (idx, first_cluster, attr) = entry_index.ok_or(Fat12Error::NotFound)?;
+    if attr & ATTR_DIRECTORY != 0 {
+        return Err(Fat12Error::IsDirectory);
+    }
+
+    deallocate_cluster_chain(&mut fat, first_cluster)?;
+    delete_file_entry(&mut root_dir, idx);
+
+    write_root_directory_to_disk(&root_dir)?;
+    write_fat_to_disk(&fat)?;
+
+    Ok(())
+}
+

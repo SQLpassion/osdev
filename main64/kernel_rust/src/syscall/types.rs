@@ -17,7 +17,24 @@ pub enum SyscallId {
     /// Set VGA cursor position (`arg0=row`, `arg1=col`).
     SetCursor = 6,
     /// Clear VGA text screen and reset cursor to origin.
+    /// Clear VGA text screen and reset cursor to origin.
     ClearScreen = 7,
+    /// Open a file in the file system.
+    OpenFile = 8,
+    /// Close an active file descriptor.
+    CloseFile = 9,
+    /// Read data from an active file descriptor.
+    ReadFile = 10,
+    /// Write data to an active file descriptor.
+    WriteFile = 11,
+    /// Delete a file from the file system.
+    DeleteFile = 12,
+    /// Seek to a specific offset in a file descriptor.
+    SeekFile = 13,
+    /// Return whether the file descriptor has reached EOF.
+    EndOfFile = 14,
+    /// Print the root directory listing of the disk.
+    PrintRootDirectory = 15,
 }
 
 impl SyscallId {
@@ -44,6 +61,30 @@ impl SyscallId {
 
     /// Syscall number for ClearScreen.
     pub const CLEAR_SCREEN: u64 = Self::ClearScreen as u64;
+
+    /// Syscall number for OpenFile.
+    pub const OPEN_FILE: u64 = Self::OpenFile as u64;
+
+    /// Syscall number for CloseFile.
+    pub const CLOSE_FILE: u64 = Self::CloseFile as u64;
+
+    /// Syscall number for ReadFile.
+    pub const READ_FILE: u64 = Self::ReadFile as u64;
+
+    /// Syscall number for WriteFile.
+    pub const WRITE_FILE: u64 = Self::WriteFile as u64;
+
+    /// Syscall number for DeleteFile.
+    pub const DELETE_FILE: u64 = Self::DeleteFile as u64;
+
+    /// Syscall number for SeekFile.
+    pub const SEEK_FILE: u64 = Self::SeekFile as u64;
+
+    /// Syscall number for EndOfFile.
+    pub const END_OF_FILE: u64 = Self::EndOfFile as u64;
+
+    /// Syscall number for PrintRootDirectory.
+    pub const PRINT_ROOT_DIRECTORY: u64 = Self::PrintRootDirectory as u64;
 }
 
 /// Unknown syscall number.
