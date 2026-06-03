@@ -24,11 +24,11 @@
 use crate::drivers::keyboard::{self, Key};
 use crate::drivers::screen::{Color, with_screen};
 use crate::tui::{
-    Gauge, Label, List, ProgressBar, Table, Tabs, TextBox, SCREEN_COLS, SCREEN_ROWS,
+    Gauge, Label, List, ProgressBar, Table, Tabs, TextBox, TreeView, SCREEN_COLS, SCREEN_ROWS,
 };
 
 /// Number of demo tabs (must match the tabs added in `run_demo`).
-const TAB_COUNT: usize = 4;
+const TAB_COUNT: usize = 5;
 
 /// Top-level TUI application.
 ///
@@ -62,6 +62,9 @@ pub struct TuiApp {
     bar1:           ProgressBar,
     bar2:           ProgressBar,
     bar3:           ProgressBar,
+
+    // ── Tab 4: Tree ───────────────────────────────────────────────
+    tree_view: TreeView,
 }
 
 impl TuiApp {
@@ -90,6 +93,7 @@ impl TuiApp {
         bar1:           ProgressBar,
         bar2:           ProgressBar,
         bar3:           ProgressBar,
+        tree_view:      TreeView,
     ) -> Self {
         Self {
             tabs,
@@ -110,6 +114,7 @@ impl TuiApp {
             bar1,
             bar2,
             bar3,
+            tree_view,
         }
     }
 
@@ -139,6 +144,14 @@ impl TuiApp {
                 // focused widget on the current tab).
                 Key::ArrowUp   => self.navigate_up(),
                 Key::ArrowDown => self.navigate_down(),
+
+                // Keyboard selection/expansion trigger.
+                Key::Enter => {
+                    // Step 1: If on the TreeView tab, toggle expansion of the node.
+                    if self.tabs.active() == 4 {
+                        self.tree_view.toggle_selected();
+                    }
+                }
 
                 // Quit signals.
                 Key::Escape | Key::Char(b'q') | Key::Char(b'Q') => break,
@@ -194,6 +207,10 @@ impl TuiApp {
                 self.bar2.draw();
                 self.bar3.draw();
             }
+            4 => {
+                // Tab 4 — Tree: hierarchical TreeView control.
+                self.tree_view.draw();
+            }
             _ => {}
         }
     }
@@ -222,6 +239,7 @@ impl TuiApp {
         match self.tabs.active() {
             1 => self.mem_table.select_prev(),
             2 => self.devices_list.select_prev(),
+            4 => self.tree_view.select_prev(),
             _ => {}
         }
     }
@@ -232,6 +250,7 @@ impl TuiApp {
         match self.tabs.active() {
             1 => self.mem_table.select_next(),
             2 => self.devices_list.select_next(),
+            4 => self.tree_view.select_next(),
             _ => {}
         }
     }

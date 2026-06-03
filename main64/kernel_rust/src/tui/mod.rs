@@ -39,6 +39,7 @@ pub mod progressbar;
 pub mod table;
 pub mod tabs;
 pub mod textbox;
+pub mod treeview;
 
 pub use app::TuiApp;
 pub use gauge::Gauge;
@@ -48,6 +49,7 @@ pub use progressbar::ProgressBar;
 pub use table::Table;
 pub use tabs::Tabs;
 pub use textbox::TextBox;
+pub use treeview::{TreeNode, TreeView};
 
 /// VGA screen dimensions shared by all widgets.
 pub const SCREEN_ROWS: usize = 25;
@@ -59,6 +61,7 @@ pub const SCREEN_COLS: usize = 80;
 /// It constructs the full `TuiApp` on the stack, enters the event loop, and
 /// restores a clean REPL screen state after the user exits.
 pub fn run_demo() {
+    use alloc::vec;
     use crate::drivers::screen::{Color, with_screen};
 
     // Step 1: blank the screen and hide the hardware cursor so the TUI
@@ -273,6 +276,55 @@ pub fn run_demo() {
     let bar3 = ProgressBar::new(14, 4, 72, 12, Color::White, Color::Black, Color::LightRed);
 
     // ------------------------------------------------------------------
+    // Tab 4 — PCI Devices Tree (TreeView)
+    // ------------------------------------------------------------------
+    use crate::drivers::pci;
+    let devices = pci::get_devices();
+
+    let mut storage_children = alloc::vec::Vec::new();
+    let mut network_children = alloc::vec::Vec::new();
+    let mut display_children = alloc::vec::Vec::new();
+    let mut bridge_children = alloc::vec::Vec::new();
+    let mut other_children = alloc::vec::Vec::new();
+
+    // Group each discovered device based on its PCI class code.
+    for dev in &devices {
+        let vendor_name = pci::vendor_to_str(dev.vendor_id);
+        let class_name = pci::class_to_str(dev.class_code, dev.subclass);
+
+        // Format a detailed node description containing address and info.
+        let label = alloc::format!(
+            "{:02x}:{:02x}.{} | {} | {}",
+            dev.bus,
+            dev.device,
+            dev.function,
+            vendor_name,
+            class_name
+        );
+
+        let node = TreeNode::leaf(label);
+
+        match dev.class_code {
+            0x01 => storage_children.push(node),
+            0x02 => network_children.push(node),
+            0x03 => display_children.push(node),
+            0x06 => bridge_children.push(node),
+            _    => other_children.push(node),
+        }
+    }
+
+    // Assemble the nested categories for PCI devices as root tree nodes.
+    let tree_nodes = vec![
+        TreeNode::new("Storage Controllers", storage_children, true),
+        TreeNode::new("Network Controllers", network_children, true),
+        TreeNode::new("Display Controllers", display_children, true),
+        TreeNode::new("Bridge Devices", bridge_children, false),
+        TreeNode::new("Other Devices", other_children, false),
+    ];
+
+    let tree_view = TreeView::new(1, 0, 80, 23, tree_nodes);
+
+    // ------------------------------------------------------------------
     // Tab bar (row 0, full width)
     // ------------------------------------------------------------------
     let mut tabs = Tabs::new(0, 0, 80);
@@ -280,6 +332,7 @@ pub fn run_demo() {
     tabs.add_tab("Memory");
     tabs.add_tab("Devices");
     tabs.add_tab("System");
+    tabs.add_tab("PCI");
 
     // Step 2: assemble and run the application.
     let mut app = TuiApp::new(
@@ -301,6 +354,7 @@ pub fn run_demo() {
         bar1,
         bar2,
         bar3,
+        tree_view,
     );
 
     app.run();
