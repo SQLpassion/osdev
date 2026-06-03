@@ -1,6 +1,8 @@
 //! PS/2 keyboard driver (Rust port of the C keyboard driver)
 //!
 //! Handles scan code processing and stores decoded input in a ring buffer.
+//! Extended PS/2 scancodes (0xE0 prefix) are decoded into the `Key` enum so
+//! that TUI consumers can react to arrow keys, function keys, and similar.
 
 use crate::arch::port::PortByte;
 use crate::scheduler;
@@ -9,6 +11,36 @@ use crate::sync::singlewaitqueue::SingleWaitQueue;
 use crate::sync::spinlock::SpinLock;
 use crate::sync::waitqueue::WaitQueue;
 use crate::sync::waitqueue_adapter;
+
+/// A fully-decoded keyboard event.
+///
+/// `Char(byte)` carries a printable ASCII byte; all other variants represent
+/// special keys that have no printable equivalent but are meaningful for TUI
+/// navigation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Key {
+    /// Printable ASCII character (includes Enter/Backspace for symmetry with
+    /// the existing `read_char` interface).
+    Char(u8),
+    /// Escape key (0x1B).
+    Escape,
+    /// Backspace key.
+    Backspace,
+    /// Enter / Return key.
+    Enter,
+    /// ↑ arrow key.
+    ArrowUp,
+    /// ↓ arrow key.
+    ArrowDown,
+    /// ← arrow key.
+    ArrowLeft,
+    /// → arrow key.
+    ArrowRight,
+    /// Function key F1–F12.
+    F(u8),
+    /// Any other key whose scancode is not mapped.
+    Unknown,
+}
 
 /// Keyboard controller ports
 const KYBRD_CTRL_STATS_REG: u16 = 0x64;
@@ -26,20 +58,34 @@ const RAW_BUFFER_CAPACITY: usize = 64;
 
 /// Lower-case QWERTZ scan code map (printable ASCII only; 0 == ignored)
 const SCANCODES_LOWER: [u8; SCANCODE_TABLE_LEN] = [
-    0, 0x1B, b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8', b'9', b'0', b's', b'=', 0x08, 0, b'q',
-    b'w', b'e', b'r', b't', b'z', b'u', b'i', b'o', b'p', b'[', b'+', b'\n', 0, b'a', b's', b'd',
-    b'f', b'g', b'h', b'j', b'k', b'l', b'{', b'~', b'<', 0, b'#', b'y', b'x', b'c', b'v', b'b',
-    b'n', b'm', b',', b'.', b'-', 0, b'*', 0, b' ', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    // 0x00..=0x10: error, Esc, 1-9, 0, ß(no ASCII→0), ´(no ASCII→0), Backspace, Tab, q
+    0, 0x1B, b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8', b'9', b'0', 0, 0, 0x08, 0, b'q',
+    // 0x11..=0x20: w, e, r, t, z, u, i, o, p, ü(no ASCII→0), +, Enter, LCtrl, a, s, d
+    b'w', b'e', b'r', b't', b'z', b'u', b'i', b'o', b'p', 0, b'+', b'\n', 0, b'a', b's', b'd',
+    // 0x21..=0x30: f, g, h, j, k, l, ö(no ASCII→0), ä(no ASCII→0), ^, LShift, #, y, x, c, v, b
+    b'f', b'g', b'h', b'j', b'k', b'l', 0, 0, b'^', 0, b'#', b'y', b'x', b'c', b'v', b'b',
+    // 0x31..=0x3F: n, m, ',', '.', -, RShift, Keypad-*, LAlt, Space, CapsLock, F1..F10
+    b'n', b'm', b',', b'.', b'-', 0, b'*', 0, b' ', 0, 0, 0, 0, 0, 0,
+    // 0x40..=0x4F: F6..F10, NumLock, ScrollLock, Keypad 7..9, Keypad-, Keypad 4..6, Keypad+
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    // 0x50..=0x58: Keypad 2..3, Keypad-0, Keypad-Del, Alt-SysRq, 0x55, <(ISO key), F11, F12
+    0, 0, 0, 0, 0, 0, b'<', 0, 0,
 ];
 
 /// Upper-case QWERTZ scan code map (printable ASCII only; 0 == ignored)
 const SCANCODES_UPPER: [u8; SCANCODE_TABLE_LEN] = [
-    0, 0x1B, b'!', b'"', b'0', b'$', b'%', b'&', b'/', b'(', b')', b'=', b'?', b'`', 0x08, 0, b'Q',
-    b'W', b'E', b'R', b'T', b'Z', b'U', b'I', b'O', b'P', b']', b'*', b'\n', 0, b'A', b'S', b'D',
-    b'F', b'G', b'H', b'J', b'K', b'L', b'}', b'@', b'>', 0, b'\\', b'Y', b'X', b'C', b'V', b'B',
-    b'N', b'M', b';', b':', b'_', 0, b'*', 0, b' ', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    // 0x00..=0x10: error, Esc, !"§$%&/()=?, ?(Shift+ß), ´→backtick(Shift+´), Backspace, Tab, Q
+    0, 0x1B, b'!', b'"', b'\x00', b'$', b'%', b'&', b'/', b'(', b')', b'=', b'?', b'`', 0x08, 0, b'Q',
+    // 0x11..=0x20: W, E, R, T, Z, U, I, O, P, Ü(no ASCII→0), *, Enter, LCtrl, A, S, D
+    b'W', b'E', b'R', b'T', b'Z', b'U', b'I', b'O', b'P', 0, b'*', b'\n', 0, b'A', b'S', b'D',
+    // 0x21..=0x30: F, G, H, J, K, L, Ö(no ASCII→0), Ä(no ASCII→0), °(no ASCII→0), LShift, ', Y, X, C, V, B
+    b'F', b'G', b'H', b'J', b'K', b'L', 0, 0, 0, 0, b'\\', b'Y', b'X', b'C', b'V', b'B',
+    // 0x31..=0x3F: N, M, ;, :, _, RShift, Keypad-*, LAlt, Space, CapsLock, F1..F10
+    b'N', b'M', b';', b':', b'_', 0, b'*', 0, b' ', 0, 0, 0, 0, 0, 0,
+    // 0x40..=0x4F: F6..F10, NumLock, ScrollLock, Keypad 7..9, Keypad-, Keypad 4..6, Keypad+
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    // 0x50..=0x58: Keypad 2..3, Keypad-0, Keypad-Del, Alt-SysRq, 0x55, >(ISO key Shift), F11, F12
+    0, 0, 0, 0, 0, 0, b'>', 0, 0,
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -47,6 +93,8 @@ struct KeyboardState {
     shift: bool,
     caps_lock: bool,
     left_ctrl: bool,
+    /// Set when the previous scancode was the 0xE0 extended-key prefix.
+    extended: bool,
 }
 
 impl KeyboardState {
@@ -55,13 +103,20 @@ impl KeyboardState {
             shift: false,
             caps_lock: false,
             left_ctrl: false,
+            extended: false,
         }
     }
 }
 
+/// Capacity of the decoded `Key` event ring buffer.
+const KEY_BUFFER_CAPACITY: usize = 64;
+
 struct Keyboard {
     raw: RingBuffer<RAW_BUFFER_CAPACITY>,
+    /// Decoded ASCII character ring buffer (legacy `read_char` interface).
     buffer: RingBuffer<INPUT_BUFFER_CAPACITY>,
+    /// Decoded `Key` event ring buffer (TUI / extended-key interface).
+    key_buffer: RingBuffer<KEY_BUFFER_CAPACITY>,
 }
 
 impl Keyboard {
@@ -69,6 +124,7 @@ impl Keyboard {
         Self {
             raw: RingBuffer::new(),
             buffer: RingBuffer::new(),
+            key_buffer: RingBuffer::new(),
         }
     }
 }
@@ -95,9 +151,20 @@ static INPUT_WAITQUEUE: WaitQueue = WaitQueue::new();
 pub fn init() {
     KEYBOARD.raw.clear();
     KEYBOARD.buffer.clear();
+    KEYBOARD.key_buffer.clear();
     let mut state = KEYBOARD_STATE.lock();
     *state = KeyboardState::new();
 }
+
+/// Clear the input and key buffers.
+///
+/// This drains any stale keys or characters to prevent input bleeding between
+/// different modes (e.g. from TUI to REPL).
+pub fn clear_buffers() {
+    KEYBOARD.buffer.clear();
+    KEYBOARD.key_buffer.clear();
+}
+
 
 /// Handle IRQ1 (keyboard) top half: enqueue raw scancode and wake the
 /// keyboard worker task so it can decode the scancode into ASCII.
@@ -156,6 +223,84 @@ pub fn read_char_blocking() -> u8 {
     }
 }
 
+/// Read a decoded `Key` event if one is available; returns `None` when the
+/// key-event buffer is empty.
+pub fn read_key() -> Option<Key> {
+    // The key buffer stores the raw byte representation of the Key discriminant
+    // packed by `encode_key` / decoded by `decode_key`.
+    KEYBOARD.key_buffer.pop().map(decode_key)
+}
+
+/// Block the calling task until a `Key` event is available.
+///
+/// Mirrors `read_char_blocking` but drains from the extended key-event buffer
+/// so TUI consumers receive arrow keys, function keys, etc.
+pub fn read_key_blocking() -> Key {
+    loop {
+        if let Some(key) = read_key() {
+            return key;
+        }
+
+        let task_id =
+            scheduler::current_task_id().expect("read_key_blocking called outside scheduled task");
+
+        // Re-use the same INPUT_WAITQUEUE: the keyboard worker wakes it
+        // whenever any decoded input (char or key) becomes available.
+        if waitqueue_adapter::sleep_if_multi(&INPUT_WAITQUEUE, task_id, || {
+            KEYBOARD.key_buffer.is_empty()
+        }).should_yield() {
+            scheduler::yield_now();
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Key encoding helpers
+// ---------------------------------------------------------------------------
+// The `RingBuffer` stores `u8` values.  We pack the `Key` enum into a single
+// byte using a simple tag scheme:
+//   0x00        → Unknown
+//   0x01–0x7F  → Char(byte)  (byte stored directly; 0x00 is not a valid char)
+//   0x80        → Escape
+//   0x81        → Backspace
+//   0x82        → Enter
+//   0x83        → ArrowUp
+//   0x84        → ArrowDown
+//   0x85        → ArrowLeft
+//   0x86        → ArrowRight
+//   0x90–0x9B  → F(1)–F(12)  (0x90 + n - 1)
+// ---------------------------------------------------------------------------
+
+fn encode_key(key: Key) -> u8 {
+    match key {
+        Key::Unknown        => 0x00,
+        Key::Char(b)        => b,
+        Key::Escape         => 0x80,
+        Key::Backspace      => 0x81,
+        Key::Enter          => 0x82,
+        Key::ArrowUp        => 0x83,
+        Key::ArrowDown      => 0x84,
+        Key::ArrowLeft      => 0x85,
+        Key::ArrowRight     => 0x86,
+        Key::F(n)           => 0x8F_u8.saturating_add(n),
+    }
+}
+
+fn decode_key(byte: u8) -> Key {
+    match byte {
+        0x00        => Key::Unknown,
+        0x80        => Key::Escape,
+        0x81        => Key::Backspace,
+        0x82        => Key::Enter,
+        0x83        => Key::ArrowUp,
+        0x84        => Key::ArrowDown,
+        0x85        => Key::ArrowLeft,
+        0x86        => Key::ArrowRight,
+        0x90..=0x9B => Key::F(byte - 0x8F),
+        b           => Key::Char(b),
+    }
+}
+
 /// Keyboard worker task (bottom-half): drains raw scancodes, decodes them
 /// into ASCII characters, and wakes any tasks waiting for input.
 ///
@@ -204,7 +349,11 @@ pub fn process_pending_scancodes() -> bool {
         processed_any = true;
     }
 
-    if processed_any && !KEYBOARD.buffer.is_empty() {
+    // Wake consumers when either the ASCII buffer or the Key buffer has data,
+    // so both `read_char_blocking` and `read_key_blocking` callers are woken.
+    if processed_any
+        && (!KEYBOARD.buffer.is_empty() || !KEYBOARD.key_buffer.is_empty())
+    {
         waitqueue_adapter::wake_all_multi(&INPUT_WAITQUEUE);
     }
 
@@ -212,22 +361,53 @@ pub fn process_pending_scancodes() -> bool {
 }
 
 fn handle_scancode(state: &mut KeyboardState, code: u8) {
+    // 0xE0 marks the start of a two-byte extended scancode sequence.
+    // Record the flag and consume the prefix without producing any key event.
+    if code == 0xE0 {
+        state.extended = true;
+        return;
+    }
+
     if (code & 0x80) != 0 {
+        // Break code: key released.
         handle_break(state, code & 0x7f);
     } else {
+        // Make code: key pressed.
         handle_make(state, code);
     }
+
+    // Clear the extended flag after the second byte has been processed,
+    // regardless of whether it was a break or make code.
+    state.extended = false;
 }
 
 fn handle_break(state: &mut KeyboardState, code: u8) {
-    match code {
-        0x1d => state.left_ctrl = false,
-        0x2a | 0x36 => state.shift = false,
-        _ => {}
+    // Only non-extended modifier releases are meaningful here.
+    if !state.extended {
+        match code {
+            0x1d => state.left_ctrl = false,
+            0x2a | 0x36 => state.shift = false,
+            _ => {}
+        }
     }
 }
 
 fn handle_make(state: &mut KeyboardState, code: u8) {
+    // Extended make codes (preceded by 0xE0) map to special Key variants.
+    if state.extended {
+        let key = match code {
+            0x48 => Key::ArrowUp,
+            0x50 => Key::ArrowDown,
+            0x4B => Key::ArrowLeft,
+            0x4D => Key::ArrowRight,
+            _    => Key::Unknown,
+        };
+        // Push the encoded key into the extended key-event buffer.
+        let _ = KEYBOARD.key_buffer.push(encode_key(key));
+        return;
+    }
+
+    // Non-extended make codes: handle modifiers and function keys first.
     match code {
         0x1d => {
             state.left_ctrl = true;
@@ -241,9 +421,21 @@ fn handle_make(state: &mut KeyboardState, code: u8) {
             state.shift = true;
             return;
         }
+        // F1–F10
+        0x3B => { let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(1)));  return; }
+        0x3C => { let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(2)));  return; }
+        0x3D => { let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(3)));  return; }
+        0x3E => { let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(4)));  return; }
+        0x3F => { let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(5)));  return; }
+        0x40 => { let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(6)));  return; }
+        0x41 => { let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(7)));  return; }
+        0x42 => { let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(8)));  return; }
+        0x43 => { let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(9)));  return; }
+        0x44 => { let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(10))); return; }
         _ => {}
     }
 
+    // Translate the scancode to an ASCII byte using the layout tables.
     let use_upper = if is_alpha(code) {
         state.shift ^ state.caps_lock
     } else {
@@ -256,13 +448,26 @@ fn handle_make(state: &mut KeyboardState, code: u8) {
         &SCANCODES_LOWER
     };
 
-    let Some(&key) = table.get(code as usize) else {
+    let Some(&ascii) = table.get(code as usize) else {
         return;
     };
 
-    if key != 0 {
-        let _ = KEYBOARD.buffer.push(key);
+    if ascii == 0 {
+        return;
     }
+
+    // Push into the legacy ASCII buffer (for `read_char` consumers).
+    let _ = KEYBOARD.buffer.push(ascii);
+
+    // Also push into the extended Key buffer so `read_key` consumers receive
+    // printable characters alongside special keys without a separate poll.
+    let key = match ascii {
+        0x1B => Key::Escape,
+        0x08 => Key::Backspace,
+        b'\n' | b'\r' => Key::Enter,
+        b => Key::Char(b),
+    };
+    let _ = KEYBOARD.key_buffer.push(encode_key(key));
 }
 
 fn is_alpha(code: u8) -> bool {

@@ -395,6 +395,273 @@ impl Screen {
         (self.row, self.col)
     }
 
+    /// Write `text` directly at (`row`, `col`) with explicit colors, without
+    /// advancing the scroll cursor.  Characters that would exceed the right
+    /// edge of the screen are silently clipped.
+    ///
+    /// This is the fundamental TUI primitive: it writes into the VGA buffer
+    /// at an absolute position and never triggers scrolling.
+    pub fn draw_at(&self, row: usize, col: usize, text: &str, fg: Color, bg: Color) {
+        if row >= self.num_rows {
+            return;
+        }
+
+        // Build the attribute byte from the caller-supplied colors.
+        let attr = ((bg as u8) << 4) | (fg as u8);
+        let mut c = col;
+
+        for byte in text.bytes() {
+            if c >= self.num_cols {
+                break;
+            }
+
+            let cell = VgaChar { character: byte, attribute: attr };
+
+            // SAFETY:
+            // - `row` and `c` are both checked to be in-bounds above.
+            // - `vga_ptr` returns a pointer into the MMIO-mapped VGA buffer.
+            // - Volatile write is required for deterministic MMIO behavior.
+            unsafe {
+                core::ptr::write_volatile(self.vga_ptr(row, c), cell);
+            }
+
+            c += 1;
+        }
+    }
+
+    /// Fill a rectangular region with a single character and explicit colors.
+    ///
+    /// Used by the TUI engine to blank widget backgrounds before rendering
+    /// content, ensuring no stale text from previous frames bleeds through.
+    pub fn fill_rect(
+        &self,
+        row: usize,
+        col: usize,
+        width: usize,
+        height: usize,
+        ch: u8,
+        fg: Color,
+        bg: Color,
+    ) {
+        let attr = ((bg as u8) << 4) | (fg as u8);
+
+        // Iterate row-by-row and column-by-column, clamping to screen bounds.
+        for r in row..row.saturating_add(height).min(self.num_rows) {
+            for c in col..col.saturating_add(width).min(self.num_cols) {
+                let cell = VgaChar { character: ch, attribute: attr };
+
+                // SAFETY:
+                // - `r` and `c` are clamped to valid screen dimensions above.
+                // - Volatile write is required for MMIO correctness.
+                unsafe {
+                    core::ptr::write_volatile(self.vga_ptr(r, c), cell);
+                }
+            }
+        }
+    }
+
+    /// Draw a single-line box (border only) using VGA-compatible box-drawing
+    /// characters (code page 437).
+    ///
+    /// The box occupies rows `row..row+height` and columns `col..col+width`.
+    /// Interior cells are left untouched; call `fill_rect` first if a blank
+    /// background is needed.
+    pub fn draw_box(
+        &self,
+        row: usize,
+        col: usize,
+        width: usize,
+        height: usize,
+        fg: Color,
+        bg: Color,
+    ) {
+        if width < 2 || height < 2 {
+            return;
+        }
+
+        // CP437 single-line box-drawing bytes
+        const TL: u8 = 0xDA; // ┌
+        const TR: u8 = 0xBF; // ┐
+        const BL: u8 = 0xC0; // └
+        const BR: u8 = 0xD9; // ┘
+        const H:  u8 = 0xC4; // ─
+        const V:  u8 = 0xB3; // │
+
+        let last_col = col + width - 1;
+        let last_row = row + height - 1;
+
+        // Step 1: top edge
+        self.draw_char_at(row, col, TL, fg, bg);
+        for c in col + 1..last_col {
+            self.draw_char_at(row, c, H, fg, bg);
+        }
+        self.draw_char_at(row, last_col, TR, fg, bg);
+
+        // Step 2: side edges (skip corners already drawn)
+        for r in row + 1..last_row {
+            self.draw_char_at(r, col, V, fg, bg);
+            self.draw_char_at(r, last_col, V, fg, bg);
+        }
+
+        // Step 3: bottom edge
+        self.draw_char_at(last_row, col, BL, fg, bg);
+        for c in col + 1..last_col {
+            self.draw_char_at(last_row, c, H, fg, bg);
+        }
+        self.draw_char_at(last_row, last_col, BR, fg, bg);
+    }
+
+    /// Write a single byte directly at (`row`, `col`) with explicit colors.
+    ///
+    /// Internal helper shared by `draw_at` and `draw_box`.  Out-of-bounds
+    /// coordinates are silently ignored.
+    pub fn draw_char_at(&self, row: usize, col: usize, ch: u8, fg: Color, bg: Color) {
+        if row >= self.num_rows || col >= self.num_cols {
+            return;
+        }
+
+        let attr = ((bg as u8) << 4) | (fg as u8);
+        let cell = VgaChar { character: ch, attribute: attr };
+
+        // SAFETY:
+        // - `row` and `col` are checked to be in-bounds above.
+        // - Volatile write is required for MMIO correctness.
+        unsafe {
+            core::ptr::write_volatile(self.vga_ptr(row, col), cell);
+        }
+    }
+
+    /// Disable the hardware blinking text cursor completely.
+    ///
+    /// On real VGA hardware `hide_cursor` (which moves the cursor off-screen)
+    /// may not be sufficient because the cursor can still be visible at
+    /// position 0 on some implementations.  Setting bit 5 of the Cursor Start
+    /// Register (CRTC index 0x0A) disables the cursor entirely per the VGA
+    /// specification.
+    pub fn disable_hw_cursor(&self) {
+        // SAFETY:
+        // - Hardware port I/O is inherently outside Rust's memory-safety guarantees.
+        // - CRTC register 0x0A (Cursor Start) is a standard VGA register.
+        // - Bit 5 = 1 disables the cursor; this is a pure configuration write.
+        unsafe {
+            let ctrl = crate::arch::port::PortByte::new(VGA_CTRL_REGISTER);
+            let data = crate::arch::port::PortByte::new(VGA_DATA_REGISTER);
+
+            // Select Cursor Start Register and set bit 5 (cursor disable).
+            ctrl.write(0x0A);
+            data.write(0x20);
+        }
+    }
+
+    /// Re-enable the hardware text cursor after a `disable_hw_cursor` call.
+    ///
+    /// Programs the cursor as a two-scanline underline at the bottom of the
+    /// character cell (scanlines 14–15), which is the conventional appearance
+    /// for an 80×25 VGA text mode cursor.
+    pub fn enable_hw_cursor(&self) {
+        // SAFETY:
+        // - Hardware port I/O is inherently outside Rust's memory-safety guarantees.
+        // - CRTC registers 0x0A (Cursor Start) and 0x0B (Cursor End) are
+        //   standard VGA registers for cursor shape configuration.
+        unsafe {
+            let ctrl = crate::arch::port::PortByte::new(VGA_CTRL_REGISTER);
+            let data = crate::arch::port::PortByte::new(VGA_DATA_REGISTER);
+
+            // Cursor Start: scanline 14, bit 5 clear (cursor enabled).
+            ctrl.write(0x0A);
+            data.write(0x0E);
+
+            // Cursor End: scanline 15.
+            ctrl.write(0x0B);
+            data.write(0x0F);
+        }
+    }
+
+    /// Keep `hide_cursor` for backwards compatibility — delegates to
+    /// `disable_hw_cursor` which is more reliable on real hardware.
+    #[allow(dead_code)]
+    pub fn hide_cursor(&self) {
+        self.disable_hw_cursor();
+    }
+
+    /// Disable VGA blink mode by clearing bit 3 of the Attribute Controller
+    /// Mode Control Register (AC index 0x10).
+    ///
+    /// # Why this is necessary
+    ///
+    /// In the default VGA text mode, bit 7 of a character's attribute byte is
+    /// the *blink enable* flag.  Because background colors are stored in
+    /// attribute bits 6:4 (only 3 bits), colors with value ≥ 8 — such as
+    /// `DarkGray (8)`, `LightBlue (9)`, `Pink (13)`, `Yellow (14)` — set bit 7
+    /// when shifted into the background position and therefore cause the
+    /// character cell to blink on real VGA hardware.
+    ///
+    /// Clearing bit 3 of AC register 0x10 switches the hardware into
+    /// *background intensity* mode: bit 7 of the attribute byte becomes the
+    /// high bit of a 4-bit background color field instead of the blink flag.
+    /// All 16 colors can then be used as backgrounds without any blinking.
+    ///
+    /// # Access protocol
+    ///
+    /// The VGA Attribute Controller uses a shared address/data port (0x3C0)
+    /// gated by a flip-flop that must be reset by reading the Input Status
+    /// Register 1 (port 0x3DA) before each transaction.
+    pub fn disable_blink_mode(&self) {
+        // SAFETY:
+        // - Hardware port I/O is inherently outside Rust's memory-safety guarantees.
+        // - The VGA Attribute Controller ports (0x3C0, 0x3C1, 0x3DA) are
+        //   standard x86 VGA registers valid in ring 0.
+        // - The access sequence (ISR1 read → index write → data read/write)
+        //   follows the VGA specification for AC register access.
+        // - Clearing AC[0x10] bit 3 only changes the blink/intensity mode;
+        //   it does not affect video timing or other registers.
+        unsafe {
+            let isr1      = crate::arch::port::PortByte::new(0x3DA); // Input Status Reg 1
+            let ac_addr   = crate::arch::port::PortByte::new(0x3C0); // AC address / data
+            let ac_data_r = crate::arch::port::PortByte::new(0x3C1); // AC data (read-only)
+
+            // Step 1: Reset the AC flip-flop to "address" mode by reading ISR1.
+            let _ = isr1.read();
+
+            // Step 2: Select AC register 0x10 with palette-enable bit (0x20) set
+            //         so that the screen remains visible during the transaction.
+            ac_addr.write(0x10 | 0x20);
+
+            // Step 3: Read the current value of register 0x10.
+            let val = ac_data_r.read();
+
+            // Step 4: Reset flip-flop and write back with blink bit (bit 3) cleared.
+            let _ = isr1.read();
+            ac_addr.write(0x10 | 0x20); // re-select register
+            ac_addr.write(val & !0x08); // write with blink bit cleared
+
+            // Step 5: Restore palette-enable so video output is not suppressed.
+            ac_addr.write(0x20);
+        }
+    }
+
+    /// Re-enable VGA blink mode (restore the default VGA text mode behavior).
+    ///
+    /// After this call, bit 7 of each attribute byte is again interpreted as a
+    /// blink flag, and background colors are limited to 0–7.  Call this when
+    /// transitioning back from the TUI to a context that needs only 8 bg colors.
+    pub fn enable_blink_mode(&self) {
+        // SAFETY: same invariants as `disable_blink_mode`.
+        unsafe {
+            let isr1      = crate::arch::port::PortByte::new(0x3DA);
+            let ac_addr   = crate::arch::port::PortByte::new(0x3C0);
+            let ac_data_r = crate::arch::port::PortByte::new(0x3C1);
+
+            let _ = isr1.read();
+            ac_addr.write(0x10 | 0x20);
+            let val = ac_data_r.read();
+            let _ = isr1.read();
+            ac_addr.write(0x10 | 0x20);
+            ac_addr.write(val | 0x08); // set blink bit
+            ac_addr.write(0x20);
+        }
+    }
+
 }
 
 // Implement the core::fmt::Write trait so write!() works on Screen

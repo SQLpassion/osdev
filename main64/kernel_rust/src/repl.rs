@@ -15,6 +15,7 @@ use crate::memory::pmm;
 use crate::memory::vmm;
 use crate::process;
 use crate::scheduler;
+use crate::tui;
 use crate::user_tasks;
 use core::arch::asm;
 use core::fmt::Write;
@@ -191,6 +192,7 @@ fn execute_command(line: &str) {
                     "  fputest         - run scheduler FPU/SSE smoke tasks in foreground"
                 )
                 .unwrap();
+                writeln!(screen, "  tui             - launch TUI demo (arrows: navigate | q/Esc: quit)").unwrap();
                 writeln!(screen, "  shutdown        - shutdown the system").unwrap();
             });
         }
@@ -465,6 +467,11 @@ fn execute_command(line: &str) {
         },
         "fputest" => {
             run_fpu_scheduler_smoke_test();
+        }
+        "tui" => {
+            // Launch the built-in TUI demo.  This call blocks until the user
+            // presses q or Escape, then restores the REPL screen state.
+            tui::run_demo();
         }
         _ => {
             with_screen(|screen| {

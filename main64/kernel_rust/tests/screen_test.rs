@@ -264,3 +264,35 @@ fn test_panic_screen_writer_writes_without_global_lock() {
         assert!(ch == *byte, "panic writer must write expected byte sequence");
     }
 }
+
+/// Contract: print str with ASCII hyphen renders the character correctly.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "print str with ASCII hyphen renders the character correctly".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_print_str_with_hyphen_renders_correctly() {
+    let mut screen = Screen::new();
+    screen.clear();
+
+    let row = 11usize;
+    let col = 5usize;
+    let test_str = "Physical Memory Manager (PMM) - free-list allocator";
+
+    screen.set_cursor(row, col);
+    screen.print_str(test_str);
+
+    for (idx, &expected_byte) in test_str.as_bytes().iter().enumerate() {
+        let cell = VGA_BUFFER + ((row * VGA_COLS + col + idx) * 2);
+        // SAFETY:
+        // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
+        // - `cell` points to a calculated in-bounds address within the VGA text MMIO buffer.
+        // - Volatile read is required for MMIO to read the character directly from the VGA memory.
+        let ch = unsafe { core::ptr::read_volatile(cell as *const u8) };
+        assert!(
+            ch == expected_byte,
+            "VGA cell must contain the expected character byte"
+        );
+    }
+}
+

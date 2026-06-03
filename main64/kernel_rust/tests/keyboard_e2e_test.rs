@@ -216,3 +216,204 @@ fn test_keyboard_state_does_not_leak_between_test_cases_b_after_init() {
         "init must reset global keyboard state between test cases"
     );
 }
+
+/// Contract: scancode 0x29 (caret/^ key) decodes to '^' without shift.
+/// Given: The subsystem is initialized.
+/// When: The make code 0x29 is enqueued and processed.
+/// Then: read_char returns Some(b'^') – the unshifted character on the German
+///       QWERTZ layout for that physical key.
+/// Failure Impact: Regression in QWERTZ special-character mapping.
+#[test_case]
+fn test_qwertz_caret_key_unshifted() {
+    keyboard::init();
+
+    // 0x29 = caret/circumflex key (^)
+    keyboard::enqueue_raw_scancode(0x29);
+    assert!(
+        keyboard::process_pending_scancodes(),
+        "worker iteration must process scancode 0x29"
+    );
+    assert!(
+        keyboard::read_char() == Some(b'^'),
+        "scancode 0x29 without shift must decode to '^'"
+    );
+}
+
+/// Contract: scancode 0x0C (ß/? key) produces no character unshifted.
+/// Given: The subsystem is initialized.
+/// When: The make code 0x0C is enqueued and processed.
+/// Then: read_char returns None – ß has no ASCII representation and must be
+///       silently ignored by the driver.
+/// Failure Impact: Regression in QWERTZ special-character mapping (ß key).
+#[test_case]
+fn test_qwertz_sz_key_unshifted_yields_no_char() {
+    keyboard::init();
+
+    // 0x0C = ß/? key on German QWERTZ; ß has no ASCII code point.
+    keyboard::enqueue_raw_scancode(0x0c);
+    keyboard::process_pending_scancodes();
+    assert!(
+        keyboard::read_char().is_none(),
+        "scancode 0x0C (ß) must not produce an ASCII character"
+    );
+}
+
+/// Contract: scancode 0x0C with shift decodes to '?'.
+/// Given: The subsystem is initialized with LShift held.
+/// When: The make code 0x0C is enqueued after a shift make code.
+/// Then: read_char returns Some(b'?') – Shift+ß = ? on German QWERTZ.
+/// Failure Impact: Regression in QWERTZ special-character mapping (ß/? key).
+#[test_case]
+fn test_qwertz_sz_key_shifted_yields_question_mark() {
+    keyboard::init();
+
+    // LShift make + 0x0C make + LShift break.
+    keyboard::enqueue_raw_scancode(0x2a);
+    keyboard::enqueue_raw_scancode(0x0c);
+    keyboard::enqueue_raw_scancode(0xaa);
+    assert!(
+        keyboard::process_pending_scancodes(),
+        "worker iteration must process shift + 0x0C sequence"
+    );
+    assert!(
+        keyboard::read_char() == Some(b'?'),
+        "shift + scancode 0x0C must decode to '?'"
+    );
+}
+
+/// Contract: scancode 0x1B (+ /* key) decodes to '+' without shift.
+/// Given: The subsystem is initialized.
+/// When: The make code 0x1B is enqueued and processed.
+/// Then: read_char returns Some(b'+').
+/// Failure Impact: Regression in QWERTZ special-character mapping (+/* key).
+#[test_case]
+fn test_qwertz_plus_key_unshifted() {
+    keyboard::init();
+
+    keyboard::enqueue_raw_scancode(0x1b);
+    assert!(
+        keyboard::process_pending_scancodes(),
+        "worker iteration must process scancode 0x1B"
+    );
+    assert!(
+        keyboard::read_char() == Some(b'+'),
+        "scancode 0x1B without shift must decode to '+'"
+    );
+}
+
+/// Contract: scancode 0x1B with shift decodes to '*'.
+/// Given: The subsystem is initialized with LShift held.
+/// When: The make code 0x1B is enqueued.
+/// Then: read_char returns Some(b'*') – Shift++ = * on German QWERTZ.
+/// Failure Impact: Regression in QWERTZ special-character mapping (+/* key).
+#[test_case]
+fn test_qwertz_plus_key_shifted_yields_star() {
+    keyboard::init();
+
+    keyboard::enqueue_raw_scancode(0x2a);
+    keyboard::enqueue_raw_scancode(0x1b);
+    keyboard::enqueue_raw_scancode(0xaa);
+    assert!(
+        keyboard::process_pending_scancodes(),
+        "worker iteration must process shift + 0x1B sequence"
+    );
+    assert!(
+        keyboard::read_char() == Some(b'*'),
+        "shift + scancode 0x1B must decode to '*'"
+    );
+}
+
+/// Contract: scancode 0x2B (# key) decodes to '#' without shift.
+/// Given: The subsystem is initialized.
+/// When: The make code 0x2B is enqueued and processed.
+/// Then: read_char returns Some(b'#').
+/// Failure Impact: Regression in QWERTZ special-character mapping (# key).
+#[test_case]
+fn test_qwertz_hash_key_unshifted() {
+    keyboard::init();
+
+    keyboard::enqueue_raw_scancode(0x2b);
+    assert!(
+        keyboard::process_pending_scancodes(),
+        "worker iteration must process scancode 0x2B"
+    );
+    assert!(
+        keyboard::read_char() == Some(b'#'),
+        "scancode 0x2B without shift must decode to '#'"
+    );
+}
+
+/// Contract: scancode 0x56 (ISO key <>) decodes to '<' without shift.
+/// Given: The subsystem is initialized.
+/// When: The make code 0x56 is enqueued and processed.
+/// Then: read_char returns Some(b'<') – the ISO key between LShift and Y.
+/// Failure Impact: Regression in QWERTZ special-character mapping (ISO <> key).
+#[test_case]
+fn test_qwertz_iso_key_unshifted_yields_less_than() {
+    keyboard::init();
+
+    // 0x56 = the extra ISO key (between LShift and Z/Y on 102-key QWERTZ).
+    keyboard::enqueue_raw_scancode(0x56);
+    assert!(
+        keyboard::process_pending_scancodes(),
+        "worker iteration must process scancode 0x56"
+    );
+    assert!(
+        keyboard::read_char() == Some(b'<'),
+        "scancode 0x56 without shift must decode to '<'"
+    );
+}
+
+/// Contract: scancode 0x56 with shift decodes to '>'.
+/// Given: The subsystem is initialized with LShift held.
+/// When: The make code 0x56 is enqueued.
+/// Then: read_char returns Some(b'>') – Shift+< = > on German QWERTZ.
+/// Failure Impact: Regression in QWERTZ special-character mapping (ISO <> key).
+#[test_case]
+fn test_qwertz_iso_key_shifted_yields_greater_than() {
+    keyboard::init();
+
+    keyboard::enqueue_raw_scancode(0x2a);
+    keyboard::enqueue_raw_scancode(0x56);
+    keyboard::enqueue_raw_scancode(0xaa);
+    assert!(
+        keyboard::process_pending_scancodes(),
+        "worker iteration must process shift + 0x56 sequence"
+    );
+    assert!(
+        keyboard::read_char() == Some(b'>'),
+        "shift + scancode 0x56 must decode to '>'"
+    );
+}
+
+/// Contract: clear_buffers drains all input from legacy and key buffers.
+/// Given: The keyboard driver is initialized, and a key event has been processed into the buffers.
+/// When: clear_buffers is called.
+/// Then: subsequent reads from either legacy or key buffer return None.
+/// Failure Impact: Stale key events can leak between different application contexts (like TUI and REPL).
+#[test_case]
+fn test_keyboard_clear_buffers_drains_all_inputs() {
+    keyboard::init();
+
+    // Enqueue 'q' make code (0x10)
+    keyboard::enqueue_raw_scancode(0x10);
+    assert!(
+        keyboard::process_pending_scancodes(),
+        "precondition: keyboard worker should process the scancode"
+    );
+
+    // Verify both buffers are populated
+    assert!(keyboard::read_key().is_some(), "key buffer should not be empty");
+    
+    // Repopulate (reading consumed the event)
+    keyboard::enqueue_raw_scancode(0x10);
+    keyboard::process_pending_scancodes();
+
+    // Call clear_buffers
+    keyboard::clear_buffers();
+
+    // Verify both are now empty
+    assert!(keyboard::read_char().is_none(), "legacy buffer must be empty after clear_buffers");
+    assert!(keyboard::read_key().is_none(), "key buffer must be empty after clear_buffers");
+}
+
