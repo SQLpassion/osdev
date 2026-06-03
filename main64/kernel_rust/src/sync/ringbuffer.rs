@@ -70,6 +70,8 @@ pub struct RingBuffer<const N: usize> {
 
 impl<const N: usize> RingBuffer<N> {
     pub const fn new() -> Self {
+        // Step 1: Initialize the buffer with zero bytes.
+        // Step 2: Initialize both producer head and consumer tail to 0.
         Self {
             buf: UnsafeCell::new([0; N]),
             head_producer: AtomicUsize::new(0),
@@ -78,10 +80,14 @@ impl<const N: usize> RingBuffer<N> {
     }
 
     pub fn is_empty(&self) -> bool {
+        // Step 1: Perform acquire loads on both indices to check if they are equal.
+        // If tail equals head, there are no unread bytes in the buffer.
         self.tail_consumer.load(Ordering::Acquire) == self.head_producer.load(Ordering::Acquire)
     }
 
     pub fn clear(&self) {
+        // Step 1: Reset both indices to 0 using relaxed stores, since there are no ordering
+        // constraints required for clearing/invalidating the buffer.
         self.head_producer.store(0, Ordering::Relaxed);
         self.tail_consumer.store(0, Ordering::Relaxed);
     }
@@ -95,17 +101,20 @@ impl<const N: usize> RingBuffer<N> {
     /// visible to any consumer that later observes the new `head_producer`
     /// value via an `Acquire` load.
     pub fn push(&self, value: u8) -> bool {
+        // Step 1: Load current head and calculate next prospective index using modulo N.
         let head = self.head_producer.load(Ordering::Relaxed);
         let next = (head + 1) % N;
+
+        // Step 2: Load current tail with Acquire ordering to observe consumer updates.
         let tail = self.tail_consumer.load(Ordering::Acquire);
 
-        // Buffer full: the next slot would collide with tail_consumer.
-        // One slot is intentionally wasted so that full != empty.
+        // Step 3: Check if the buffer is full. If the next index equals the tail,
+        // we cannot write because one slot is left empty to distinguish full vs empty.
         if next == tail {
             return false;
         }
 
-        // Write the byte *before* publishing the new head_producer.
+        // Step 4: Write the byte *before* publishing the new head_producer.
         // SAFETY:
         // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
         // - Single-producer contract guarantees exclusive writes to `head` slot.
@@ -114,7 +123,7 @@ impl<const N: usize> RingBuffer<N> {
             (*self.buf.get())[head] = value;
         }
 
-        // Publish: consumers can now see this slot.
+        // Step 5: Publish the new head index using Release ordering so consumers can safely read the byte.
         self.head_producer.store(next, Ordering::Release);
         true
     }
@@ -142,15 +151,16 @@ impl<const N: usize> RingBuffer<N> {
     /// always initialised and stable.
     pub fn pop(&self) -> Option<u8> {
         loop {
+            // Step 1: Load both indices with Acquire ordering.
             let tail = self.tail_consumer.load(Ordering::Acquire);
             let head = self.head_producer.load(Ordering::Acquire);
 
+            // Step 2: If the tail is equal to the head, the buffer is empty.
             if tail == head {
                 return None;
             }
 
-            // Speculatively read the value — valid because the producer has
-            // already published this slot (head_producer is past tail_consumer).
+            // Step 3: Speculatively read the byte from the slot.
             // SAFETY:
             // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
             // - `tail != head` guarantees slot is initialized by producer.
@@ -158,9 +168,8 @@ impl<const N: usize> RingBuffer<N> {
             let value = unsafe { (*self.buf.get())[tail] };
             let next = (tail + 1) % N;
 
-            // Try to claim this slot by advancing tail_consumer.  If another
-            // consumer beat us to it, `tail_consumer` has already moved and the
-            // CAS fails — we simply retry with the new tail_consumer value.
+            // Step 4: Attempt to transition tail_consumer from `tail` to `next` atomically.
+            // If another consumer changed tail_consumer in the meantime, CAS fails, and we loop back.
             match self.tail_consumer.compare_exchange_weak(
                 tail,
                 next,

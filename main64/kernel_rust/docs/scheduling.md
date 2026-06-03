@@ -649,345 +649,44 @@ in low-power halt until the next interrupt wakes a task.
 
 ## 14. RingBuffer: Lock-Free SPMC Byte Queue
 
-The kernel uses a lock-free ring buffer (`sync/ringbuffer.rs`) for
-interrupt-safe producer/consumer communication.  The ring buffer is a
-fixed-size circular array that supports **single producer, multiple consumer
-(SPMC)** access without any locks.
+The lock-free `RingBuffer<const N: usize>` provides thread-safe and interrupt-safe producer/consumer communication without using locks.
 
-### Data Structure
-
-```rust
-pub struct RingBuffer<const N: usize> {
-    buf: UnsafeCell<[u8; N]>,
-    head_producer: AtomicUsize,   // write index (producer side)
-    tail_consumer: AtomicUsize,   // read index (consumer side)
-}
-```
-
-### Memory Layout
-
-Both indices advance with modular arithmetic (`% N`), wrapping from the last
-slot back to index 0.  This makes the fixed-size array reusable cyclically:
-
-```
-   tail_consumer      head_producer
-        ▼                   ▼
-  ┌───┬───┬───┬───┬───┬───┬───┬───┐
-  │   │ A │ B │ C │ D │   │   │   │   N = 8
-  └───┴───┴───┴───┴───┴───┴───┴───┘
-        ▲               ▲
-      pop()           push()
-   (consumers)      (producer)
-```
-
-After enough push/pop operations, both indices wrap around so that
-`head_producer` is at a lower array index than `tail_consumer`:
-
-```
-         head_producer   tail_consumer
-              ▼             ▼
-  ┌───┬───┬───┬───┬───┬───┬───┬───┐
-  │ X │ Y │   │   │   │   │ W │   │   N = 8
-  └───┴───┴───┴───┴───┴───┴───┴───┘
-  ← wrapped                  oldest
-```
-
-The buffer is **empty** when `tail_consumer == head_producer` and **full** when
-`(head_producer + 1) % N == tail_consumer`.  One slot is intentionally wasted
-to distinguish full from empty.
-
-### push(): Single Producer
-
-Only one writer may call `push()`.  No Compare-And-Swap (CAS) is needed
-because exactly one producer advances `head_producer`:
-
-```
-push('E'):
-  1. Read head_producer (= 5)
-  2. Compute next = (5 + 1) % 8 = 6
-  3. Read tail_consumer — if next == tail_consumer, buffer is full → return false
-  4. Write 'E' into buf[5]                        ← before publishing!
-  5. Store head_producer = 6 (Release ordering)    ← now consumers can see it
-```
-
-The `Release` ordering on step 5 guarantees that the write in step 4 is visible
-to any consumer that subsequently loads `head_producer` with `Acquire`.
-
-### pop(): Multiple Consumers with CAS
-
-Multiple tasks may call `pop()` concurrently.  A **Compare-And-Swap (CAS)
-loop** prevents two consumers from reading the same element:
-
-```
-Consumer 1: pop()                    Consumer 2: pop()
-  1. Load tail_consumer (= 1)         1. Load tail_consumer (= 1)
-  2. Load head_producer (= 5)         2. Load head_producer (= 5)
-  3. Read buf[1] → 'A'                3. Read buf[1] → 'A'    (speculative!)
-  4. CAS(tail, 1→2): SUCCESS ✓        4. CAS(tail, 1→2): FAIL ✗ (now tail=2)
-  5. Return Some('A')                 5. Loop: reload tail=2, read buf[2]→'B'
-                                      6. CAS(tail, 2→3): SUCCESS ✓
-                                      7. Return Some('B')
-```
-
-Without CAS, both consumers would observe `tail_consumer = 1`, both read `'A'`,
-and both advance `tail_consumer` to 2 — delivering `'A'` twice and losing `'B'`.
-
-The CAS uses `compare_exchange_weak` which is allowed to spuriously fail.  On
-failure, the consumer simply retries from the beginning of the loop.
-
-### Why Speculative Read is Safe
-
-In step 3, the consumer reads `buf[tail_consumer]` **before** confirming
-ownership via CAS.  This is safe because:
-
-- The producer only writes to `buf[head_producer]` *before* advancing
-  `head_producer` with `Release` ordering.
-- The consumer reads `head_producer` with `Acquire` ordering in step 2.
-- Any slot between `tail_consumer` and `head_producer` has already been written
-  by the producer and will not be overwritten until the consumer advances
-  `tail_consumer` past it.
-
-### Usage in the Keyboard Driver
-
-Two ring buffers are used with different access patterns:
-
-| Buffer | Capacity | Producer | Consumer(s) | Pattern |
-|--------|----------|----------|-------------|---------|
-| `KEYBOARD.raw` | 64 | IRQ handler (`handle_irq`) | Keyboard worker task | SPSC |
-| `KEYBOARD.buffer` | 256 | Keyboard worker (`handle_scancode`) | Any task (`read_char_blocking`) | SPMC |
-
-Both use the same `RingBuffer<N>` type.  For `raw`, the CAS in `pop()` is
-technically unnecessary (only one consumer), but it adds no correctness issues.
+For the detailed layout, memory ordering invariants (Acquire/Release), speculative read safety, and the Compare-and-Swap (CAS) loop used in the multi-consumer pop path, please refer to the detailed synchronization guide:
+* See [sync.md (Section 3: Lock-Free Ring Buffer)](sync.md#3-lock-free-ring-buffer-ringbufferrs)
 
 ---
 
 ## 15. WaitQueue and SingleWaitQueue
 
-Wait queues are the mechanism through which tasks declare "I am waiting for
-something" and other code declares "the something happened".  They are
-**scheduler-agnostic** — they only track waiter registration using atomic
-operations.  The actual blocking/unblocking of tasks is handled by the adapter
-layer (section 16).
+Wait queues allow tasks to register for events and block/wake up dynamically.
+* **`SingleWaitQueue`**: A lock-free, zero-allocation wait-queue supporting at most one waiter. Optimized for driver architectures (e.g. `RAW_WAITQUEUE` for keyboard scancodes) to save atomic storage and O(N) traversal.
+* **`WaitQueue`**: A thread-safe, multi-waiter queue utilizing an internal `SpinLock` around a dynamically heap-allocated `Vec<usize>` representing waiter task IDs. It features OOM protection via `try_reserve(1)` and a double-buffer recycling wake strategy.
 
-### WaitQueue\<N\> — Multiple Waiters, Wake-All Semantics
-
-```rust
-pub struct WaitQueue<const N: usize> {
-    waiters: [AtomicBool; N],   // waiters[task_id] = true → task is waiting
-}
-```
-
-An array of atomic booleans, indexed by task ID.  When task 3 registers as a
-waiter, `waiters[3]` is set to `true`.  When `wake_all()` is called, it
-iterates all N slots, atomically swaps each `true` to `false`, and calls the
-wake callback for each one:
-
-```
-Initial state:  [false, false, false, true, false, false, true, false]
-                                       ▲                   ▲
-                                     task 3              task 6
-
-wake_all(callback):
-  slot 0: false → skip
-  slot 1: false → skip
-  slot 2: false → skip
-  slot 3: swap(false) returns true → callback(3)
-  slot 4: false → skip
-  slot 5: false → skip
-  slot 6: swap(false) returns true → callback(6)
-  slot 7: false → skip
-
-After:          [false, false, false, false, false, false, false, false]
-```
-
-The atomic `swap` guarantees that each waiter is woken exactly once, even if
-`wake_all()` is called concurrently from multiple contexts.
-
-**Usage**: `INPUT_WAITQUEUE` — multiple consumer tasks can wait for decoded
-keyboard characters simultaneously.
-
-### SingleWaitQueue — One Waiter, Atomic Slot
-
-```rust
-pub struct SingleWaitQueue {
-    waiter: AtomicUsize,   // stores task_id or NO_WAITER (usize::MAX)
-}
-```
-
-Optimized for the case where at most one task waits.  Uses a single
-`AtomicUsize` instead of an array:
-
-- **`register_waiter(task_id)`**: Atomically replaces `NO_WAITER` with
-  `task_id` using CAS.  Fails if a different task is already registered.
-  Succeeds silently if the same task re-registers (idempotent).
-
-- **`wake_all(callback)`**: Atomically swaps `waiter` to `NO_WAITER`.
-  If the previous value was a valid task ID, calls `callback(task_id)`.
-
-```
-register_waiter(2):
-  CAS(NO_WAITER → 2): SUCCESS → waiter = 2
-
-wake_all(callback):
-  swap(NO_WAITER) → returns 2 → callback(2) → waiter = NO_WAITER
-```
-
-**Usage**: `RAW_WAITQUEUE` — only the keyboard worker task waits for raw
-scancodes from the IRQ handler.  Using `SingleWaitQueue` instead of
-`WaitQueue<8>` saves 7 bytes of atomic storage and avoids the O(N) iteration
-in `wake_all`.
-
-### Why Wake-All Instead of Wake-One?
-
-When a keyboard character becomes available, **all** waiting tasks are woken
-(thundering herd).  Each woken task attempts `read_char()` — a `pop()` from the
-ring buffer with CAS.  Only one task succeeds; the others find the buffer empty
-and go back to sleep.
-
-This is simpler than wake-one because it avoids the need to track which task
-should receive which character.  The CAS in `pop()` ensures correct delivery
-regardless of how many tasks race for the same element.
+For struct definitions, lifecycle diagrams, and the double-buffer swap strategy, see the detailed synchronization guide:
+* See [sync.md (Section 4: Scheduler-Agnostic Wait Queues)](sync.md#4-scheduler-agnostic-wait-queues)
 
 ---
 
 ## 16. The waitqueue_adapter: Decoupling Queues from Scheduler
 
-The architecture deliberately separates three concerns:
+The `waitqueue_adapter` layer decouples task wait-queue state tracking from the task scheduler's concrete state machine. It contains:
+* `SleepOutcome`: Enum representing the sleep registration outcome (`Blocked`, `QueueFull`, `ConditionFalse`).
+* `sleep_if_multi` / `sleep_if_single`: Performs atomic checking and registration under local interrupt masking to avoid the lost wakeup problem.
+* `wake_all_multi` / `wake_all_single`: Transitions wait-queue tasks back to `Ready` using `scheduler::unblock_task`.
 
-```
-┌─────────────────────────────────────────────────────────┐
-│  Layer 3: Consumer Code (keyboard.rs, apps/mod.rs)      │
-│  Uses: sleep_if_multi(), wake_all_multi(), yield_now()  │
-├─────────────────────────────────────────────────────────┤
-│  Layer 2: waitqueue_adapter.rs                          │
-│  Couples: WaitQueue registration ↔ Scheduler states     │
-│  Uses: queue.register_waiter() + scheduler::block_task()│
-│  Uses: queue.wake_all(scheduler::unblock_task)          │
-├──────────────────────┬──────────────────────────────────┤
-│  Layer 1a:           │  Layer 1b:                       │
-│  WaitQueue /         │  Scheduler                       │
-│  SingleWaitQueue     │  (roundrobin.rs)                 │
-│                      │                                  │
-│  Knows: atomic flags │  Knows: TaskState, SpinLock      │
-│  Does NOT know about │  Does NOT know about             │
-│  TaskState or        │  WaitQueues or atomic flags      │
-│  scheduler           │                                  │
-└──────────────────────┴──────────────────────────────────┘
-```
-
-**Why this separation matters:**
-
-1. **WaitQueues are testable in isolation** — they use only atomic operations,
-   no scheduler dependency.  Unit tests can call `register_waiter()` and
-   `wake_all()` without initializing the scheduler.
-
-2. **The scheduler is testable in isolation** — `block_task()` and
-   `unblock_task()` can be called directly in tests without any WaitQueue.
-
-3. **The adapter is the single point of coupling** — only
-   `waitqueue_adapter.rs` imports both `scheduler` and `waitqueue`.  If the
-   scheduler's blocking API changes, only the adapter needs updating.
-
-### The `sleep_if_*` Pattern
-
-The adapter provides conditional blocking with lost-wakeup protection:
-
-```rust
-pub fn sleep_if_multi<const N: usize>(
-    queue: &WaitQueue<N>,
-    task_id: usize,
-    should_block: impl FnOnce() -> bool,
-) -> bool {
-    let were_enabled = interrupts::are_enabled();
-    interrupts::disable();              // ① no IRQs between check and block
-
-    let mut blocked = should_block();   // ② check condition (e.g. buffer empty?)
-    if blocked {
-        queue.register_waiter(task_id); // ③ register in wait queue
-        scheduler::block_task(task_id); // ④ mark task as Blocked
-    } else {
-        queue.clear_waiter(task_id);    // ⑤ clean up stale registration
-    }
-
-    if were_enabled {
-        interrupts::enable();           // ⑥ restore interrupt state
-    }
-    blocked
-}
-```
-
-The **else branch** (step ⑤) handles the case where a previous iteration
-registered the waiter but the condition is now false (data arrived between
-iterations).  Without clearing, a stale registration would remain.
-
-### The `wake_all_*` Pattern
-
-Waking is straightforward — it delegates to the queue's `wake_all` with
-`scheduler::unblock_task` as the callback:
-
-```rust
-pub fn wake_all_multi<const N: usize>(queue: &WaitQueue<N>) {
-    queue.wake_all(scheduler::unblock_task);
-}
-```
-
-For each registered waiter, this atomically clears the waiter flag and calls
-`unblock_task(task_id)`, which sets `TaskState::Ready` under the scheduler's
-spinlock.
+For the layer diagrams and function flows, see the detailed synchronization guide:
+* See [sync.md (Section 5: Scheduler Adapters)](sync.md#5-scheduler-adapters-waitqueue_adapterrs)
 
 ---
 
 ## 17. Lost-Wakeup Protection
 
-The most subtle bug in any sleep/wake system is the **lost wakeup**:
+To block a task safely, the checking of the condition and enqueuing of the waiter must be atomic with respect to interrupts. Otherwise, an interrupt could trigger a wakeup after the check but before the block, leading to an indefinite sleep (lost wakeup).
 
-```
-Task (wants to sleep):              IRQ handler (wants to wake):
+This is solved by disabling CPU interrupts during the entire check-register-block sequence within the `sleep_if_*` adapter functions.
 
-  1. Check: is buffer empty?  YES
-                                      2. Push data into buffer
-                                      3. wake_all() → no waiters registered!
-  4. Register as waiter
-  5. Block task
-  6. yield_now()
-
-  → DEADLOCK: Task is blocked, but nobody will ever wake it.
-     The data sits in the buffer, unconsumed.
-```
-
-The problem: between checking the condition (step 1) and registering as a
-waiter (step 4), an IRQ handler pushed data and called wake.  But the task was
-not yet registered, so the wake had no effect.
-
-### The Solution: Disable Interrupts Around Check + Register + Block
-
-The `sleep_if_*` functions in the adapter disable interrupts **before** checking
-the condition:
-
-```
-Task (wants to sleep):              IRQ handler (wants to wake):
-
-  1. CLI (disable interrupts)
-  2. Check: is buffer empty?  YES
-     ┌─────────────────────────────────────────────────────────┐
-     │ IRQ CANNOT fire here — interrupts are disabled!         │
-     │ Step 3 from the IRQ handler cannot happen between       │
-     │ our check and our registration.                         │
-     └─────────────────────────────────────────────────────────┘
-  3. Register as waiter
-  4. Block task
-  5. STI (restore interrupts)
-  6. yield_now()
-                                      7. IRQ fires now
-                                      8. Push data into buffer
-                                      9. wake_all() → finds waiter → unblocks
-
-  → CORRECT: Task is woken and can consume the data.
-```
-
-Because interrupts are disabled during the entire check-register-block sequence,
-no IRQ can fire in the critical window.  The wake happens **after** the task has
-registered, so it takes effect.
+For the sequence diagrams and atomic wait protocol analysis, see:
+* See [sync.md (Section 5.2: Atomic Wait Protocol)](sync.md#52-atomic-wait-protocol-sleep_if_)
 
 ---
 
