@@ -51,7 +51,6 @@ struct VgaChar {
     attribute: u8,
 }
 
-
 /// Screen driver state (mirrors C ScreenLocation struct)
 pub struct Screen {
     row: usize,
@@ -415,7 +414,10 @@ impl Screen {
                 break;
             }
 
-            let cell = VgaChar { character: byte, attribute: attr };
+            let cell = VgaChar {
+                character: byte,
+                attribute: attr,
+            };
 
             // SAFETY:
             // - `row` and `c` are both checked to be in-bounds above.
@@ -433,6 +435,7 @@ impl Screen {
     ///
     /// Used by the TUI engine to blank widget backgrounds before rendering
     /// content, ensuring no stale text from previous frames bleeds through.
+    #[allow(clippy::too_many_arguments)]
     pub fn fill_rect(
         &self,
         row: usize,
@@ -448,7 +451,10 @@ impl Screen {
         // Iterate row-by-row and column-by-column, clamping to screen bounds.
         for r in row..row.saturating_add(height).min(self.num_rows) {
             for c in col..col.saturating_add(width).min(self.num_cols) {
-                let cell = VgaChar { character: ch, attribute: attr };
+                let cell = VgaChar {
+                    character: ch,
+                    attribute: attr,
+                };
 
                 // SAFETY:
                 // - `r` and `c` are clamped to valid screen dimensions above.
@@ -484,8 +490,8 @@ impl Screen {
         const TR: u8 = 0xBF; // ┐
         const BL: u8 = 0xC0; // └
         const BR: u8 = 0xD9; // ┘
-        const H:  u8 = 0xC4; // ─
-        const V:  u8 = 0xB3; // │
+        const H: u8 = 0xC4; // ─
+        const V: u8 = 0xB3; // │
 
         let last_col = col + width - 1;
         let last_row = row + height - 1;
@@ -521,7 +527,10 @@ impl Screen {
         }
 
         let attr = ((bg as u8) << 4) | (fg as u8);
-        let cell = VgaChar { character: ch, attribute: attr };
+        let cell = VgaChar {
+            character: ch,
+            attribute: attr,
+        };
 
         // SAFETY:
         // - `row` and `col` are checked to be in-bounds above.
@@ -616,8 +625,8 @@ impl Screen {
         // - Clearing AC[0x10] bit 3 only changes the blink/intensity mode;
         //   it does not affect video timing or other registers.
         unsafe {
-            let isr1      = crate::arch::port::PortByte::new(0x3DA); // Input Status Reg 1
-            let ac_addr   = crate::arch::port::PortByte::new(0x3C0); // AC address / data
+            let isr1 = crate::arch::port::PortByte::new(0x3DA); // Input Status Reg 1
+            let ac_addr = crate::arch::port::PortByte::new(0x3C0); // AC address / data
             let ac_data_r = crate::arch::port::PortByte::new(0x3C1); // AC data (read-only)
 
             // Step 1: Reset the AC flip-flop to "address" mode by reading ISR1.
@@ -648,8 +657,8 @@ impl Screen {
     pub fn enable_blink_mode(&self) {
         // SAFETY: same invariants as `disable_blink_mode`.
         unsafe {
-            let isr1      = crate::arch::port::PortByte::new(0x3DA);
-            let ac_addr   = crate::arch::port::PortByte::new(0x3C0);
+            let isr1 = crate::arch::port::PortByte::new(0x3DA);
+            let ac_addr = crate::arch::port::PortByte::new(0x3C0);
             let ac_data_r = crate::arch::port::PortByte::new(0x3C1);
 
             let _ = isr1.read();
@@ -661,7 +670,6 @@ impl Screen {
             ac_addr.write(0x20);
         }
     }
-
 }
 
 // Implement the core::fmt::Write trait so write!() works on Screen

@@ -1,6 +1,6 @@
 # KAOS Text User Interface (TUI) Framework Architecture Guide
 
-This document provides a comprehensive, deep-dive technical reference for the Text User Interface (TUI) framework built into the KAOS kernel. Running entirely in Ring 0 under `#![no_std]` and with zero heap allocation, the TUI provides a responsive, multi-tab windowing experience directly on bare-metal VGA text-mode hardware.
+This document provides a comprehensive, deep-dive technical reference for the Text User Interface (TUI) framework built into the KAOS kernel. Running entirely in Ring 0 under `#![no_std]` and backed by the kernel's heap allocator, the TUI provides a responsive, dynamically allocated, multi-tab windowing experience directly on bare-metal VGA text-mode hardware.
 
 ---
 
@@ -373,28 +373,33 @@ pub fn run(&mut self) {
 
 ## 4. Widget Tree Design & Layout System
 
-Because the kernel runs in a heap-free environment (`no_std`), we cannot use dynamic allocation (like `Vec` or `Box`) to construct nested widget components at runtime. Instead, the framework relies on stack allocation and compile-time bounds.
+The TUI framework utilizes dynamic memory allocations via the registered global heap allocator (`GLOBAL_ALLOCATOR`). This allows widgets to be configured with dynamic collection structures (specifically `alloc::vec::Vec`) rather than being constrained by fixed-capacity arrays or compile-time limits.
 
-### 4.1 Memory Layout of Stack-Allocated Widgets
-All widgets must declare their maximum size limits using fixed constants. This ensures that the size of all widgets is known at compile time:
+### 4.1 Memory Layout of Dynamically Allocated Widgets
+By using `Vec`, widgets do not need to pre-allocate maximum buffers. Instead, they dynamically expand to fit the size of their data.
+
+For example, the `TextBox` widget uses a `Vec` to store an arbitrary number of lines:
 
 ```rust
-pub const TEXTBOX_MAX_LINES: usize = 24;
+extern crate alloc;
+
+use alloc::vec::Vec;
 
 pub struct TextBox {
     row: usize,
     col: usize,
     width: usize,
     height: usize,
-    lines: [&'static str; TEXTBOX_MAX_LINES],
-    line_count: usize,
+    lines: Vec<&'static str>,
     fg: Color,
     bg: Color,
     border_fg: Color,
 }
 ```
 
-When building a dashboard, these widgets are instantiated on the stack of the main kernel thread. Since kernel threads have a limited stack budget (typically 16KB to 32KB on x86-64 long mode), widgets must only hold pointers or references (`&'static str`) rather than nesting large raw byte arrays.
+Similarly, the `Tabs` selector uses `Vec<&'static str>` for dynamic labels, the `List` widget uses `Vec<&'static str>` for dynamic entries, and the `Table` widget uses `Vec<Vec<&'static str>>` to represent dynamically sized 2D data grids.
+
+When instantiating the widgets, they are created on the stack of the running task, while their underlying collections dynamically allocate memory from the kernel heap.
 
 ### 4.2 Drawing Primitives and Clipping Rules
 Every widget receives layout bounds (`row`, `col`, `width`, `height`) during construction. To ensure widgets do not overwrite adjacent borders, all strings are clipped at render time:

@@ -39,6 +39,7 @@ impl Gauge {
     ///
     /// `label_width` must be smaller than `width` to leave room for the bar.
     /// `fill_color` is the color of the filled portion of the embedded bar.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         row: usize,
         col: usize,

@@ -13,11 +13,11 @@
 //! └──────────────────────────────────────────────────────────────────────────────┘
 //! ```
 
+extern crate alloc;
+
+use alloc::vec::Vec;
 use crate::drivers::screen::{Color, with_screen};
 use crate::tui::{SCREEN_COLS, SCREEN_ROWS};
-
-/// Maximum number of text lines the widget can hold without heap allocation.
-pub const TEXTBOX_MAX_LINES: usize = 24;
 
 /// A multi-line static text widget surrounded by a box border.
 pub struct TextBox {
@@ -29,10 +29,8 @@ pub struct TextBox {
     width: usize,
     /// Total outer height (including the 1-row border at top and bottom).
     height: usize,
-    /// Fixed-size backing array of text lines (`&'static str`).
-    lines: [&'static str; TEXTBOX_MAX_LINES],
-    /// Number of populated entries in `lines`.
-    line_count: usize,
+    /// Dynamic backing array of text lines (`&'static str`).
+    lines: Vec<&'static str>,
     /// Foreground color for the text content.
     fg: Color,
     /// Background color filling the interior.
@@ -44,8 +42,8 @@ pub struct TextBox {
 impl TextBox {
     /// Construct a new `TextBox` from a slice of static string references.
     ///
-    /// Lines beyond `TEXTBOX_MAX_LINES` are silently truncated.  Lines that
-    /// exceed the inner width are clipped at render time by `Screen::draw_at`.
+    /// Lines that exceed the inner width are clipped at render time by `Screen::draw_at`.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         row: usize,
         col: usize,
@@ -56,19 +54,12 @@ impl TextBox {
         bg: Color,
         border_fg: Color,
     ) -> Self {
-        let mut backing = [""; TEXTBOX_MAX_LINES];
-        let count = lines.len().min(TEXTBOX_MAX_LINES);
-        for i in 0..count {
-            backing[i] = lines[i];
-        }
-
         Self {
             row,
             col,
             width,
             height,
-            lines: backing,
-            line_count: count,
+            lines: Vec::from(lines),
             fg,
             bg,
             border_fg,
@@ -104,7 +95,7 @@ impl TextBox {
             );
 
             // Step 3: render each text line; clip at inner_height.
-            for (i, &line) in self.lines[..self.line_count].iter().enumerate() {
+            for (i, &line) in self.lines.iter().enumerate() {
                 if i >= inner_height {
                     break;
                 }

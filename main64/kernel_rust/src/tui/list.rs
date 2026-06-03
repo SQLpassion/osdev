@@ -18,6 +18,9 @@
 //! at once.  When the selected item moves outside the visible window, the
 //! scroll offset is adjusted so the selection is always on screen.
 
+extern crate alloc;
+
+use alloc::vec::Vec;
 use crate::drivers::screen::{Color, with_screen};
 use crate::tui::{SCREEN_COLS, SCREEN_ROWS};
 
@@ -39,11 +42,6 @@ const BORDER_FG: Color = Color::LightCyan;
 /// Box border background color.
 const BORDER_BG: Color = Color::Black;
 
-/// Maximum number of items the list can hold.
-///
-/// This constant-size array avoids heap allocation (`alloc`) in the kernel.
-pub const MAX_ITEMS: usize = 64;
-
 /// A scrollable, selectable list widget.
 pub struct List {
     /// Top-left row of the outer box border.
@@ -54,10 +52,8 @@ pub struct List {
     width: usize,
     /// Total outer height (including the 1-row border at top and bottom).
     height: usize,
-    /// Item strings stored in a fixed-size array (no heap).
-    items: [&'static str; MAX_ITEMS],
-    /// Actual number of populated items.
-    item_count: usize,
+    /// Item strings stored in a dynamic Vec.
+    items: Vec<&'static str>,
     /// Index of the currently highlighted item (0-based, absolute).
     selected: usize,
     /// First visible item index (scroll offset).
@@ -66,8 +62,6 @@ pub struct List {
 
 impl List {
     /// Construct a new `List` from a slice of string references.
-    ///
-    /// Items beyond `MAX_ITEMS` are silently truncated.
     pub fn new(
         row: usize,
         col: usize,
@@ -75,20 +69,12 @@ impl List {
         height: usize,
         items: &[&'static str],
     ) -> Self {
-        // Copy the caller-provided slice into our fixed-size backing array.
-        let mut backing = [""; MAX_ITEMS];
-        let count = items.len().min(MAX_ITEMS);
-        for i in 0..count {
-            backing[i] = items[i];
-        }
-
         Self {
             row,
             col,
             width,
             height,
-            items: backing,
-            item_count: count,
+            items: Vec::from(items),
             selected: 0,
             scroll: 0,
         }
@@ -114,7 +100,7 @@ impl List {
 
     /// Move the selection down by one item and scroll if needed.
     pub fn select_next(&mut self) {
-        if self.selected + 1 < self.item_count {
+        if self.selected + 1 < self.items.len() {
             self.selected += 1;
 
             // Scroll down so the newly selected item stays in the visible window.
@@ -134,7 +120,7 @@ impl List {
     /// Return the total number of items in the list.
     #[allow(dead_code)]
     pub fn item_count(&self) -> usize {
-        self.item_count
+        self.items.len()
     }
 
     /// Render the list widget (border + all visible items) into the VGA buffer.
@@ -166,7 +152,7 @@ impl List {
             // Step 3: render each visible item, highlighting the selected one.
             for vis_idx in 0..visible {
                 let abs_idx = self.scroll + vis_idx;
-                if abs_idx >= self.item_count {
+                if abs_idx >= self.items.len() {
                     break;
                 }
 
@@ -196,14 +182,11 @@ impl List {
             // allocating a string buffer.
             let bottom_row = self.row + self.height - 1;
             let indicator_col = self.col + self.width.saturating_sub(8);
-            // Write the indicator character by character using draw_char_at to
-            // avoid needing a formatted string (no alloc / format! in no_std).
-            // Format: space, digit(s), '/', digit(s), space — max 7 chars.
+            
             let cur = self.selected + 1;           // 1-based
-            let total = self.item_count;
+            let total = self.items.len();
 
-            // We have at most 2-digit numbers (MAX_ITEMS = 64), so a 7-byte
-            // scratch buffer is always sufficient: " NN/NN "
+            // We construct a scratch buffer for: " NN/NN "
             let mut buf = [b' '; 7];
             let mut pos = 6usize;                  // write from right to left
 

@@ -19,14 +19,11 @@
 //! `height` includes the outer borders.  The visible data rows is therefore:
 //! `height - 4`  (top border + header + separator + bottom border).
 
+extern crate alloc;
+
+use alloc::vec::Vec;
 use crate::drivers::screen::{Color, Screen, with_screen};
 use crate::tui::{SCREEN_COLS, SCREEN_ROWS};
-
-/// Maximum number of columns a `Table` can hold.
-pub const TABLE_MAX_COLS: usize = 6;
-
-/// Maximum number of data rows a `Table` can hold without heap allocation.
-pub const TABLE_MAX_ROWS: usize = 16;
 
 /// Header row foreground color.
 const HEADER_FG: Color = Color::Yellow;
@@ -77,17 +74,13 @@ pub struct Table {
     width: usize,
     /// Total outer height (including top and bottom border rows).
     height: usize,
-    /// Column header labels (up to `TABLE_MAX_COLS` entries).
-    col_labels: [&'static str; TABLE_MAX_COLS],
+    /// Column header labels.
+    col_labels: Vec<&'static str>,
     /// Content width of each column *excluding* the surrounding padding spaces
     /// and the vertical separator character.
-    col_widths: [usize; TABLE_MAX_COLS],
-    /// Number of populated columns.
-    col_count: usize,
-    /// Data rows stored in a fixed-size 2D array (`no_std`, no heap).
-    rows: [[&'static str; TABLE_MAX_COLS]; TABLE_MAX_ROWS],
-    /// Number of populated data rows.
-    row_count: usize,
+    col_widths: Vec<usize>,
+    /// Data rows stored in a dynamic 2D Vec.
+    rows: Vec<Vec<&'static str>>,
     /// Index of the currently selected row (0-based, absolute).
     selected: usize,
     /// Scroll offset: index of the first visible data row.
@@ -97,9 +90,7 @@ pub struct Table {
 impl Table {
     /// Construct a new `Table`.
     ///
-    /// `col_labels` and `col_widths` must have the same length; the shorter
-    /// slice determines `col_count`.  Pairs beyond `TABLE_MAX_COLS` are
-    /// silently ignored.
+    /// `col_labels` and `col_widths` must have the same length.
     pub fn new(
         row: usize,
         col: usize,
@@ -108,43 +99,31 @@ impl Table {
         col_labels: &[&'static str],
         col_widths: &[usize],
     ) -> Self {
-        let col_count = col_labels.len().min(col_widths.len()).min(TABLE_MAX_COLS);
-
-        let mut cl = [""; TABLE_MAX_COLS];
-        let mut cw = [0usize; TABLE_MAX_COLS];
-        for i in 0..col_count {
-            cl[i] = col_labels[i];
-            cw[i] = col_widths[i];
-        }
+        let count = col_labels.len().min(col_widths.len());
 
         Self {
             row,
             col,
             width,
             height,
-            col_labels: cl,
-            col_widths: cw,
-            col_count,
-            rows: [[""; TABLE_MAX_COLS]; TABLE_MAX_ROWS],
-            row_count: 0,
+            col_labels: Vec::from(&col_labels[..count]),
+            col_widths: Vec::from(&col_widths[..count]),
+            rows: Vec::new(),
             selected: 0,
             scroll: 0,
         }
     }
 
-    /// Append a data row.  Cells beyond `col_count` are ignored; rows beyond
-    /// `TABLE_MAX_ROWS` are silently dropped.
+    /// Append a data row.  Cells beyond column length are ignored; missing cells
+    /// are filled with empty strings.
     pub fn add_row(&mut self, cells: &[&'static str]) {
-        if self.row_count >= TABLE_MAX_ROWS {
-            return;
+        let mut row = Vec::new();
+        let n = cells.len().min(self.col_labels.len());
+        row.extend_from_slice(&cells[..n]);
+        while row.len() < self.col_labels.len() {
+            row.push("");
         }
-
-        let n = cells.len().min(self.col_count);
-        for i in 0..n {
-            self.rows[self.row_count][i] = cells[i];
-        }
-
-        self.row_count += 1;
+        self.rows.push(row);
     }
 
     /// Move the selection up by one row, scrolling if necessary.
@@ -161,7 +140,7 @@ impl Table {
 
     /// Move the selection down by one row, scrolling if necessary.
     pub fn select_next(&mut self) {
-        if self.selected + 1 < self.row_count {
+        if self.selected + 1 < self.rows.len() {
             self.selected += 1;
 
             // Scroll down so the newly selected row stays in the visible window.
@@ -181,7 +160,7 @@ impl Table {
     /// Return the total number of populated data rows.
     #[allow(dead_code)]
     pub fn row_count(&self) -> usize {
-        self.row_count
+        self.rows.len()
     }
 
     /// Number of data rows that fit in the inner height of the widget.
@@ -205,8 +184,10 @@ impl Table {
         }
 
         with_screen(|screen| {
+            let col_count = self.col_labels.len();
+
             // Step 1: top border.
-            draw_h_border(screen, self.row, self.col, self.width, &self.col_widths, self.col_count, TL, TR, TT);
+            draw_h_border(screen, self.row, self.col, self.width, &self.col_widths, col_count, TL, TR, TT);
 
             // Step 2: header row.
             draw_row(
@@ -215,14 +196,14 @@ impl Table {
                 self.col,
                 self.width,
                 &self.col_widths,
-                self.col_count,
-                &self.col_labels[..self.col_count],
+                col_count,
+                &self.col_labels,
                 HEADER_FG,
                 HEADER_BG,
             );
 
             // Step 3: separator between header and data.
-            draw_h_border(screen, self.row + 2, self.col, self.width, &self.col_widths, self.col_count, LT, RT, CR);
+            draw_h_border(screen, self.row + 2, self.col, self.width, &self.col_widths, col_count, LT, RT, CR);
 
             // Step 4 & 5: visible data rows (or blank rows when past end).
             let visible = self.visible_rows();
@@ -235,7 +216,7 @@ impl Table {
                     break;
                 }
 
-                if abs < self.row_count {
+                if abs < self.rows.len() {
                     let (fg, bg) = if abs == self.selected {
                         (SEL_FG, SEL_BG)
                     } else {
@@ -247,8 +228,8 @@ impl Table {
                         self.col,
                         self.width,
                         &self.col_widths,
-                        self.col_count,
-                        &self.rows[abs][..self.col_count],
+                        col_count,
+                        &self.rows[abs],
                         fg,
                         bg,
                     );
@@ -265,11 +246,11 @@ impl Table {
             // Step 6: bottom border.
             let bottom = self.row + self.height - 1;
             if bottom < SCREEN_ROWS {
-                draw_h_border(screen, bottom, self.col, self.width, &self.col_widths, self.col_count, BL, BR, BT);
+                draw_h_border(screen, bottom, self.col, self.width, &self.col_widths, col_count, BL, BR, BT);
             }
 
             // Step 7: draw a scroll indicator in the bottom border.
-            draw_scroll_indicator(screen, bottom, self.col + self.width, self.selected + 1, self.row_count);
+            draw_scroll_indicator(screen, bottom, self.col + self.width, self.selected + 1, self.rows.len());
         });
     }
 }
@@ -281,6 +262,7 @@ impl Table {
 /// Draw a horizontal border row with corner and junction characters.
 ///
 /// Layout:  `left` + (H ... H + `junc`) * col_count + `right`
+#[allow(clippy::too_many_arguments)]
 fn draw_h_border(
     screen: &mut Screen,
     row: usize,
@@ -301,9 +283,9 @@ fn draw_h_border(
 
     let mut c = col + 1;
 
-    for ci in 0..col_count {
+    for (ci, &cw) in col_widths.iter().enumerate().take(col_count) {
         // Horizontal fill: 1 space + col_width + 1 space = col_width + 2 cells.
-        let cell_width = col_widths[ci] + 2;
+        let cell_width = cw + 2;
         for _ in 0..cell_width {
             if c >= last_col { break; }
             screen.draw_char_at(row, c, H, BORDER_FG, BORDER_BG);
@@ -330,6 +312,7 @@ fn draw_h_border(
 /// Draw a single data or header row with cell content and vertical separators.
 ///
 /// Layout:  `│` + ` ` + text (clipped) + padding + ` ` + (`│` + ...) + `│`
+#[allow(clippy::too_many_arguments)]
 fn draw_row(
     screen: &mut Screen,
     row: usize,

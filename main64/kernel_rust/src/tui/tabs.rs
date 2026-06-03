@@ -1,6 +1,6 @@
 //! Tabs widget
 //!
-//! A horizontal tab selection bar that renders up to `MAX_TABS` labeled tabs
+//! A horizontal tab selection bar that renders labeled tabs
 //! and highlights the currently active one with inverted colors.
 //!
 //! Layout (4 tabs, tab 1 active):
@@ -10,10 +10,10 @@
 //!
 //! Left/Right arrow navigation is exposed via `select_prev` / `select_next`.
 
-use crate::drivers::screen::{Color, with_screen};
+extern crate alloc;
 
-/// Maximum number of tabs the bar can hold.
-pub const MAX_TABS: usize = 8;
+use alloc::vec::Vec;
+use crate::drivers::screen::{Color, with_screen};
 
 /// Foreground color for the active tab.
 const ACTIVE_FG: Color = Color::Black;
@@ -42,33 +42,27 @@ pub struct Tabs {
     col: usize,
     /// Total width of the tab bar in columns.
     width: usize,
-    /// Fixed-size array of tab label strings.
-    labels: [&'static str; MAX_TABS],
-    /// Number of populated tabs.
-    tab_count: usize,
+    /// Dynamic array of tab label strings.
+    labels: Vec<&'static str>,
     /// Index of the currently active tab (0-based).
     active: usize,
 }
 
 impl Tabs {
     /// Construct an empty `Tabs` bar.  Call `add_tab` to populate it.
-    pub const fn new(row: usize, col: usize, width: usize) -> Self {
+    pub fn new(row: usize, col: usize, width: usize) -> Self {
         Self {
             row,
             col,
             width,
-            labels: [""; MAX_TABS],
-            tab_count: 0,
+            labels: Vec::new(),
             active: 0,
         }
     }
 
-    /// Append a tab with the given label.  Tabs beyond `MAX_TABS` are dropped.
+    /// Append a tab with the given label.
     pub fn add_tab(&mut self, label: &'static str) {
-        if self.tab_count < MAX_TABS {
-            self.labels[self.tab_count] = label;
-            self.tab_count += 1;
-        }
+        self.labels.push(label);
     }
 
     /// Return the index of the currently active tab.
@@ -85,7 +79,7 @@ impl Tabs {
 
     /// Move the active selection one tab to the right (clamps at last tab).
     pub fn select_next(&mut self) {
-        if self.active + 1 < self.tab_count {
+        if self.active + 1 < self.labels.len() {
             self.active += 1;
         }
     }
@@ -96,8 +90,6 @@ impl Tabs {
     /// Step 2: Draw each tab as `[ label ]` with a gap between tabs.
     ///         The active tab uses ACTIVE_FG / ACTIVE_BG colors; all others
     ///         use INACTIVE_FG / INACTIVE_BG.
-    /// Step 3: Draw an underline character below active tab on next row
-    ///         to visually separate it from content.
     pub fn draw(&self) {
         with_screen(|screen| {
             // Step 1: blank the full tab bar row.
@@ -105,7 +97,7 @@ impl Tabs {
 
             // Step 2: render each tab label with its colors.
             let mut c = self.col + 1;
-            for i in 0..self.tab_count {
+            for i in 0..self.labels.len() {
                 if c + 4 >= self.col + self.width {
                     break;
                 }
@@ -126,7 +118,7 @@ impl Tabs {
                 c += 1;
 
                 // One blank gap between tabs (in bar colors).
-                if i + 1 < self.tab_count {
+                if i + 1 < self.labels.len() {
                     screen.draw_char_at(self.row, c, b' ', BAR_FG, BAR_BG);
                     c += 1;
                 }
