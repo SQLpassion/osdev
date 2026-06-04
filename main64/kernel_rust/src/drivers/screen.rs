@@ -44,7 +44,7 @@ pub enum Color {
 }
 
 /// Represents a VGA character cell (character + attribute byte)
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
 struct VgaChar {
     character: u8,
@@ -59,6 +59,9 @@ pub struct Screen {
     background: Color,
     num_cols: usize,
     num_rows: usize,
+    back_buffer: [VgaChar; DEFAULT_ROWS * DEFAULT_COLS],
+    front_buffer: [VgaChar; DEFAULT_ROWS * DEFAULT_COLS],
+    suspend_flush: bool,
 }
 
 impl Default for Screen {
@@ -184,7 +187,9 @@ static GLOBAL_SCREEN: GlobalScreen = GlobalScreen::new();
 /// preventing preemption.
 pub fn with_screen<R>(f: impl FnOnce(&mut Screen) -> R) -> R {
     let mut guard = GLOBAL_SCREEN.inner.lock();
-    f(&mut guard)
+    let res = f(&mut guard);
+    guard.flush();
+    res
 }
 
 impl Screen {
@@ -197,6 +202,9 @@ impl Screen {
             background: Color::Black,
             num_cols: DEFAULT_COLS,
             num_rows: DEFAULT_ROWS,
+            back_buffer: [VgaChar { character: b' ', attribute: 0x07 }; DEFAULT_ROWS * DEFAULT_COLS],
+            front_buffer: [VgaChar { character: 0, attribute: 0 }; DEFAULT_ROWS * DEFAULT_COLS],
+            suspend_flush: false,
         }
     }
 
@@ -211,14 +219,45 @@ impl Screen {
         (VGA_BUFFER + offset * 2) as *mut VgaChar
     }
 
-    /// Write a character to the VGA buffer (volatile write)
-    fn write_vga(&self, row: usize, col: usize, ch: VgaChar) {
-        // SAFETY:
-        // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
-        // - `vga_ptr(row, col)` computes an in-bounds MMIO cell address.
-        // - Volatile write is required for VGA memory-mapped I/O semantics.
-        unsafe {
-            ptr::write_volatile(self.vga_ptr(row, col), ch);
+    /// Write a character to the back-buffer (no MMIO, safe memory write)
+    fn write_vga(&mut self, row: usize, col: usize, ch: VgaChar) {
+        if row < self.num_rows && col < self.num_cols {
+            let offset = row * self.num_cols + col;
+            self.back_buffer[offset] = ch;
+        }
+    }
+
+    /// Set whether screen flushing to physical MMIO is suspended.
+    #[allow(dead_code)]
+    pub fn set_suspend_flush(&mut self, suspend: bool) {
+        self.suspend_flush = suspend;
+    }
+
+    /// Flush the back-buffer to the physical VGA screen.
+    /// Only cells that differ from the cached frontbuffer are written to MMIO.
+    pub fn flush(&mut self) {
+        if self.suspend_flush {
+            return;
+        }
+        for i in 0..(self.num_rows * self.num_cols) {
+            let back_cell = self.back_buffer[i];
+            let front_cell = self.front_buffer[i];
+
+            if back_cell.character != front_cell.character || back_cell.attribute != front_cell.attribute {
+                let row = i / self.num_cols;
+                let col = i % self.num_cols;
+                let vga_ptr = self.vga_ptr(row, col);
+
+                // SAFETY:
+                // - `row` and `col` are in bounds (since `i < 2000`).
+                // - `vga_ptr` points to the memory-mapped physical VGA buffer.
+                // - Volatile write is required for MMIO behavior.
+                unsafe {
+                    ptr::write_volatile(vga_ptr, back_cell);
+                }
+                
+                self.front_buffer[i] = back_cell;
+            }
         }
     }
 
@@ -243,6 +282,7 @@ impl Screen {
         self.row = 0;
         self.col = 0;
         self.update_cursor();
+        self.flush();
     }
 
     /// Write a character to the VGA buffer and handle scrolling,
@@ -313,6 +353,7 @@ impl Screen {
     pub fn print_char(&mut self, c: u8) {
         self.put_char(c);
         self.update_cursor();
+        self.flush();
     }
 
     /// Print a string. The hardware cursor is updated once at the end,
@@ -322,36 +363,27 @@ impl Screen {
             self.put_char(byte);
         }
         self.update_cursor();
+        self.flush();
     }
 
     /// Scroll the screen if necessary (matching C Scroll function)
     fn scroll(&mut self) {
         if self.row >= self.num_rows {
-            // Move all lines up by one using volatile accesses.
-            // The VGA buffer is MMIO, so every read/write must be volatile
-            // to prevent the compiler from reordering or eliding them.
+            // Step 1: Shift all lines up by 1 in the back-buffer.
             let count = (self.num_rows - 1) * self.num_cols;
-            // SAFETY:
-            // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
-            // - `src` and `dst` point to valid VGA rows and range is in-bounds.
-            // - Volatile accesses preserve MMIO ordering semantics.
-            unsafe {
-                let dst = self.vga_ptr(0, 0);
-                let src = self.vga_ptr(1, 0);
-                for i in 0..count {
-                    let val = ptr::read_volatile(src.add(i));
-                    ptr::write_volatile(dst.add(i), val);
-                }
+            for i in 0..count {
+                self.back_buffer[i] = self.back_buffer[i + self.num_cols];
             }
 
-            // Clear the last line
+            // Step 2: Clear the last line.
             let blank = VgaChar {
                 character: b' ',
                 attribute: self.attribute(),
             };
 
             for col in 0..self.num_cols {
-                self.write_vga(self.num_rows - 1, col, blank);
+                let offset = (self.num_rows - 1) * self.num_cols + col;
+                self.back_buffer[offset] = blank;
             }
 
             self.row = self.num_rows - 1;
@@ -400,7 +432,7 @@ impl Screen {
     ///
     /// This is the fundamental TUI primitive: it writes into the VGA buffer
     /// at an absolute position and never triggers scrolling.
-    pub fn draw_at(&self, row: usize, col: usize, text: &str, fg: Color, bg: Color) {
+    pub fn draw_at(&mut self, row: usize, col: usize, text: &str, fg: Color, bg: Color) {
         if row >= self.num_rows {
             return;
         }
@@ -419,14 +451,7 @@ impl Screen {
                 attribute: attr,
             };
 
-            // SAFETY:
-            // - `row` and `c` are both checked to be in-bounds above.
-            // - `vga_ptr` returns a pointer into the MMIO-mapped VGA buffer.
-            // - Volatile write is required for deterministic MMIO behavior.
-            unsafe {
-                core::ptr::write_volatile(self.vga_ptr(row, c), cell);
-            }
-
+            self.write_vga(row, c, cell);
             c += 1;
         }
     }
@@ -437,7 +462,7 @@ impl Screen {
     /// content, ensuring no stale text from previous frames bleeds through.
     #[allow(clippy::too_many_arguments)]
     pub fn fill_rect(
-        &self,
+        &mut self,
         row: usize,
         col: usize,
         width: usize,
@@ -455,13 +480,7 @@ impl Screen {
                     character: ch,
                     attribute: attr,
                 };
-
-                // SAFETY:
-                // - `r` and `c` are clamped to valid screen dimensions above.
-                // - Volatile write is required for MMIO correctness.
-                unsafe {
-                    core::ptr::write_volatile(self.vga_ptr(r, c), cell);
-                }
+                self.write_vga(r, c, cell);
             }
         }
     }
@@ -473,7 +492,7 @@ impl Screen {
     /// Interior cells are left untouched; call `fill_rect` first if a blank
     /// background is needed.
     pub fn draw_box(
-        &self,
+        &mut self,
         row: usize,
         col: usize,
         width: usize,
@@ -521,7 +540,7 @@ impl Screen {
     ///
     /// Internal helper shared by `draw_at` and `draw_box`.  Out-of-bounds
     /// coordinates are silently ignored.
-    pub fn draw_char_at(&self, row: usize, col: usize, ch: u8, fg: Color, bg: Color) {
+    pub fn draw_char_at(&mut self, row: usize, col: usize, ch: u8, fg: Color, bg: Color) {
         if row >= self.num_rows || col >= self.num_cols {
             return;
         }
@@ -532,12 +551,7 @@ impl Screen {
             attribute: attr,
         };
 
-        // SAFETY:
-        // - `row` and `col` are checked to be in-bounds above.
-        // - Volatile write is required for MMIO correctness.
-        unsafe {
-            core::ptr::write_volatile(self.vga_ptr(row, col), cell);
-        }
+        self.write_vga(row, col, cell);
     }
 
     /// Disable the hardware blinking text cursor completely.

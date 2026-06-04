@@ -123,8 +123,11 @@ impl TuiApp {
     /// Renders the initial frame, then processes key events until the user
     /// presses **q**, **Q**, or **Escape**.
     pub fn run(&mut self) {
+        // Step 1: Suspend default flushing during TUI session to batch frame draws.
+        with_screen(|screen| screen.set_suspend_flush(true));
+
         // Render the initial frame before waiting for any input.
-        self.draw_all();
+        self.draw_frame();
 
         loop {
             let key = keyboard::read_key_blocking();
@@ -160,8 +163,11 @@ impl TuiApp {
                 _ => {}
             }
 
-            self.draw_all();
+            self.draw_frame();
         }
+
+        // Step 2: Restore physical screen flush behavior when returning to REPL.
+        with_screen(|screen| screen.set_suspend_flush(false));
     }
 
     // -----------------------------------------------------------------------
@@ -173,6 +179,18 @@ impl TuiApp {
         self.tabs.draw();
         self.draw_tab_content();
         self.draw_status_bar();
+    }
+
+    /// Render all layouts to backbuffer and perform a single atomic commit.
+    fn draw_frame(&mut self) {
+        self.draw_all();
+
+        // Temporarily activate flush to write the complete frame.
+        with_screen(|screen| {
+            screen.set_suspend_flush(false);
+            screen.flush();
+            screen.set_suspend_flush(true);
+        });
     }
 
     /// Draw the content widgets for the currently active tab.
