@@ -1,7 +1,7 @@
 # Heap Manager Documentation
 
 This document describes the current heap manager implementation in
-[main64/kernel_rust/src/memory/heap.rs](../src/memory/heap.rs) in detail.
+[main64/kernel_rust/src/memory/heap/](../src/memory/heap/) in detail.
 
 ## Table of Contents
 
@@ -50,14 +50,18 @@ This document describes the current heap manager implementation in
   - [23.3 Step B: `malloc(200)`](#233-step-b-malloc200)
   - [23.4 Step C: `free(first)` — freeing the 80-byte block at 0x1000](#234-step-c-freefirst-freeing-the-80-byte-block-at-0x1000)
   - [23.5 Step D: `free(second)` — freeing the 224-byte block at 0x1050](#235-step-d-freesecond-freeing-the-224-byte-block-at-0x1050)
-- [24. User-Space Heap Manager](#24-user-space-heap-manager)
-  - [24.1 Architecture & Integration](#241-architecture-integration)
-  - [24.2 Logging Formatting & Buffering](#242-logging-formatting-buffering)
-  - [24.3 Naming Realignment](#243-naming-realignment)
-  - [24.4 Compilation & Build-Std Configuration](#244-compilation-build-std-configuration)
-  - [24.5 Safety Contract (`Heap::deallocate`)](#245-safety-contract-heapdeallocate)
+- [24. Module Structure & File Splitting](#24-module-structure--file-splitting)
+  - [24.1 File Overview](#241-file-overview)
+  - [24.2 Shared vs. Kernel-Specific Separation](#242-shared-vs-kernel-specific-separation)
+- [25. User-Space Heap Manager](#25-user-space-heap-manager)
+  - [25.1 Architecture & Integration](#251-architecture-integration)
+  - [25.2 Logging Formatting & Buffering](#252-logging-formatting-buffering)
+  - [25.3 Naming Realignment](#253-naming-realignment)
+  - [25.4 Compilation & Build-Std Configuration](#254-compilation-build-std-configuration)
+  - [25.5 Safety Contract (`Heap::deallocate`)](#255-safety-contract-heapdeallocate)
 
 ---
+
 
 
 ## 1. Conceptual Introduction
@@ -1029,13 +1033,28 @@ is complete: class selection, bitmap-based empty-bin skipping, splitting with
 re-insertion into a lower class, two bins active simultaneously, and finally
 bi-directional coalescing that drains both bins and restores the original block.
 
-## 24. User-Space Heap Manager
+## 24. Module Structure & File Splitting
 
-The user-space programs (`hello`, `readline`, `filedemo`) utilize the same underlying segregated free-list allocator core logic ([kernel_rust/src/memory/heap.rs](../src/memory/heap.rs)) as the kernel. This is implemented via a proxy and module-level re-exports to avoid duplicating the complex allocation code.
+To improve code maintainability and avoid compiler warnings (`dead_code`) for generic components compiled under the kernel target, the heap manager has been refactored from a single file into a directory module at [main64/kernel_rust/src/memory/heap/](../src/memory/heap/).
 
-### 24.1 Architecture & Integration
+### 24.1 File Overview
+* **[mod.rs](../src/memory/heap/mod.rs)**: Entry point of the module. Declares the submodules and re-exports public items (such as `Heap` and `HeapEnvironment`) to preserve the stable API.
+* **[types.rs](../src/memory/heap/types.rs)**: Defines the core data layouts (`HeapBlockHeader`, `FreeListNode`, `HeapState`), basic constants, size class calculation logic, and low-level block/list manipulation helper functions (coalescing, splitting, growth).
+* **[generic.rs](../src/memory/heap/generic.rs)**: Houses the generic, unsynchronized `Heap<E>` implementation and the `HeapEnvironment` trait.
+* **[kernel.rs](../src/memory/heap/kernel.rs)**: Houses the Ring 0 bare-metal kernel `GlobalHeap` singleton, `KernelHeapEnv` demand-paging allocator wrapper, serial logging settings, and boot-time self-tests.
+
+### 24.2 Shared vs. Kernel-Specific Separation
+By isolating the generic core logic (`generic.rs` and `types.rs`) from bare-metal kernel specific structures (`kernel.rs`), user-space programs can import the allocator core directly without compiling bare-metal Ring 0 features.
+
+---
+
+## 25. User-Space Heap Manager
+
+The user-space programs (`hello`, `readline`, `filedemo`) utilize the same underlying segregated free-list allocator core logic ([kernel_rust/src/memory/heap/mod.rs](../src/memory/heap/mod.rs)) as the kernel. This is implemented via a proxy and module-level re-exports to avoid duplicating the complex allocation code.
+
+### 25.1 Architecture & Integration
 The user-mode heap allocator is defined in [user_programs/common/heap.rs](../../user_programs/common/heap.rs):
-- **Crate Re-use**: The module path `#[path = "../../kernel_rust/src/memory/heap.rs"] pub mod kernel_heap;` is imported directly.
+- **Crate Re-use**: The module path `#[path = "../../kernel_rust/src/memory/heap/mod.rs"] pub mod kernel_heap;` is imported directly.
 - **Environment Abstraction**: `UserHeapEnv` implements the `kernel_heap::HeapEnvironment` trait:
   - `map_memory(start, end)`: Wraps the `Mmap` syscall (syscall nr=16) to map raw pages of size `INITIAL_PAGE_SIZE` (4 KiB) as needed.
   - `max_heap_size()`: Bounded to `256 MiB`.
@@ -1046,22 +1065,22 @@ The user-mode heap allocator is defined in [user_programs/common/heap.rs](../../
 - **Global Allocator Proxy**: The `SafeUserHeapAllocator` struct implements `Sync` and `GlobalAlloc` by casting pointer references directly to the metadata stored at `USER_HEAP_BASE`.
 - **Static Allocator**: `pub static ALLOCATOR: SafeUserHeapAllocator = SafeUserHeapAllocator;` is annotated with `#[global_allocator]` to register it as the user-space global allocator.
 
-### 24.2 Logging Formatting & Buffering
+### 25.2 Logging Formatting & Buffering
 To prevent interleaving between serial logging outputs of the user-space allocator and other syscall traces/kernel logs, a custom stack-allocated `BufWriter` buffer is used:
 - Writes to `WriteSerial` are buffered and flushed atomically.
 - All allocator messages are prefixed with `[USER HEAP]` (e.g., `[USER HEAP] alloc ptr=...` / `[USER HEAP] free ptr=...`) to clearly distinguish them from kernel-space allocator outputs which are prefixed with `[KERNEL HEAP]`.
 
-### 24.3 Naming Realignment
+### 25.3 Naming Realignment
 Previously, the user-space allocator proxy struct was named `SafeUserAllocator`. To prevent naming ambiguities and improve clarity regarding its specific role (as a heap manager), it was renamed to `SafeUserHeapAllocator` across all trait implementations (`Sync`, `GlobalAlloc`) and static bindings in [user_programs/common/heap.rs](../../user_programs/common/heap.rs).
 
-### 24.4 Compilation & Build-Std Configuration
+### 25.4 Compilation & Build-Std Configuration
 To support dynamic structures like `Box` and `Vec`, the user-mode binaries depend on `extern crate alloc;`. In release mode, the build system compiles both the `core` and `alloc` crates from source via `-Z build-std=core,alloc`:
 ```bash
 cargo +nightly build --release --target x86_64-unknown-none -Z build-std=core,alloc
 ```
 This ensures a unified standard library graph and prevents duplicate compiler definitions for the `core` crate.
 
-### 24.5 Safety Contract (`Heap::deallocate`)
+### 25.5 Safety Contract (`Heap::deallocate`)
 The `Heap::deallocate` method receives a raw `*mut u8` pointer and reads its metadata slot (for over-aligned allocations). Dereferencing raw pointers is unsafe because the pointer may be invalid or mismatched.
 - **Method Signature**: The method is marked `unsafe`:
   ```rust

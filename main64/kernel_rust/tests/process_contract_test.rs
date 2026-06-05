@@ -405,12 +405,6 @@ fn test_map_program_image_into_user_address_space_zeroes_bootstrap_stack_page() 
     });
 }
 
-extern "C" fn parked_kernel_task() -> ! {
-    loop {
-        core::hint::spin_loop();
-    }
-}
-
 /// Contract: `exec_from_fat12` maps image and spawns a scheduler user task.
 #[test_case]
 fn test_exec_from_fat12_spawns_user_task() {

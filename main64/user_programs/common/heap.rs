@@ -10,7 +10,7 @@ pub mod vmm_constants;
 #[path = "syscall.rs"]
 pub mod syscall;
 
-#[path = "../../kernel_rust/src/memory/heap.rs"]
+#[path = "../../kernel_rust/src/memory/heap/mod.rs"]
 pub mod kernel_heap;
 
 const USER_HEAP_BASE: usize = vmm_constants::USER_HEAP_BASE as usize;
