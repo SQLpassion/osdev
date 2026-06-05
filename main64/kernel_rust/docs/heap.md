@@ -980,3 +980,45 @@ bi-directional coalescing that drains both bins and restores the original block.
 - Global allocator bridge: `main64/kernel_rust/src/allocator.rs`
 - Integration tests: `main64/kernel_rust/tests/heap_test.rs`
 - Spinlock primitive: `main64/kernel_rust/src/sync/spinlock.rs`
+
+---
+
+## 25. User-Space Heap Manager
+
+The user-space programs (`hello`, `readline`, `filedemo`) utilize the same underlying segregated free-list allocator core logic (`kernel_rust/src/memory/heap.rs`) as the kernel. This is implemented via a proxy and module-level re-exports to avoid duplicating the complex allocation code.
+
+### 25.1 Architecture & Integration
+The user-mode heap allocator is defined in [user_programs/common/heap.rs](file:///Users/klaus/dev/github/sqlpassion/osdev/main64/user_programs/common/heap.rs):
+- **Crate Re-use**: The module path `#[path = "../../kernel_rust/src/memory/heap.rs"] pub mod kernel_heap;` is imported directly.
+- **Environment Abstraction**: `UserHeapEnv` implements the `kernel_heap::HeapEnvironment` trait:
+  - `map_memory(start, end)`: Wraps the `Mmap` syscall (syscall nr=16) to map raw pages of size `INITIAL_PAGE_SIZE` (4 KiB) as needed.
+  - `max_heap_size()`: Bounded to `256 MiB`.
+  - `log(msg)`: Buffers logging messages and routes them through the `WriteSerial` syscall (syscall nr=1).
+- **Metadata Placement**: Because loaded binary pages are mapped read-only, we cannot store the mutable heap allocator metadata in static variables (which reside in read-only pages). Instead:
+  - The actual `Heap` allocator metadata is stored directly at the start of the mapped, writable user heap page (`USER_HEAP_BASE = 0x0000_7000_1000_0000`).
+  - The first `ARENA_OFFSET = 1024` bytes are reserved for this metadata. The actual allocatable heap arena starts at `USER_HEAP_BASE + ARENA_OFFSET`.
+- **Global Allocator Proxy**: The `SafeUserHeapAllocator` struct implements `Sync` and `GlobalAlloc` by casting pointer references directly to the metadata stored at `USER_HEAP_BASE`.
+- **Static Allocator**: `pub static ALLOCATOR: SafeUserHeapAllocator = SafeUserHeapAllocator;` is annotated with `#[global_allocator]` to register it as the user-space global allocator.
+
+### 25.2 Logging Formatting & Buffering
+To prevent interleaving between serial logging outputs of the user-space allocator and other syscall traces/kernel logs, a custom stack-allocated `BufWriter` buffer is used:
+- Writes to `WriteSerial` are buffered and flushed atomically.
+- All allocator messages are prefixed with `[USER HEAP]` (e.g., `[USER HEAP] alloc ptr=...` / `[USER HEAP] free ptr=...`) to clearly distinguish them from kernel-space allocator outputs which are prefixed with `[KERNEL HEAP]`.
+
+### 25.3 Naming Realignment
+Previously, the user-space allocator proxy struct was named `SafeUserAllocator`. To prevent naming ambiguities and improve clarity regarding its specific role (as a heap manager), it was renamed to `SafeUserHeapAllocator` across all trait implementations (`Sync`, `GlobalAlloc`) and static bindings in [user_programs/common/heap.rs](file:///Users/klaus/dev/github/sqlpassion/osdev/main64/user_programs/common/heap.rs).
+
+### 25.4 Compilation & Build-Std Configuration
+To support dynamic structures like `Box` and `Vec`, the user-mode binaries depend on `extern crate alloc;`. In release mode, the build system compiles both the `core` and `alloc` crates from source via `-Z build-std=core,alloc`:
+```bash
+cargo +nightly build --release --target x86_64-unknown-none -Z build-std=core,alloc
+```
+This ensures a unified standard library graph and prevents duplicate compiler definitions for the `core` crate.
+
+### 25.5 Safety Contract (`Heap::deallocate`)
+The `Heap::deallocate` method receives a raw `*mut u8` pointer and reads its metadata slot (for over-aligned allocations). Dereferencing raw pointers is unsafe because the pointer may be invalid or mismatched.
+- **Method Signature**: The method is marked `unsafe`:
+  ```rust
+  pub unsafe fn deallocate(&mut self, ptr: *mut u8, layout: core::alloc::Layout)
+  ```
+- **Caller Safety**: Callers in [user_programs/common/heap.rs](file:///Users/klaus/dev/github/sqlpassion/osdev/main64/user_programs/common/heap.rs) and [kernel_rust/tests/heap_test.rs](file:///Users/klaus/dev/github/sqlpassion/osdev/main64/kernel_rust/tests/heap_test.rs) invoke this method inside an `unsafe` block with an explicit `SAFETY:` comment detailing the invariants relied upon.

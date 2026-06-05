@@ -1812,3 +1812,103 @@ fn test_exit_syscall_marks_zombie_and_returns_ok() {
         "zombie task must be reaped on subsequent tick"
     );
 }
+
+/// Contract: user task mmap syscall allocates and maps memory.
+/// Given: The scheduler is initialized, a user task is spawned with a cloned user PML4, and selected as active.
+/// When: The Mmap syscall is dispatched with various lengths (valid, zero, and out-of-bounds).
+/// Then: The syscall returns USER_HEAP_BASE for the first valid allocation, updates the task's user_heap_top,
+///       and returns appropriate error codes for invalid cases. Mapped memory is readable and writable.
+/// Failure Impact: Indicates a bug in the mmap syscall implementation, physical page frame mapping, or
+///                 scheduler-tracked task heap metadata.
+#[test_case]
+fn test_user_task_mmap_syscall() {
+    let kernel_cr3 = vmm::get_pml4_address();
+    let user_cr3 = vmm::clone_kernel_pml4_for_user();
+
+    TEST_ARCH_KERNEL_CR3.store(kernel_cr3, Ordering::Release);
+    TEST_ARCH_LAST_SWITCH_CR3.store(0, Ordering::Release);
+
+    sched::set_arch_callbacks(SchedulerArchCallbacks {
+        read_kernel_cr3: test_arch_read_kernel_cr3,
+        set_kernel_rsp0: test_arch_set_kernel_rsp0,
+        switch_cr3: test_arch_switch_cr3,
+    });
+
+    sched::init();
+
+    // Step 1: Spawn user task. We want to test the mmap syscall, so it must be a user task.
+    let user_task = sched::spawn_user_task(vmm::USER_CODE_BASE, vmm::USER_STACK_TOP - 16, user_cr3)
+        .expect("user task spawn should succeed");
+
+    sched::start();
+
+    let mut bootstrap = SavedRegisters::default();
+    let mut current = &mut bootstrap as *mut SavedRegisters;
+
+    // Step 2: Tick the scheduler to make the user task the active running task.
+    current = sched::on_timer_tick(current);
+    assert!(
+        sched::current_task_id() == Some(user_task),
+        "scheduler must make user_task active"
+    );
+
+    // Step 3: Verify the initial user heap top is set to USER_HEAP_BASE.
+    assert_eq!(sched::current_user_heap_top(), Some(vmm::USER_HEAP_BASE));
+
+    // Step 4: Dispatch the Mmap syscall for a valid 4096-byte (1 page) length.
+    let ret_ptr_val = kaos_kernel::syscall::dispatch(
+        kaos_kernel::syscall::SyscallId::Mmap as u64,
+        4096,
+        0,
+        0,
+        0,
+    );
+
+    // Step 5: Verify the returned virtual address matches the start of the user heap.
+    assert_eq!(ret_ptr_val, vmm::USER_HEAP_BASE);
+
+    // Step 6: Verify the user heap top was advanced by exactly 1 page.
+    assert_eq!(sched::current_user_heap_top(), Some(vmm::USER_HEAP_BASE + 4096));
+
+    // Step 7: Temporarily activate the user task address space to verify memory accessibility.
+    vmm::with_address_space(user_cr3, || {
+        let ptr = ret_ptr_val as *mut u8;
+        // SAFETY:
+        // - `ret_ptr_val` is the virtual address of the page mapped by the mmap syscall.
+        // - The memory range `ret_ptr_val..ret_ptr_val + 4096` was mapped as writable user-accessible.
+        // - We perform a volatile write and read to verify physical backing without CPU caching side-effects.
+        unsafe {
+            core::ptr::write_volatile(ptr, 42);
+            assert_eq!(core::ptr::read_volatile(ptr), 42);
+        }
+    });
+
+    // Step 8: Call mmap with size 0; must return the invalid argument error sentinel.
+    let err_val = kaos_kernel::syscall::dispatch(
+        kaos_kernel::syscall::SyscallId::Mmap as u64,
+        0,
+        0,
+        0,
+        0,
+    );
+    assert_eq!(err_val, kaos_kernel::syscall::SYSCALL_ERR_INVALID_ARG);
+
+    // Step 9: Call mmap with a size exceeding USER_HEAP_SIZE; must return the invalid argument error sentinel.
+    let err_val_huge = kaos_kernel::syscall::dispatch(
+        kaos_kernel::syscall::SyscallId::Mmap as u64,
+        vmm::USER_HEAP_SIZE + 4096,
+        0,
+        0,
+        0,
+    );
+    assert_eq!(err_val_huge, kaos_kernel::syscall::SYSCALL_ERR_INVALID_ARG);
+
+    // Step 10: Terminate the task and clean up scheduler hooks.
+    assert!(
+        sched::terminate_task(user_task),
+        "terminate_task must succeed"
+    );
+    let _ = sched::on_timer_tick(current);
+
+    sched::reset_arch_callbacks_to_default();
+}

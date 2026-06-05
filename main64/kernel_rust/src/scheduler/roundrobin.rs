@@ -142,6 +142,11 @@ struct TaskEntry {
     #[cfg_attr(not(test), allow(dead_code))]
     user_rsp: u64,
 
+    /// Current top of the user-mode heap.
+    /// Updated dynamically via `mmap` syscalls.
+    /// Kernel-only tasks keep this at zero.
+    user_heap_top: u64,
+
     /// Top of this task's kernel stack, used to program `TSS.RSP0`
     /// before resuming a user-mode task.
     kernel_rsp_top: u64,
@@ -183,6 +188,7 @@ impl TaskEntry {
             frame_ptr: ptr::null_mut(),
             cr3: 0,
             user_rsp: 0,
+            user_heap_top: 0,
             kernel_rsp_top: 0,
             is_user: false,
             release_user_code_pfns: false,
@@ -972,6 +978,7 @@ fn spawn_internal(kind: SpawnKind) -> Result<usize, SpawnError> {
             frame_ptr,
             cr3,
             user_rsp,
+            user_heap_top: if is_user { vmm::USER_HEAP_BASE } else { 0 },
             kernel_rsp_top,
             is_user,
             release_user_code_pfns,
@@ -1640,6 +1647,7 @@ pub fn set_task_user_context(task_id: usize, cr3: u64, user_rsp: u64, kernel_rsp
         let slot = &mut meta.slots[task_id];
         slot.cr3 = cr3;
         slot.user_rsp = user_rsp;
+        slot.user_heap_top = vmm::USER_HEAP_BASE;
         slot.kernel_rsp_top = kernel_rsp_top;
         slot.is_user = true;
         true
@@ -1740,4 +1748,43 @@ pub fn yield_now() {
             options(nomem)
         );
     }
+}
+
+/// Gets the user heap top address of the current task.
+///
+/// Returns `None` if there is no current task or it is not a user task.
+pub fn current_user_heap_top() -> Option<u64> {
+    // Step 1: Acquire scheduler lock to safely inspect current task metadata.
+    with_scheduler(|meta| {
+        // Step 2: Resolve the slot ID of the currently selected/running task.
+        let slot = meta.running_slot?;
+        let entry = meta.slots.get(slot)?;
+
+        // Step 3: Only user tasks carry a valid user heap boundary; return it.
+        if entry.is_user {
+            Some(entry.user_heap_top)
+        } else {
+            None
+        }
+    })
+}
+
+/// Sets the user heap top address of the current task.
+///
+/// Returns `false` if there is no current task or it is not a user task.
+pub fn set_current_user_heap_top(new_top: u64) -> bool {
+    // Step 1: Acquire scheduler lock to mutate the current task's state.
+    with_scheduler(|meta| {
+        // Step 2: Resolve the slot ID of the currently selected/running task.
+        if let Some(slot) = meta.running_slot {
+            if let Some(entry) = meta.slots.get_mut(slot) {
+                // Step 3: Mutate only if the task runs user context.
+                if entry.is_user {
+                    entry.user_heap_top = new_top;
+                    return true;
+                }
+            }
+        }
+        false
+    })
 }

@@ -13,15 +13,38 @@
 //! - Payload pointer is always `header + HEADER_SIZE`.
 //! - Heap growth is page-sized (`HEAP_GROWTH`) and relies on demand paging.
 
-use alloc::vec::Vec;
-use core::fmt::Write;
 use core::mem::{align_of, size_of};
+
+#[cfg(feature = "kernel")]
+use alloc::vec::Vec;
+#[cfg(feature = "kernel")]
+use core::fmt::Write;
+#[cfg(feature = "kernel")]
 use core::sync::atomic::{AtomicBool, Ordering};
 
+#[cfg(feature = "kernel")]
 use crate::drivers::screen::Screen;
+#[cfg(feature = "kernel")]
 use crate::logging;
+#[cfg(feature = "kernel")]
 use crate::memory::pmm;
+#[cfg(feature = "kernel")]
 use crate::sync::spinlock::SpinLock;
+
+#[allow(dead_code)]
+/// Interface for the allocator's interaction with the environment (Kernel vs. User-space).
+pub trait HeapEnvironment {
+    /// Informs the environment that the heap needs to grow, ensuring the virtual address range
+    /// `[start, end)` is mapped and backed by physical memory.
+    /// Returns `true` if successful.
+    fn map_memory(&self, start: usize, end: usize) -> bool;
+
+    /// Returns the maximum heap size in bytes.
+    fn max_heap_size(&self) -> usize;
+
+    /// Logs a debug message.
+    fn log(&self, msg: &str);
+}
 
 /// Size of one block header in bytes.
 const HEADER_SIZE: usize = size_of::<HeapBlockHeader>();
@@ -184,6 +207,201 @@ impl HeapState {
     }
 }
 
+#[cfg(feature = "kernel")]
+pub struct KernelHeapEnv;
+
+#[cfg(feature = "kernel")]
+impl HeapEnvironment for KernelHeapEnv {
+    fn map_memory(&self, _start: usize, _end: usize) -> bool {
+        // The kernel uses demand paging via the page fault handler,
+        // so we don't need to do any explicit mapping during growth.
+        true
+    }
+
+    fn max_heap_size(&self) -> usize {
+        compute_system_heap_cap()
+    }
+
+    fn log(&self, msg: &str) {
+        logging::logln_with_options(
+            "heap",
+            format_args!("{}", msg),
+            serial_debug_enabled(),
+            true,
+        );
+    }
+}
+
+#[allow(dead_code)]
+/// A generic, unsynchronized Heap allocator instance.
+///
+/// This can be used in Ring 3 or in other custom allocator contexts by parameterizing
+/// it with a custom [`HeapEnvironment`].
+pub struct Heap<E: HeapEnvironment> {
+    state: HeapState,
+    env: E,
+}
+
+#[allow(dead_code)]
+impl<E: HeapEnvironment> Heap<E> {
+    /// Creates a new, uninitialized heap instance with the given environment.
+    pub const fn new(env: E) -> Self {
+        Self {
+            state: HeapState::new(),
+            env,
+        }
+    }
+
+    /// Initializes the heap arena at `start_addr` with `initial_size`.
+    ///
+    /// This will request mapping from the environment and initialize the first free block.
+    pub fn init(&mut self, start_addr: usize, initial_size: usize) -> Result<(), &'static str> {
+        let heap_end = start_addr
+            .checked_add(initial_size)
+            .ok_or("heap size overflow")?;
+        let max_size = self.env.max_heap_size();
+
+        if !self.env.map_memory(start_addr, heap_end) {
+            return Err("Failed to map initial heap memory");
+        }
+
+        // SAFETY:
+        // - Caller must ensure `start_addr` is valid and aligned.
+        // - Environment successfully mapped the memory.
+        unsafe {
+            core::ptr::write_bytes(start_addr as *mut u8, 0, initial_size);
+        }
+
+        self.state.heap_start = start_addr;
+        self.state.heap_end = heap_end;
+        self.state.max_heap_size = max_size;
+        self.state.reset_free_bins();
+
+        // SAFETY:
+        // - Initial block header is within the mapped area.
+        unsafe {
+            let header = &mut *header_at(start_addr);
+            header.set_in_use(false);
+            header.set_size(initial_size);
+            header.set_prev_size(0);
+            header.set_magic_for_addr(start_addr);
+        }
+
+        insert_free_block(&mut self.state, header_at(start_addr));
+        self.state.tail_block_addr = start_addr;
+
+        Ok(())
+    }
+
+    /// Allocates a block of memory satisfying `layout`.
+    pub fn allocate(&mut self, layout: core::alloc::Layout) -> *mut u8 {
+        let size = layout.size().max(1);
+        let align = layout.align();
+
+        // Standard alignment-aware malloc pattern:
+        // If alignment exceeds ALIGNMENT, we overallocate and align up.
+        if align <= ALIGNMENT {
+            return self.malloc_internal(size);
+        }
+
+        let overhead = match align
+            .checked_sub(1)
+            .and_then(|v| v.checked_add(size_of::<*mut *mut u8>()))
+        {
+            Some(v) => v,
+            None => return core::ptr::null_mut(),
+        };
+        let total_size = match size.checked_add(overhead) {
+            Some(v) => v,
+            None => return core::ptr::null_mut(),
+        };
+
+        let raw_ptr = self.malloc_internal(total_size);
+        if raw_ptr.is_null() {
+            return core::ptr::null_mut();
+        }
+
+        let aligned_addr =
+            (raw_ptr as usize + size_of::<*mut *mut u8>() + align - 1) & !(align - 1);
+        let aligned_ptr = aligned_addr as *mut u8;
+
+        // SAFETY:
+        // - One pointer slot before the aligned payload stores the original raw pointer.
+        unsafe {
+            let backref = aligned_ptr.sub(size_of::<*mut *mut u8>()).cast::<*mut u8>();
+            core::ptr::write(backref, raw_ptr);
+        }
+
+        aligned_ptr
+    }
+
+    /// Frees an allocated pointer.
+    ///
+    /// # Safety
+    /// - `ptr` must be a valid pointer previously allocated by this allocator.
+    /// - `layout` must match the layout used when allocating `ptr`.
+    pub unsafe fn deallocate(&mut self, ptr: *mut u8, layout: core::alloc::Layout) {
+        if ptr.is_null() {
+            return;
+        }
+
+        if layout.align() <= ALIGNMENT {
+            let _ = self.free_internal(ptr);
+            return;
+        }
+
+        // SAFETY:
+        // - Read the original raw pointer stored before the aligned address.
+        unsafe {
+            let backref = ptr.sub(size_of::<*mut *mut u8>()).cast::<*mut u8>();
+            let raw_ptr = core::ptr::read(backref);
+            let _ = self.free_internal(raw_ptr);
+        }
+    }
+
+    fn malloc_internal(&mut self, size: usize) -> *mut u8 {
+        let Some(aligned_size) = compute_aligned_heapblock_size(size) else {
+            self.env.log("[KERNEL HEAP] alloc failed (overflow)");
+            return core::ptr::null_mut();
+        };
+
+        loop {
+            if let Some(block) = find_suitable_free_block(&mut self.state, aligned_size) {
+                return allocate_block(&mut self.state, block, aligned_size);
+            }
+
+            let growth = compute_heap_growth_for_request(aligned_size);
+            if !grow_heap(&mut self.state, growth, &self.env) {
+                self.env.log("[KERNEL HEAP] alloc failed (grow)");
+                return core::ptr::null_mut();
+            }
+        }
+    }
+
+    fn free_internal(&mut self, ptr: *mut u8) -> Result<(), &'static str> {
+        let Some(block) = find_block_by_payload_ptr(&self.state, ptr) else {
+            return Err("invalid pointer");
+        };
+
+        // SAFETY:
+        // - `block` points to a validated block header.
+        let header = unsafe { &mut *block };
+        if !header.in_use() {
+            return Err("double free");
+        }
+        if !header.has_valid_magic(block as usize) {
+            return Err("invalid magic");
+        }
+
+        header.set_in_use(false);
+        let coalesced = coalesce_free_block(&mut self.state, block);
+        insert_free_block(&mut self.state, coalesced);
+
+        Ok(())
+    }
+}
+
+#[cfg(feature = "kernel")]
 /// Global heap singleton.
 struct GlobalHeap {
     /// Protected mutable heap state.
@@ -196,6 +414,7 @@ struct GlobalHeap {
     serial_debug_enabled: AtomicBool,
 }
 
+#[cfg(feature = "kernel")]
 impl GlobalHeap {
     const fn new() -> Self {
         Self {
@@ -206,6 +425,7 @@ impl GlobalHeap {
     }
 }
 
+#[cfg(feature = "kernel")]
 /// Process-wide heap instance.
 static HEAP: GlobalHeap = GlobalHeap::new();
 
@@ -224,6 +444,7 @@ fn compute_aligned_heapblock_size(requested_size: usize) -> Option<usize> {
         .and_then(|v| align_up_checked(v, ALIGNMENT))
 }
 
+#[cfg(feature = "kernel")]
 /// Computes the heap cap strictly from current PMM free capacity.
 fn compute_system_heap_cap() -> usize {
     // Step 1: PMM may be unavailable in early bring-up contexts.
@@ -295,12 +516,14 @@ fn size_class_index(block_size: usize) -> usize {
     raw.min(FREE_BIN_COUNT - 1)
 }
 
+#[cfg(feature = "kernel")]
 /// Executes a closure with exclusive mutable access to heap state.
 fn with_heap<R>(f: impl FnOnce(&mut HeapState) -> R) -> R {
     let mut guard = HEAP.inner.lock();
     f(&mut guard)
 }
 
+#[cfg(feature = "kernel")]
 /// Initializes the heap manager and returns the heap size.
 pub fn init(debug_output: bool) -> usize {
     let heap_start = HEAP_START_OFFSET;
@@ -348,7 +571,7 @@ pub fn init(debug_output: bool) -> usize {
     // Step 4: Emit the derived system cap once so OOM behavior is auditable.
     logging::logln_with_options(
         "heap",
-        format_args!("[HEAP] init cap={} bytes", max_heap_size),
+        format_args!("[KERNEL HEAP] init cap={} bytes", max_heap_size),
         serial_debug_enabled(),
         true,
     );
@@ -356,11 +579,13 @@ pub fn init(debug_output: bool) -> usize {
     INITIAL_HEAP_SIZE
 }
 
+#[cfg(feature = "kernel")]
 #[inline]
 fn serial_debug_enabled() -> bool {
     HEAP.serial_debug_enabled.load(Ordering::Acquire)
 }
 
+#[cfg(feature = "kernel")]
 /// Emits heap free-path diagnostics via the central logger.
 #[inline]
 fn log_free_diagnostic(args: core::fmt::Arguments<'_>) {
@@ -370,23 +595,27 @@ fn log_free_diagnostic(args: core::fmt::Arguments<'_>) {
     logging::logln_with_options("heap", args, serial_debug_enabled(), true);
 }
 
+#[cfg(feature = "kernel")]
 /// Returns whether heap debug output to serial is enabled.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn debug_output_enabled() -> bool {
     serial_debug_enabled()
 }
 
+#[cfg(feature = "kernel")]
 /// Enables or disables heap debug output and returns the previous setting.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn set_debug_output(enabled: bool) -> bool {
     HEAP.serial_debug_enabled.swap(enabled, Ordering::AcqRel)
 }
 
+#[cfg(feature = "kernel")]
 /// Returns whether the heap manager has been initialized.
 pub fn is_initialized() -> bool {
     HEAP.initialized.load(Ordering::Acquire)
 }
 
+#[cfg(feature = "kernel")]
 /// Returns the current heap growth cap in bytes.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn max_heap_size() -> usize {
@@ -396,6 +625,7 @@ pub fn max_heap_size() -> usize {
 /// Public alignment constant for components that prefer const access.
 pub const HEAP_ALIGNMENT: usize = ALIGNMENT;
 
+#[cfg(feature = "kernel")]
 /// Allocates `size` bytes and returns a pointer to the payload.
 pub fn malloc(size: usize) -> *mut u8 {
     let requested_size = size;
@@ -404,7 +634,7 @@ pub fn malloc(size: usize) -> *mut u8 {
         logging::logln_with_options(
             "heap",
             format_args!(
-                "[HEAP] alloc failed (overflow) requested={}",
+                "[KERNEL HEAP] alloc failed (overflow) requested={}",
                 requested_size
             ),
             serial_debug_enabled(),
@@ -431,7 +661,7 @@ pub fn malloc(size: usize) -> *mut u8 {
             // Step 2: Grow heap when no fitting block currently exists.
             let growth = compute_heap_growth_for_request(size);
 
-            if grow_heap(state, growth) {
+            if grow_heap(state, growth, &KernelHeapEnv) {
                 AllocAttempt::Retry
             } else {
                 AllocAttempt::Fail
@@ -443,7 +673,7 @@ pub fn malloc(size: usize) -> *mut u8 {
                 logging::logln_with_options(
                     "heap",
                     format_args!(
-                        "[HEAP] alloc ptr={:#x} requested={} block={}",
+                        "[KERNEL HEAP] alloc ptr={:#x} requested={} block={}",
                         ptr as usize, requested_size, size
                     ),
                     serial_debug_enabled(),
@@ -457,7 +687,7 @@ pub fn malloc(size: usize) -> *mut u8 {
                 logging::logln_with_options(
                     "heap",
                     format_args!(
-                        "[HEAP] alloc failed (grow) requested={} block={}",
+                        "[KERNEL HEAP] alloc failed (grow) requested={} block={}",
                         requested_size, size
                     ),
                     serial_debug_enabled(),
@@ -470,6 +700,7 @@ pub fn malloc(size: usize) -> *mut u8 {
     }
 }
 
+#[cfg(feature = "kernel")]
 /// Frees a previously allocated heap pointer.
 pub fn free(ptr: *mut u8) {
     if ptr.is_null() {
@@ -531,13 +762,13 @@ pub fn free(ptr: *mut u8) {
     match result {
         FreeResult::Freed { block_size } => {
             log_free_diagnostic(format_args!(
-                "[HEAP] free ptr={:#x} block={}",
+                "[KERNEL HEAP] free ptr={:#x} block={}",
                 ptr as usize, block_size
             ));
         }
         FreeResult::Rejected { reason } => {
             log_free_diagnostic(format_args!(
-                "[HEAP] free rejected ptr={:#x} reason={}",
+                "[KERNEL HEAP] free rejected ptr={:#x} reason={}",
                 ptr as usize, reason
             ));
         }
@@ -849,7 +1080,7 @@ fn coalesce_free_block(state: &mut HeapState, block: *mut HeapBlockHeader) -> *m
 ///
 /// Requires the global heap lock (`HEAP.inner`) to already be held by the caller
 /// via `with_heap`, i.e. this function must only run with exclusive heap access.
-fn grow_heap(state: &mut HeapState, amount: usize) -> bool {
+fn grow_heap(state: &mut HeapState, amount: usize, env: &impl HeapEnvironment) -> bool {
     if amount < HEADER_SIZE {
         return false;
     }
@@ -868,6 +1099,11 @@ fn grow_heap(state: &mut HeapState, amount: usize) -> bool {
     let Some(new_end) = old_end.checked_add(amount) else {
         return false;
     };
+
+    // Step 0: Ensure memory for the grown range is mapped and backed by the environment.
+    if !env.map_memory(old_end, new_end) {
+        return false;
+    }
 
     // Step 1: Read the tail block size in O(1) from the cached `tail_block_addr`.
     // When the heap is empty (old_end == heap_start), there is no predecessor.
@@ -914,6 +1150,7 @@ fn compute_heap_growth_for_request(required_block_size: usize) -> usize {
     align_up_checked(required_block_size, HEAP_GROWTH).unwrap_or(HEAP_GROWTH)
 }
 
+#[cfg(feature = "kernel")]
 /// Runs heap self-tests and prints results to the screen.
 pub fn run_self_test(screen: &mut Screen) {
     let mut failures = 0u32;

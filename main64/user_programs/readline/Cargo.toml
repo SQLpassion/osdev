@@ -3,6 +3,9 @@ name = "readline_user_program"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+kernel = []
+
 [dependencies]
 
 [profile.dev]

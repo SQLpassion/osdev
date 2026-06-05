@@ -416,3 +416,36 @@ pub fn user_readline(buf: &mut [u8]) -> Result<usize, SysError> {
 
     Ok(len)
 }
+
+/// Dynamically maps user-space memory pages of the given length.
+///
+/// ABI arguments:
+/// - `arg0` (`RDI`) = `length` (requested bytes to allocate/map)
+///
+/// Return value:
+/// - `Ok(ptr)` pointing to the start of the newly mapped user memory.
+/// - `Err(SysError)` if the allocation fails or parameters are invalid.
+///
+/// # Safety
+/// - This function is marked `unsafe` because it introduces arbitrary raw pointers
+///   into the caller's address space. The caller is responsible for ensuring that
+///   accesses to the returned pointer remain within the requested size and do not
+///   violate Rust's aliasing rules.
+#[inline(always)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub unsafe fn sys_mmap(length: usize) -> Result<*mut u8, SysError> {
+    let raw_value = unsafe {
+        // SAFETY:
+        // - This requires `unsafe` because syscall entry executes raw ABI-level interrupt machinery.
+        // - The wrapper runs only in environments where the `int 0x80` entry is configured.
+        abi::syscall1(SyscallId::Mmap as u64, length as u64)
+    };
+
+    match raw_value {
+        SYSCALL_ERR_UNSUPPORTED => Err(SysError::UnsupportedSyscall),
+        SYSCALL_ERR_INVALID_ARG => Err(SysError::InvalidArgument),
+        SYSCALL_ERR_IO => Err(SysError::IoError),
+        x if x >= SYSCALL_ERR_IO => Err(SysError::Unknown(x)),
+        ptr => Ok(ptr as *mut u8),
+    }
+}

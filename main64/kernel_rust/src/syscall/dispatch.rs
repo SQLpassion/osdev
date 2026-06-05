@@ -71,6 +71,7 @@ pub const fn syscall_name_for_number(syscall_nr: u64) -> &'static str {
         SyscallId::SEEK_FILE => "SeekFile",
         SyscallId::END_OF_FILE => "EndOfFile",
         SyscallId::PRINT_ROOT_DIRECTORY => "PrintRootDirectory",
+        SyscallId::MMAP => "Mmap",
         _ => "Unknown",
     }
 }
@@ -109,6 +110,7 @@ pub fn dispatch_checked(
         SyscallId::SEEK_FILE => syscall_seek_file_impl(arg0, arg1),
         SyscallId::END_OF_FILE => syscall_end_of_file_impl(arg0),
         SyscallId::PRINT_ROOT_DIRECTORY => syscall_print_root_directory_impl(),
+        SyscallId::MMAP => syscall_mmap_impl(arg0 as usize),
         _ => Err(SyscallError::Unsupported),
     };
 
@@ -459,4 +461,111 @@ fn syscall_end_of_file_impl(fd: u64) -> SyscallResult<u64> {
 fn syscall_print_root_directory_impl() -> SyscallResult<u64> {
     crate::io::fat12::print_root_directory();
     Ok(0)
+}
+
+/// Implements `Mmap`: dynamically allocate physical frames and map them into user space.
+///
+/// Under the hood, this grows the user-space heap region of the calling task dynamically.
+/// Memory pages are mapped as writable, non-executable, and user-accessible.
+///
+/// # Invariants and Safety
+/// - No unsafe blocks are directly executed in this function (page table and register
+///   writes are encapsulated within safe-looking PMM/VMM/scheduler APIs).
+/// - Rollback safety: if any page fails to map (e.g. page directory allocation fails),
+///   all pages mapped during this call are rolled back, and all allocated physical frames
+///   are released back to the PMM to prevent memory leaks.
+fn syscall_mmap_impl(length: usize) -> SyscallResult<u64> {
+    // Step 1: Reject zero-length allocations immediately.
+    if length == 0 {
+        return Err(SyscallError::InvalidArg);
+    }
+
+    // Step 2: Fetch the active task ID from the scheduler.
+    let task_id = scheduler::current_task_id().ok_or(SyscallError::InvalidArg)?;
+
+    // Step 3: Extract the PML4 address space root (CR3) for the current task.
+    let (cr3, _, _) = scheduler::task_context(task_id).ok_or(SyscallError::InvalidArg)?;
+
+    // Step 4: Retrieve the current heap boundary (brk) for the active task.
+    let current_heap_top = scheduler::current_user_heap_top().ok_or(SyscallError::InvalidArg)?;
+
+    // Step 5: Align the requested length up to a multiple of PAGE_SIZE_U64 (4 KiB).
+    let page_size = crate::arch::constants::PAGE_SIZE_U64;
+    let aligned_len = match (length as u64).checked_add(page_size - 1) {
+        Some(sum) => sum & !(page_size - 1),
+        None => return Err(SyscallError::InvalidArg),
+    };
+
+    // Step 6: Verify the allocation does not overflow or exceed the maximum heap window boundary.
+    let new_heap_top = match current_heap_top.checked_add(aligned_len) {
+        Some(top) if top <= crate::memory::vmm::USER_HEAP_END => top,
+        _ => return Err(SyscallError::InvalidArg),
+    };
+
+    let num_pages = aligned_len / page_size;
+
+    // Step 7: Allocate the physical memory frames from the PMM.
+    // We pre-reserve Vec capacity so that vector pushes are infallible.
+    let mut allocated_pfns = alloc::vec::Vec::new();
+    if allocated_pfns.try_reserve(num_pages as usize).is_err() {
+        return Err(SyscallError::InvalidArg);
+    }
+
+    for _ in 0..num_pages {
+        if let Some(frame) = crate::memory::pmm::with_pmm(|mgr| mgr.alloc_frame()) {
+            allocated_pfns.push(frame.pfn);
+        } else {
+            // Rollback physical frame allocations on failure.
+            for pfn in allocated_pfns {
+                crate::memory::pmm::with_pmm(|mgr| mgr.release_pfn(pfn));
+            }
+            return Err(SyscallError::InvalidArg);
+        }
+    }
+
+    // Step 8: Map the allocated physical frames into the task's address space.
+    // All VMM page mapping is performed under `with_address_space` to guarantee active page directory context.
+    let mut map_failed = false;
+    let mut mapped_count = 0;
+
+    crate::memory::vmm::with_address_space(cr3, || {
+        for (i, &pfn) in allocated_pfns.iter().enumerate() {
+            let page_va = current_heap_top + (i as u64 * page_size);
+            if crate::memory::vmm::map_user_page(page_va, pfn, true).is_err() {
+                map_failed = true;
+                break;
+            }
+            mapped_count += 1;
+        }
+
+        // If mapping failed mid-way, rollback all pages mapped during this call.
+        if map_failed {
+            for j in 0..mapped_count {
+                let roll_va = current_heap_top + (j as u64 * page_size);
+                crate::memory::vmm::unmap_virtual_address(roll_va);
+            }
+        }
+    });
+
+    // Step 9: Release frames that were not successfully mapped (or were rolled back).
+    if map_failed {
+        for &pfn in &allocated_pfns[mapped_count..] {
+            crate::memory::pmm::with_pmm(|mgr| mgr.release_pfn(pfn));
+        }
+        return Err(SyscallError::Io);
+    }
+
+    // Step 10: Commit the new heap top to the scheduler metadata and return the start address of the block.
+    if !scheduler::set_current_user_heap_top(new_heap_top) {
+        // Rollback all mapped pages if scheduler update fails (highly unlikely).
+        crate::memory::vmm::with_address_space(cr3, || {
+            for j in 0..num_pages {
+                let roll_va = current_heap_top + (j * page_size);
+                crate::memory::vmm::unmap_virtual_address(roll_va);
+            }
+        });
+        return Err(SyscallError::Io);
+    }
+
+    Ok(current_heap_top)
 }

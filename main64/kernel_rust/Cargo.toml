@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Klaus Aschenbrenner"]
 
+[features]
+default = ["kernel"]
+kernel = []
+
+
 [lib]
 # Disable default test target for lib - we use integration tests only
 test = false

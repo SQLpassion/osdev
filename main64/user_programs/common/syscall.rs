@@ -8,6 +8,7 @@ use core::arch::asm;
 #[repr(u64)]
 #[allow(dead_code)]
 enum SyscallId {
+    WriteSerial = 1,
     Exit = 2,
     WriteConsole = 3,
     GetChar = 4,
@@ -16,6 +17,7 @@ enum SyscallId {
     ReadFile = 10,
     WriteFile = 11,
     DeleteFile = 12,
+    Mmap = 16,
 }
 
 #[allow(dead_code)]
@@ -154,6 +156,28 @@ unsafe fn raw_delete_file(name_ptr: *const u8) -> u64 {
     // SAFETY:
     // - Caller must provide a valid pointer to a null-terminated string.
     unsafe { syscall1(SyscallId::DeleteFile as u64, name_ptr as u64) }
+}
+
+/// Writes bytes to serial port via kernel syscall.
+#[inline(always)]
+unsafe fn raw_write_serial(ptr: *const u8, len: usize) -> u64 {
+    // SAFETY:
+    // - Caller provides buffer pointer/length according to syscall contract.
+    unsafe { syscall2(SyscallId::WriteSerial as u64, ptr as u64, len as u64) }
+}
+
+/// Safe wrapper for writing a slice of bytes to the serial port.
+#[inline(always)]
+pub fn write_serial(msg: &[u8]) -> Result<(), u64> {
+    let raw = unsafe {
+        // SAFETY:
+        // - msg is a valid slice in memory.
+        raw_write_serial(msg.as_ptr(), msg.len())
+    };
+    if raw >= SYSCALL_ERR_IO {
+        return Err(raw);
+    }
+    Ok(())
 }
 
 /// Writes bytes to VGA console via kernel syscall.
@@ -353,6 +377,21 @@ pub fn user_readline(buf: &mut [u8]) -> Result<usize, u64> {
     }
 
     Ok(len)
+}
+
+/// Dynamically maps user-space memory pages of the given length.
+#[inline(always)]
+pub fn mmap(length: usize) -> Result<*mut u8, u64> {
+    let raw = unsafe {
+        // SAFETY:
+        // - Mmap syscall is available through `int 0x80` ABI.
+        // - No pointers are dereferenced here.
+        syscall1(SyscallId::Mmap as u64, length as u64)
+    };
+    if raw >= SYSCALL_ERR_IO {
+        return Err(raw);
+    }
+    Ok(raw as *mut u8)
 }
 
 /// Terminates the current user task.

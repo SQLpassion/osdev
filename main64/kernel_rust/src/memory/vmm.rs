@@ -110,6 +110,7 @@ pub const USER_STACK_TOP: u64 = 0x0000_7FFF_F000_0000;
 pub const USER_STACK_SIZE: u64 = 0x0010_0000;
 
 /// User stack start (inclusive).
+/// User stack start (inclusive).
 pub const USER_STACK_BASE: u64 = USER_STACK_TOP - USER_STACK_SIZE;
 
 /// Optional guard page below the user stack.
@@ -118,9 +119,17 @@ pub const USER_STACK_GUARD_BASE: u64 = USER_STACK_BASE - PAGE_SIZE_U64;
 /// Optional guard page end (exclusive).
 pub const USER_STACK_GUARD_END: u64 = USER_STACK_BASE;
 
+/// User heap base virtual address (grows upwards).
+pub const USER_HEAP_BASE: u64 = 0x0000_7000_1000_0000;
+
+/// User heap size limit (256 MiB).
+pub const USER_HEAP_SIZE: u64 = 0x0000_0000_1000_0000;
+
+/// User heap end address (exclusive).
+pub const USER_HEAP_END: u64 = USER_HEAP_BASE + USER_HEAP_SIZE;
+
 /// Classified user virtual address region.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-
 pub enum UserRegion {
     /// Executable/text region for user program image.
     Code,
@@ -130,7 +139,11 @@ pub enum UserRegion {
 
     /// Guard page below stack (must stay unmapped).
     Guard,
+
+    /// Writable heap region for user programs.
+    Heap,
 }
+
 
 /// Error returned by the checked page-fault handling path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -395,9 +408,16 @@ fn classify_user_region(virtual_address: u64) -> Option<UserRegion> {
     if (USER_STACK_GUARD_BASE..USER_STACK_GUARD_END).contains(&virtual_address) {
         return Some(UserRegion::Guard);
     }
+
+    // Heap window represents the user-mode heap memory range.
+    if (USER_HEAP_BASE..USER_HEAP_END).contains(&virtual_address) {
+        return Some(UserRegion::Heap);
+    }
+
     // Any other VA is outside supported user ranges.
     None
 }
+
 
 /// Converts a physical byte address to a page-frame number.
 #[inline]
@@ -1654,6 +1674,9 @@ pub fn destroy_user_address_space_with_page_counts(
             unmap_page_and_prune_pagetable_hierarchy(stack_va, true);
             stack_va += PAGE_SIZE_U64;
         }
+
+        // Step 3: Clear and release all mapped pages in the user-mode heap region.
+        unmap_user_heap_region();
     });
 
     // Finally release the root PML4 frame itself after its hierarchy has been pruned.
@@ -1668,6 +1691,50 @@ pub fn destroy_user_address_space_with_page_counts(
         ));
     }
 }
+
+/// Unmaps all mapped pages in the user heap region [USER_HEAP_BASE..USER_HEAP_END).
+///
+/// This traverses intermediate page table directories to efficiently skip
+/// unmapped sub-regions and prunes hierarchy frames as they become empty.
+pub fn unmap_user_heap_region() {
+    let mut va = USER_HEAP_BASE;
+    while va < USER_HEAP_END {
+        // Step 1: Resolve PML4 level and skip if non-present.
+        let pml4 = table_at(PML4_TABLE_ADDR);
+        let pml4_idx = pml4_index(va);
+        let pml4e = table_entry(pml4, pml4_idx);
+        if !pml4e.present() {
+            // PML4 entries cover 512 GiB of virtual address space.
+            va = (va + 0x80_0000_0000) & !(0x80_0000_0000 - 1);
+            continue;
+        }
+
+        // Step 2: Resolve PDPT level and skip if non-present.
+        let pdp = table_at(pdp_table_addr(va));
+        let pdp_idx = pdp_index(va);
+        let pdpe = table_entry(pdp, pdp_idx);
+        if !pdpe.present() {
+            // PDPT entries cover 1 GiB of virtual address space.
+            va = (va + 0x4000_0000) & !(0x4000_0000 - 1);
+            continue;
+        }
+
+        // Step 3: Resolve PD level and skip if non-present.
+        let pd = table_at(pd_table_addr(va));
+        let pd_idx = pd_index(va);
+        let pde = table_entry(pd, pd_idx);
+        if !pde.present() {
+            // PD entries cover 2 MiB of virtual address space.
+            va = (va + 0x20_0000) & !(0x20_0000 - 1);
+            continue;
+        }
+
+        // Step 4: Page table level exists; unmap individual page and advance by page size.
+        unmap_page_and_prune_pagetable_hierarchy(va, true);
+        va += PAGE_SIZE_U64;
+    }
+}
+
 
 /// Returns page-table PFNs `(pdp, pd, pt)` for `virtual_address` in active CR3.
 ///
@@ -1823,6 +1890,7 @@ pub fn map_user_page(virtual_address: u64, pfn: u64, writable: bool) -> Result<(
     let no_execute = match classify_user_region(virtual_address) {
         Some(UserRegion::Code) => false,
         Some(UserRegion::Stack) => true,
+        Some(UserRegion::Heap) => true,
         Some(UserRegion::Guard) => {
             return Err(MapError::UserGuardPage { virtual_address });
         }
@@ -1830,6 +1898,7 @@ pub fn map_user_page(virtual_address: u64, pfn: u64, writable: bool) -> Result<(
             return Err(MapError::NotUserRegion { virtual_address });
         }
     };
+
 
     // Ensure all intermediate levels exist and are marked user-accessible.
     populate_page_table_path(virtual_address, true)?;

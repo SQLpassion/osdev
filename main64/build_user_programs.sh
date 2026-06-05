@@ -23,7 +23,7 @@ echo "-> Building hello user program..."
 cd "$HELLO_DIR"
 
 if [ "$PROFILE" = "release" ]; then
-    cargo +nightly build --release --target x86_64-unknown-none -Z build-std=core
+    cargo +nightly build --release --target x86_64-unknown-none -Z build-std=core,alloc
     INPUT_ELF="target/x86_64-unknown-none/release/hello"
 else
     cargo +nightly build --target x86_64-unknown-none
@@ -43,7 +43,7 @@ echo "-> Building readline user program..."
 cd "$READLINE_DIR"
 
 if [ "$PROFILE" = "release" ]; then
-    cargo +nightly build --release --target x86_64-unknown-none -Z build-std=core
+    cargo +nightly build --release --target x86_64-unknown-none -Z build-std=core,alloc
     INPUT_ELF="target/x86_64-unknown-none/release/readline"
 else
     cargo +nightly build --target x86_64-unknown-none
@@ -64,7 +64,7 @@ echo "-> Building filedemo user program..."
 cd "$FILEDEMO_DIR"
 
 if [ "$PROFILE" = "release" ]; then
-    cargo +nightly build --release --target x86_64-unknown-none -Z build-std=core
+    cargo +nightly build --release --target x86_64-unknown-none -Z build-std=core,alloc
     INPUT_ELF="target/x86_64-unknown-none/release/filedemo"
 else
     cargo +nightly build --target x86_64-unknown-none

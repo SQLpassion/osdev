@@ -670,3 +670,63 @@ fn test_rust_vec_uses_kernel_heap() {
     assert!(values[0] == 0, "first Vec element should match");
     assert!(values[15] == 45, "last Vec element should match");
 }
+
+struct DummyHeapEnv {
+    max_size: usize,
+}
+
+impl heap::HeapEnvironment for DummyHeapEnv {
+    fn map_memory(&self, _start: usize, _end: usize) -> bool {
+        // In the test, we already allocated a static/stack buffer or we mock it.
+        // Returning true simulates successful page mapping.
+        true
+    }
+
+    fn max_heap_size(&self) -> usize {
+        self.max_size
+    }
+
+    fn log(&self, _msg: &str) {
+        // No-op for test logging
+    }
+}
+
+/// Contract: heap abstraction environment verification.
+/// Given: A stack memory buffer and a custom Heap Environment implementation.
+/// When: We initialize and allocate from the generic `Heap` allocator.
+/// Then: All assertions must hold, verifying that allocations succeed, remain aligned, and do not overlap.
+/// Failure Impact: Indicates a regression in the generic Heap or HeapEnvironment trait logic.
+#[test_case]
+fn test_heap_environment_abstraction() {
+    let mut buffer = [0u8; 4096];
+    let env = DummyHeapEnv { max_size: 4096 };
+    
+    // SAFETY:
+    // - We construct and initialize a local Heap instance using a stack buffer.
+    // - The environment maps the memory successfully.
+    let start = buffer.as_mut_ptr() as usize;
+    let mut user_heap = heap::Heap::new(env);
+    
+    user_heap.init(start, 4096).expect("initialization should succeed");
+    
+    let layout1 = Layout::from_size_align(128, 8).unwrap();
+    let ptr1 = user_heap.allocate(layout1);
+    assert!(!ptr1.is_null(), "allocation 1 should succeed");
+    assert!((ptr1 as usize) >= start && (ptr1 as usize) < start + 4096, "pointer 1 within range");
+    assert!((ptr1 as usize).is_multiple_of(8), "pointer 1 aligned");
+    
+    let layout2 = Layout::from_size_align(256, 16).unwrap();
+    let ptr2 = user_heap.allocate(layout2);
+    assert!(!ptr2.is_null(), "allocation 2 should succeed");
+    assert!(ptr1 != ptr2, "allocations must not overlap");
+    assert!((ptr2 as usize).is_multiple_of(16), "pointer 2 aligned to 16");
+    
+    // SAFETY:
+    // - ptr1 and ptr2 are valid allocated pointers and layouts match.
+    unsafe {
+        user_heap.deallocate(ptr1, layout1);
+        user_heap.deallocate(ptr2, layout2);
+    }
+}
+
+

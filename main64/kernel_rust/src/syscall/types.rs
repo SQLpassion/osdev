@@ -35,6 +35,8 @@ pub enum SyscallId {
     EndOfFile = 14,
     /// Print the root directory listing of the disk.
     PrintRootDirectory = 15,
+    /// Map memory pages.
+    Mmap = 16,
 }
 
 impl SyscallId {
@@ -85,6 +87,9 @@ impl SyscallId {
 
     /// Syscall number for PrintRootDirectory.
     pub const PRINT_ROOT_DIRECTORY: u64 = Self::PrintRootDirectory as u64;
+
+    /// Syscall number for Mmap.
+    pub const MMAP: u64 = Self::Mmap as u64;
 }
 
 /// Unknown syscall number.
