@@ -15,7 +15,8 @@
 use core::arch::asm;
 
 use super::{
-    abi, SysError, SyscallId, SYSCALL_ERR_INVALID_ARG, SYSCALL_ERR_IO, SYSCALL_ERR_UNSUPPORTED,
+    abi, SysError, SyscallId, SYSCALL_ERR_INVALID_ARG, SYSCALL_ERR_IO,
+    SYSCALL_ERR_OUT_OF_MEMORY, SYSCALL_ERR_UNSUPPORTED,
 };
 
 /// Normalizes a raw input byte for one-shot console echo.
@@ -417,10 +418,15 @@ pub fn user_readline(buf: &mut [u8]) -> Result<usize, SysError> {
     Ok(len)
 }
 
-/// Dynamically maps user-space memory pages of the given length.
+/// Dynamically maps user-space memory pages at a given address and length.
 ///
 /// ABI arguments:
-/// - `arg0` (`RDI`) = `length` (requested bytes to allocate/map)
+/// - `arg0` (`RDI`) = `addr`   — target virtual address (0 = let kernel choose)
+/// - `arg1` (`RSI`) = `length` — requested bytes to allocate/map
+///
+/// When `addr` is zero the kernel automatically picks the next contiguous heap
+/// address.  When non-zero it must be page-aligned and equal to the current
+/// heap top.
 ///
 /// Return value:
 /// - `Ok(ptr)` pointing to the start of the newly mapped user memory.
@@ -433,19 +439,23 @@ pub fn user_readline(buf: &mut [u8]) -> Result<usize, SysError> {
 ///   violate Rust's aliasing rules.
 #[inline(always)]
 #[cfg_attr(not(test), allow(dead_code))]
-pub unsafe fn sys_mmap(length: usize) -> Result<*mut u8, SysError> {
+pub unsafe fn sys_mmap(addr: u64, length: usize) -> Result<*mut u8, SysError> {
     let raw_value = unsafe {
         // SAFETY:
         // - This requires `unsafe` because syscall entry executes raw ABI-level interrupt machinery.
         // - The wrapper runs only in environments where the `int 0x80` entry is configured.
-        abi::syscall1(SyscallId::Mmap as u64, length as u64)
+        abi::syscall2(SyscallId::Mmap as u64, addr, length as u64)
     };
 
+    // Valid user heap addresses (0x0000_7000_1000_0000...) are safely below the
+    // error sentinel range (u64::MAX - 3 .. u64::MAX) so there is no ambiguity
+    // between a successful pointer return and an error code.
     match raw_value {
         SYSCALL_ERR_UNSUPPORTED => Err(SysError::UnsupportedSyscall),
         SYSCALL_ERR_INVALID_ARG => Err(SysError::InvalidArgument),
         SYSCALL_ERR_IO => Err(SysError::IoError),
-        x if x >= SYSCALL_ERR_IO => Err(SysError::Unknown(x)),
+        SYSCALL_ERR_OUT_OF_MEMORY => Err(SysError::OutOfMemory),
+        x if x >= SYSCALL_ERR_OUT_OF_MEMORY => Err(SysError::Unknown(x)),
         ptr => Ok(ptr as *mut u8),
     }
 }

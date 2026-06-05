@@ -4,16 +4,17 @@
 
 extern crate alloc;
 
+#[path = "../../kernel_rust/src/memory/vmm_constants.rs"]
+pub mod vmm_constants;
+
 #[path = "syscall.rs"]
 pub mod syscall;
 
 #[path = "../../kernel_rust/src/memory/heap.rs"]
 pub mod kernel_heap;
 
+const USER_HEAP_BASE: usize = vmm_constants::USER_HEAP_BASE as usize;
 use core::alloc::{GlobalAlloc, Layout};
-
-/// Virtual start address of the user heap.
-const USER_HEAP_BASE: usize = 0x0000_7000_1000_0000;
 
 /// Size of the initial heap page mapping (4 KiB).
 const INITIAL_PAGE_SIZE: usize = 4096;
@@ -23,6 +24,10 @@ const INITIAL_PAGE_SIZE: usize = 4096;
 /// ensuring that it does not overlap with the arena (which previously corrupted the
 /// state since Heap needs 552 bytes).
 const ARENA_OFFSET: usize = 1024;
+
+/// Controls verbose per-allocation serial logging.
+/// Set to `false` to disable in production for better performance.
+const HEAP_DEBUG_LOGGING: bool = true;
 
 /// Ring 3 implementation of the `HeapEnvironment` trait.
 struct UserHeapEnv;
@@ -34,9 +39,9 @@ impl kernel_heap::HeapEnvironment for UserHeapEnv {
             return true;
         }
 
-        // Otherwise, map new pages via the kernel mmap syscall.
+        // Map new pages at the specific target address via the kernel mmap syscall.
         let len = end - start;
-        match syscall::mmap(len) {
+        match syscall::mmap(start, len) {
             Ok(ptr) => !ptr.is_null(),
             Err(_) => false,
         }
@@ -69,6 +74,14 @@ impl kernel_heap::HeapEnvironment for UserHeapEnv {
 /// We annotate this helper with `#[inline(never)]` as a compiler barrier. This prevents
 /// LLVM from propagating pointer provenance analysis across the function boundary,
 /// ensuring that the raw integer address cast is not optimized to NULL.
+///
+/// # Provenance Workaround
+/// LLVM's pointer provenance analysis may determine that a `const usize` cast to a
+/// pointer has no valid provenance and optimize the access to a null dereference.
+/// The `mov` instruction in inline assembly forces the value through a register,
+/// breaking LLVM's ability to track its origin. This is a known workaround;
+/// `core::ptr::with_exposed_provenance_mut` (nightly-only) would be the stable
+/// alternative once it stabilizes.
 #[inline(never)]
 unsafe fn get_heap_mut() -> &'static mut kernel_heap::Heap<UserHeapEnv> {
     let heap_addr: usize;
@@ -147,16 +160,18 @@ unsafe impl GlobalAlloc for SafeUserHeapAllocator {
         let heap = unsafe { get_heap_mut() };
         let ptr = heap.allocate(layout);
 
-        use core::fmt::Write;
-        let mut writer = BufWriter::new();
-        let _ = core::write!(
-            &mut writer,
-            "[USER HEAP] alloc ptr={:p} size={} align={}\n",
-            ptr,
-            layout.size(),
-            layout.align()
-        );
-        let _ = syscall::write_serial(writer.as_bytes());
+        if HEAP_DEBUG_LOGGING {
+            use core::fmt::Write;
+            let mut writer = BufWriter::new();
+            let _ = core::write!(
+                &mut writer,
+                "[USER HEAP] alloc ptr={:p} size={} align={}\n",
+                ptr,
+                layout.size(),
+                layout.align()
+            );
+            let _ = syscall::write_serial(writer.as_bytes());
+        }
 
         ptr
     }
@@ -173,16 +188,18 @@ unsafe impl GlobalAlloc for SafeUserHeapAllocator {
             heap.deallocate(ptr, layout);
         }
 
-        use core::fmt::Write;
-        let mut writer = BufWriter::new();
-        let _ = core::write!(
-            &mut writer,
-            "[USER HEAP] free ptr={:p} size={} align={}\n",
-            ptr,
-            layout.size(),
-            layout.align()
-        );
-        let _ = syscall::write_serial(writer.as_bytes());
+        if HEAP_DEBUG_LOGGING {
+            use core::fmt::Write;
+            let mut writer = BufWriter::new();
+            let _ = core::write!(
+                &mut writer,
+                "[USER HEAP] free ptr={:p} size={} align={}\n",
+                ptr,
+                layout.size(),
+                layout.align()
+            );
+            let _ = syscall::write_serial(writer.as_bytes());
+        }
     }
 }
 
@@ -196,7 +213,8 @@ pub static ALLOCATOR: SafeUserHeapAllocator = SafeUserHeapAllocator;
 /// - Must be called only once during early binary startup (typically in `_start()`).
 pub unsafe fn init() -> Result<(), &'static str> {
     // Step 1: Manually map the first page of the user heap.
-    let ptr = syscall::mmap(INITIAL_PAGE_SIZE).map_err(|_| "Failed to map first heap page")?;
+    let ptr = syscall::mmap(USER_HEAP_BASE, INITIAL_PAGE_SIZE)
+        .map_err(|_| "Failed to map first heap page")?;
     if ptr as usize != USER_HEAP_BASE {
         return Err("Heap mapped at unexpected address");
     }
@@ -214,7 +232,10 @@ pub unsafe fn init() -> Result<(), &'static str> {
     // SAFETY:
     // - The heap instance was initialized in the step above.
     let h = unsafe { &mut *heap_ptr };
-    h.init(ptr as usize + ARENA_OFFSET, INITIAL_PAGE_SIZE - ARENA_OFFSET)?;
+    h.init(
+        ptr as usize + ARENA_OFFSET,
+        INITIAL_PAGE_SIZE - ARENA_OFFSET,
+    )?;
 
     Ok(())
 }

@@ -1788,3 +1788,16 @@ pub fn set_current_user_heap_top(new_top: u64) -> bool {
         false
     })
 }
+
+/// Resets the scheduler initialization state to `false`.
+///
+/// This is a test-only helper to simulate initialization failure.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn reset_initialization_for_test() {
+    // Step 1: Acquire scheduler lock to safely modify initialization metadata.
+    with_scheduler(|meta| {
+        // Step 2: Clear initialized state.
+        meta.initialized = false;
+    });
+}
+

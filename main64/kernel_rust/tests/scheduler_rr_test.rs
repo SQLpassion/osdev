@@ -1855,11 +1855,11 @@ fn test_user_task_mmap_syscall() {
     // Step 3: Verify the initial user heap top is set to USER_HEAP_BASE.
     assert_eq!(sched::current_user_heap_top(), Some(vmm::USER_HEAP_BASE));
 
-    // Step 4: Dispatch the Mmap syscall for a valid 4096-byte (1 page) length.
+    // Step 4: Dispatch the Mmap syscall with target addr=USER_HEAP_BASE and length=4096.
     let ret_ptr_val = kaos_kernel::syscall::dispatch(
         kaos_kernel::syscall::SyscallId::Mmap as u64,
+        vmm::USER_HEAP_BASE,
         4096,
-        0,
         0,
         0,
     );
@@ -1883,7 +1883,7 @@ fn test_user_task_mmap_syscall() {
         }
     });
 
-    // Step 8: Call mmap with size 0; must return the invalid argument error sentinel.
+    // Step 8: Call mmap with addr=0, size=0; must return the invalid argument error sentinel.
     let err_val = kaos_kernel::syscall::dispatch(
         kaos_kernel::syscall::SyscallId::Mmap as u64,
         0,
@@ -1896,8 +1896,8 @@ fn test_user_task_mmap_syscall() {
     // Step 9: Call mmap with a size exceeding USER_HEAP_SIZE; must return the invalid argument error sentinel.
     let err_val_huge = kaos_kernel::syscall::dispatch(
         kaos_kernel::syscall::SyscallId::Mmap as u64,
-        vmm::USER_HEAP_SIZE + 4096,
         0,
+        vmm::USER_HEAP_SIZE + 4096,
         0,
         0,
     );

@@ -26,6 +26,8 @@ const SYSCALL_ERR_UNSUPPORTED: u64 = u64::MAX;
 const SYSCALL_ERR_INVALID_ARG: u64 = u64::MAX - 1;
 #[allow(dead_code)]
 const SYSCALL_ERR_IO: u64 = u64::MAX - 2;
+#[allow(dead_code)]
+const SYSCALL_ERR_OUT_OF_MEMORY: u64 = u64::MAX - 3;
 
 #[inline(always)]
 unsafe fn syscall0(syscall_nr: u64) -> u64 {
@@ -379,16 +381,16 @@ pub fn user_readline(buf: &mut [u8]) -> Result<usize, u64> {
     Ok(len)
 }
 
-/// Dynamically maps user-space memory pages of the given length.
+/// Dynamically maps user-space memory pages at the given address with the given length.
 #[inline(always)]
-pub fn mmap(length: usize) -> Result<*mut u8, u64> {
+pub fn mmap(addr: usize, length: usize) -> Result<*mut u8, u64> {
     let raw = unsafe {
         // SAFETY:
         // - Mmap syscall is available through `int 0x80` ABI.
         // - No pointers are dereferenced here.
-        syscall1(SyscallId::Mmap as u64, length as u64)
+        syscall2(SyscallId::Mmap as u64, addr as u64, length as u64)
     };
-    if raw >= SYSCALL_ERR_IO {
+    if raw >= SYSCALL_ERR_OUT_OF_MEMORY {
         return Err(raw);
     }
     Ok(raw as *mut u8)

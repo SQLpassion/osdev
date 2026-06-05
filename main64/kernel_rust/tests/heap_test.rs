@@ -698,6 +698,9 @@ impl heap::HeapEnvironment for DummyHeapEnv {
 /// Failure Impact: Indicates a regression in the generic Heap or HeapEnvironment trait logic.
 #[test_case]
 fn test_heap_environment_abstraction() {
+    // NOTE: DummyHeapEnv::map_memory returns true without actually mapping memory.
+    // All allocations must fit within this 4 KiB buffer; exceeding it would trigger
+    // grow_heap which writes to unmapped memory beyond the buffer.
     let mut buffer = [0u8; 4096];
     let env = DummyHeapEnv { max_size: 4096 };
     
@@ -729,4 +732,51 @@ fn test_heap_environment_abstraction() {
     }
 }
 
+/// Contract: heap grow failure when environment rejects mapping.
+/// Given: A Heap instance with an environment that rejects map_memory calls beyond initial size.
+/// When: We exhaust the initial 4 KiB buffer and trigger a growth request.
+/// Then: The allocation returns null, verifying that grow_heap correctly propagates map_memory failures.
+/// Failure Impact: Indicates grow_heap does not check HeapEnvironment::map_memory return value.
+#[test_case]
+fn test_heap_environment_grow_failure() {
+    struct FailGrowEnv {
+        /// Tracks whether init mapping was already done.
+        init_done: core::cell::Cell<bool>,
+    }
 
+    impl heap::HeapEnvironment for FailGrowEnv {
+        fn map_memory(&self, _start: usize, _end: usize) -> bool {
+            if !self.init_done.get() {
+                // Allow the initial mapping during init().
+                self.init_done.set(true);
+                true
+            } else {
+                // Reject all subsequent growth requests.
+                false
+            }
+        }
+
+        fn max_heap_size(&self) -> usize {
+            1024 * 1024 // 1 MiB cap (irrelevant since map_memory fails first)
+        }
+
+        fn log(&self, _msg: &str) {}
+    }
+
+    let mut buffer = [0u8; 4096];
+    let start = buffer.as_mut_ptr() as usize;
+    let env = FailGrowEnv {
+        init_done: core::cell::Cell::new(false),
+    };
+    let mut test_heap = heap::Heap::new(env);
+    test_heap.init(start, 4096).expect("init should succeed");
+
+    // Exhaust the 4 KiB buffer with large allocations.
+    let layout_big = Layout::from_size_align(3000, 8).unwrap();
+    let ptr1 = test_heap.allocate(layout_big);
+    assert!(!ptr1.is_null(), "first large allocation should succeed within initial 4 KiB");
+
+    // This allocation should fail because grow_heap will call map_memory which returns false.
+    let ptr2 = test_heap.allocate(layout_big);
+    assert!(ptr2.is_null(), "second allocation must fail when environment rejects growth");
+}

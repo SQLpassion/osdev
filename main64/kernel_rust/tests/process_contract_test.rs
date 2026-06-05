@@ -501,31 +501,18 @@ fn test_exec_from_fat12_terminate_releases_loader_code_pfn() {
 /// Contract: `exec_from_fat12` maps scheduler spawn errors to `ExecError::SpawnFailed`.
 #[test_case]
 fn test_exec_from_fat12_maps_spawn_failure_to_spawn_failed() {
-    scheduler::init();
-    scheduler::set_kernel_address_space_cr3(vmm::get_pml4_address());
-
-    let mut filler_task_ids = Vec::new();
-    while let Ok(task_id) = scheduler::spawn_kernel_task(parked_kernel_task) {
-        filler_task_ids.push(task_id);
-    }
-
-    assert!(
-        !filler_task_ids.is_empty(),
-        "test precondition: scheduler must accept at least one filler task before capacity is hit"
-    );
+    // Reset initialization state to guarantee a scheduler spawn error (NotInitialized).
+    scheduler::reset_initialization_for_test();
 
     let result = process::exec_from_fat12("hello.bin");
     assert!(
         matches!(result, Err(process::ExecError::SpawnFailed)),
-        "scheduler-capacity spawn failure must map to ExecError::SpawnFailed"
+        "scheduler spawn failure must map to ExecError::SpawnFailed"
     );
 
-    for task_id in filler_task_ids {
-        assert!(
-            scheduler::terminate_task(task_id),
-            "filler task must be terminatable for test cleanup"
-        );
-    }
+    // Re-initialize scheduler after test to restore clean state for subsequent tests.
+    scheduler::init();
+    scheduler::set_kernel_address_space_cr3(vmm::get_pml4_address());
 }
 
 /// Contract: `exec_from_fat12` maps invalid FAT12 short names to `ExecError::InvalidName`.

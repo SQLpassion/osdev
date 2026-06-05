@@ -33,6 +33,8 @@
 # Building on Mac OS
 #####################
 - Open Terminal:
+    ./build_kernel_debug.sh && ./build_user_programs.sh && qemu-system-x86_64 -drive format=raw,file=../kaos64_rust.img --serial stdio
+    ./build_kernel_release.sh && ./build_user_programs.sh && qemu-system-x86_64 -drive format=raw,file=../kaos64_rust.img --serial stdio
     ./build_kernel_debug.sh && qemu-system-x86_64 -drive format=raw,file=../kaos64_rust.img --serial stdio
     ./build_kernel_debug.sh && qemu-system-x86_64 -drive format=raw,file=../kaos64_rust.img -display curses
     docker run --rm -it -v $HOME/dev/GitHub/SQLpassion/osdev:/src sqlpassion/kaos-buildenv /bin/sh /src/main64/clean.sh

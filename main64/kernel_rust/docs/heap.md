@@ -1,9 +1,64 @@
 # Heap Manager Documentation
 
 This document describes the current heap manager implementation in
-`main64/kernel_rust/src/memory/heap.rs` in detail.
+[main64/kernel_rust/src/memory/heap.rs](../src/memory/heap.rs) in detail.
+
+## Table of Contents
+
+- [1. Conceptual Introduction](#1-conceptual-introduction)
+  - [1.1 The Basic Principle](#11-the-basic-principle)
+  - [1.2 The Problem: Finding a Free Block Efficiently](#12-the-problem-finding-a-free-block-efficiently)
+  - [1.3 Segregated Free-List: Sorting Blocks by Size](#13-segregated-free-list-sorting-blocks-by-size)
+  - [1.4 How a Bin Knows Where Its Blocks Are](#14-how-a-bin-knows-where-its-blocks-are)
+    - [1.4.1 How a Block Gets Into a Bin](#141-how-a-block-gets-into-a-bin)
+  - [1.5 The Bitmap Optimization](#15-the-bitmap-optimization)
+  - [1.6 How Empty Bins Are Distinguished from Non-Empty Ones](#16-how-empty-bins-are-distinguished-from-non-empty-ones)
+  - [1.7 Coalescing: Merging Adjacent Free Blocks](#17-coalescing-merging-adjacent-free-blocks)
+- [2. Scope and Design Goals](#2-scope-and-design-goals)
+- [3. High-Level Model](#3-high-level-model)
+- [4. Block Header Format](#4-block-header-format)
+  - [4.1 Header Size and Alignment](#41-header-size-and-alignment)
+  - [4.2 Boundary-Tag Role of `prev_size`](#42-boundary-tag-role-of-prev_size)
+- [5. Free-List Node Format (Intrusive Metadata)](#5-free-list-node-format-intrusive-metadata)
+- [6. Segregated Free-List Topology](#6-segregated-free-list-topology)
+- [7. Size-Class Mapping](#7-size-class-mapping)
+  - [7.1 Practical Bin Ranges (for typical x86_64 values)](#71-practical-bin-ranges-for-typical-x86_64-values)
+- [8. Global State and Synchronization](#8-global-state-and-synchronization)
+- [9. Heap Memory Layout](#9-heap-memory-layout)
+- [10. Initialization (`init`)](#10-initialization-init)
+- [11. Allocation Path (`malloc`)](#11-allocation-path-malloc)
+  - [11.1 Steps](#111-steps)
+  - [11.2 Candidate Search (`find_suitable_free_block`)](#112-candidate-search-find_suitable_free_block)
+  - [11.3 Block Split (`allocate_block`)](#113-block-split-allocate_block)
+- [12. Free Path (`free`)](#12-free-path-free)
+- [13. Coalescing Algorithm (`coalesce_free_block`)](#13-coalescing-algorithm-coalesce_free_block)
+  - [13.1 Previous Neighbor Merge](#131-previous-neighbor-merge)
+  - [13.2 Next Neighbor Merge](#132-next-neighbor-merge)
+  - [13.3 Boundary-Tag Repair](#133-boundary-tag-repair)
+- [14. Heap Growth (`grow_heap`)](#14-heap-growth-grow_heap)
+- [15. Pointer Conversion Helpers](#15-pointer-conversion-helpers)
+- [16. Logging Behavior](#16-logging-behavior)
+- [17. Self-Test (`run_self_test`)](#17-self-test-run_self_test)
+- [18. Integration Test Coverage](#18-integration-test-coverage)
+- [19. Rust Global Allocator Integration](#19-rust-global-allocator-integration)
+- [20. Safety and Invariants](#20-safety-and-invariants)
+- [21. Performance Characteristics](#21-performance-characteristics)
+- [22. Known Limitations](#22-known-limitations)
+- [23. Working Example](#23-working-example)
+  - [23.1 Initial State (after `init(false)`)](#231-initial-state-after-initfalse)
+  - [23.2 Step A: `malloc(50)`](#232-step-a-malloc50)
+  - [23.3 Step B: `malloc(200)`](#233-step-b-malloc200)
+  - [23.4 Step C: `free(first)` — freeing the 80-byte block at 0x1000](#234-step-c-freefirst-freeing-the-80-byte-block-at-0x1000)
+  - [23.5 Step D: `free(second)` — freeing the 224-byte block at 0x1050](#235-step-d-freesecond-freeing-the-224-byte-block-at-0x1050)
+- [24. User-Space Heap Manager](#24-user-space-heap-manager)
+  - [24.1 Architecture & Integration](#241-architecture-integration)
+  - [24.2 Logging Formatting & Buffering](#242-logging-formatting-buffering)
+  - [24.3 Naming Realignment](#243-naming-realignment)
+  - [24.4 Compilation & Build-Std Configuration](#244-compilation-build-std-configuration)
+  - [24.5 Safety Contract (`Heap::deallocate`)](#245-safety-contract-heapdeallocate)
 
 ---
+
 
 ## 1. Conceptual Introduction
 
@@ -974,21 +1029,12 @@ is complete: class selection, bitmap-based empty-bin skipping, splitting with
 re-insertion into a lower class, two bins active simultaneously, and finally
 bi-directional coalescing that drains both bins and restores the original block.
 
-## 24. Files and Entry Points
+## 24. User-Space Heap Manager
 
-- Implementation: `main64/kernel_rust/src/memory/heap.rs`
-- Global allocator bridge: `main64/kernel_rust/src/allocator.rs`
-- Integration tests: `main64/kernel_rust/tests/heap_test.rs`
-- Spinlock primitive: `main64/kernel_rust/src/sync/spinlock.rs`
+The user-space programs (`hello`, `readline`, `filedemo`) utilize the same underlying segregated free-list allocator core logic ([kernel_rust/src/memory/heap.rs](../src/memory/heap.rs)) as the kernel. This is implemented via a proxy and module-level re-exports to avoid duplicating the complex allocation code.
 
----
-
-## 25. User-Space Heap Manager
-
-The user-space programs (`hello`, `readline`, `filedemo`) utilize the same underlying segregated free-list allocator core logic (`kernel_rust/src/memory/heap.rs`) as the kernel. This is implemented via a proxy and module-level re-exports to avoid duplicating the complex allocation code.
-
-### 25.1 Architecture & Integration
-The user-mode heap allocator is defined in [user_programs/common/heap.rs](file:///Users/klaus/dev/github/sqlpassion/osdev/main64/user_programs/common/heap.rs):
+### 24.1 Architecture & Integration
+The user-mode heap allocator is defined in [user_programs/common/heap.rs](../../user_programs/common/heap.rs):
 - **Crate Re-use**: The module path `#[path = "../../kernel_rust/src/memory/heap.rs"] pub mod kernel_heap;` is imported directly.
 - **Environment Abstraction**: `UserHeapEnv` implements the `kernel_heap::HeapEnvironment` trait:
   - `map_memory(start, end)`: Wraps the `Mmap` syscall (syscall nr=16) to map raw pages of size `INITIAL_PAGE_SIZE` (4 KiB) as needed.
@@ -1000,25 +1046,25 @@ The user-mode heap allocator is defined in [user_programs/common/heap.rs](file:/
 - **Global Allocator Proxy**: The `SafeUserHeapAllocator` struct implements `Sync` and `GlobalAlloc` by casting pointer references directly to the metadata stored at `USER_HEAP_BASE`.
 - **Static Allocator**: `pub static ALLOCATOR: SafeUserHeapAllocator = SafeUserHeapAllocator;` is annotated with `#[global_allocator]` to register it as the user-space global allocator.
 
-### 25.2 Logging Formatting & Buffering
+### 24.2 Logging Formatting & Buffering
 To prevent interleaving between serial logging outputs of the user-space allocator and other syscall traces/kernel logs, a custom stack-allocated `BufWriter` buffer is used:
 - Writes to `WriteSerial` are buffered and flushed atomically.
 - All allocator messages are prefixed with `[USER HEAP]` (e.g., `[USER HEAP] alloc ptr=...` / `[USER HEAP] free ptr=...`) to clearly distinguish them from kernel-space allocator outputs which are prefixed with `[KERNEL HEAP]`.
 
-### 25.3 Naming Realignment
-Previously, the user-space allocator proxy struct was named `SafeUserAllocator`. To prevent naming ambiguities and improve clarity regarding its specific role (as a heap manager), it was renamed to `SafeUserHeapAllocator` across all trait implementations (`Sync`, `GlobalAlloc`) and static bindings in [user_programs/common/heap.rs](file:///Users/klaus/dev/github/sqlpassion/osdev/main64/user_programs/common/heap.rs).
+### 24.3 Naming Realignment
+Previously, the user-space allocator proxy struct was named `SafeUserAllocator`. To prevent naming ambiguities and improve clarity regarding its specific role (as a heap manager), it was renamed to `SafeUserHeapAllocator` across all trait implementations (`Sync`, `GlobalAlloc`) and static bindings in [user_programs/common/heap.rs](../../user_programs/common/heap.rs).
 
-### 25.4 Compilation & Build-Std Configuration
+### 24.4 Compilation & Build-Std Configuration
 To support dynamic structures like `Box` and `Vec`, the user-mode binaries depend on `extern crate alloc;`. In release mode, the build system compiles both the `core` and `alloc` crates from source via `-Z build-std=core,alloc`:
 ```bash
 cargo +nightly build --release --target x86_64-unknown-none -Z build-std=core,alloc
 ```
 This ensures a unified standard library graph and prevents duplicate compiler definitions for the `core` crate.
 
-### 25.5 Safety Contract (`Heap::deallocate`)
+### 24.5 Safety Contract (`Heap::deallocate`)
 The `Heap::deallocate` method receives a raw `*mut u8` pointer and reads its metadata slot (for over-aligned allocations). Dereferencing raw pointers is unsafe because the pointer may be invalid or mismatched.
 - **Method Signature**: The method is marked `unsafe`:
   ```rust
   pub unsafe fn deallocate(&mut self, ptr: *mut u8, layout: core::alloc::Layout)
   ```
-- **Caller Safety**: Callers in [user_programs/common/heap.rs](file:///Users/klaus/dev/github/sqlpassion/osdev/main64/user_programs/common/heap.rs) and [kernel_rust/tests/heap_test.rs](file:///Users/klaus/dev/github/sqlpassion/osdev/main64/kernel_rust/tests/heap_test.rs) invoke this method inside an `unsafe` block with an explicit `SAFETY:` comment detailing the invariants relied upon.
+- **Caller Safety**: Callers in [user_programs/common/heap.rs](../../user_programs/common/heap.rs) and [kernel_rust/tests/heap_test.rs](../tests/heap_test.rs) invoke this method inside an `unsafe` block with an explicit `SAFETY:` comment detailing the invariants relied upon.

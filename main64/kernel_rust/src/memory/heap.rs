@@ -15,23 +15,20 @@
 
 use core::mem::{align_of, size_of};
 
+// Gated imports for kernel-only functionality (concurrency safety, logging, page table/physical memory mapping).
+// This module is shared directly with user-space binaries (via `#[path]`) which do not compile with
+// the `kernel` feature and lack access to Ring 0 bare-metal structures.
 #[cfg(feature = "kernel")]
-use alloc::vec::Vec;
-#[cfg(feature = "kernel")]
-use core::fmt::Write;
-#[cfg(feature = "kernel")]
-use core::sync::atomic::{AtomicBool, Ordering};
+use {
+    crate::drivers::screen::Screen,
+    crate::logging,
+    crate::memory::pmm,
+    crate::sync::spinlock::SpinLock,
+    alloc::vec::Vec,
+    core::fmt::Write,
+    core::sync::atomic::{AtomicBool, Ordering},
+};
 
-#[cfg(feature = "kernel")]
-use crate::drivers::screen::Screen;
-#[cfg(feature = "kernel")]
-use crate::logging;
-#[cfg(feature = "kernel")]
-use crate::memory::pmm;
-#[cfg(feature = "kernel")]
-use crate::sync::spinlock::SpinLock;
-
-#[allow(dead_code)]
 /// Interface for the allocator's interaction with the environment (Kernel vs. User-space).
 pub trait HeapEnvironment {
     /// Informs the environment that the heap needs to grow, ensuring the virtual address range
@@ -225,13 +222,14 @@ impl HeapEnvironment for KernelHeapEnv {
     fn log(&self, msg: &str) {
         logging::logln_with_options(
             "heap",
-            format_args!("{}", msg),
+            format_args!("[KERNEL HEAP] {}", msg),
             serial_debug_enabled(),
             true,
         );
     }
 }
 
+/// Compiled but unused in kernel builds; actively used in user-space heap.
 #[allow(dead_code)]
 /// A generic, unsynchronized Heap allocator instance.
 ///
@@ -242,6 +240,7 @@ pub struct Heap<E: HeapEnvironment> {
     env: E,
 }
 
+/// Compiled but unused in kernel builds; actively used in user-space heap.
 #[allow(dead_code)]
 impl<E: HeapEnvironment> Heap<E> {
     /// Creates a new, uninitialized heap instance with the given environment.
@@ -361,7 +360,7 @@ impl<E: HeapEnvironment> Heap<E> {
 
     fn malloc_internal(&mut self, size: usize) -> *mut u8 {
         let Some(aligned_size) = compute_aligned_heapblock_size(size) else {
-            self.env.log("[KERNEL HEAP] alloc failed (overflow)");
+            self.env.log("alloc failed (overflow)");
             return core::ptr::null_mut();
         };
 
@@ -372,7 +371,7 @@ impl<E: HeapEnvironment> Heap<E> {
 
             let growth = compute_heap_growth_for_request(aligned_size);
             if !grow_heap(&mut self.state, growth, &self.env) {
-                self.env.log("[KERNEL HEAP] alloc failed (grow)");
+                self.env.log("alloc failed (grow)");
                 return core::ptr::null_mut();
             }
         }

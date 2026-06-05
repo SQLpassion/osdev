@@ -110,7 +110,7 @@ pub fn dispatch_checked(
         SyscallId::SEEK_FILE => syscall_seek_file_impl(arg0, arg1),
         SyscallId::END_OF_FILE => syscall_end_of_file_impl(arg0),
         SyscallId::PRINT_ROOT_DIRECTORY => syscall_print_root_directory_impl(),
-        SyscallId::MMAP => syscall_mmap_impl(arg0 as usize),
+        SyscallId::MMAP => syscall_mmap_impl(arg0, arg1 as usize),
         _ => Err(SyscallError::Unsupported),
     };
 
@@ -463,7 +463,16 @@ fn syscall_print_root_directory_impl() -> SyscallResult<u64> {
     Ok(0)
 }
 
-/// Implements `Mmap`: dynamically allocate physical frames and map them into user space.
+/// Implements `Mmap(addr, length)`: dynamically allocate physical frames and map them
+/// into user space.
+///
+/// # Arguments (ABI)
+/// - `addr` (`arg0` / `RDI`): target virtual address for the mapping.  When zero the
+///   kernel picks the next contiguous heap address automatically.  When non-zero the
+///   value must be page-aligned and equal to the current heap top — this enforces
+///   strictly contiguous growth and prevents holes.
+/// - `length` (`arg1` / `RSI`): requested mapping size in bytes (rounded up to page
+///   granularity by the kernel).
 ///
 /// Under the hood, this grows the user-space heap region of the calling task dynamically.
 /// Memory pages are mapped as writable, non-executable, and user-accessible.
@@ -474,7 +483,7 @@ fn syscall_print_root_directory_impl() -> SyscallResult<u64> {
 /// - Rollback safety: if any page fails to map (e.g. page directory allocation fails),
 ///   all pages mapped during this call are rolled back, and all allocated physical frames
 ///   are released back to the PMM to prevent memory leaks.
-fn syscall_mmap_impl(length: usize) -> SyscallResult<u64> {
+fn syscall_mmap_impl(addr: u64, length: usize) -> SyscallResult<u64> {
     // Step 1: Reject zero-length allocations immediately.
     if length == 0 {
         return Err(SyscallError::InvalidArg);
@@ -488,6 +497,26 @@ fn syscall_mmap_impl(length: usize) -> SyscallResult<u64> {
 
     // Step 4: Retrieve the current heap boundary (brk) for the active task.
     let current_heap_top = scheduler::current_user_heap_top().ok_or(SyscallError::InvalidArg)?;
+
+    // Step 4b: Validate the requested target address.
+    // When `addr` is non-zero the caller is requesting a specific VA.  We enforce:
+    //   (a) page alignment,
+    //   (b) the address falls within the user heap window,
+    //   (c) it matches the current heap top — ensuring strictly contiguous growth.
+    // When `addr` is zero the kernel silently picks `current_heap_top` (backward
+    // compatible behaviour).
+    if addr != 0 {
+        let page_mask = crate::arch::constants::PAGE_SIZE_U64 - 1;
+        if addr & page_mask != 0 {
+            return Err(SyscallError::InvalidArg);
+        }
+        if addr < crate::memory::vmm::USER_HEAP_BASE || addr >= crate::memory::vmm::USER_HEAP_END {
+            return Err(SyscallError::InvalidArg);
+        }
+        if addr != current_heap_top {
+            return Err(SyscallError::InvalidArg);
+        }
+    }
 
     // Step 5: Align the requested length up to a multiple of PAGE_SIZE_U64 (4 KiB).
     let page_size = crate::arch::constants::PAGE_SIZE_U64;
@@ -508,7 +537,7 @@ fn syscall_mmap_impl(length: usize) -> SyscallResult<u64> {
     // We pre-reserve Vec capacity so that vector pushes are infallible.
     let mut allocated_pfns = alloc::vec::Vec::new();
     if allocated_pfns.try_reserve(num_pages as usize).is_err() {
-        return Err(SyscallError::InvalidArg);
+        return Err(SyscallError::OutOfMemory);
     }
 
     for _ in 0..num_pages {
@@ -519,7 +548,7 @@ fn syscall_mmap_impl(length: usize) -> SyscallResult<u64> {
             for pfn in allocated_pfns {
                 crate::memory::pmm::with_pmm(|mgr| mgr.release_pfn(pfn));
             }
-            return Err(SyscallError::InvalidArg);
+            return Err(SyscallError::OutOfMemory);
         }
     }
 

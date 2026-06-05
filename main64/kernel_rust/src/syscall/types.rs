@@ -17,7 +17,6 @@ pub enum SyscallId {
     /// Set VGA cursor position (`arg0=row`, `arg1=col`).
     SetCursor = 6,
     /// Clear VGA text screen and reset cursor to origin.
-    /// Clear VGA text screen and reset cursor to origin.
     ClearScreen = 7,
     /// Open a file in the file system.
     OpenFile = 8,
@@ -101,6 +100,9 @@ pub const SYSCALL_ERR_INVALID_ARG: u64 = u64::MAX - 1;
 /// I/O error during syscall execution.
 pub const SYSCALL_ERR_IO: u64 = u64::MAX - 2;
 
+/// Out-of-memory error during syscall execution.
+pub const SYSCALL_ERR_OUT_OF_MEMORY: u64 = u64::MAX - 3;
+
 /// Successful syscall return code for void-like operations.
 pub const SYSCALL_OK: u64 = 0;
 
@@ -118,6 +120,9 @@ pub enum SyscallError {
 
     /// I/O error during syscall execution.
     Io,
+
+    /// Out-of-memory error (e.g., physical frame allocator exhausted).
+    OutOfMemory,
 }
 
 /// Kernel-internal syscall result type.
@@ -130,6 +135,7 @@ pub const fn syscall_error_to_raw(err: SyscallError) -> u64 {
         SyscallError::Unsupported => SYSCALL_ERR_UNSUPPORTED,
         SyscallError::InvalidArg => SYSCALL_ERR_INVALID_ARG,
         SyscallError::Io => SYSCALL_ERR_IO,
+        SyscallError::OutOfMemory => SYSCALL_ERR_OUT_OF_MEMORY,
     }
 }
 
@@ -219,6 +225,8 @@ pub enum SysError {
     InvalidArgument,
     /// I/O error during syscall execution.
     IoError,
+    /// Out-of-memory error (e.g., physical frame allocator exhausted).
+    OutOfMemory,
     /// Any unclassified kernel return value in the error range.
     Unknown(u64),
 }
@@ -231,7 +239,8 @@ pub fn decode_result(raw: u64) -> Result<u64, SysError> {
         SYSCALL_ERR_UNSUPPORTED => Err(SysError::UnsupportedSyscall),
         SYSCALL_ERR_INVALID_ARG => Err(SysError::InvalidArgument),
         SYSCALL_ERR_IO => Err(SysError::IoError),
-        x if x >= SYSCALL_ERR_IO => Err(SysError::Unknown(x)),
+        SYSCALL_ERR_OUT_OF_MEMORY => Err(SysError::OutOfMemory),
+        x if x >= SYSCALL_ERR_OUT_OF_MEMORY => Err(SysError::Unknown(x)),
         value => Ok(value),
     }
 }
