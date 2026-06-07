@@ -17,9 +17,7 @@
 //! - **Architecture Decoupling**: Decouples TSS and MMU details from the core round-robin logic using the
 //!   `SchedulerArchCallbacks` interface.
 
-use core::alloc::Layout;
 use core::arch::asm;
-use core::mem::size_of;
 use core::ptr;
 use core::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
@@ -27,27 +25,53 @@ use core::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 extern crate alloc;
-use alloc::alloc as heap_alloc;
 use alloc::vec::Vec;
 
-use crate::arch::constants::PAGE_SIZE;
 use crate::arch::fpu;
 use crate::arch::gdt;
-use crate::arch::interrupts::{self, InterruptStackFrame, SavedRegisters};
+use crate::arch::interrupts::{self, SavedRegisters};
 use crate::memory::vmm;
 use crate::sync::spinlock::SpinLock;
-use crate::sync::waitqueue::WaitQueue;
+
 use crate::sync::waitqueue_adapter;
 
 pub mod types;
 pub use types::*;
 
-const TASK_STACK_SIZE: usize = 64 * 1024;
-const STACK_ALIGNMENT: usize = 16;
-const KERNEL_CODE_SELECTOR: u64 = gdt::KERNEL_CODE_SELECTOR as u64;
-const KERNEL_DATA_SELECTOR: u64 = gdt::KERNEL_DATA_SELECTOR as u64;
-const USER_CODE_SELECTOR: u64 = gdt::USER_CODE_SELECTOR as u64;
-const USER_DATA_SELECTOR: u64 = gdt::USER_DATA_SELECTOR as u64;
+mod context;
+mod manager;
+mod spawn;
+mod wait;
+mod api;
+
+#[allow(unused_imports)]
+pub use spawn::{spawn_kernel_task, spawn_user_task, spawn_user_task_owning_code};
+#[allow(unused_imports)]
+pub use wait::{block_task, unblock_task, terminate_task, wait_for_task_exit, wait_for_task_exit_with};
+#[allow(unused_imports)]
+pub use api::{
+    task_frame_ptr, task_iret_frame, current_task_id, slot_table_len, set_task_user_context,
+    is_user_task, task_context, task_state, current_user_heap_top, set_current_user_heap_top,
+    reset_initialization_for_test,
+};
+
+use manager::{
+    bootstrap_or_current, find_entry_by_frame, frame_within_any_task_stack, free_pending_stacks,
+    reap_zombies, reset_scheduler_state, select_next_task,
+};
+
+/// Returns whether the scheduler is currently active.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn is_running() -> bool {
+    with_scheduler(|meta| meta.started)
+}
+
+pub(crate) const TASK_STACK_SIZE: usize = 64 * 1024;
+pub(crate) const STACK_ALIGNMENT: usize = 16;
+pub(crate) const KERNEL_CODE_SELECTOR: u64 = gdt::KERNEL_CODE_SELECTOR as u64;
+pub(crate) const KERNEL_DATA_SELECTOR: u64 = gdt::KERNEL_DATA_SELECTOR as u64;
+pub(crate) const USER_CODE_SELECTOR: u64 = gdt::USER_CODE_SELECTOR as u64;
+pub(crate) const USER_DATA_SELECTOR: u64 = gdt::USER_DATA_SELECTOR as u64;
 
 /// RFLAGS bit 9: Interrupt Enable Flag.
 /// When set, the CPU will respond to maskable hardware interrupts.
@@ -61,12 +85,9 @@ const RFLAGS_RESERVED: u64 = 1 << 1;
 /// - IF=1: Enable timer preemption
 /// - Reserved=1: Required by architecture
 /// - IOPL=0: I/O privilege level 0 (no direct I/O port access)
-const DEFAULT_RFLAGS: u64 = RFLAGS_IF | RFLAGS_RESERVED;
+pub(crate) const DEFAULT_RFLAGS: u64 = RFLAGS_IF | RFLAGS_RESERVED;
 
 static SCHED: SpinLock<SchedulerMetadata> = SpinLock::new(SchedulerMetadata::new());
-
-/// Wait queue for tasks blocked in `wait_for_task_exit`.
-static TASK_EXIT_WAITQUEUE: WaitQueue = WaitQueue::new();
 
 fn default_read_kernel_cr3() -> u64 {
     vmm::get_pml4_address()
@@ -106,407 +127,33 @@ static SCHED_ACTIVE_CR3: AtomicU64 = AtomicU64::new(0);
 /// `SchedulerMetadata`.  Debug/test builds keep this external hook so
 /// scheduler integration tests can still terminate cleanly.
 #[cfg(debug_assertions)]
-static TEST_STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
-
-/// Aligns `value` down to the given power-of-two `align`.
-#[inline]
-const fn align_down(value: usize, align: usize) -> usize {
-    value & !(align - 1)
-}
+pub(crate) static TEST_STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 /// Executes `f` while holding the scheduler spinlock.
-fn with_scheduler<R>(f: impl FnOnce(&mut SchedulerMetadata) -> R) -> R {
+pub(super) fn with_scheduler<R>(f: impl FnOnce(&mut SchedulerMetadata) -> R) -> R {
     let mut sched = SCHED.lock();
     f(&mut sched)
 }
 
-fn arch_callbacks() -> SchedulerArchCallbacks {
+pub(crate) fn arch_callbacks() -> SchedulerArchCallbacks {
     *SCHED_ARCH_CALLBACKS.lock()
 }
 
-fn kernel_cr3_value() -> u64 {
+pub(crate) fn kernel_cr3_value() -> u64 {
     SCHED_KERNEL_CR3.load(AtomicOrdering::Acquire)
 }
 
-fn active_cr3_value() -> u64 {
+pub(crate) fn active_cr3_value() -> u64 {
     SCHED_ACTIVE_CR3.load(AtomicOrdering::Acquire)
 }
 
-fn set_kernel_and_active_cr3(cr3: u64) {
+pub(crate) fn set_kernel_and_active_cr3(cr3: u64) {
     SCHED_KERNEL_CR3.store(cr3, AtomicOrdering::Release);
     SCHED_ACTIVE_CR3.store(cr3, AtomicOrdering::Release);
 }
 
-fn set_active_cr3(cr3: u64) {
+pub(crate) fn set_active_cr3(cr3: u64) {
     SCHED_ACTIVE_CR3.store(cr3, AtomicOrdering::Release);
-}
-
-/// Allocates a stack from the kernel heap and touches every page.
-///
-/// Returns a pointer to the base of the allocated block, or null on failure.
-/// The returned memory is 16-byte aligned and zero-touched on every page
-/// boundary to force demand paging at allocation time rather than in IRQ
-/// context.
-fn allocate_task_stack() -> *mut u8 {
-    // Step 1: Pre-calculate layout with safety constraints for the stack size and alignment.
-    // SAFETY:
-    // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
-    // - Layout is non-zero and alignment is a power of two.
-    let layout = unsafe { Layout::from_size_align_unchecked(TASK_STACK_SIZE, STACK_ALIGNMENT) };
-    
-    // Step 2: Request raw block allocation from the global heap.
-    // SAFETY:
-    // - This requires `unsafe` because unchecked `Layout` construction bypasses runtime validation of size/alignment constraints.
-    // - Layout has non-zero size.
-    let ptr = unsafe { heap_alloc::alloc(layout) };
-    if ptr.is_null() {
-        return ptr::null_mut();
-    }
-
-    // Step 3: Touch every page to force demand paging now, not during IRQ context.
-    // SAFETY:
-    // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
-    // - `ptr` points to a valid allocation of `TASK_STACK_SIZE` bytes.
-    unsafe {
-        for page_off in (0..TASK_STACK_SIZE).step_by(PAGE_SIZE) {
-            ptr::write_volatile(ptr.add(page_off), 0);
-        }
-    }
-
-    ptr
-}
-
-/// Frees a heap-allocated task stack.
-///
-/// # Safety
-///
-/// `ptr` must have been returned by `allocate_task_stack` and must not be
-/// used after this call.
-unsafe fn free_task_stack(ptr: *mut u8) {
-    if ptr.is_null() {
-        return;
-    }
-    // Step 1: Re-create layout corresponding to the original allocation parameters.
-    // SAFETY:
-    // - Constants match the layout used by `allocate_task_stack`.
-    // - Size is non-zero and alignment is a valid power of two.
-    let layout = Layout::from_size_align_unchecked(TASK_STACK_SIZE, STACK_ALIGNMENT);
-    
-    // Step 2: Deallocate memory block using the constructed layout.
-    heap_alloc::dealloc(ptr, layout);
-}
-
-extern "C" fn task_return_trap() -> ! {
-    exit_current_task()
-}
-
-/// Builds the initial kernel-task context on a heap-allocated stack.
-///
-/// Returns a pointer to the saved [`SavedRegisters`] used as scheduler context,
-/// and the stack top address (for `kernel_rsp_top`).
-fn build_initial_kernel_task_frame(
-    stack_base: *mut u8,
-    stack_size: usize,
-    entry: KernelTaskFn,
-) -> (*mut SavedRegisters, u64) {
-    // SAFETY:
-    // - This requires `unsafe` because it performs operations that Rust marks as potentially violating memory or concurrency invariants.
-    // - `stack_base` points to a valid heap allocation of `stack_size` bytes.
-    // - The caller guarantees exclusive access to this stack memory.
-    unsafe {
-        // Step 1: Calculate stack limits.
-        let stack_top = stack_base as usize + stack_size;
-
-        // Step 2: Set up SysV-friendly entry stack alignment.
-        // Keep one return-address slot below RSP for a synthetic trap target.
-        let entry_rsp = align_down(stack_top, 16) - 8;
-        let iret_addr = entry_rsp - size_of::<InterruptStackFrame>();
-        let frame_addr = iret_addr - size_of::<SavedRegisters>();
-
-        let frame_ptr = frame_addr as *mut SavedRegisters;
-        let iret_ptr = iret_addr as *mut InterruptStackFrame;
-
-        // Step 3: Register a safety fallback trap for accidental returns.
-        // SAFETY:
-        // - `entry_rsp` lies within the task's private stack memory.
-        // - Writing a synthetic return address ensures an accidental task return
-        //   traps into scheduler-controlled termination.
-        ptr::write(
-            entry_rsp as *mut u64,
-            task_return_trap as *const () as usize as u64,
-        );
-
-        // Step 4: Write default register states.
-        ptr::write(frame_ptr, SavedRegisters::default());
-        
-        // Step 5: Write the initial interrupt return frame pointing to kernel entry.
-        ptr::write(
-            iret_ptr,
-            InterruptStackFrame {
-                rip: entry as usize as u64,
-                cs: KERNEL_CODE_SELECTOR,
-                rflags: DEFAULT_RFLAGS,
-                rsp: entry_rsp as u64,
-                ss: KERNEL_DATA_SELECTOR,
-            },
-        );
-
-        (frame_ptr, stack_top as u64)
-    }
-}
-
-/// Builds an initial user-mode task context on a heap-allocated stack.
-///
-/// The saved interrupt frame is configured so that the next scheduler-selected
-/// `iretq` transitions to ring 3 at `entry_rip` with user stack `user_rsp`.
-fn build_initial_user_task_frame(
-    stack_base: *mut u8,
-    stack_size: usize,
-    entry_rip: u64,
-    user_rsp: u64,
-) -> (*mut SavedRegisters, u64) {
-    // SAFETY:
-    // - This requires `unsafe` because it performs operations that Rust marks as potentially violating memory or concurrency invariants.
-    // - `stack_base` points to a valid heap allocation of `stack_size` bytes.
-    // - The caller guarantees exclusive access to this stack memory.
-    unsafe {
-        let stack_top = stack_base as usize + stack_size;
-
-        let frame_addr = align_down(stack_top, 16)
-            - size_of::<SavedRegisters>()
-            - size_of::<InterruptStackFrame>();
-        let frame_ptr = frame_addr as *mut SavedRegisters;
-        let iret_ptr = (frame_addr + size_of::<SavedRegisters>()) as *mut InterruptStackFrame;
-
-        ptr::write(frame_ptr, SavedRegisters::default());
-        ptr::write(
-            iret_ptr,
-            InterruptStackFrame {
-                rip: entry_rip,
-                cs: USER_CODE_SELECTOR,
-                rflags: DEFAULT_RFLAGS, // IF=1 so timer preemption remains active in user mode.
-                rsp: user_rsp,
-                ss: USER_DATA_SELECTOR,
-            },
-        );
-
-        (frame_ptr, stack_top as u64)
-    }
-}
-
-/// Resolves a trap frame pointer back to its owning task slot.
-fn find_entry_by_frame(
-    meta: &SchedulerMetadata,
-    frame_ptr: *const SavedRegisters,
-) -> Option<usize> {
-    if frame_ptr.is_null() {
-        return None;
-    }
-
-    meta.run_queue
-        .iter()
-        .find(|&&slot| meta.slots[slot].used && meta.slots[slot].is_frame_within_stack(frame_ptr))
-        .copied()
-}
-
-/// Returns `true` when `frame_ptr` lies within any scheduler-owned task stack,
-/// including stacks from recently terminated tasks that are pending deallocation.
-fn frame_within_any_task_stack(meta: &SchedulerMetadata, frame_ptr: *const SavedRegisters) -> bool {
-    if frame_ptr.is_null() {
-        return false;
-    }
-
-    // Check active task slots.
-    for slot in meta.slots.iter() {
-        if slot.used && slot.is_frame_within_stack(frame_ptr) {
-            return true;
-        }
-    }
-
-    // Check stacks from recently terminated tasks that haven't been freed yet.
-    let frame_start = frame_ptr as usize;
-    let frame_end = frame_start + size_of::<SavedRegisters>() + size_of::<InterruptStackFrame>();
-    for &(base, size) in meta.pending_free_stacks.iter() {
-        if !base.is_null() {
-            let stack_start = base as usize;
-            let stack_end = stack_start + size;
-            if frame_start >= stack_start && frame_end <= stack_end {
-                return true;
-            }
-        }
-    }
-
-    false
-}
-
-/// Removes `task_id` from the run queue and clears its slot.
-///
-/// The task's stack is added to the pending-free list in `meta` so that
-/// `frame_within_any_task_stack` can still detect stale frame pointers.
-/// Actual deallocation happens on the next [`on_timer_tick`] or in [`init`].
-///
-/// Returns `true` when an active task was removed.
-fn remove_task(
-    meta: &mut SchedulerMetadata,
-    task_id: usize,
-    callbacks: SchedulerArchCallbacks,
-) -> bool {
-    // Step 1: reject invalid or already-free task IDs.
-    if task_id >= meta.slots.len() || !meta.slots[task_id].used {
-        return false;
-    }
-
-    // Step 2: locate the task inside the compact run queue.
-    // If it is not present, scheduler metadata is inconsistent for this ID.
-    let Some(removed_pos) = meta.run_queue.iter().position(|&s| s == task_id) else {
-        return false;
-    };
-
-    // Step 3: precompute address-space teardown intent.
-    // Kernel tasks carry no user CR3, so no address-space cleanup is needed.
-    let mut cleanup = if meta.slots[task_id].is_user {
-        Some((
-            meta.slots[task_id].cr3,
-            meta.slots[task_id].release_user_code_pfns,
-        ))
-    } else {
-        None
-    };
-
-    if let Some((cr3, _)) = cleanup {
-        if active_cr3_value() == cr3 {
-            let kernel_cr3 = kernel_cr3_value();
-
-            if kernel_cr3 != 0 && kernel_cr3 != cr3 {
-                // Before destroying a user address space, ensure we are not
-                // still executing with that CR3 active on this CPU.
-                // SAFETY:
-                // - This requires `unsafe` because changing CPU address-space state is a privileged operation outside Rust's guarantees.
-                // - `kernel_cr3` is configured by scheduler owner via
-                //   `set_kernel_address_space_cr3`.
-                // - Switching away avoids releasing an address space that is
-                //   currently active in CR3.
-                unsafe {
-                    (callbacks.switch_cr3)(kernel_cr3);
-                }
-
-                set_active_cr3(kernel_cr3);
-            } else {
-                // This branch indicates a scheduler bug:
-                // - kernel_cr3 == cr3: a user task was spawned with the kernel CR3,
-                //   which violates the address-space isolation invariant.
-                //
-                // In either case there is no safe CR3 to switch to before teardown.
-                // Destroying the user address space while it is the active CR3 would
-                // release the PML4 frame and leave the CPU pointing at freed memory,
-                // causing an immediate triple fault. Skipping cleanup leaks the
-                // address space, but avoids a harder crash.
-                //
-                // Slot and stack cleanup still proceed below so scheduler state
-                // does not become permanently inconsistent.
-                debug_assert!(
-                    false,
-                    "remove_task: cannot tear down user CR3 {:#x} — \
-                     no safe kernel CR3 available (kernel_cr3={:#x}).",
-                    cr3, kernel_cr3,
-                );
-
-                cleanup = None;
-            }
-        }
-    }
-
-    // Free the FPU state buffer immediately.
-    // Unlike the task stack, the FPU buffer is not an execution stack — the CPU
-    // is never "running on" it — so it is always safe to free here, even from
-    // inside an IRQ handler.  Nesting the heap spinlock inside the scheduler
-    // spinlock is safe on this single-core kernel because the scheduler lock
-    // already has interrupts disabled (CLI).
-    //
-    // Clear fpu_owner if this task was the FPU owner so select_next_task does
-    // not try to FXSAVE into a freed buffer.
-    if meta.fpu_owner == Some(task_id) {
-        meta.fpu_owner = None;
-    }
-    // SAFETY:
-    // - This requires `unsafe` because it frees a raw heap allocation.
-    // - `fpu_state` was returned by `fpu::FpuState::allocate_default` and is
-    //   not used after this call (the slot is cleared below).
-    unsafe {
-        fpu::FpuState::deallocate(meta.slots[task_id].fpu_state);
-    }
-
-    meta.slots[task_id].fpu_state = ptr::null_mut();
-
-    // Move the stack to the pending-free list instead of freeing it now.
-    // This keeps the stack range visible to `frame_within_any_task_stack`
-    // until the next timer tick, preventing stale task frames from being
-    // mistaken for bootstrap frames.
-    //
-    // Immediate stack freeing is NOT a safe fallback here: `terminate_task`
-    // can be called while the caller is still executing on the target task's
-    // stack. Freeing it immediately would leave the CPU on a freed allocation.
-    //
-    // `try_reserve(1)` is used because this path can run inside an IRQ handler
-    // (via `reap_zombies`). On this single-core kernel the scheduler spinlock
-    // already disabled interrupts (`cli`), so nesting the heap spinlock is
-    // safe. OOM here would be a stack leak, but is structurally unreachable:
-    // the list is drained to empty on every timer tick, so its length is
-    // bounded by the number of tasks terminated since the previous tick.
-    if !meta.slots[task_id].stack_base.is_null() && meta.pending_free_stacks.try_reserve(1).is_ok()
-    {
-        meta.pending_free_stacks.push((
-            meta.slots[task_id].stack_base,
-            meta.slots[task_id].stack_size,
-        ));
-    }
-
-    // Step 4: compact the run queue by removing the entry at `removed_pos`.
-    // `Vec::remove` performs the same O(n) left-shift as the previous manual loop.
-    meta.run_queue.remove(removed_pos);
-
-    // If the removed slot was marked as currently running, clear the marker.
-    if meta.running_slot == Some(task_id) {
-        meta.running_slot = None;
-    }
-
-    // Clear the slot after we copied all required metadata out of it.
-    meta.slots[task_id] = TaskEntry::empty();
-
-    // Step 5: keep round-robin cursor valid after compaction.
-    // - queue empty: reset to 0
-    // - removed before cursor: shift cursor one step left
-    // - cursor now out-of-range: clamp to last remaining entry
-    if meta.run_queue.is_empty() {
-        meta.current_queue_pos = 0;
-    } else if removed_pos < meta.current_queue_pos {
-        meta.current_queue_pos -= 1;
-    } else if meta.current_queue_pos >= meta.run_queue.len() {
-        meta.current_queue_pos = meta.run_queue.len() - 1;
-    }
-
-    // Step 6: trim trailing unused slots to prevent unbounded Vec growth at
-    // the tail.
-    //
-    // Only trailing entries can be removed safely: `run_queue` stores slot
-    // indices, so removing from the middle or from an index that is still live
-    // would invalidate those references. Unused entries at the tail (beyond the
-    // last `used` slot) have no `run_queue` entry and no `running_slot` claim,
-    // so truncating them is safe.
-    //
-    // Trade-off (explicit): the Vec may still retain interior holes forever
-    // under churny ID patterns. These holes are reused by first-fit in
-    // `spawn_internal`, but they do not reduce `slots.len()` until they are
-    // part of the trailing unused suffix.
-    let live_end = meta.slots.iter().rposition(|s| s.used).map_or(0, |i| i + 1);
-    meta.slots.truncate(live_end);
-
-    // Final step: release user address-space resources if cleanup is safe.
-    if let Some((cr3, release_user_code_pfns)) = cleanup {
-        vmm::destroy_user_address_space_with_options(cr3, release_user_code_pfns);
-    }
-
-    true
 }
 
 /// Resets and initializes the round-robin scheduler.
@@ -568,14 +215,14 @@ pub fn init() {
         // SAFETY: Pointers were returned by `allocate_task_stack`.
         // - This requires `unsafe` because it performs operations that Rust marks as potentially violating memory or concurrency invariants.
         unsafe {
-            free_task_stack(ptr);
+            context::free_task_stack(ptr);
         }
     }
 
     // Step 1: Drop stale exit-wait registrations from the previous scheduler epoch.
     // This keeps task-id reuse deterministic after `init()` and prevents old
     // waiter IDs from being spuriously unblocked in a fresh run.
-    TASK_EXIT_WAITQUEUE.wake_all(|_task_id| {});
+    wait::TASK_EXIT_WAITQUEUE.wake_all(|_task_id| {});
 
     interrupts::register_irq_handler(interrupts::IRQ0_PIT_TIMER_VECTOR, timer_irq_handler);
 }
@@ -597,168 +244,6 @@ pub fn start() {
     }
 }
 
-/// Creates a new kernel task and appends it to the run queue.
-///
-/// Thin wrapper around the shared spawn path for kernel-mode tasks.
-pub fn spawn_kernel_task(entry: KernelTaskFn) -> Result<usize, SpawnError> {
-    spawn_internal(SpawnKind::Kernel { entry })
-}
-
-/// Creates a new user task with explicit user entry point and user stack pointer.
-///
-/// `entry_rip` and `user_rsp` are user-space virtual addresses in the task's
-/// address space identified by `cr3`.
-pub fn spawn_user_task(entry_rip: u64, user_rsp: u64, cr3: u64) -> Result<usize, SpawnError> {
-    spawn_internal(SpawnKind::User {
-        entry_rip,
-        user_rsp,
-        cr3,
-        release_user_code_pfns: false,
-    })
-}
-
-/// Creates a new user task that owns dedicated user-code pages.
-///
-/// Use this for loader-backed binaries that were copied into private PMM
-/// frames. On task teardown these code PFNs are released.
-pub fn spawn_user_task_owning_code(
-    entry_rip: u64,
-    user_rsp: u64,
-    cr3: u64,
-) -> Result<usize, SpawnError> {
-    spawn_internal(SpawnKind::User {
-        entry_rip,
-        user_rsp,
-        cr3,
-        release_user_code_pfns: true,
-    })
-}
-
-/// Shared task creation path used by both public spawn wrappers.
-///
-/// The stack is heap-allocated *before* acquiring the scheduler lock to
-/// avoid nested spinlock acquisition (scheduler lock + heap lock).
-fn spawn_internal(kind: SpawnKind) -> Result<usize, SpawnError> {
-    // Pre-check: reject early if scheduler is not initialized,
-    // before performing the (expensive) heap allocation.
-    let pre_check = with_scheduler(|meta| {
-        if !meta.initialized {
-            return Err(SpawnError::NotInitialized);
-        }
-        Ok(())
-    });
-
-    pre_check?;
-
-    // Allocate the stack and FPU state outside the scheduler lock to avoid
-    // nesting the scheduler spinlock with the heap spinlock.
-    let stack_ptr = allocate_task_stack();
-
-    if stack_ptr.is_null() {
-        return Err(SpawnError::StackAllocationFailed);
-    }
-
-    let fpu_ptr = fpu::FpuState::allocate_default();
-    if fpu_ptr.is_null() {
-        // SAFETY: `stack_ptr` was returned by `allocate_task_stack` and has
-        // not been stored anywhere yet.
-        unsafe { free_task_stack(stack_ptr) };
-        return Err(SpawnError::StackAllocationFailed);
-    }
-
-    let result = with_scheduler(|meta| {
-        // Re-check under lock — state may have changed between pre-check and now.
-        if !meta.initialized {
-            return Err(SpawnError::NotInitialized);
-        }
-
-        // Find a free (previously used) slot or determine that a new one must
-        // be appended. `remove_task` trims trailing unused entries, so the Vec
-        // length reflects the live high-water mark; new slots are pushed at the end.
-        let (slot_idx, is_new_slot) = match meta.slots.iter().position(|s| !s.used) {
-            Some(i) => (i, false),
-            None => (meta.slots.len(), true),
-        };
-
-        // Pre-reserve Vec capacity so the actual push operations are infallible.
-        // Both reservations happen before any state is mutated so that an OOM
-        // during either reservation leaves the scheduler in a consistent state.
-        if is_new_slot {
-            meta.slots
-                .try_reserve(1)
-                .map_err(|_| SpawnError::StackAllocationFailed)?;
-        }
-        meta.run_queue
-            .try_reserve(1)
-            .map_err(|_| SpawnError::StackAllocationFailed)?;
-
-        let (frame_ptr, cr3, user_rsp, kernel_rsp_top, is_user, release_user_code_pfns) = match kind
-        {
-            SpawnKind::Kernel { entry } => {
-                let (frame_ptr, kernel_rsp_top) =
-                    build_initial_kernel_task_frame(stack_ptr, TASK_STACK_SIZE, entry);
-                (frame_ptr, 0, 0, kernel_rsp_top, false, false)
-            }
-            SpawnKind::User {
-                entry_rip,
-                user_rsp,
-                cr3,
-                release_user_code_pfns,
-            } => {
-                let (frame_ptr, kernel_rsp_top) =
-                    build_initial_user_task_frame(stack_ptr, TASK_STACK_SIZE, entry_rip, user_rsp);
-                (
-                    frame_ptr,
-                    cr3,
-                    user_rsp,
-                    kernel_rsp_top,
-                    true,
-                    release_user_code_pfns,
-                )
-            }
-        };
-
-        let entry = TaskEntry {
-            used: true,
-            state: TaskState::Ready,
-            frame_ptr,
-            cr3,
-            user_rsp,
-            user_heap_top: if is_user { vmm::USER_HEAP_BASE } else { 0 },
-            kernel_rsp_top,
-            is_user,
-            release_user_code_pfns,
-            stack_base: stack_ptr,
-            stack_size: TASK_STACK_SIZE,
-            fpu_state: fpu_ptr,
-        };
-
-        if is_new_slot {
-            meta.slots.push(entry); // capacity guaranteed by try_reserve above
-        } else {
-            meta.slots[slot_idx] = entry;
-        }
-
-        meta.run_queue.push(slot_idx); // capacity guaranteed by try_reserve above
-
-        Ok(slot_idx)
-    });
-
-    // If spawn failed after we already allocated the stack and FPU buffer, free them.
-    if result.is_err() {
-        // SAFETY:
-        // - This requires `unsafe` because it performs operations that Rust marks as potentially violating memory or concurrency invariants.
-        // - `stack_ptr` and `fpu_ptr` were returned by their respective allocators
-        //   and have not been stored in any task slot (spawn failed).
-        unsafe {
-            free_task_stack(stack_ptr);
-            fpu::FpuState::deallocate(fpu_ptr);
-        }
-    }
-
-    result
-}
-
 /// Requests a cooperative scheduler stop on the next timer tick.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn request_stop() {
@@ -766,12 +251,6 @@ pub fn request_stop() {
     {
         TEST_STOP_REQUESTED.store(true, Ordering::Release);
     }
-}
-
-/// Returns whether the scheduler is currently active.
-#[cfg_attr(not(test), allow(dead_code))]
-pub fn is_running() -> bool {
-    with_scheduler(|meta| meta.started)
 }
 
 /// Replace architecture callback set used by scheduler core.
@@ -796,229 +275,10 @@ pub fn set_kernel_address_space_cr3(kernel_cr3: u64) {
     set_kernel_and_active_cr3(kernel_cr3);
 }
 
+
 /// IRQ adapter that routes PIT ticks into the scheduler core.
 fn timer_irq_handler(_vector: u8, frame: &mut SavedRegisters) -> *mut SavedRegisters {
     on_timer_tick(frame as *mut SavedRegisters)
-}
-
-/// Switches CR3 to the selected task context.
-fn apply_selected_address_space(
-    meta: &mut SchedulerMetadata,
-    selected_slot: usize,
-    callbacks: SchedulerArchCallbacks,
-) {
-    let target_cr3 = if meta.slots[selected_slot].is_user {
-        meta.slots[selected_slot].cr3
-    } else {
-        kernel_cr3_value()
-    };
-
-    debug_assert!(
-        target_cr3 != 0,
-        "scheduler selected task with invalid CR3 (slot={}, is_user={})",
-        selected_slot,
-        meta.slots[selected_slot].is_user
-    );
-
-    if target_cr3 == 0 || active_cr3_value() == target_cr3 {
-        return;
-    }
-
-    // SAFETY:
-    // - This requires `unsafe` because changing CPU address-space state is a privileged operation outside Rust's guarantees.
-    // - `target_cr3` originates from scheduler-controlled task metadata.
-    // - Backend callback defines platform-specific switch operation.
-    unsafe {
-        (callbacks.switch_cr3)(target_cr3);
-    }
-
-    set_active_cr3(target_cr3);
-}
-
-/// Removes all [`Zombie`](TaskState::Zombie) tasks from the run queue.
-///
-/// Called at the start of [`on_timer_tick`] — at that point execution has
-/// already moved off the zombie's kernel stack (either onto a different
-/// task's stack or onto the bootstrap stack), so freeing the slot is safe.
-///
-/// Zombie task stacks are moved to the pending-free list and will be
-/// deallocated after releasing the scheduler lock.
-fn reap_zombies(meta: &mut SchedulerMetadata, callbacks: SchedulerArchCallbacks) -> bool {
-    let mut i = 0;
-    let mut removed_any = false;
-
-    while i < meta.run_queue.len() {
-        let slot = meta.run_queue[i];
-
-        if meta.slots[slot].state == TaskState::Zombie {
-            if remove_task(meta, slot, callbacks) {
-                removed_any = true;
-            }
-            // `remove_task` shifts entries down; re-check the same index.
-            continue;
-        }
-
-        i += 1;
-    }
-
-    removed_any
-}
-
-/// Returns `bootstrap_frame` if set, otherwise falls back to `current_frame`.
-///
-/// Used in two places: when the task queue becomes empty and when the
-/// debug/test stop hook asks to return to bootstrap context.
-/// Centralising the fallback avoids repeating the same conditional.
-#[inline]
-fn bootstrap_or_current(
-    meta: &SchedulerMetadata,
-    current_frame: *mut SavedRegisters,
-) -> *mut SavedRegisters {
-    if !meta.bootstrap_frame.is_null() {
-        meta.bootstrap_frame
-    } else {
-        current_frame
-    }
-}
-
-/// Clears all volatile scheduling state after a full scheduler teardown.
-///
-/// Address-space configuration and `initialized` are preserved so the
-/// scheduler can be restarted without re-registration.
-#[cfg_attr(not(debug_assertions), allow(dead_code))]
-fn reset_scheduler_state(meta: &mut SchedulerMetadata) {
-    meta.started = false;
-    meta.bootstrap_frame = ptr::null_mut();
-    meta.running_slot = None;
-    meta.current_queue_pos = 0;
-    meta.tick_count = 0;
-    meta.run_queue.clear();
-    meta.slots.clear();
-    meta.pending_free_stacks.clear();
-}
-
-/// Selects the next runnable task in round-robin order and returns its frame.
-///
-/// Advances `current_queue_pos` and `running_slot`, programs TSS.RSP0 for user
-/// tasks, and switches CR3 when address-space switching is enabled.
-///
-/// Falls back to `bootstrap_frame` (or `current_frame`) when all tasks are
-/// blocked so the CPU can execute the idle `hlt` loop instead of spinning.
-fn select_next_task(
-    meta: &mut SchedulerMetadata,
-    detected_slot: Option<usize>,
-    current_frame: *mut SavedRegisters,
-    callbacks: SchedulerArchCallbacks,
-) -> *mut SavedRegisters {
-    // Step 1: Close out the previous running mark before selecting the next slot.
-    // Keep explicit non-running states (Blocked/Zombie) untouched.
-    if let Some(previous_slot) = meta.running_slot {
-        if previous_slot < meta.slots.len()
-            && meta.slots[previous_slot].used
-            && meta.slots[previous_slot].state == TaskState::Running
-        {
-            meta.slots[previous_slot].state = TaskState::Ready;
-
-            // Lazy FPU: if the outgoing task was the FPU owner, save its state.
-            //
-            // FXSAVE64 does not check CR0.TS, so it is safe to call here
-            // regardless of the current CR0.TS value.  The CPU FPU registers
-            // still contain the outgoing task's live state at this point
-            // because hardware interrupts only save GPRs, not FPU registers.
-            if meta.fpu_owner == Some(previous_slot) {
-                let fpu_ptr = meta.slots[previous_slot].fpu_state;
-
-                if !fpu_ptr.is_null() {
-                    // SAFETY:
-                    // - This requires `unsafe` because it executes privileged
-                    //   inline assembly (FXSAVE64) and accesses a raw pointer.
-                    // - `fpu_ptr` is a valid, 16-byte-aligned 512-byte buffer.
-                    // - The outgoing task's FPU state is live in the CPU registers.
-                    unsafe { (*fpu_ptr).save() };
-                }
-
-                meta.fpu_owner = None;
-            }
-        }
-    }
-
-    let task_count = meta.run_queue.len();
-    // Guard: a caller must ensure the run_queue is non-empty before calling
-    // this function. An empty queue causes division-by-zero in the modulo
-    // arithmetic below. `on_timer_tick` already enforces this via its
-    // `run_queue.is_empty()` early-return, but the assert catches future
-    // call sites that might miss the precondition.
-    debug_assert!(
-        task_count > 0,
-        "select_next_task called with empty run_queue"
-    );
-
-    let base_pos = if let Some(slot) = detected_slot {
-        meta.run_queue
-            .iter()
-            .position(|&s| s == slot)
-            .unwrap_or(meta.current_queue_pos)
-    } else {
-        meta.current_queue_pos
-    };
-
-    let search_start_pos = (base_pos + 1) % task_count;
-
-    let mut selected_pos = None;
-    let mut selected_slot = 0usize;
-    let mut selected_frame = ptr::null_mut();
-
-    for step in 0..task_count {
-        let pos = (search_start_pos + step) % task_count;
-        let slot = meta.run_queue[pos];
-
-        // Skip non-runnable tasks (blocked or zombie).
-        if meta.slots[slot].state == TaskState::Blocked
-            || meta.slots[slot].state == TaskState::Zombie
-        {
-            continue;
-        }
-
-        let frame = meta.slots[slot].frame_ptr;
-
-        if meta.slots[slot].is_frame_within_stack(frame) {
-            selected_pos = Some(pos);
-            selected_slot = slot;
-            selected_frame = frame;
-            break;
-        }
-    }
-
-    meta.tick_count = meta.tick_count.wrapping_add(1);
-
-    // Set CR0.TS before switching to any context (task or bootstrap).
-    // This ensures the next FPU/SSE instruction raises #NM so the lazy
-    // switcher can restore the correct state.  FXSAVE64 (called above for
-    // the outgoing owner) does not check CR0.TS and is unaffected by this.
-    // SAFETY:
-    // - This requires `unsafe` because it modifies a privileged control register.
-    // - Valid only in ring 0; the scheduler always runs in ring 0.
-    unsafe { fpu::set_ts() };
-
-    if let Some(pos) = selected_pos {
-        // Step 2: Persist scheduler-visible running state for the selected slot.
-        meta.slots[selected_slot].state = TaskState::Running;
-        meta.current_queue_pos = pos;
-        meta.running_slot = Some(selected_slot);
-
-        if meta.slots[selected_slot].is_user {
-            (callbacks.set_kernel_rsp0)(meta.slots[selected_slot].kernel_rsp_top);
-        }
-
-        apply_selected_address_space(meta, selected_slot, callbacks);
-
-        selected_frame
-    } else {
-        // All tasks are blocked — return to the idle loop so the CPU
-        // can execute `hlt` instead of busy-spinning a blocked task.
-        meta.running_slot = None;
-        bootstrap_or_current(meta, current_frame)
-    }
 }
 
 /// Scheduler core executed on every timer IRQ.
@@ -1062,7 +322,7 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
             free_pending_stacks(&stacks_to_free);
 
             if removed_zombie_tasks {
-                waitqueue_adapter::wake_all_multi(&TASK_EXIT_WAITQUEUE);
+                waitqueue_adapter::wake_all_multi(&wait::TASK_EXIT_WAITQUEUE);
             }
 
             return frame;
@@ -1102,7 +362,7 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
             free_pending_stacks(&stacks_to_free);
 
             if removed_zombie_tasks {
-                waitqueue_adapter::wake_all_multi(&TASK_EXIT_WAITQUEUE);
+                waitqueue_adapter::wake_all_multi(&wait::TASK_EXIT_WAITQUEUE);
             }
 
             return return_frame;
@@ -1119,7 +379,7 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
             free_pending_stacks(&stacks_to_free);
 
             if removed_zombie_tasks {
-                waitqueue_adapter::wake_all_multi(&TASK_EXIT_WAITQUEUE);
+                waitqueue_adapter::wake_all_multi(&wait::TASK_EXIT_WAITQUEUE);
             }
 
             return frame;
@@ -1132,80 +392,15 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
     free_pending_stacks(&stacks_to_free);
 
     if removed_zombie_tasks {
-        waitqueue_adapter::wake_all_multi(&TASK_EXIT_WAITQUEUE);
+        waitqueue_adapter::wake_all_multi(&wait::TASK_EXIT_WAITQUEUE);
     }
 
     result
 }
 
-/// Frees heap-allocated task stacks outside the scheduler lock.
-fn free_pending_stacks(stacks: &[(*mut u8, usize)]) {
-    for &(ptr, _size) in stacks {
-        // SAFETY: Pointers were returned by `allocate_task_stack`.
-        // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
-        unsafe {
-            free_task_stack(ptr);
-        }
-    }
-}
-
-/// Returns the saved frame pointer for `task_id` if that slot is active.
-///
-/// Primarily intended for integration tests and diagnostics.
-pub fn task_frame_ptr(task_id: usize) -> Option<*mut SavedRegisters> {
-    with_scheduler(|meta| {
-        if task_id >= meta.slots.len() || !meta.slots[task_id].used {
-            None
-        } else {
-            Some(meta.slots[task_id].frame_ptr)
-        }
-    })
-}
-
-/// Returns a copy of the initial interrupt return frame for `task_id`.
-///
-/// Intended for tests that validate kernel/user frame construction semantics.
-#[cfg_attr(not(test), allow(dead_code))]
-pub fn task_iret_frame(task_id: usize) -> Option<InterruptStackFrame> {
-    with_scheduler(|meta| {
-        if task_id >= meta.slots.len() || !meta.slots[task_id].used {
-            return None;
-        }
-        let frame_ptr = meta.slots[task_id].frame_ptr as usize;
-        let iret_ptr = frame_ptr + size_of::<SavedRegisters>();
-        // SAFETY:
-        // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
-        // - `frame_ptr` belongs to the scheduler-owned stack for this task.
-        // - `InterruptStackFrame` is written directly behind `SavedRegisters`.
-        Some(unsafe { *(iret_ptr as *const InterruptStackFrame) })
-    })
-}
-
-/// Returns the slot index of the currently running task, if any.
-pub fn current_task_id() -> Option<usize> {
-    with_scheduler(|meta| meta.running_slot)
-}
-
-/// Returns the current length of the internal slot table.
-///
-/// After every task removal `remove_task` trims trailing unused entries, so
-/// this value reflects the number of slots up to and including the last live
-/// task. It shrinks when the highest-index tasks exit and grows when new tasks
-/// are spawned beyond the current length.
-///
-/// Trade-off (explicit):
-/// - This is not equal to "number of live tasks" when interior holes exist.
-/// - `slots` is a high-water-mark table with hole reuse, not a compact vector.
-///
-/// Primarily intended for integration tests that verify the Vec-shrink contract.
-#[cfg_attr(not(test), allow(dead_code))]
-pub fn slot_table_len() -> usize {
-    with_scheduler(|meta| meta.slots.len())
-}
-
 /// Lazy FPU state restore — called from the `#NM` (vector 7) exception handler.
 ///
-/// When `CR0.TS` is set by [`select_next_task`] the next FPU/SSE instruction
+/// When `CR0.TS` is set by `select_next_task` the next FPU/SSE instruction
 /// executed by a task raises `#NM`.  This function:
 ///
 /// 1. Clears `CR0.TS` so `FXRSTOR64` itself does not raise a recursive `#NM`.
@@ -1255,189 +450,11 @@ pub fn handle_fpu_trap() {
     meta.fpu_owner = Some(running_slot);
 }
 
-/// Marks the task in `task_id` as [`TaskState::Blocked`].
-///
-/// A blocked task is skipped by the round-robin selector until it is
-/// unblocked via [`unblock_task`].
-pub fn block_task(task_id: usize) {
-    with_scheduler(|meta| {
-        if task_id < meta.slots.len()
-            && meta.slots[task_id].used
-            && meta.slots[task_id].state != TaskState::Blocked
-        {
-            meta.slots[task_id].state = TaskState::Blocked;
-        }
-    });
-}
-
-/// Marks a previously blocked task as [`TaskState::Ready`].
-///
-/// Safe to call from IRQ context (the scheduler spinlock handles
-/// interrupt masking internally).
-pub fn unblock_task(task_id: usize) {
-    with_scheduler(|meta| {
-        if task_id < meta.slots.len()
-            && meta.slots[task_id].used
-            && meta.slots[task_id].state == TaskState::Blocked
-        {
-            meta.slots[task_id].state = TaskState::Ready;
-        }
-    });
-}
-
-/// Terminates `task_id`, removing it from the run queue and freeing its slot.
-///
-/// The task's stack is deferred for freeing on the next timer tick so that
-/// stale frame pointers can still be detected by the scheduler.
-///
-/// Returns `true` if the task existed and was removed.
-pub fn terminate_task(task_id: usize) -> bool {
-    // Snapshot callbacks before entering the scheduler lock to avoid
-    // nested lock acquisition (`SCHED` -> `SCHED_ARCH_CALLBACKS`).
-    let callbacks = arch_callbacks();
-    let removed = with_scheduler(|meta| remove_task(meta, task_id, callbacks));
-
-    // Step 1: Wake tasks that are blocked in `wait_for_task_exit`.
-    // Wake-all is safe: each waiter re-checks its own task-id predicate and
-    // sleeps again when its target is still alive.
-    if removed {
-        waitqueue_adapter::wake_all_multi(&TASK_EXIT_WAITQUEUE);
-    }
-
-    removed
-}
-
-/// Waits cooperatively until `task_id` is no longer present in the scheduler.
-///
-/// This is intended for foreground command flows (for example REPL `exec`)
-/// that need to block the caller until a spawned task has terminated.
-///
-/// Behavior:
-/// - if `task_id` is already absent, this returns immediately,
-/// - otherwise this repeatedly yields so normal scheduler ticks can progress.
-pub fn wait_for_task_exit(task_id: usize) {
-    // Step 1: Fast path for already-absent targets.
-    if task_frame_ptr(task_id).is_none() {
-        return;
-    }
-
-    // Step 2: In scheduled task context, use wait-queue blocking instead of
-    // spin-yield polling to avoid burning CPU while waiting.
-    if is_running() {
-        if let Some(waiter_task_id) = current_task_id() {
-            // Self-wait cannot make progress through blocking because the target
-            // would be the currently blocked task itself. Keep the historical
-            // cooperative poll behavior for this edge case.
-            if waiter_task_id == task_id {
-                wait_for_task_exit_with(task_id, |id| task_frame_ptr(id).is_some(), yield_now);
-                return;
-            }
-
-            loop {
-                // Step 3: Atomically recheck liveness, register on queue, and block.
-                let outcome =
-                    waitqueue_adapter::sleep_if_multi(&TASK_EXIT_WAITQUEUE, waiter_task_id, || {
-                        task_frame_ptr(task_id).is_some()
-                    });
-
-                // Step 4: Predicate false means target already exited; return.
-                if !outcome.should_yield() {
-                    return;
-                }
-
-                // Step 5: Blocked (or queue OOM degradation) path yields once.
-                yield_now();
-            }
-        }
-    }
-
-    // Step 6: Fallback for non-scheduler contexts (boot/tests).
-    wait_for_task_exit_with(task_id, |id| task_frame_ptr(id).is_some(), yield_now);
-}
-
-/// Generic wait helper behind [`wait_for_task_exit`].
-///
-/// `is_task_alive` must report whether `task_id` is still present.
-/// `yield_once` must provide one cooperative scheduling opportunity.
-///
-/// Primarily exposed to keep the wait-loop contract directly testable without
-/// requiring real interrupt-driven context switches in tests.
-pub fn wait_for_task_exit_with<FAlive, FYield>(
-    task_id: usize,
-    mut is_task_alive: FAlive,
-    mut yield_once: FYield,
-) where
-    FAlive: FnMut(usize) -> bool,
-    FYield: FnMut(),
-{
-    // Foreground wait policy:
-    // - poll liveness,
-    // - yield between polls so the target task can run and eventually exit.
-    while is_task_alive(task_id) {
-        yield_once();
-    }
-}
-
-/// Marks an existing task as user-mode task context.
-///
-/// The scheduler uses `kernel_rsp_top` to update `TSS.RSP0` before resuming
-/// this task, so future ring3->ring0 transitions enter on the task-specific
-/// kernel stack.
-#[cfg_attr(not(test), allow(dead_code))]
-pub fn set_task_user_context(task_id: usize, cr3: u64, user_rsp: u64, kernel_rsp_top: u64) -> bool {
-    with_scheduler(|meta| {
-        if task_id >= meta.slots.len() || !meta.slots[task_id].used {
-            return false;
-        }
-
-        let slot = &mut meta.slots[task_id];
-        slot.cr3 = cr3;
-        slot.user_rsp = user_rsp;
-        slot.user_heap_top = vmm::USER_HEAP_BASE;
-        slot.kernel_rsp_top = kernel_rsp_top;
-        slot.is_user = true;
-        true
-    })
-}
-
-/// Returns whether `task_id` is configured as a user-mode task.
-#[cfg_attr(not(test), allow(dead_code))]
-pub fn is_user_task(task_id: usize) -> bool {
-    with_scheduler(|meta| {
-        task_id < meta.slots.len() && meta.slots[task_id].used && meta.slots[task_id].is_user
-    })
-}
-
-/// Returns task context tuple `(cr3, user_rsp, kernel_rsp_top)` for `task_id`.
-#[cfg_attr(not(test), allow(dead_code))]
-pub fn task_context(task_id: usize) -> Option<(u64, u64, u64)> {
-    with_scheduler(|meta| {
-        if task_id >= meta.slots.len() || !meta.slots[task_id].used {
-            None
-        } else {
-            let slot = &meta.slots[task_id];
-            Some((slot.cr3, slot.user_rsp, slot.kernel_rsp_top))
-        }
-    })
-}
-
-/// Returns the lifecycle state of `task_id`, or `None` if the slot is unused.
-#[cfg_attr(not(test), allow(dead_code))]
-pub fn task_state(task_id: usize) -> Option<TaskState> {
-    with_scheduler(|meta| {
-        if task_id >= meta.slots.len() || !meta.slots[task_id].used {
-            None
-        } else {
-            Some(meta.slots[task_id].state)
-        }
-    })
-}
-
-/// Marks the currently running task as [`TaskState::Zombie`].
+/// Marks the currently running task as `TaskState::Zombie`.
 ///
 /// The slot remains allocated (`used = true`) so no `spawn_*` call can
 /// reuse it.  The scheduler skips zombie tasks during round-robin selection
-/// and reaps them at the start of the next [`on_timer_tick`], when
+/// and reaps them at the start of the next `on_timer_tick`, when
 /// execution has moved to a different stack.
 ///
 /// # Panics
@@ -1454,7 +471,7 @@ pub fn mark_current_as_zombie() {
 
 /// Terminates the currently running task and forces an immediate reschedule.
 ///
-/// The task is first marked as [`Zombie`](TaskState::Zombie) so its slot
+/// The task is first marked as `Zombie` so its slot
 /// and stack remain reserved.  The subsequent `yield_now` triggers a
 /// context switch; the scheduler will never select this task again and
 /// reaps the zombie slot on the following tick.
@@ -1494,55 +511,4 @@ pub fn yield_now() {
             options(nomem)
         );
     }
-}
-
-/// Gets the user heap top address of the current task.
-///
-/// Returns `None` if there is no current task or it is not a user task.
-pub fn current_user_heap_top() -> Option<u64> {
-    // Step 1: Acquire scheduler lock to safely inspect current task metadata.
-    with_scheduler(|meta| {
-        // Step 2: Resolve the slot ID of the currently selected/running task.
-        let slot = meta.running_slot?;
-        let entry = meta.slots.get(slot)?;
-
-        // Step 3: Only user tasks carry a valid user heap boundary; return it.
-        if entry.is_user {
-            Some(entry.user_heap_top)
-        } else {
-            None
-        }
-    })
-}
-
-/// Sets the user heap top address of the current task.
-///
-/// Returns `false` if there is no current task or it is not a user task.
-pub fn set_current_user_heap_top(new_top: u64) -> bool {
-    // Step 1: Acquire scheduler lock to mutate the current task's state.
-    with_scheduler(|meta| {
-        // Step 2: Resolve the slot ID of the currently selected/running task.
-        if let Some(slot) = meta.running_slot {
-            if let Some(entry) = meta.slots.get_mut(slot) {
-                // Step 3: Mutate only if the task runs user context.
-                if entry.is_user {
-                    entry.user_heap_top = new_top;
-                    return true;
-                }
-            }
-        }
-        false
-    })
-}
-
-/// Resets the scheduler initialization state to `false`.
-///
-/// This is a test-only helper to simulate initialization failure.
-#[cfg_attr(not(test), allow(dead_code))]
-pub fn reset_initialization_for_test() {
-    // Step 1: Acquire scheduler lock to safely modify initialization metadata.
-    with_scheduler(|meta| {
-        // Step 2: Clear initialized state.
-        meta.initialized = false;
-    });
 }
