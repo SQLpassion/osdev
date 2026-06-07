@@ -246,6 +246,33 @@ pub enum SysError {
     Unknown(u64),
 }
 
+impl core::fmt::Display for SysError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // Step 1: Match the enum variant to its corresponding string representation.
+        match self {
+            SysError::UnsupportedSyscall => write!(f, "UnsupportedSyscall"),
+            SysError::InvalidArgument => write!(f, "InvalidArgument"),
+            SysError::IoError => write!(f, "IoError"),
+            SysError::OutOfMemory => write!(f, "OutOfMemory"),
+            SysError::Unknown(raw) => write!(f, "UnknownError(0x{:x})", raw),
+        }
+    }
+}
+
+impl core::fmt::LowerHex for SysError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // Step 1: Map each variant back to its original raw ABI u64 value for hex formatting.
+        let val = match self {
+            SysError::UnsupportedSyscall => SYSCALL_ERR_UNSUPPORTED,
+            SysError::InvalidArgument => SYSCALL_ERR_INVALID_ARG,
+            SysError::IoError => SYSCALL_ERR_IO,
+            SysError::OutOfMemory => SYSCALL_ERR_OUT_OF_MEMORY,
+            SysError::Unknown(raw) => *raw,
+        };
+        core::fmt::LowerHex::fmt(&val, f)
+    }
+}
+
 /// Decodes a raw syscall return value into `Result`.
 #[inline]
 #[cfg_attr(not(test), allow(dead_code))]
@@ -259,3 +286,4 @@ pub fn decode_result(raw: u64) -> Result<u64, SysError> {
         value => Ok(value),
     }
 }
+

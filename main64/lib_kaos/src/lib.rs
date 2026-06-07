@@ -20,10 +20,8 @@
 #[path = "../../kernel_rust/src/syscall/types.rs"]
 mod kernel_types;
 
-pub(crate) use kernel_types::{
-    SyscallId, SYSCALL_ERR_INVALID_ARG, SYSCALL_ERR_IO, SYSCALL_ERR_OUT_OF_MEMORY,
-    SYSCALL_ERR_UNSUPPORTED,
-};
+pub use kernel_types::SysError;
+pub(crate) use kernel_types::{decode_result, SyscallId};
 
 mod raw;
 

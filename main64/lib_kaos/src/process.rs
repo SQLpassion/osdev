@@ -1,16 +1,20 @@
 //! Process lifecycle syscall wrappers: exec, wait, exit, shutdown.
 
-use crate::{raw::{syscall0, syscall1}, SyscallId, SYSCALL_ERR_INVALID_ARG, SYSCALL_ERR_IO};
+use crate::{
+    decode_result,
+    raw::{syscall0, syscall1},
+    SyscallId, SysError,
+};
 
 /// Executes a flat binary from the FAT12 disk.
 ///
 /// `name` is automatically null-terminated in a stack buffer before the syscall.
 /// Returns the task ID of the spawned process on success.
 #[inline(always)]
-pub fn exec(name: &[u8]) -> Result<usize, u64> {
+pub fn exec(name: &[u8]) -> Result<usize, SysError> {
     let mut buf = [0u8; 128];
     if name.len() >= 128 {
-        return Err(SYSCALL_ERR_INVALID_ARG);
+        return Err(SysError::InvalidArgument);
     }
     buf[..name.len()].copy_from_slice(name);
     buf[name.len()] = 0;
@@ -21,23 +25,17 @@ pub fn exec(name: &[u8]) -> Result<usize, u64> {
         // - The kernel validates the pointer at the syscall boundary.
         syscall1(SyscallId::Exec as u64, buf.as_ptr() as u64)
     };
-    if raw >= SYSCALL_ERR_IO {
-        return Err(raw);
-    }
-    Ok(raw as usize)
+    decode_result(raw).map(|pid| pid as usize)
 }
 
 /// Blocks until the task with the given `task_id` exits.
 #[inline(always)]
-pub fn wait(task_id: usize) -> Result<(), u64> {
+pub fn wait(task_id: usize) -> Result<(), SysError> {
     let raw = unsafe {
         // SAFETY: `Wait` passes an integer task ID, no pointer arguments.
         syscall1(SyscallId::Wait as u64, task_id as u64)
     };
-    if raw >= SYSCALL_ERR_IO {
-        return Err(raw);
-    }
-    Ok(())
+    decode_result(raw).map(|_| ())
 }
 
 /// Terminates the current user task.

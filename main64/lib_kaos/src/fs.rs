@@ -1,8 +1,9 @@
 //! File-system syscall wrappers: open, read, write, delete, and directory listing.
 
 use crate::{
+    decode_result,
     raw::{syscall0, syscall1, syscall2, syscall3},
-    SyscallId, SYSCALL_ERR_INVALID_ARG, SYSCALL_ERR_IO,
+    SyscallId, SysError,
 };
 
 /// Open mode passed to [`File::open`].
@@ -59,10 +60,10 @@ impl File {
     /// Opens `name` with the given `mode`.
     ///
     /// `name` is null-terminated in a stack buffer before the syscall.
-    pub fn open(name: &[u8], mode: FileMode) -> Result<Self, u64> {
+    pub fn open(name: &[u8], mode: FileMode) -> Result<Self, SysError> {
         let mut buf = [0u8; 64];
         if name.len() >= 64 {
-            return Err(SYSCALL_ERR_INVALID_ARG);
+            return Err(SysError::InvalidArgument);
         }
         buf[..name.len()].copy_from_slice(name);
         buf[name.len()] = 0;
@@ -71,40 +72,31 @@ impl File {
             // SAFETY: `buf` is a valid null-terminated string on the stack.
             raw_open_file(buf.as_ptr(), mode)
         };
-        if fd >= SYSCALL_ERR_IO {
-            return Err(fd);
-        }
-        Ok(Self { fd })
+        decode_result(fd).map(|fd| Self { fd })
     }
 
     /// Reads up to `buf.len()` bytes from the file.
     ///
     /// Returns the number of bytes actually read (`0` on EOF).
     #[allow(clippy::cast_possible_truncation)]
-    pub fn read(&mut self, buf: &mut [u8]) -> Result<usize, u64> {
+    pub fn read(&mut self, buf: &mut [u8]) -> Result<usize, SysError> {
         let raw = unsafe {
             // SAFETY: `buf` is a valid slice in user memory.
             raw_read_file(self.fd, buf.as_mut_ptr(), buf.len())
         };
-        if raw >= SYSCALL_ERR_IO {
-            return Err(raw);
-        }
-        Ok(raw as usize)
+        decode_result(raw).map(|res| res as usize)
     }
 
     /// Writes `buf` to the file.
     ///
     /// Returns the number of bytes actually written.
     #[allow(clippy::cast_possible_truncation)]
-    pub fn write(&mut self, buf: &[u8]) -> Result<usize, u64> {
+    pub fn write(&mut self, buf: &[u8]) -> Result<usize, SysError> {
         let raw = unsafe {
             // SAFETY: `buf` is a valid slice in user memory.
             raw_write_file(self.fd, buf.as_ptr(), buf.len())
         };
-        if raw >= SYSCALL_ERR_IO {
-            return Err(raw);
-        }
-        Ok(raw as usize)
+        decode_result(raw).map(|res| res as usize)
     }
 }
 
@@ -127,10 +119,10 @@ pub fn file_exists(name: &[u8]) -> bool {
 /// Deletes the file named `name`.
 ///
 /// `name` is null-terminated in a stack buffer before the syscall.
-pub fn delete_file(name: &[u8]) -> Result<(), u64> {
+pub fn delete_file(name: &[u8]) -> Result<(), SysError> {
     let mut buf = [0u8; 64];
     if name.len() >= 64 {
-        return Err(SYSCALL_ERR_INVALID_ARG);
+        return Err(SysError::InvalidArgument);
     }
     buf[..name.len()].copy_from_slice(name);
     buf[name.len()] = 0;
@@ -139,21 +131,15 @@ pub fn delete_file(name: &[u8]) -> Result<(), u64> {
         // SAFETY: `buf` is a valid null-terminated string on the stack.
         raw_delete_file(buf.as_ptr())
     };
-    if raw >= SYSCALL_ERR_IO {
-        return Err(raw);
-    }
-    Ok(())
+    decode_result(raw).map(|_| ())
 }
 
 /// Prints the root directory listing of the FAT12 disk to the console.
 #[inline(always)]
-pub fn print_root_directory() -> Result<(), u64> {
+pub fn print_root_directory() -> Result<(), SysError> {
     let raw = unsafe {
         // SAFETY: `PrintRootDirectory` takes no pointer arguments.
         syscall0(SyscallId::PrintRootDirectory as u64)
     };
-    if raw >= SYSCALL_ERR_IO {
-        return Err(raw);
-    }
-    Ok(())
+    decode_result(raw).map(|_| ())
 }

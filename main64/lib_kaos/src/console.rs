@@ -1,66 +1,50 @@
 //! VGA console, serial port, and keyboard input syscall wrappers.
 
 use crate::{
+    decode_result,
     raw::{syscall0, syscall2},
-    SyscallId, SYSCALL_ERR_IO, SYSCALL_ERR_INVALID_ARG, SYSCALL_ERR_UNSUPPORTED,
+    SyscallId, SysError,
 };
 
 /// Writes `msg` to the VGA text console.
 #[inline(always)]
-pub fn writeline(msg: &[u8]) -> Result<(), u64> {
+pub fn writeline(msg: &[u8]) -> Result<(), SysError> {
     let raw = unsafe {
         // SAFETY: `msg` is a valid slice whose pointer and length are passed to the kernel.
         syscall2(SyscallId::WriteConsole as u64, msg.as_ptr() as u64, msg.len() as u64)
     };
-    if raw >= SYSCALL_ERR_IO {
-        return Err(raw);
-    }
-    Ok(())
+    decode_result(raw).map(|_| ())
 }
 
 /// Writes `msg` to the debug serial port (COM1).
 #[inline(always)]
-pub fn write_serial(msg: &[u8]) -> Result<(), u64> {
+pub fn write_serial(msg: &[u8]) -> Result<(), SysError> {
     let raw = unsafe {
         // SAFETY: `msg` is a valid slice whose pointer and length are passed to the kernel.
         syscall2(SyscallId::WriteSerial as u64, msg.as_ptr() as u64, msg.len() as u64)
     };
-    if raw >= SYSCALL_ERR_IO {
-        return Err(raw);
-    }
-    Ok(())
+    decode_result(raw).map(|_| ())
 }
 
 /// Clears the VGA text screen and resets the cursor to the origin.
 #[inline(always)]
-pub fn clear_screen() -> Result<(), u64> {
+pub fn clear_screen() -> Result<(), SysError> {
     let raw = unsafe {
         // SAFETY: `ClearScreen` takes no pointer arguments.
         syscall0(SyscallId::ClearScreen as u64)
     };
-    if raw >= SYSCALL_ERR_IO {
-        return Err(raw);
-    }
-    Ok(())
+    decode_result(raw).map(|_| ())
 }
 
 /// Reads one decoded keyboard character (blocking).
 #[inline(always)]
 #[allow(clippy::cast_possible_truncation)]
-fn getchar() -> Result<u8, u64> {
+fn getchar() -> Result<u8, SysError> {
     let raw = unsafe {
         // SAFETY: `GetChar` takes no pointer arguments.
         syscall0(SyscallId::GetChar as u64)
     };
-
-    if raw == SYSCALL_ERR_UNSUPPORTED || raw == SYSCALL_ERR_INVALID_ARG || raw == SYSCALL_ERR_IO {
-        return Err(raw);
-    }
-    if raw >= SYSCALL_ERR_IO {
-        return Err(raw);
-    }
-
-    Ok(raw as u8)
+    decode_result(raw).map(|val| val as u8)
 }
 
 /// Reads one line from the keyboard, echoes every character to the console.
@@ -69,7 +53,7 @@ fn getchar() -> Result<u8, u64> {
 /// Returns the number of bytes written into `buf`.
 #[inline(always)]
 #[allow(clippy::cast_possible_truncation)]
-pub fn readline(buf: &mut [u8]) -> Result<usize, u64> {
+pub fn readline(buf: &mut [u8]) -> Result<usize, SysError> {
     let mut len = 0usize;
 
     loop {
@@ -86,9 +70,7 @@ pub fn readline(buf: &mut [u8]) -> Result<usize, u64> {
                         1,
                     )
                 };
-                if raw >= SYSCALL_ERR_IO {
-                    return Err(raw);
-                }
+                decode_result(raw)?;
                 break;
             }
             0x08 => {
@@ -104,9 +86,7 @@ pub fn readline(buf: &mut [u8]) -> Result<usize, u64> {
                             1,
                         )
                     };
-                    if raw >= SYSCALL_ERR_IO {
-                        return Err(raw);
-                    }
+                    decode_result(raw)?;
                 }
             }
             _ => {
@@ -121,9 +101,7 @@ pub fn readline(buf: &mut [u8]) -> Result<usize, u64> {
                             1,
                         )
                     };
-                    if raw >= SYSCALL_ERR_IO {
-                        return Err(raw);
-                    }
+                    decode_result(raw)?;
                 }
             }
         }

@@ -123,7 +123,7 @@ fn init_if_needed() -> Result<(), &'static str> {
             )?;
             Ok(())
         }
-        Err(crate::SYSCALL_ERR_INVALID_ARG) => {
+        Err(crate::SysError::InvalidArgument) => {
             // Already mapped/initialized, so this is a successful check.
             Ok(())
         }
