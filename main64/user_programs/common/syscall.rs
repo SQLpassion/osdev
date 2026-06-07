@@ -4,40 +4,13 @@
 
 use core::arch::asm;
 
-/// Stable syscall numbers exposed by the kernel.
-#[repr(u64)]
-#[allow(dead_code)]
-enum SyscallId {
-    Yield = 0,
-    WriteSerial = 1,
-    Exit = 2,
-    WriteConsole = 3,
-    GetChar = 4,
-    GetCursor = 5,
-    SetCursor = 6,
-    ClearScreen = 7,
-    OpenFile = 8,
-    CloseFile = 9,
-    ReadFile = 10,
-    WriteFile = 11,
-    DeleteFile = 12,
-    SeekFile = 13,
-    EndOfFile = 14,
-    PrintRootDirectory = 15,
-    Mmap = 16,
-    Exec = 17,
-    Wait = 18,
-    Shutdown = 19,
-}
+#[path = "../../kernel_rust/src/syscall/types.rs"]
+mod syscall_types;
 
-#[allow(dead_code)]
-const SYSCALL_ERR_UNSUPPORTED: u64 = u64::MAX;
-#[allow(dead_code)]
-const SYSCALL_ERR_INVALID_ARG: u64 = u64::MAX - 1;
-#[allow(dead_code)]
-const SYSCALL_ERR_IO: u64 = u64::MAX - 2;
-#[allow(dead_code)]
-const SYSCALL_ERR_OUT_OF_MEMORY: u64 = u64::MAX - 3;
+use syscall_types::{
+    SyscallId, SYSCALL_ERR_INVALID_ARG, SYSCALL_ERR_IO, SYSCALL_ERR_OUT_OF_MEMORY,
+    SYSCALL_ERR_UNSUPPORTED,
+};
 
 #[inline(always)]
 unsafe fn syscall0(syscall_nr: u64) -> u64 {
