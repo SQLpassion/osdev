@@ -47,6 +47,18 @@ unsafe fn raw_delete_file(name_ptr: *const u8) -> u64 {
     unsafe { syscall1(SyscallId::DeleteFile as u64, name_ptr as u64) }
 }
 
+#[inline(always)]
+unsafe fn raw_seek_file(fd: u64, offset: u64) -> u64 {
+    // SAFETY: Caller guarantees fd is a valid open file descriptor.
+    unsafe { syscall2(SyscallId::SeekFile as u64, fd, offset) }
+}
+
+#[inline(always)]
+unsafe fn raw_end_of_file(fd: u64) -> u64 {
+    // SAFETY: Caller guarantees fd is a valid open file descriptor.
+    unsafe { syscall1(SyscallId::EndOfFile as u64, fd) }
+}
+
 // ── public API ───────────────────────────────────────────────────────────────
 
 /// RAII handle to an open file descriptor.
@@ -98,6 +110,24 @@ impl File {
             raw_write_file(self.fd, buf.as_ptr(), buf.len())
         };
         decode_result(raw).map(|res| res as usize)
+    }
+
+    /// Seeks to a specific byte offset within the file.
+    pub fn seek(&mut self, offset: u64) -> Result<(), SysError> {
+        let raw = unsafe {
+            // SAFETY: `self.fd` is a valid open descriptor.
+            raw_seek_file(self.fd, offset)
+        };
+        decode_result(raw).map(|_| ())
+    }
+
+    /// Returns `true` if the file pointer is at the end of the file.
+    pub fn is_eof(&self) -> Result<bool, SysError> {
+        let raw = unsafe {
+            // SAFETY: `self.fd` is a valid open descriptor.
+            raw_end_of_file(self.fd)
+        };
+        decode_result(raw).map(|res| res != 0)
     }
 }
 
