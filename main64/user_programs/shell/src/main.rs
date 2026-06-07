@@ -3,36 +3,7 @@
 
 extern crate alloc;
 
-use core::fmt::Write;
-
-use lib_kaos as syscall;
-
-/// Proxy struct to implement `core::fmt::Write` formatting for console output.
-struct ConsoleWriter;
-
-impl core::fmt::Write for ConsoleWriter {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        let _ = syscall::write_console(s.as_bytes());
-        Ok(())
-    }
-}
-
-macro_rules! print {
-    ($($arg:tt)*) => {{
-        let mut writer = ConsoleWriter;
-        let _ = write!(writer, $($arg)*);
-    }};
-}
-
-macro_rules! println {
-    () => {{
-        let _ = syscall::write_console(b"\n");
-    }};
-    ($($arg:tt)*) => {{
-        let mut writer = ConsoleWriter;
-        let _ = writeln!(writer, $($arg)*);
-    }};
-}
+use lib_kaos::{console, fs, process, print, println};
 
 /// Renders the shell welcome banner on startup.
 fn print_welcome_banner() {
@@ -55,7 +26,7 @@ pub extern "C" fn _start() -> ! {
     let mut buf = [0u8; 128];
     loop {
         print!("> ");
-        if let Ok(len) = syscall::user_readline(&mut buf) {
+        if let Ok(len) = console::readline(&mut buf) {
             if let Ok(line) = core::str::from_utf8(&buf[..len]) {
                 execute_command(line);
             } else {
@@ -94,12 +65,12 @@ fn execute_command(line: &str) {
             println!("{}", rest);
         }
         "cls" | "clear" => {
-            if let Err(err) = syscall::clear_screen() {
+            if let Err(err) = console::clear_screen() {
                 println!("cls failed: error {:#x}", err);
             }
         }
         "dir" => {
-            if let Err(err) = syscall::print_root_directory() {
+            if let Err(err) = fs::print_root_directory() {
                 println!("dir failed: error {:#x}", err);
             }
         }
@@ -118,11 +89,11 @@ fn execute_command(line: &str) {
             }
         }
         "exit" => {
-            syscall::exit();
+            process::exit();
         }
         "shutdown" => {
             println!("Shutting down KAOS...");
-            syscall::shutdown();
+            process::shutdown();
         }
         // Direct execution shortcut for filenames (e.g. typing "hello.bin")
         other if other.ends_with(".bin") || other.ends_with(".BIN") => {
@@ -136,14 +107,14 @@ fn execute_command(line: &str) {
 
 /// Reads the contents of a file chunk-by-chunk and writes them to the console.
 fn cat_file(name: &str) {
-    match syscall::File::open(name.as_bytes(), syscall::FileMode::Read) {
+    match fs::File::open(name.as_bytes(), fs::FileMode::Read) {
         Ok(mut file) => {
             let mut read_buf = [0u8; 128];
             loop {
                 match file.read(&mut read_buf) {
                     Ok(0) => break, // EOF reached
                     Ok(bytes_read) => {
-                        let _ = syscall::write_console(&read_buf[..bytes_read]);
+                        let _ = console::writeline(&read_buf[..bytes_read]);
                     }
                     Err(err) => {
                         println!("\nError reading file: error {:#x}", err);
@@ -161,11 +132,11 @@ fn cat_file(name: &str) {
 /// Launches a user process in the foreground and waits for it to exit.
 fn run_program(name: &str) {
     println!("Launching program '{}'...", name);
-    match syscall::exec(name.as_bytes()) {
+    match process::exec(name.as_bytes()) {
         Ok(pid) => {
             // Wait for the spawned program task to complete.
             // The shell is blocked on the wait queue until the child calls exit.
-            if let Err(err) = syscall::wait(pid) {
+            if let Err(err) = process::wait(pid) {
                 println!("Error waiting for process to finish: error {:#x}", err);
             }
         }
@@ -178,5 +149,5 @@ fn run_program(name: &str) {
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     println!("\nShell Panic: {}", _info);
-    syscall::exit()
+    process::exit()
 }

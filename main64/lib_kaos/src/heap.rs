@@ -117,7 +117,10 @@ fn init_if_needed() -> Result<(), &'static str> {
             // SAFETY:
             // - `heap_ptr` was just initialised above.
             let h = unsafe { &mut *heap_ptr };
-            h.init(ptr as usize + ARENA_OFFSET, INITIAL_PAGE_SIZE - ARENA_OFFSET)?;
+            h.init(
+                ptr as usize + ARENA_OFFSET,
+                INITIAL_PAGE_SIZE - ARENA_OFFSET,
+            )?;
             Ok(())
         }
         Err(crate::SYSCALL_ERR_INVALID_ARG) => {
@@ -206,7 +209,10 @@ struct BufWriter {
 
 impl BufWriter {
     fn new() -> Self {
-        Self { buf: [0u8; 128], len: 0 }
+        Self {
+            buf: [0u8; 128],
+            len: 0,
+        }
     }
 
     fn as_bytes(&self) -> &[u8] {
@@ -219,7 +225,11 @@ impl BufWriter {
         let to_copy = bytes.len().min(remaining);
         self.buf[self.len..self.len + to_copy].copy_from_slice(&bytes[..to_copy]);
         self.len += to_copy;
-        if bytes.len() > remaining { Err(core::fmt::Error) } else { Ok(()) }
+        if bytes.len() > remaining {
+            Err(core::fmt::Error)
+        } else {
+            Ok(())
+        }
     }
 }
 

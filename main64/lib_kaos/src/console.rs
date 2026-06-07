@@ -7,7 +7,7 @@ use crate::{
 
 /// Writes `msg` to the VGA text console.
 #[inline(always)]
-pub fn write_console(msg: &[u8]) -> Result<(), u64> {
+pub fn writeline(msg: &[u8]) -> Result<(), u64> {
     let raw = unsafe {
         // SAFETY: `msg` is a valid slice whose pointer and length are passed to the kernel.
         syscall2(SyscallId::WriteConsole as u64, msg.as_ptr() as u64, msg.len() as u64)
@@ -69,7 +69,7 @@ fn getchar() -> Result<u8, u64> {
 /// Returns the number of bytes written into `buf`.
 #[inline(always)]
 #[allow(clippy::cast_possible_truncation)]
-pub fn user_readline(buf: &mut [u8]) -> Result<usize, u64> {
+pub fn readline(buf: &mut [u8]) -> Result<usize, u64> {
     let mut len = 0usize;
 
     loop {
@@ -130,4 +130,22 @@ pub fn user_readline(buf: &mut [u8]) -> Result<usize, u64> {
     }
 
     Ok(len)
+}
+
+#[doc(hidden)]
+pub struct ConsoleWriter;
+
+impl core::fmt::Write for ConsoleWriter {
+    #[inline(always)]
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        let _ = writeline(s.as_bytes());
+        Ok(())
+    }
+}
+
+#[doc(hidden)]
+#[inline(always)]
+pub fn _print(args: core::fmt::Arguments) {
+    use core::fmt::Write;
+    let _ = ConsoleWriter.write_fmt(args);
 }

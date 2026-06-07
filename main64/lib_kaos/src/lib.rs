@@ -9,8 +9,8 @@
 //!
 //! All public items are also re-exported at crate root so user programs can write:
 //! ```no_run
-//! use lib_kaos as syscall;
-//! syscall::write_console(b"hello\n").ok();
+//! use lib_kaos::console;
+//! console::writeline(b"hello\n").ok();
 //! ```
 
 #![no_std]
@@ -33,8 +33,19 @@ pub mod heap;
 pub mod memory;
 pub mod process;
 
-// Flat re-exports — preserve the `syscall::write_console(...)` call pattern.
-pub use console::{clear_screen, user_readline, write_console, write_serial};
-pub use fs::{delete_file, file_exists, print_root_directory, File, FileMode};
-pub use memory::mmap;
-pub use process::{exec, exit, shutdown, wait};
+#[macro_export]
+macro_rules! print {
+    ($($arg:tt)*) => {
+        $crate::console::_print(format_args!($($arg)*))
+    };
+}
+
+#[macro_export]
+macro_rules! println {
+    () => {
+        $crate::print!("\n")
+    };
+    ($($arg:tt)*) => {
+        $crate::print!("{}\n", format_args!($($arg)*))
+    };
+}
