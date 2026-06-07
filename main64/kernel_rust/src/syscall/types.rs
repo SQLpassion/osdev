@@ -36,6 +36,12 @@ pub enum SyscallId {
     PrintRootDirectory = 15,
     /// Map memory pages.
     Mmap = 16,
+    /// Execute a flat binary from the FAT12 disk.
+    Exec = 17,
+    /// Wait for a user-space task to exit.
+    Wait = 18,
+    /// Shutdown the system.
+    Shutdown = 19,
 }
 
 impl SyscallId {
@@ -89,6 +95,15 @@ impl SyscallId {
 
     /// Syscall number for Mmap.
     pub const MMAP: u64 = Self::Mmap as u64;
+
+    /// Syscall number for Exec.
+    pub const EXEC: u64 = Self::Exec as u64;
+
+    /// Syscall number for Wait.
+    pub const WAIT: u64 = Self::Wait as u64;
+
+    /// Syscall number for Shutdown.
+    pub const SHUTDOWN: u64 = Self::Shutdown as u64;
 }
 
 /// Unknown syscall number.

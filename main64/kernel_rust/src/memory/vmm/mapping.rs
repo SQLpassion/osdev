@@ -393,42 +393,72 @@ pub unsafe fn switch_page_directory(pml4_phys: u64) {
     write_cr3(pml4_phys);
 }
 
-/// Clones the active kernel PML4 into a new physical frame for a user address space.
+/// Clones the kernel PML4 into a new physical frame for a fresh user address space.
 ///
 /// The returned physical address points to a copied PML4 image with recursive
 /// mapping updated to self-reference in entry 511.
 ///
-/// Detailed flow:
-/// - Allocate one new physical frame that will hold the clone root table.
-/// - Temporarily map that frame at [`TEMP_CLONE_PML4_VA`].
-/// - Copy the currently active PML4 page (`PML4_TABLE_ADDR`) byte-for-byte
-///   into the temporary mapping. This preserves kernel-half mappings.
-/// - Update entry 511 inside the clone so its recursive mapping points to the
-///   clone frame itself (not the original kernel PML4).
-/// - Remove the temporary VA mapping and return the clone frame physical address.
+/// # Why we always clone from the *kernel* PML4
 ///
-/// Why not write directly via physical address:
-/// - Rust code executes in virtual-address context; writing to arbitrary physical
-///   addresses requires either identity mapping assumptions or a temporary map.
-/// - Using one fixed scratch VA is explicit, deterministic, and avoids keeping
-///   permanent helper mappings around.
+/// When called from a user task's syscall (e.g. `Exec`) the CPU's active CR3
+/// is the **user task's** address space, which already has pages mapped at
+/// `USER_CODE_BASE` (the task's own code).  `PML4_TABLE_ADDR` is a recursively
+/// derived virtual address that always reflects the *currently active* PML4.
+/// Copying it directly would therefore embed the calling task's user-code and
+/// user-stack entries into the clone, causing `AlreadyMapped` errors when the
+/// loader later tries to map the new program's pages into the same VAs.
+///
+/// The fix: temporarily switch to the stored kernel-only PML4 root before
+/// performing the copy, then restore the previous CR3 afterwards.  This ensures
+/// the clone starts from a clean kernel-only address space with no user-half
+/// entries.
+///
+/// Detailed flow:
+/// - Allocate one new physical frame for the clone root table.
+/// - Temporarily switch CR3 to the kernel PML4 so `PML4_TABLE_ADDR` resolves
+///   against a user-free address space.
+/// - Map the new frame at [`TEMP_CLONE_PML4_VA`] and copy one PML4 page.
+/// - Update entry 511 in the clone to self-reference (recursive mapping).
+/// - Remove the temporary VA mapping.
+/// - Restore the previous CR3 and return the clone frame physical address.
 ///
 /// Safety/ownership note:
 /// - The returned frame remains allocated and owned by the caller.
 /// - `unmap_without_release` is used intentionally so PMM does not free it.
 pub fn clone_kernel_pml4_for_user() -> u64 {
+    // Step 1: Ensure interrupts are off for the entire CR3-switch window.
+    // All operations below touch CPU-visible page-table structures and must
+    // not be interrupted by a timer tick that would see an inconsistent CR3.
+    let interrupts_were_enabled = interrupts::are_enabled();
+    if interrupts_were_enabled {
+        interrupts::disable();
+    }
+
+    // Step 2: Allocate the new PML4 frame before switching CR3, so that
+    // the allocator runs in the context we entered with and cannot race.
     let new_pml4_phys =
         alloc_frame_phys_or_panic("VMM: out of physical memory while cloning user PML4");
 
-    // Reuse one temporary VA for clone operations.
+    // Step 3: Temporarily switch to the kernel PML4.
+    // This makes PML4_TABLE_ADDR (recursive mapping VA) resolve to the
+    // kernel-only address space, free of any user-space code/stack entries.
+    let previous_cr3 = read_cr3();
+    let kernel_pml4 = super::get_pml4_address();
+    if previous_cr3 != kernel_pml4 {
+        // interrupts are disabled above; `kernel_pml4` is the validated stable
+        // root from VMM init.  This is a transient switch restored in Step 6.
+        write_cr3(kernel_pml4);
+    }
+
+    // Step 4: Map the clone frame at the scratch VA, then copy the kernel PML4.
     unmap_without_release(TEMP_CLONE_PML4_VA);
     map_virtual_to_physical(TEMP_CLONE_PML4_VA, new_pml4_phys);
 
     // SAFETY:
-    // - This requires `unsafe` because raw memory copy operations require manually proving non-overlap and valid ranges.
-    // - Source is the current recursively mapped kernel PML4 page.
-    // - Destination is a freshly allocated page mapped at TEMP_CLONE_PML4_VA.
-    // - Regions are disjoint and exactly one page long.
+    // - CR3 is now the kernel PML4, so PML4_TABLE_ADDR resolves correctly.
+    // - TEMP_CLONE_PML4_VA is mapped to `new_pml4_phys` just above.
+    // - Source and destination are disjoint, each exactly one page long.
+    // - Interrupts are disabled; no concurrent CR3 change can occur.
     unsafe {
         core::ptr::copy_nonoverlapping(
             PML4_TABLE_ADDR as *const u8,
@@ -437,32 +467,36 @@ pub fn clone_kernel_pml4_for_user() -> u64 {
         );
     }
 
-    // Rebind recursive slot 511 inside the clone to point to the clone itself.
+    // Step 5: Rebind recursive slot 511 inside the clone.
     //
-    // Background:
-    // - In this kernel, PML4 entry 511 is used for recursive page-table mapping.
-    // - After the raw memcpy above, entry 511 in the clone still points to the
-    //   original kernel PML4 frame (copied value), which is wrong for an
-    //   independent address-space root.
-    //
-    // What these lines do:
-    // 1) Interpret the temporary clone mapping as a mutable PML4 table.
-    // 2) Overwrite entry 511 so it maps `new_pml4_phys` (the clone frame).
-    //
-    // Result:
-    // - Recursive virtual windows (PML4/PDP/PD/PT helper addresses) operate on
-    //   the cloned hierarchy once this CR3 is activated, not on the kernel root.
+    // After the raw memcpy, entry 511 in the clone still holds the kernel PML4
+    // physical address (copied from the kernel PML4). Overwrite it so that the
+    // clone's recursive window points to the clone frame itself, enabling
+    // independent page-table walks once this CR3 is activated.
     let clone_pml4 = table_at(TEMP_CLONE_PML4_VA);
-    // SAFETY: `clone_pml4` is a valid PML4 page (freshly mapped scratch at TEMP_CLONE_PML4_VA),
-    // `511 < PT_ENTRIES`, interrupts disabled for the duration of the scratch mapping.
+    // SAFETY:
+    // - `clone_pml4` is a valid PML4 page mapped at TEMP_CLONE_PML4_VA.
+    // - 511 < PT_ENTRIES.
+    // - Interrupts disabled throughout; no concurrent access.
     unsafe {
         (*entry_ptr(clone_pml4, 511)).set_mapping(phys_to_pfn(new_pml4_phys), true, true, false)
     };
 
     unmap_without_release(TEMP_CLONE_PML4_VA);
 
+    // Step 6: Restore the previous CR3 before re-enabling interrupts.
+    if previous_cr3 != kernel_pml4 {
+        // `previous_cr3` was read from the CPU before the switch and is valid.
+        write_cr3(previous_cr3);
+    }
+
+    if interrupts_were_enabled {
+        interrupts::enable();
+    }
+
     new_pml4_phys
 }
+
 
 /// Destroys a user address space rooted at `pml4_phys`.
 ///

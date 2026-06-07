@@ -1,0 +1,21 @@
+[package]
+name = "shell_user_program"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+kernel = []
+
+[dependencies]
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+
+[[bin]]
+name = "shell"
+path = "src/main.rs"
+test = false
+bench = false

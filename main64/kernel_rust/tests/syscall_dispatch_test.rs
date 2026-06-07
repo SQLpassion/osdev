@@ -69,6 +69,21 @@ fn test_syscall_ids_are_stable() {
         SyscallId::ClearScreen as u64 == 7,
         "ClearScreen syscall id changed"
     );
+    assert!(SyscallId::OpenFile as u64 == 8, "OpenFile syscall id changed");
+    assert!(SyscallId::CloseFile as u64 == 9, "CloseFile syscall id changed");
+    assert!(SyscallId::ReadFile as u64 == 10, "ReadFile syscall id changed");
+    assert!(SyscallId::WriteFile as u64 == 11, "WriteFile syscall id changed");
+    assert!(SyscallId::DeleteFile as u64 == 12, "DeleteFile syscall id changed");
+    assert!(SyscallId::SeekFile as u64 == 13, "SeekFile syscall id changed");
+    assert!(SyscallId::EndOfFile as u64 == 14, "EndOfFile syscall id changed");
+    assert!(
+        SyscallId::PrintRootDirectory as u64 == 15,
+        "PrintRootDirectory syscall id changed"
+    );
+    assert!(SyscallId::Mmap as u64 == 16, "Mmap syscall id changed");
+    assert!(SyscallId::Exec as u64 == 17, "Exec syscall id changed");
+    assert!(SyscallId::Wait as u64 == 18, "Wait syscall id changed");
+    assert!(SyscallId::Shutdown as u64 == 19, "Shutdown syscall id changed");
 }
 
 /// Contract: syscall number-to-name mapping for dispatcher logs stays stable.
@@ -105,6 +120,54 @@ fn test_syscall_name_mapping_for_logging_is_stable() {
     assert!(
         syscall::syscall_name_for_number(SyscallId::ClearScreen as u64) == "ClearScreen",
         "ClearScreen mapping must stay stable for syscall trace output"
+    );
+    assert!(
+        syscall::syscall_name_for_number(SyscallId::OpenFile as u64) == "OpenFile",
+        "OpenFile mapping must stay stable for syscall trace output"
+    );
+    assert!(
+        syscall::syscall_name_for_number(SyscallId::CloseFile as u64) == "CloseFile",
+        "CloseFile mapping must stay stable for syscall trace output"
+    );
+    assert!(
+        syscall::syscall_name_for_number(SyscallId::ReadFile as u64) == "ReadFile",
+        "ReadFile mapping must stay stable for syscall trace output"
+    );
+    assert!(
+        syscall::syscall_name_for_number(SyscallId::WriteFile as u64) == "WriteFile",
+        "WriteFile mapping must stay stable for syscall trace output"
+    );
+    assert!(
+        syscall::syscall_name_for_number(SyscallId::DeleteFile as u64) == "DeleteFile",
+        "DeleteFile mapping must stay stable for syscall trace output"
+    );
+    assert!(
+        syscall::syscall_name_for_number(SyscallId::SeekFile as u64) == "SeekFile",
+        "SeekFile mapping must stay stable for syscall trace output"
+    );
+    assert!(
+        syscall::syscall_name_for_number(SyscallId::EndOfFile as u64) == "EndOfFile",
+        "EndOfFile mapping must stay stable for syscall trace output"
+    );
+    assert!(
+        syscall::syscall_name_for_number(SyscallId::PrintRootDirectory as u64) == "PrintRootDirectory",
+        "PrintRootDirectory mapping must stay stable for syscall trace output"
+    );
+    assert!(
+        syscall::syscall_name_for_number(SyscallId::Mmap as u64) == "Mmap",
+        "Mmap mapping must stay stable for syscall trace output"
+    );
+    assert!(
+        syscall::syscall_name_for_number(SyscallId::Exec as u64) == "Exec",
+        "Exec mapping must stay stable for syscall trace output"
+    );
+    assert!(
+        syscall::syscall_name_for_number(SyscallId::Wait as u64) == "Wait",
+        "Wait mapping must stay stable for syscall trace output"
+    );
+    assert!(
+        syscall::syscall_name_for_number(SyscallId::Shutdown as u64) == "Shutdown",
+        "Shutdown mapping must stay stable for syscall trace output"
     );
     assert!(
         syscall::syscall_name_for_number(0xDEAD) == "Unknown",
@@ -622,3 +685,24 @@ fn test_clear_screen_resets_cursor_to_origin() {
     assert!(row == 0, "clear_screen must reset row to 0");
     assert!(col == 0, "clear_screen must reset col to 0");
 }
+
+/// Contract: exec with invalid user buffer returns invalid argument error.
+#[test_case]
+fn test_exec_with_invalid_pointer_returns_error() {
+    let ret = syscall::dispatch(SyscallId::Exec as u64, 0, 0, 0, 0);
+    assert!(
+        ret == syscall::SYSCALL_ERR_INVALID_ARG,
+        "exec with null pointer must return invalid argument error"
+    );
+}
+
+/// Contract: wait returns immediately for non-existent task.
+#[test_case]
+fn test_wait_for_invalid_task_returns_ok() {
+    let ret = syscall::dispatch(SyscallId::Wait as u64, 9999, 0, 0, 0);
+    assert!(
+        ret == syscall::SYSCALL_OK,
+        "wait for invalid task ID must return OK immediately"
+    );
+}
+

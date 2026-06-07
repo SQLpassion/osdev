@@ -8,16 +8,26 @@ use core::arch::asm;
 #[repr(u64)]
 #[allow(dead_code)]
 enum SyscallId {
+    Yield = 0,
     WriteSerial = 1,
     Exit = 2,
     WriteConsole = 3,
     GetChar = 4,
+    GetCursor = 5,
+    SetCursor = 6,
+    ClearScreen = 7,
     OpenFile = 8,
     CloseFile = 9,
     ReadFile = 10,
     WriteFile = 11,
     DeleteFile = 12,
+    SeekFile = 13,
+    EndOfFile = 14,
+    PrintRootDirectory = 15,
     Mmap = 16,
+    Exec = 17,
+    Wait = 18,
+    Shutdown = 19,
 }
 
 #[allow(dead_code)]
@@ -407,3 +417,84 @@ pub fn exit() -> ! {
         core::hint::spin_loop();
     }
 }
+
+/// Clears the VGA text console screen.
+#[inline(always)]
+pub fn clear_screen() -> Result<(), u64> {
+    let raw = unsafe {
+        // SAFETY:
+        // - ClearScreen syscall takes no pointer arguments.
+        syscall0(SyscallId::ClearScreen as u64)
+    };
+    if raw >= SYSCALL_ERR_IO {
+        return Err(raw);
+    }
+    Ok(())
+}
+
+/// Prints the root directory listing of the FAT12 disk.
+#[inline(always)]
+pub fn print_root_directory() -> Result<(), u64> {
+    let raw = unsafe {
+        // SAFETY:
+        // - PrintRootDirectory syscall takes no pointer arguments.
+        syscall0(SyscallId::PrintRootDirectory as u64)
+    };
+    if raw >= SYSCALL_ERR_IO {
+        return Err(raw);
+    }
+    Ok(())
+}
+
+/// Executes a flat binary from the FAT12 disk.
+/// The name of the binary must be null-terminated or passed as a slice.
+/// Under the hood, this function maps the name to a stack buffer,
+/// adds a null terminator, and performs the Exec syscall.
+#[inline(always)]
+pub fn exec(name: &[u8]) -> Result<usize, u64> {
+    let mut buf = [0u8; 128];
+    if name.len() >= 128 {
+        return Err(SYSCALL_ERR_INVALID_ARG);
+    }
+    buf[..name.len()].copy_from_slice(name);
+    buf[name.len()] = 0;
+
+    let raw = unsafe {
+        // SAFETY:
+        // - buf is a valid null-terminated string on the stack.
+        // - The pointer is verified inside the kernel syscall boundary.
+        syscall1(SyscallId::Exec as u64, buf.as_ptr() as u64)
+    };
+    if raw >= SYSCALL_ERR_IO {
+        return Err(raw);
+    }
+    Ok(raw as usize)
+}
+
+/// Blocks the calling task until the target task terminates.
+#[inline(always)]
+pub fn wait(task_id: usize) -> Result<(), u64> {
+    let raw = unsafe {
+        // SAFETY:
+        // - Wait syscall takes no pointer arguments.
+        syscall1(SyscallId::Wait as u64, task_id as u64)
+    };
+    if raw >= SYSCALL_ERR_IO {
+        return Err(raw);
+    }
+    Ok(())
+}
+
+/// Shuts down the machine.
+#[inline(always)]
+pub fn shutdown() -> ! {
+    let _ = unsafe {
+        // SAFETY:
+        // - Shutdown syscall takes no pointer arguments and halts the machine.
+        syscall0(SyscallId::Shutdown as u64)
+    };
+    loop {
+        core::hint::spin_loop();
+    }
+}
+

@@ -5,6 +5,7 @@
 
 #![no_std]
 #![no_main]
+#![allow(dead_code)]
 
 extern crate alloc;
 
@@ -17,7 +18,6 @@ mod memory;
 mod panic;
 #[cfg_attr(not(test), allow(dead_code))]
 mod process;
-mod repl;
 mod scheduler;
 mod sync;
 mod syscall;
@@ -78,9 +78,6 @@ pub extern "C" fn KernelMain(kernel_size: u64) -> ! {
     debugln!("KAOS Rust Kernel starting...");
     debugln!("Kernel size: {} bytes", kernel_size);
 
-    // Store kernel size for the REPL task banner.
-    repl::set_kernel_size(kernel_size);
-
     // Initialize GDT/TSS so ring-3 transitions have a valid architectural base.
     gdt::init();
     debugln!("GDT/TSS initialized");
@@ -137,9 +134,16 @@ pub extern "C" fn KernelMain(kernel_size: u64) -> ! {
     scheduler::set_kernel_address_space_cr3(vmm::get_pml4_address());
     scheduler::spawn_kernel_task(keyboard::keyboard_worker_task)
         .expect("failed to spawn keyboard worker task");
-    scheduler::spawn_kernel_task(repl::repl_task).expect("failed to spawn REPL task");
+
+    // Spawn the user-space shell task from the FAT12 disk
+    let shell_pid =
+        process::exec_from_fat12("shell.bin").expect("failed to spawn SHELL.BIN user-mode task");
+
     scheduler::start();
-    debugln!("Scheduler started with keyboard worker + REPL task");
+    debugln!(
+        "Scheduler started with keyboard worker + SHELL.BIN (PID {})",
+        shell_pid
+    );
 
     // Enable interrupts — the first timer tick will preempt into a task.
     interrupts::enable();

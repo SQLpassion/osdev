@@ -211,3 +211,62 @@ pub fn syscall_mmap_impl(addr: u64, length: usize) -> SyscallResult<u64> {
 
     Ok(current_heap_top)
 }
+
+/// Implements `Exec(name_ptr)`: load and spawn a new user task from FAT12.
+///
+/// Reads the name string from user space safely and invokes the file loader.
+/// Each `ExecError` variant is mapped to the most appropriate `SyscallError`
+/// so user-space callers can distinguish file-not-found from spawn failures.
+pub fn syscall_exec_impl(name_ptr: *const u8) -> SyscallResult<u64> {
+    use crate::process::ExecError;
+
+    // Step 1: Decode the null-terminated string from user-space memory.
+    let name = super::fs::read_user_string(name_ptr, 128)?;
+
+    // Step 2: Attempt to load the program image and spawn a user task.
+    let result = crate::process::exec_from_fat12(&name);
+
+    // Step 3: Log the outcome to serial so failures are visible without a debugger.
+    match &result {
+        Ok(tid) => {
+            crate::logging::logln(
+                "exec",
+                format_args!("EXEC: spawned '{}' as task {}", name, tid),
+            );
+        }
+        Err(e) => {
+            crate::logging::logln(
+                "exec",
+                format_args!("EXEC: failed to exec '{}': {:?}", name, e),
+            );
+        }
+    }
+
+    // Step 4: Map ExecError variants to distinct SyscallError codes.
+    result.map(|tid| tid as u64).map_err(|e| match e {
+        ExecError::InvalidName => SyscallError::InvalidArg,
+        ExecError::NotFound => SyscallError::InvalidArg,
+        ExecError::IsDirectory => SyscallError::InvalidArg,
+        ExecError::EmptyImage => SyscallError::InvalidArg,
+        ExecError::FileTooLarge => SyscallError::InvalidArg,
+        ExecError::OutOfMemory => SyscallError::OutOfMemory,
+        ExecError::MappingFailed => SyscallError::OutOfMemory,
+        ExecError::SpawnFailed => SyscallError::Io,
+        ExecError::Io => SyscallError::Io,
+    })
+}
+
+/// Implements `Wait(task_id)`: block current task until target task exits.
+pub fn syscall_wait_impl(task_id: u64) -> SyscallResult<u64> {
+    // Step 1: Delegate task wait to the scheduler exit queue.
+    scheduler::wait_for_task_exit(task_id as usize);
+
+    Ok(SYSCALL_OK)
+}
+
+/// Implements `Shutdown()`: shuts down the virtual machine.
+pub fn syscall_shutdown_impl() -> SyscallResult<u64> {
+    // Step 1: Trigger system shutdown.
+    crate::arch::power::shutdown();
+}
+

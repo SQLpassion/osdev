@@ -77,3 +77,25 @@ llvm-objcopy -O binary "$INPUT_ELF" filedemo.bin 2>/dev/null || \
 
 echo "-> Built: $FILEDEMO_DIR/filedemo.bin"
 ls -la filedemo.bin
+
+SHELL_DIR="$SCRIPT_DIR/user_programs/shell"
+echo ""
+echo "-> Building shell user program..."
+
+cd "$SHELL_DIR"
+
+if [ "$PROFILE" = "release" ]; then
+    cargo +nightly build --release --target x86_64-unknown-none -Z build-std=core,alloc
+    INPUT_ELF="target/x86_64-unknown-none/release/shell"
+else
+    cargo +nightly build --target x86_64-unknown-none
+    INPUT_ELF="target/x86_64-unknown-none/debug/shell"
+fi
+
+llvm-objcopy -O binary "$INPUT_ELF" shell.bin 2>/dev/null || \
+    rust-objcopy -O binary "$INPUT_ELF" shell.bin 2>/dev/null || \
+    objcopy -O binary "$INPUT_ELF" shell.bin
+
+echo "-> Built: $SHELL_DIR/shell.bin"
+ls -la shell.bin
+
