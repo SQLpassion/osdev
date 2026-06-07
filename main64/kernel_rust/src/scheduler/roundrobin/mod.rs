@@ -57,8 +57,10 @@ pub use api::{
 
 use manager::{
     bootstrap_or_current, find_entry_by_frame, frame_within_any_task_stack, free_pending_stacks,
-    reap_zombies, reset_scheduler_state, select_next_task,
+    reap_zombies, select_next_task,
 };
+#[cfg(debug_assertions)]
+use manager::reset_scheduler_state;
 
 /// Returns whether the scheduler is currently active.
 #[cfg_attr(not(test), allow(dead_code))]
