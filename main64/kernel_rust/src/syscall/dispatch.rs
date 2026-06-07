@@ -23,8 +23,7 @@ use crate::logging;
 use crate::scheduler;
 
 use super::{
-    is_valid_user_buffer, syscall_result_to_raw, SyscallError, SyscallId, SyscallResult,
-    SYSCALL_OK,
+    is_valid_user_buffer, syscall_result_to_raw, SyscallError, SyscallId, SyscallResult, SYSCALL_OK,
 };
 
 /// Maximum number of bytes that can be written in a single WriteSerial syscall.
@@ -418,7 +417,8 @@ fn syscall_read_file_impl(fd: u64, buf_ptr: *mut u8, len: u64) -> SyscallResult<
     // SAFETY:
     // - We validated the buffer is a valid user memory range.
     let buffer = unsafe { core::slice::from_raw_parts_mut(buf_ptr, len as usize) };
-    let bytes_read = crate::io::fat12::read_file_fd(fd as usize, buffer).map_err(|_| SyscallError::Io)?;
+    let bytes_read =
+        crate::io::fat12::read_file_fd(fd as usize, buffer).map_err(|_| SyscallError::Io)?;
     Ok(bytes_read as u64)
 }
 
@@ -434,7 +434,8 @@ fn syscall_write_file_impl(fd: u64, buf_ptr: *const u8, len: u64) -> SyscallResu
     // SAFETY:
     // - We validated the buffer is a valid user memory range.
     let buffer = unsafe { core::slice::from_raw_parts(buf_ptr, len as usize) };
-    let bytes_written = crate::io::fat12::write_file_fd(fd as usize, buffer).map_err(|_| SyscallError::Io)?;
+    let bytes_written =
+        crate::io::fat12::write_file_fd(fd as usize, buffer).map_err(|_| SyscallError::Io)?;
     Ok(bytes_written as u64)
 }
 
@@ -447,7 +448,8 @@ fn syscall_delete_file_impl(name_ptr: *const u8) -> SyscallResult<u64> {
 
 /// Implements `SeekFile()`.
 fn syscall_seek_file_impl(fd: u64, offset: u64) -> SyscallResult<u64> {
-    crate::io::fat12::seek_file(fd as usize, offset as u32).map_err(|_| SyscallError::InvalidArg)?;
+    crate::io::fat12::seek_file(fd as usize, offset as u32)
+        .map_err(|_| SyscallError::InvalidArg)?;
     Ok(0)
 }
 
@@ -510,7 +512,8 @@ fn syscall_mmap_impl(addr: u64, length: usize) -> SyscallResult<u64> {
         if addr & page_mask != 0 {
             return Err(SyscallError::InvalidArg);
         }
-        if addr < crate::memory::vmm::USER_HEAP_BASE || addr >= crate::memory::vmm::USER_HEAP_END {
+        if !(crate::memory::vmm::USER_HEAP_BASE..crate::memory::vmm::USER_HEAP_END).contains(&addr)
+        {
             return Err(SyscallError::InvalidArg);
         }
         if addr != current_heap_top {
