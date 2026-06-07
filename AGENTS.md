@@ -17,6 +17,7 @@ that read/modify code in this repo.
 - Maintain a small, well-audited `unsafe` surface
 - Every change MUST be covered by tests
 - Every functional change MUST introduce at least one new test
+- After each change, running `cargo clippy` MUST NOT raise any errors or warnings.
 
 ---
 
