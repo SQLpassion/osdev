@@ -102,7 +102,7 @@ fn test_fpu_allocate_default_alignment_contract() {
     let ptr = fpu::FpuState::allocate_default();
     assert!(!ptr.is_null(), "FPU state allocation must succeed");
     assert!(
-        (ptr as usize) % 16 == 0,
+        (ptr as usize).is_multiple_of(16),
         "FPU state buffer must be 16-byte aligned for FXSAVE64/FXRSTOR64"
     );
 

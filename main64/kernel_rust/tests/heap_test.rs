@@ -530,8 +530,7 @@ fn test_heap_free_logging_with_capture_enabled_remains_allocator_safe() {
     heap::free(ptr2);
 
     // Step 4: Verify global allocator still works after the same path.
-    let mut values = Vec::new();
-    values.push(1_u8);
+    let values = alloc::vec![1_u8];
     assert!(
         values[0] == 1_u8,
         "global allocator should remain usable after logged free-path execution"

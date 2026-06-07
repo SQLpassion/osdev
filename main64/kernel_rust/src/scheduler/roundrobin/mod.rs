@@ -1,7 +1,21 @@
-//! Minimal kernel-mode round-robin scheduler.
+//! # Round-Robin Kernel Task Scheduler
 //!
-//! Task stacks are heap-allocated at spawn time and freed when tasks are
-//! reaped, keeping the static footprint minimal.
+//! A minimal, preemption-capable, round-robin task scheduler for a 64-bit Rust kernel running in ring 0.
+//!
+//! ## Core Features & Mechanics
+//!
+//! - **Preemption & Yielding**: Preemptive scheduling is driven by the PIT timer interrupt (IRQ0). Each tick triggers
+//!   a context switch to the next ready task. Cooperative yields can be requested via the `yield_now` syscall.
+//! - **Task Lifecycle**: Tasks cycle through `Ready`, `Running`, `Blocked`, and `Zombie` states. Terminated
+//!   tasks are kept as `Zombie` slots and reaped in a deferred, two-phase cleanup on the next timer tick
+//!   to avoid use-after-free races on the active stack.
+//! - **Lazy FPU Switching**: Rather than saving the 512-byte FPU/SSE state on every switch, the scheduler
+//!   sets the `CR0.TS` bit. The first FPU instruction by a task triggers a Device Not Available (`#NM`) trap,
+//!   which restores the FPU context on-demand.
+//! - **Heap-Allocated Stacks**: Stacks are allocated from the kernel heap, 16-byte aligned, and zero-touched
+//!   on spawn to force demand paging allocation up front.
+//! - **Architecture Decoupling**: Decouples TSS and MMU details from the core round-robin logic using the
+//!   `SchedulerArchCallbacks` interface.
 
 use core::alloc::Layout;
 use core::arch::asm;
@@ -25,11 +39,8 @@ use crate::sync::spinlock::SpinLock;
 use crate::sync::waitqueue::WaitQueue;
 use crate::sync::waitqueue_adapter;
 
-/// Entry point type for schedulable kernel tasks.
-///
-/// Tasks are entered via a synthetic interrupt-return frame and are expected
-/// to never return.
-pub type KernelTaskFn = extern "C" fn() -> !;
+pub mod types;
+pub use types::*;
 
 const TASK_STACK_SIZE: usize = 64 * 1024;
 const STACK_ALIGNMENT: usize = 16;
@@ -52,286 +63,10 @@ const RFLAGS_RESERVED: u64 = 1 << 1;
 /// - IOPL=0: I/O privilege level 0 (no direct I/O port access)
 const DEFAULT_RFLAGS: u64 = RFLAGS_IF | RFLAGS_RESERVED;
 
-/// Internal task-construction descriptor for the shared spawn path.
-///
-/// Public APIs `spawn_kernel_task` and `spawn_user_task` are thin wrappers
-/// that translate their parameters into one of these variants and call
-/// `spawn_internal`.
-enum SpawnKind {
-    /// Kernel-mode task entered via function pointer.
-    Kernel {
-        /// Kernel entry function (`extern "C" fn() -> !`).
-        entry: KernelTaskFn,
-    },
-    /// User-mode task entered via synthetic IRET frame.
-    User {
-        /// Initial user RIP to be placed into the IRET frame.
-        entry_rip: u64,
-        /// Initial user RSP to be placed into the IRET frame.
-        user_rsp: u64,
-        /// Address-space root (CR3 physical address) associated with task.
-        cr3: u64,
-        /// Whether user-code PFNs should be released on task teardown.
-        ///
-        /// `false` is used for temporary user aliases of kernel code pages.
-        /// `true` is used for loader-owned binaries with dedicated code PFNs.
-        release_user_code_pfns: bool,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SpawnError {
-    /// Scheduler has not been initialized via [`init`].
-    NotInitialized,
-
-    /// Heap allocation for the task stack or scheduler metadata failed.
-    StackAllocationFailed,
-}
-
-/// Lifecycle state of a scheduled task.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TaskState {
-    /// Task is eligible for scheduling.
-    Ready,
-
-    /// Task is the one currently executing on the CPU.
-    Running,
-
-    /// Task is waiting for an external event (e.g. keyboard input).
-    Blocked,
-
-    /// Task has exited but its slot and stack are still reserved.
-    ///
-    /// A zombie is never selected by the round-robin loop.  The scheduler
-    /// reaps zombie slots at the beginning of the next [`on_timer_tick`]
-    /// call, when execution is guaranteed to have moved off the zombie's
-    /// kernel stack.
-    ///
-    /// This two-phase cleanup avoids a use-after-free race: if
-    /// `exit_current_task` freed the slot immediately, a timer IRQ between
-    /// the free and the subsequent `yield_now` could allow `spawn_*` to
-    /// reuse the slot — overwriting the stack that the exiting code path
-    /// is still running on.
-    Zombie,
-}
-
-/// One slot in the task table.
-#[derive(Clone, Copy)]
-struct TaskEntry {
-    /// Slot allocation flag in the task pool.
-    /// `true` means the entry is currently owned by a live task.
-    used: bool,
-
-    /// Scheduler lifecycle state used by round-robin selection.
-    /// Blocked tasks are skipped until explicitly unblocked.
-    state: TaskState,
-
-    /// Pointer to the currently saved register frame for this task.
-    /// This is the resume target returned to the IRQ trampoline.
-    frame_ptr: *mut SavedRegisters,
-
-    /// Task address space root (future user-mode CR3 switch support).
-    /// Kernel-only tasks currently keep this at zero.
-    cr3: u64,
-
-    /// User-mode stack pointer snapshot kept for diagnostics/tests only.
-    ///
-    /// The scheduler resumes tasks from the saved `InterruptStackFrame` on the
-    /// task stack; this field is not used in scheduling decisions.
-    /// Kernel-only tasks keep this at zero.
-    #[cfg_attr(not(test), allow(dead_code))]
-    user_rsp: u64,
-
-    /// Current top of the user-mode heap.
-    /// Updated dynamically via `mmap` syscalls.
-    /// Kernel-only tasks keep this at zero.
-    user_heap_top: u64,
-
-    /// Top of this task's kernel stack, used to program `TSS.RSP0`
-    /// before resuming a user-mode task.
-    kernel_rsp_top: u64,
-
-    /// Marks whether this task should be treated as user-mode context.
-    /// When set, scheduler updates `TSS.RSP0` from `kernel_rsp_top`.
-    is_user: bool,
-
-    /// Code-page teardown policy for user tasks.
-    ///
-    /// `true` means user-code leaf PFNs are returned to PMM when the task CR3
-    /// is destroyed. `false` keeps code PFNs reserved (alias-safe).
-    release_user_code_pfns: bool,
-
-    /// Base address of this task's heap-allocated kernel stack.
-    stack_base: *mut u8,
-
-    /// Size of the heap-allocated kernel stack in bytes.
-    stack_size: usize,
-
-    /// Per-task FXSAVE64/FXRSTOR64 buffer for lazy FPU state switching.
-    ///
-    /// Allocated at spawn time (not lazily) to avoid heap allocation from the
-    /// `#NM` exception context.  Freed by `remove_task`.  The buffer is
-    /// initialised with a clean FPU state (equivalent to `FNINIT`) so tasks
-    /// that never use FPU/SSE start from a well-defined state rather than
-    /// inheriting random register contents.
-    ///
-    /// Raw pointer instead of `Box<FpuState>` because `TaskEntry: Copy`.
-    fpu_state: *mut fpu::FpuState,
-}
-
-impl TaskEntry {
-    /// Returns an unused slot marker.
-    const fn empty() -> Self {
-        Self {
-            used: false,
-            state: TaskState::Ready,
-            frame_ptr: ptr::null_mut(),
-            cr3: 0,
-            user_rsp: 0,
-            user_heap_top: 0,
-            kernel_rsp_top: 0,
-            is_user: false,
-            release_user_code_pfns: false,
-            stack_base: ptr::null_mut(),
-            stack_size: 0,
-            fpu_state: ptr::null_mut(),
-        }
-    }
-
-    /// Checks whether `frame_ptr` lies within this task's stack memory.
-    fn is_frame_within_stack(&self, frame_ptr: *const SavedRegisters) -> bool {
-        if frame_ptr.is_null() || self.stack_base.is_null() {
-            return false;
-        }
-        let frame_start = frame_ptr as usize;
-        let frame_end =
-            frame_start + size_of::<SavedRegisters>() + size_of::<InterruptStackFrame>();
-
-        let stack_start = self.stack_base as usize;
-        let stack_end = stack_start + self.stack_size;
-        frame_start >= stack_start && frame_end <= stack_end
-    }
-}
-
-/// Runtime metadata of the round-robin scheduler.
-struct SchedulerMetadata {
-    /// Global initialization latch set by [`init`].
-    /// Guards API usage before scheduler data structures are ready.
-    initialized: bool,
-
-    /// Indicates whether timer ticks should perform scheduling decisions.
-    /// Set by [`start`], cleared when scheduler state is reset.
-    started: bool,
-
-    /// Last non-task interrupt frame pointer (typically bootstrap/idle context).
-    /// Used as fallback return frame when no runnable tasks exist.
-    bootstrap_frame: *mut SavedRegisters,
-
-    /// Slot index of currently selected/running task, if any.
-    /// `None` when executing bootstrap/idle context.
-    running_slot: Option<usize>,
-
-    /// Cursor into `run_queue` used for round-robin progression.
-    /// Points at the most recently selected queue position.
-    current_queue_pos: usize,
-
-    /// Compact queue of active task slot IDs in scheduling order.
-    /// Length gives the number of active tasks.
-    run_queue: Vec<usize>,
-
-    /// Per-slot task metadata table.
-    ///
-    /// `used=false` marks free slots available for reuse by `spawn_internal`.
-    /// The Vec grows when all existing slots are occupied. After a task exits,
-    /// any trailing `used=false` entries are trimmed by `remove_task` so that
-    /// the Vec length reflects the number of live tasks after every removal.
-    ///
-    /// Trade-off (explicit):
-    /// - This is intentionally a `Vec + used-flag` design, not a dedicated
-    ///   slot allocator/free-list.
-    /// - Interior unused holes are reused by first-fit spawn, but they are not
-    ///   compacted out of `slots`.
-    /// - Under churny spawn/despawn patterns, `slots.len()` follows a high-water
-    ///   mark and only shrinks when trailing slots become unused.
-    slots: Vec<TaskEntry>,
-
-    /// Total number of timer ticks processed while scheduler is started.
-    /// Primarily for diagnostics/tests.
-    tick_count: u64,
-
-    /// Stacks from terminated tasks awaiting deallocation.
-    ///
-    /// When a task is terminated via [`terminate_task`] while the scheduler is
-    /// running, the stack cannot be freed immediately because the next
-    /// `on_timer_tick` may still receive a stale frame pointer from that stack.
-    /// Keeping the range here allows [`frame_within_any_task_stack`] to
-    /// recognize stale task frames and avoid overwriting `bootstrap_frame`.
-    /// The stacks are freed on the next [`on_timer_tick`] call.
-    /// Drained via `core::mem::take` inside the scheduler lock.
-    pending_free_stacks: Vec<(*mut u8, usize)>,
-
-    /// Slot index of the task whose FPU/SSE state is currently live in the
-    /// CPU's XMM/x87 registers.
-    ///
-    /// `None` means no task owns the FPU (initial state after boot or after
-    /// a context switch before any FPU instruction has been executed).
-    ///
-    /// Set to `Some(slot)` by [`handle_fpu_trap`] when the `#NM` handler
-    /// restores a task's state.  Cleared to `None` by `select_next_task`
-    /// after saving the outgoing owner's state via `FXSAVE64`.
-    fpu_owner: Option<usize>,
-}
-
-impl SchedulerMetadata {
-    /// Returns the initial scheduler metadata.
-    ///
-    /// `Vec::new()` does not allocate, so this is safe as a `const fn` and
-    /// can be used to initialize the global `static SCHED`.
-    const fn new() -> Self {
-        Self {
-            initialized: false,
-            started: false,
-            bootstrap_frame: ptr::null_mut(),
-            running_slot: None,
-            current_queue_pos: 0,
-            run_queue: Vec::new(),
-            slots: Vec::new(),
-            tick_count: 0,
-            pending_free_stacks: Vec::new(),
-            fpu_owner: None,
-        }
-    }
-}
-
-// SAFETY:
-// - This requires `unsafe` because the compiler cannot automatically verify the thread-safety invariants of this `unsafe impl`.
-// - `SchedulerMetadata` is only accessed behind `SpinLock<SchedulerMetadata>`.
-// - Raw pointers inside metadata always reference scheduler-owned task stacks.
-// - Cross-thread transfer does not create unsynchronized mutable aliasing.
-unsafe impl Send for SchedulerMetadata {}
-
-// SAFETY:
-// - `SchedulerMetadata` is only accessed behind `SpinLock<SchedulerMetadata>`.
-// - Raw pointers in slots point into heap-allocated stacks and are only
-//   read/written while holding the lock.
 static SCHED: SpinLock<SchedulerMetadata> = SpinLock::new(SchedulerMetadata::new());
 
 /// Wait queue for tasks blocked in `wait_for_task_exit`.
 static TASK_EXIT_WAITQUEUE: WaitQueue = WaitQueue::new();
-
-/// Architecture-specific callbacks used by scheduler core.
-///
-/// This isolates MMU/TSS details from round-robin selection logic and makes
-/// behavior replaceable in tests without modifying scheduler internals.
-#[derive(Clone, Copy)]
-pub struct SchedulerArchCallbacks {
-    /// Returns the canonical kernel address-space root (CR3).
-    pub read_kernel_cr3: fn() -> u64,
-    /// Programs TSS.RSP0 before resuming a user-mode task.
-    pub set_kernel_rsp0: fn(u64),
-    /// Switches CPU address space to `cr3`.
-    pub switch_cr3: unsafe fn(u64),
-}
 
 fn default_read_kernel_cr3() -> u64 {
     vmm::get_pml4_address()
@@ -413,10 +148,13 @@ fn set_active_cr3(cr3: u64) {
 /// boundary to force demand paging at allocation time rather than in IRQ
 /// context.
 fn allocate_task_stack() -> *mut u8 {
+    // Step 1: Pre-calculate layout with safety constraints for the stack size and alignment.
     // SAFETY:
     // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
     // - Layout is non-zero and alignment is a power of two.
     let layout = unsafe { Layout::from_size_align_unchecked(TASK_STACK_SIZE, STACK_ALIGNMENT) };
+    
+    // Step 2: Request raw block allocation from the global heap.
     // SAFETY:
     // - This requires `unsafe` because unchecked `Layout` construction bypasses runtime validation of size/alignment constraints.
     // - Layout has non-zero size.
@@ -425,7 +163,7 @@ fn allocate_task_stack() -> *mut u8 {
         return ptr::null_mut();
     }
 
-    // Touch every page to force demand paging now, not during IRQ context.
+    // Step 3: Touch every page to force demand paging now, not during IRQ context.
     // SAFETY:
     // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
     // - `ptr` points to a valid allocation of `TASK_STACK_SIZE` bytes.
@@ -448,10 +186,13 @@ unsafe fn free_task_stack(ptr: *mut u8) {
     if ptr.is_null() {
         return;
     }
+    // Step 1: Re-create layout corresponding to the original allocation parameters.
     // SAFETY:
     // - Constants match the layout used by `allocate_task_stack`.
     // - Size is non-zero and alignment is a valid power of two.
     let layout = Layout::from_size_align_unchecked(TASK_STACK_SIZE, STACK_ALIGNMENT);
+    
+    // Step 2: Deallocate memory block using the constructed layout.
     heap_alloc::dealloc(ptr, layout);
 }
 
@@ -473,9 +214,10 @@ fn build_initial_kernel_task_frame(
     // - `stack_base` points to a valid heap allocation of `stack_size` bytes.
     // - The caller guarantees exclusive access to this stack memory.
     unsafe {
+        // Step 1: Calculate stack limits.
         let stack_top = stack_base as usize + stack_size;
 
-        // SysV-friendly entry stack alignment.
+        // Step 2: Set up SysV-friendly entry stack alignment.
         // Keep one return-address slot below RSP for a synthetic trap target.
         let entry_rsp = align_down(stack_top, 16) - 8;
         let iret_addr = entry_rsp - size_of::<InterruptStackFrame>();
@@ -484,6 +226,7 @@ fn build_initial_kernel_task_frame(
         let frame_ptr = frame_addr as *mut SavedRegisters;
         let iret_ptr = iret_addr as *mut InterruptStackFrame;
 
+        // Step 3: Register a safety fallback trap for accidental returns.
         // SAFETY:
         // - `entry_rsp` lies within the task's private stack memory.
         // - Writing a synthetic return address ensures an accidental task return
@@ -493,7 +236,10 @@ fn build_initial_kernel_task_frame(
             task_return_trap as *const () as usize as u64,
         );
 
+        // Step 4: Write default register states.
         ptr::write(frame_ptr, SavedRegisters::default());
+        
+        // Step 5: Write the initial interrupt return frame pointing to kernel entry.
         ptr::write(
             iret_ptr,
             InterruptStackFrame {
@@ -1800,4 +1546,3 @@ pub fn reset_initialization_for_test() {
         meta.initialized = false;
     });
 }
-
