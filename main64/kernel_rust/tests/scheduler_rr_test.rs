@@ -962,6 +962,9 @@ fn test_reaping_user_task_destroys_its_address_space() {
     sched::mark_current_as_zombie();
     let _ = sched::on_timer_tick(current);
 
+    // An extra tick is needed to reap the zombie task after the scheduler has left its stack.
+    let _ = sched::on_timer_tick(current);
+
     assert!(
         sched::task_state(user_task).is_none(),
         "zombie user task should be reaped on next tick"
@@ -1519,12 +1522,12 @@ fn test_reap_zombies_frees_slot_for_reuse() {
     assert!(current == frame_a, "first tick should select task A");
     sched::mark_current_as_zombie();
 
-    // Next tick: scheduler leaves task A's stack → reap_zombies runs,
-    // freeing the slot.  Task B is selected.
+    // Next tick: scheduler leaves task A's stack. Task B is selected.
     current = sched::on_timer_tick(current);
     assert!(current == frame_b, "second tick should select task B");
 
-    // Slot A has been reaped — task_state returns None for freed slots.
+    // Third tick: Task B is running, so Task A is no longer running_slot and gets reaped.
+    let _ = sched::on_timer_tick(current);
     assert!(
         sched::task_state(task_a).is_none(),
         "zombie slot must be reaped and freed after scheduler tick"
@@ -1594,17 +1597,20 @@ fn test_successive_zombies_are_reaped_across_ticks() {
     assert!(current == frame_a, "first tick should select task A");
     sched::mark_current_as_zombie();
 
-    // Tick 2: reap zombie A, select the next runnable task,
-    // then mark that one as zombie too.
+    // Tick 2: select the next runnable task, then mark that one as zombie too.
     current = sched::on_timer_tick(current);
-    assert!(
-        sched::task_state(task_a).is_none(),
-        "zombie task A must be reaped after first post-zombie tick"
-    );
     // Whatever task was selected, mark it zombie.
     sched::mark_current_as_zombie();
 
-    // Tick 3: the second zombie is reaped, only one task remains.
+    // Tick 3: zombie A is reaped (since the scheduler has fully transitioned to B),
+    // and the last remaining task is selected.
+    current = sched::on_timer_tick(current);
+    assert!(
+        sched::task_state(task_a).is_none(),
+        "zombie task A must be reaped after scheduler leaves its stack"
+    );
+
+    // Tick 4: the second zombie is reaped, only one task remains.
     let _current = sched::on_timer_tick(current);
 
     // Exactly one of B or C should still be alive.
@@ -1799,14 +1805,16 @@ fn test_exit_syscall_marks_zombie_and_returns_ok() {
         "Exit syscall must mark the current task as Zombie"
     );
 
-    // Next tick: zombie A is skipped and reaped, task B selected.
+    // Next tick: zombie A is skipped, task B selected.
     current = sched::on_timer_tick(current);
     assert!(
         current == frame_b,
         "after Exit syscall, zombie task must be skipped"
     );
 
-    // Zombie slot has been reaped.
+    // A subsequent tick is needed to reap the zombie task A after the scheduler
+    // has left its stack.
+    let _ = sched::on_timer_tick(current);
     assert!(
         sched::task_state(task_a).is_none(),
         "zombie task must be reaped on subsequent tick"
