@@ -8,7 +8,7 @@ use lib_kaos::{console, fs, process, print, println};
 pub extern "C" fn _start() -> ! {
     println!("=== FILEDEMO [Ring 3] ===");
 
-    let filename = b"test.txt";
+    let filename = "test.txt";
 
     // Check if the file already exists
     if fs::file_exists(filename) {

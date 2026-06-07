@@ -3,7 +3,7 @@
 use crate::{
     decode_result,
     raw::{syscall0, syscall1},
-    SyscallId, SysError,
+    SyscallId, SysError, MAX_PATH_LEN,
 };
 
 /// Executes a flat binary from the FAT12 disk.
@@ -11,13 +11,14 @@ use crate::{
 /// `name` is automatically null-terminated in a stack buffer before the syscall.
 /// Returns the task ID of the spawned process on success.
 #[inline(always)]
-pub fn exec(name: &[u8]) -> Result<usize, SysError> {
-    let mut buf = [0u8; 128];
-    if name.len() >= 128 {
+pub fn exec(name: &str) -> Result<usize, SysError> {
+    let mut buf = [0u8; MAX_PATH_LEN];
+    let name_bytes = name.as_bytes();
+    if name_bytes.len() >= MAX_PATH_LEN {
         return Err(SysError::InvalidArgument);
     }
-    buf[..name.len()].copy_from_slice(name);
-    buf[name.len()] = 0;
+    buf[..name_bytes.len()].copy_from_slice(name_bytes);
+    buf[name_bytes.len()] = 0;
 
     let raw = unsafe {
         // SAFETY:

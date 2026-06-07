@@ -107,7 +107,7 @@ fn execute_command(line: &str) {
 
 /// Reads the contents of a file chunk-by-chunk and writes them to the console.
 fn cat_file(name: &str) {
-    match fs::File::open(name.as_bytes(), fs::FileMode::Read) {
+    match fs::File::open(name, fs::FileMode::Read) {
         Ok(mut file) => {
             let mut read_buf = [0u8; 128];
             loop {
@@ -132,7 +132,7 @@ fn cat_file(name: &str) {
 /// Launches a user process in the foreground and waits for it to exit.
 fn run_program(name: &str) {
     println!("Launching program '{}'...", name);
-    match process::exec(name.as_bytes()) {
+    match process::exec(name) {
         Ok(pid) => {
             // Wait for the spawned program task to complete.
             // The shell is blocked on the wait queue until the child calls exit.

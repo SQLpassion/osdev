@@ -281,6 +281,14 @@ pub(crate) fn reap_zombies(
         let slot = meta.run_queue[i];
 
         if meta.slots[slot].state == TaskState::Zombie {
+            // Step 1: Avoid reaping the currently running slot (e.g., during the Exit syscall).
+            // Freeing the stack of the currently executing context while still running on it
+            // causes memory corruption when the allocator overwrites the active stack frame.
+            if meta.running_slot == Some(slot) {
+                i += 1;
+                continue;
+            }
+
             if remove_task(meta, slot, callbacks) {
                 removed_any = true;
             }

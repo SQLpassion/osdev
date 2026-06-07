@@ -23,6 +23,9 @@ mod kernel_types;
 pub use kernel_types::SysError;
 pub(crate) use kernel_types::{decode_result, SyscallId};
 
+/// Maximum allowed length of a path or filename (including directory separators).
+pub const MAX_PATH_LEN: usize = 128;
+
 mod raw;
 
 pub mod console;

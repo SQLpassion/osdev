@@ -3,7 +3,7 @@
 use crate::{
     decode_result,
     raw::{syscall0, syscall1, syscall2, syscall3},
-    SyscallId, SysError,
+    SyscallId, SysError, MAX_PATH_LEN,
 };
 
 /// Open mode passed to [`File::open`].
@@ -60,13 +60,14 @@ impl File {
     /// Opens `name` with the given `mode`.
     ///
     /// `name` is null-terminated in a stack buffer before the syscall.
-    pub fn open(name: &[u8], mode: FileMode) -> Result<Self, SysError> {
-        let mut buf = [0u8; 64];
-        if name.len() >= 64 {
+    pub fn open(name: &str, mode: FileMode) -> Result<Self, SysError> {
+        let mut buf = [0u8; MAX_PATH_LEN];
+        let name_bytes = name.as_bytes();
+        if name_bytes.len() >= MAX_PATH_LEN {
             return Err(SysError::InvalidArgument);
         }
-        buf[..name.len()].copy_from_slice(name);
-        buf[name.len()] = 0;
+        buf[..name_bytes.len()].copy_from_slice(name_bytes);
+        buf[name_bytes.len()] = 0;
 
         let fd = unsafe {
             // SAFETY: `buf` is a valid null-terminated string on the stack.
@@ -112,20 +113,21 @@ impl Drop for File {
 /// Returns `true` when `name` exists on disk.
 ///
 /// Attempts a read-only open; the resulting `File` is immediately dropped.
-pub fn file_exists(name: &[u8]) -> bool {
+pub fn file_exists(name: &str) -> bool {
     File::open(name, FileMode::Read).is_ok()
 }
 
 /// Deletes the file named `name`.
 ///
 /// `name` is null-terminated in a stack buffer before the syscall.
-pub fn delete_file(name: &[u8]) -> Result<(), SysError> {
-    let mut buf = [0u8; 64];
-    if name.len() >= 64 {
+pub fn delete_file(name: &str) -> Result<(), SysError> {
+    let mut buf = [0u8; MAX_PATH_LEN];
+    let name_bytes = name.as_bytes();
+    if name_bytes.len() >= MAX_PATH_LEN {
         return Err(SysError::InvalidArgument);
     }
-    buf[..name.len()].copy_from_slice(name);
-    buf[name.len()] = 0;
+    buf[..name_bytes.len()].copy_from_slice(name_bytes);
+    buf[name_bytes.len()] = 0;
 
     let raw = unsafe {
         // SAFETY: `buf` is a valid null-terminated string on the stack.
