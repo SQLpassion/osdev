@@ -98,6 +98,7 @@ fn execute_command(line: &str) {
             println!("  dir             - list directory contents of the FAT12 disk");
             println!("  cat <file>      - read and print the contents of a file");
             println!("  exec <file>     - run a program in the foreground");
+            println!("  exit            - exit this shell instance");
             println!("  shutdown        - shutdown the system");
         }
         "echo" => {
@@ -127,6 +128,9 @@ fn execute_command(line: &str) {
             } else {
                 println!("Usage: exec <8.3-filename>");
             }
+        }
+        "exit" => {
+            syscall::exit();
         }
         "shutdown" => {
             println!("Shutting down KAOS...");

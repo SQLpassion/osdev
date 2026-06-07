@@ -148,10 +148,11 @@ pub extern "C" fn KernelMain(kernel_size: u64) -> ! {
     // Enable interrupts — the first timer tick will preempt into a task.
     interrupts::enable();
 
-    // Idle loop: the CPU halts until each timer interrupt.  The scheduler
-    // selects a ready task on every tick; when all tasks are blocked the
-    // CPU stays here in low-power halt.
-    idle_loop()
+    // Block until the root shell exits, then shut down cleanly.
+    // If the user calls `exit` in the root shell, there is no parent to
+    // return to — shutting down is the only sensible response.
+    scheduler::wait_for_task_exit(shell_pid as usize);
+    arch::power::shutdown()
 }
 
 /// Low-power idle loop entered after the scheduler is started.
