@@ -3,7 +3,10 @@
 
 extern crate alloc;
 
-use lib_kaos::{console, fs, process, print, println};
+mod fpu;
+
+use lib_kaos::{console, fs, print, println, process};
+use fpu::run_fpu_smoke_test;
 
 /// Renders the shell welcome banner on startup.
 fn print_welcome_banner() {
@@ -57,6 +60,7 @@ fn execute_command(line: &str) {
             println!("  dir             - list directory contents of the FAT12 disk");
             println!("  cat <file>      - read and print the contents of a file");
             println!("  exec <file>     - run a program in the foreground");
+            println!("  fputest         - run FPU/SSE smoke test (ring 3)");
             println!("  exit            - exit this shell instance");
             println!("  shutdown        - shutdown the system");
         }
@@ -87,6 +91,9 @@ fn execute_command(line: &str) {
             } else {
                 println!("Usage: exec <8.3-filename>");
             }
+        }
+        "fputest" => {
+            run_fpu_smoke_test();
         }
         "exit" => {
             process::exit();
