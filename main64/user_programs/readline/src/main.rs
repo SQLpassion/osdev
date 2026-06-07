@@ -1,8 +1,7 @@
 #![no_std]
 #![no_main]
 
-#[path = "../../common/syscall.rs"]
-mod syscall;
+use lib_kaos as syscall;
 
 const PROMPT_MSG: &[u8] = b"Enter your name: ";
 const OUTPUT_PREFIX: &[u8] = b"Your name is: ";

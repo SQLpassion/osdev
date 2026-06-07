@@ -1,0 +1,19 @@
+[package]
+name = "lib_kaos"
+version = "0.1.0"
+edition = "2021"
+authors = ["Klaus Aschenbrenner"]
+
+[lib]
+crate-type = ["rlib"]
+
+# Inform rustc that `feature = "kernel"` is a known cfg value used inside
+# the path-imported kernel heap module, avoiding unexpected_cfg warnings.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("kernel"))'] }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

@@ -4,13 +4,9 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
-use alloc::vec::Vec;
 
-#[path = "../../common/syscall.rs"]
-mod syscall;
-
-#[path = "../../common/heap.rs"]
-mod heap;
+use lib_kaos as syscall;
+use lib_kaos::heap;
 
 const HELLO_MSG: &[u8] = b"HELLO.BIN launched as a [ring3] task\n";
 const ALLOC_START: &[u8] = b"Initializing user heap allocator...\n";
@@ -47,10 +43,7 @@ pub extern "C" fn _start() -> ! {
     }
 
     // Test Vec allocation and growth
-    let mut v = Vec::new();
-    v.push(1);
-    v.push(2);
-    v.push(3);
+    let v = alloc::vec![1, 2, 3];
 
     if v.len() == 3 && v[0] == 1 && v[2] == 3 {
         let _ = syscall::write_console(VEC_SUCCESS);

@@ -5,3 +5,10 @@ version = 4
 [[package]]
 name = "hello_user_program"
 version = "0.1.0"
+dependencies = [
+ "lib_kaos",
+]
+
+[[package]]
+name = "lib_kaos"
+version = "0.1.0"

@@ -1,0 +1,133 @@
+//! VGA console, serial port, and keyboard input syscall wrappers.
+
+use crate::{
+    raw::{syscall0, syscall2},
+    SyscallId, SYSCALL_ERR_IO, SYSCALL_ERR_INVALID_ARG, SYSCALL_ERR_UNSUPPORTED,
+};
+
+/// Writes `msg` to the VGA text console.
+#[inline(always)]
+pub fn write_console(msg: &[u8]) -> Result<(), u64> {
+    let raw = unsafe {
+        // SAFETY: `msg` is a valid slice whose pointer and length are passed to the kernel.
+        syscall2(SyscallId::WriteConsole as u64, msg.as_ptr() as u64, msg.len() as u64)
+    };
+    if raw >= SYSCALL_ERR_IO {
+        return Err(raw);
+    }
+    Ok(())
+}
+
+/// Writes `msg` to the debug serial port (COM1).
+#[inline(always)]
+pub fn write_serial(msg: &[u8]) -> Result<(), u64> {
+    let raw = unsafe {
+        // SAFETY: `msg` is a valid slice whose pointer and length are passed to the kernel.
+        syscall2(SyscallId::WriteSerial as u64, msg.as_ptr() as u64, msg.len() as u64)
+    };
+    if raw >= SYSCALL_ERR_IO {
+        return Err(raw);
+    }
+    Ok(())
+}
+
+/// Clears the VGA text screen and resets the cursor to the origin.
+#[inline(always)]
+pub fn clear_screen() -> Result<(), u64> {
+    let raw = unsafe {
+        // SAFETY: `ClearScreen` takes no pointer arguments.
+        syscall0(SyscallId::ClearScreen as u64)
+    };
+    if raw >= SYSCALL_ERR_IO {
+        return Err(raw);
+    }
+    Ok(())
+}
+
+/// Reads one decoded keyboard character (blocking).
+#[inline(always)]
+#[allow(clippy::cast_possible_truncation)]
+fn getchar() -> Result<u8, u64> {
+    let raw = unsafe {
+        // SAFETY: `GetChar` takes no pointer arguments.
+        syscall0(SyscallId::GetChar as u64)
+    };
+
+    if raw == SYSCALL_ERR_UNSUPPORTED || raw == SYSCALL_ERR_INVALID_ARG || raw == SYSCALL_ERR_IO {
+        return Err(raw);
+    }
+    if raw >= SYSCALL_ERR_IO {
+        return Err(raw);
+    }
+
+    Ok(raw as u8)
+}
+
+/// Reads one line from the keyboard, echoes every character to the console.
+///
+/// The terminating newline is echoed but **not** stored in `buf`.
+/// Returns the number of bytes written into `buf`.
+#[inline(always)]
+#[allow(clippy::cast_possible_truncation)]
+pub fn user_readline(buf: &mut [u8]) -> Result<usize, u64> {
+    let mut len = 0usize;
+
+    loop {
+        let ch = getchar()?;
+
+        match ch {
+            b'\r' | b'\n' => {
+                let newline = b'\n';
+                let raw = unsafe {
+                    // SAFETY: `newline` is a valid local byte on the stack.
+                    crate::raw::syscall2(
+                        SyscallId::WriteConsole as u64,
+                        &raw const newline as u64,
+                        1,
+                    )
+                };
+                if raw >= SYSCALL_ERR_IO {
+                    return Err(raw);
+                }
+                break;
+            }
+            0x08 => {
+                // Backspace
+                if len > 0 {
+                    len -= 1;
+                    let bs = 0x08u8;
+                    let raw = unsafe {
+                        // SAFETY: `bs` is a valid local byte on the stack.
+                        crate::raw::syscall2(
+                            SyscallId::WriteConsole as u64,
+                            &raw const bs as u64,
+                            1,
+                        )
+                    };
+                    if raw >= SYSCALL_ERR_IO {
+                        return Err(raw);
+                    }
+                }
+            }
+            _ => {
+                if len < buf.len() {
+                    buf[len] = ch;
+                    len += 1;
+                    let raw = unsafe {
+                        // SAFETY: `ch` is a valid local byte on the stack.
+                        crate::raw::syscall2(
+                            SyscallId::WriteConsole as u64,
+                            &raw const ch as u64,
+                            1,
+                        )
+                    };
+                    if raw >= SYSCALL_ERR_IO {
+                        return Err(raw);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(len)
+}

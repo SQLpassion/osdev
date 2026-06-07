@@ -1,8 +1,7 @@
 #![no_std]
 #![no_main]
 
-#[path = "../../common/syscall.rs"]
-mod syscall;
+use lib_kaos as syscall;
 
 #[no_mangle]
 #[link_section = ".ltext._start"]

@@ -301,10 +301,12 @@ const fn page_count_for_len(image_len: usize) -> usize {
 /// On partial allocation failure, all already-allocated PFNs in this transaction
 /// are released before returning, so the caller receives all-or-nothing behavior.
 fn alloc_program_frames(code_page_count: usize) -> ExecResult<(Vec<u64>, u64)> {
-    pmm::with_pmm(|mgr| {
-        // Step 1: Reserve code-page backing frames.
-        let mut code_pfns = Vec::with_capacity(code_page_count);
+    // Allocate the code PFNs vector on the kernel heap before acquiring the PMM lock.
+    // This avoids lock-ordering inversion deadlocks (PMM lock -> HEAP lock).
+    let mut code_pfns = Vec::with_capacity(code_page_count);
 
+    let stack_pfn = pmm::with_pmm(|mgr| {
+        // Step 1: Reserve code-page backing frames.
         for _ in 0..code_page_count {
             let pfn = match mgr.alloc_frame().map(|frame| frame.pfn) {
                 Some(pfn) => pfn,
@@ -336,8 +338,10 @@ fn alloc_program_frames(code_page_count: usize) -> ExecResult<(Vec<u64>, u64)> {
             "PMM returned PFN 0 (reserved low memory) for stack frame"
         );
 
-        Ok((code_pfns, stack_pfn))
-    })
+        Ok(stack_pfn)
+    })?;
+
+    Ok((code_pfns, stack_pfn))
 }
 
 fn release_allocated_code_pfns(mgr: &mut pmm::PhysicalMemoryManager, code_pfns: &[u64]) {

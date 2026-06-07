@@ -6,7 +6,12 @@
         "editor.formatOnSave": true
     },
     "rust-analyzer.linkedProjects": [
-        "main64/kernel_rust/Cargo.toml"
+        "main64/kernel_rust/Cargo.toml",
+        "main64/lib_kaos/Cargo.toml",
+        "main64/user_programs/hello/Cargo.toml",
+        "main64/user_programs/shell/Cargo.toml",
+        "main64/user_programs/readline/Cargo.toml",
+        "main64/user_programs/filedemo/Cargo.toml"
     ],
     "rust-analyzer.check.command": "clippy",
     "rust-analyzer.check.allTargets": false,

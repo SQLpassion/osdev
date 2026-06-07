@@ -5,11 +5,7 @@ extern crate alloc;
 
 use core::fmt::Write;
 
-#[path = "../../common/syscall.rs"]
-mod syscall;
-
-#[path = "../../common/heap.rs"]
-mod heap;
+use lib_kaos as syscall;
 
 /// Proxy struct to implement `core::fmt::Write` formatting for console output.
 struct ConsoleWriter;
@@ -51,15 +47,7 @@ fn print_welcome_banner() {
 #[no_mangle]
 #[link_section = ".ltext._start"]
 pub extern "C" fn _start() -> ! {
-    // Step 1: Initialize User Heap Allocator so we can use dynamic vectors/strings.
-    // SAFETY:
-    // - Initializing the user allocator from the single-threaded shell entry point is safe.
-    unsafe {
-        if heap::init().is_err() {
-            let _ = syscall::write_console(b"Fatal: User heap allocator failed to initialize.\n");
-            syscall::exit();
-        }
-    }
+    // Step 1: Note that the user heap allocator is now automatically lazy-initialized on the first allocation.
 
     print_welcome_banner();
 
