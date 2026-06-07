@@ -31,9 +31,10 @@ pub mod page_table;
 pub mod page_fault;
 pub mod mapping;
 pub mod diagnostics;
+pub mod vmm_constants;
 
 // Re-export constants.
-pub use super::vmm_constants::*;
+pub use vmm_constants::*;
 
 // Re-export main structures/functions.
 #[allow(unused_imports)]

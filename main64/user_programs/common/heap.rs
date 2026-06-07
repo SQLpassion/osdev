@@ -4,7 +4,7 @@
 
 extern crate alloc;
 
-#[path = "../../kernel_rust/src/memory/vmm_constants.rs"]
+#[path = "../../kernel_rust/src/memory/vmm/vmm_constants.rs"]
 pub mod vmm_constants;
 
 #[path = "syscall.rs"]
