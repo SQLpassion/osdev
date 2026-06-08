@@ -19,7 +19,7 @@ extern crate alloc;
 use alloc::vec;
 use lib_kaos::console::{self, Key};
 use lib_tui::{
-    with_screen, Color, Gauge, Label, List, ProgressBar, Table, Tabs, TextBox, TreeNode, TreeView,
+    with_screen, Color, Gauge, Label, ProgressBar, Table, Tabs, TextBox, TreeNode, TreeView,
     SCREEN_COLS, SCREEN_ROWS,
 };
 
@@ -27,9 +27,9 @@ use lib_tui::{
 mod pci_database;
 
 /// Number of demo tabs.
-const TAB_COUNT: usize = 5;
+const TAB_COUNT: usize = 4;
 
-/// Top-level TUI application — owns every widget across all five tabs.
+/// Top-level TUI application — owns every widget across all four tabs.
 pub struct TuiApp {
     /// Horizontal tab bar at the top of the screen (row 0).
     tabs: Tabs,
@@ -43,9 +43,7 @@ pub struct TuiApp {
     pmm_gauge: Gauge,
     /// Tab 1: Table displaying physical & virtual memory region maps.
     mem_table: Table,
-    /// Tab 2: Scrollable menu listing detected system hardware components.
-    devices_list: List,
-    /// Tab 3: Section title label for system metrics.
+    /// Tab 2: Section title label for system metrics.
     sys_header: Label,
     /// Tab 3: Section title label for standalone progress bars.
     sys_bar_header: Label,
@@ -81,7 +79,6 @@ impl TuiApp {
         heap_gauge: Gauge,
         pmm_gauge: Gauge,
         mem_table: Table,
-        devices_list: List,
         sys_header: Label,
         sys_bar_header: Label,
         cpu_gauge: Gauge,
@@ -102,7 +99,6 @@ impl TuiApp {
             heap_gauge,
             pmm_gauge,
             mem_table,
-            devices_list,
             sys_header,
             sys_bar_header,
             cpu_gauge,
@@ -141,8 +137,14 @@ impl TuiApp {
                 Key::ArrowDown => self.navigate_down(),
                 // Enter: Perform actions on active tab widgets (e.g. toggle tree nodes).
                 Key::Enter => {
-                    if self.tabs.active() == 4 {
-                        self.tree_view.toggle_selected();
+                    if self.tabs.active() == 3 {
+                        if let Some((label, has_children)) = self.tree_view.selected_node_info() {
+                            if has_children {
+                                self.tree_view.toggle_selected();
+                            } else {
+                                self.show_pci_detail_dialog(&label);
+                            }
+                        }
                     }
                 }
                 // Quit triggers (q, Q, or Escape).
@@ -180,9 +182,6 @@ impl TuiApp {
                 self.mem_table.draw();
             }
             2 => {
-                self.devices_list.draw();
-            }
-            3 => {
                 self.sys_header.draw();
                 self.cpu_gauge.draw();
                 self.heap_gauge2.draw();
@@ -195,7 +194,7 @@ impl TuiApp {
                 self.bar2.draw();
                 self.bar3.draw();
             }
-            4 => {
+            3 => {
                 self.tree_view.draw();
             }
             _ => {}
@@ -221,8 +220,7 @@ impl TuiApp {
     fn navigate_up(&mut self) {
         match self.tabs.active() {
             1 => self.mem_table.select_prev(),
-            2 => self.devices_list.select_prev(),
-            4 => self.tree_view.select_prev(),
+            3 => self.tree_view.select_prev(),
             _ => {}
         }
     }
@@ -231,8 +229,7 @@ impl TuiApp {
     fn navigate_down(&mut self) {
         match self.tabs.active() {
             1 => self.mem_table.select_next(),
-            2 => self.devices_list.select_next(),
-            4 => self.tree_view.select_next(),
+            3 => self.tree_view.select_next(),
             _ => {}
         }
     }
@@ -281,6 +278,115 @@ impl TuiApp {
                 );
             }
         });
+    }
+
+    /// Parses the BDF from a leaf node's label and displays a modal dialog with PCI details.
+    fn show_pci_detail_dialog(&self, label: &str) {
+        if label.len() < 7 || &label[2..3] != ":" || &label[5..6] != "." {
+            return;
+        }
+
+        let bus = match u8::from_str_radix(&label[0..2], 16) {
+            Ok(b) => b,
+            Err(_) => return,
+        };
+        let device = match u8::from_str_radix(&label[3..5], 16) {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+        let function = match label[6..7].parse::<u8>() {
+            Ok(f) => f,
+            Err(_) => return,
+        };
+
+        if let Ok(count) = lib_kaos::pci::get_pci_device_count() {
+            for idx in 0..count {
+                let mut dev = lib_kaos::pci::UserPciDevice {
+                    bus: 0,
+                    device: 0,
+                    function: 0,
+                    class_code: 0,
+                    subclass: 0,
+                    prog_if: 0,
+                    revision_id: 0,
+                    header_type: 0,
+                    vendor_id: 0,
+                    device_id: 0,
+                    interrupt_line: 0,
+                    interrupt_pin: 0,
+                    _padding: [0; 2],
+                    bars: [lib_kaos::pci::UserPciBar {
+                        bar_type: 0,
+                        flags: 0,
+                        address: 0,
+                        size: 0,
+                        raw_value: 0,
+                        _padding: 0,
+                    }; 6],
+                };
+
+                if lib_kaos::pci::get_pci_device(idx, &mut dev).is_ok()
+                    && dev.bus == bus
+                    && dev.device == device
+                    && dev.function == function
+                {
+                    use alloc::string::String;
+                    use alloc::format;
+                    use alloc::vec;
+
+                    let vendor_name = pci_database::vendor_to_str(dev.vendor_id);
+                    let device_name = pci_database::device_to_str(dev.vendor_id, dev.device_id);
+                    let class_name = pci_database::class_to_str(dev.class_code, dev.subclass);
+
+                    let mut lines = vec![
+                        format!("BDF Address:  {:02x}:{:02x}.{}", dev.bus, dev.device, dev.function),
+                        format!("Vendor Name:  {}", vendor_name),
+                        format!("Device Name:  {}", device_name),
+                        format!("IDs:          Vendor {:04x}, Device {:04x}", dev.vendor_id, dev.device_id),
+                        format!("Class Code:   {} ({:02x}:{:02x})", class_name, dev.class_code, dev.subclass),
+                        format!("Revision ID:  {:#04x}", dev.revision_id),
+                        format!("Prog IF:      {:#04x}", dev.prog_if),
+                        format!("Interrupts:   Line {}, Pin {}", dev.interrupt_line, dev.interrupt_pin),
+                        String::from("Base Address Registers:"),
+                    ];
+
+                    let mut has_bars = false;
+                    for (i, bar) in dev.bars.iter().enumerate() {
+                        if bar.bar_type != 0 {
+                            has_bars = true;
+                            let type_str = match bar.bar_type {
+                                1 => "I/O Port",
+                                2 => "Mem32",
+                                3 => "Mem64",
+                                _ => "Unknown",
+                            };
+                            let pref_str = if bar.flags == 1 { "prefetchable" } else { "non-pref" };
+                            lines.push(format!(
+                                "  BAR {}: {} {:#x} (size {}, {})",
+                                i, type_str, bar.address, bar.size, pref_str
+                            ));
+                        }
+                    }
+
+                    if !has_bars {
+                        lines.push(String::from("  No active BARs configured."));
+                    }
+
+                    let dialog = lib_tui::Dialog::new(2, 5, 70, 20, "PCI Device Details", lines);
+                    dialog.draw();
+                    with_screen(|screen| screen.flush());
+
+                    loop {
+                        let k = console::read_key().unwrap_or(Key::Unknown);
+                        match k {
+                            Key::Enter | Key::Escape | Key::Char(b'q') | Key::Char(b'Q') => break,
+                            _ => {}
+                        }
+                    }
+                    break;
+                }
+            }
+        }
     }
 }
 
@@ -384,24 +490,7 @@ pub fn run_demo() {
         "Kernel VA | Virtual",
     ]);
 
-    // ------------------------------------------------------------------
-    // Tab 2 — Devices (List)
-    // ------------------------------------------------------------------
-    let device_items: [&str; 12] = [
-        "  PCI 00:00.0  | Intel          | Host Bridge          | Class 06:00",
-        "  PCI 00:01.0  | Intel          | ISA Bridge           | Class 06:01",
-        "  PCI 00:01.1  | Intel/PIIX     | IDE Controller       | Class 01:01",
-        "  PCI 00:02.0  | Bochs/VBox     | VGA Compatible       | Class 03:00",
-        "  PCI 00:03.0  | Intel/PIIX     | Ethernet Controller  | Class 02:00",
-        "  PCI 00:04.0  | VMware/VBox    | System Peripheral    | Class 08:80",
-        "  PCI 00:05.0  | Intel          | Audio Controller     | Class 04:01",
-        "  PCI 00:06.0  | Intel          | USB Controller       | Class 0C:03",
-        "  PCI 00:07.0  | Intel          | PCI Bridge           | Class 06:04",
-        "  PCI 00:08.0  | RedHat/QEMU    | Virtio SCSI          | Class 01:00",
-        "  PCI 00:09.0  | RedHat/QEMU    | Virtio Network       | Class 02:00",
-        "  PCI 00:1F.0  | Intel          | LPC Controller       | Class 06:01",
-    ];
-    let devices_list = List::new(1, 0, 80, 23, &device_items);
+
 
     // ------------------------------------------------------------------
     // Tab 3 — System (Gauge × 6 + ProgressBar × 3)
@@ -526,19 +615,15 @@ pub fn run_demo() {
             if lib_kaos::pci::get_pci_device(idx, &mut dev).is_ok() {
                 let vendor_name = pci_database::vendor_to_str(dev.vendor_id);
                 let device_name = pci_database::device_to_str(dev.vendor_id, dev.device_id);
-                let class_name = pci_database::class_to_str(dev.class_code, dev.subclass);
 
-                // Format descriptive string: "00:01.1 | Intel (8086): PIIX IDE (7010) | IDE Controller"
+                // Format a compact descriptive string to fit on the 80-column screen: "00:01.1 | Intel | PIIX IDE"
                 let dev_desc = format!(
-                    "{:02x}:{:02x}.{} | {} ({:04x}): {} ({:04x}) | {}",
+                    "{:02x}:{:02x}.{} | {} | {}",
                     dev.bus,
                     dev.device,
                     dev.function,
                     vendor_name,
-                    dev.vendor_id,
-                    device_name,
-                    dev.device_id,
-                    class_name
+                    device_name
                 );
 
                 let leaf = TreeNode::leaf(dev_desc);
@@ -569,9 +654,8 @@ pub fn run_demo() {
     let mut tabs = Tabs::new(0, 0, 80);
     tabs.add_tab("Info");
     tabs.add_tab("Memory");
-    tabs.add_tab("Devices");
     tabs.add_tab("System");
-    tabs.add_tab("PCI");
+    tabs.add_tab("PCI Devices");
 
     // Assemble and run the application.
     let mut app = TuiApp::new(
@@ -581,7 +665,6 @@ pub fn run_demo() {
         heap_gauge,
         pmm_gauge,
         mem_table,
-        devices_list,
         sys_header,
         sys_bar_header,
         cpu_gauge,

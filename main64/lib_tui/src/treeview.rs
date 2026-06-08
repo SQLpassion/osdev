@@ -158,6 +158,13 @@ impl TreeView {
         self.clamp_indices();
     }
 
+    /// Returns the label and child-status of the currently selected node.
+    pub fn selected_node_info(&self) -> Option<(alloc::borrow::Cow<'static, str>, bool)> {
+        let visible = self.get_visible_nodes();
+        let node = visible.get(self.selected)?;
+        Some((node.label.clone(), node.has_children))
+    }
+
     /// Ensures that index/scroll indices stay in bounds after nodes expand/collapse.
     fn clamp_indices(&mut self) {
         let visible = self.get_visible_nodes();
@@ -209,8 +216,10 @@ impl TreeView {
 
                     let label_col = start_col + 4;
                     if label_col < inner_col + inner_width {
-                        // Draw node label.
-                        screen.draw_at(item_row, label_col, &node.label, fg, bg);
+                        // Draw node label with hard clipping to widget boundaries.
+                        let max_len = (inner_col + inner_width).saturating_sub(label_col);
+                        let label_str = &node.label[..node.label.len().min(max_len)];
+                        screen.draw_at(item_row, label_col, label_str, fg, bg);
                     }
                 }
             }

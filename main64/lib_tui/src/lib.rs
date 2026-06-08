@@ -20,6 +20,7 @@
 #![no_std]
 extern crate alloc;
 
+pub mod dialog;
 pub mod gauge;
 pub mod label;
 pub mod list;
@@ -30,6 +31,7 @@ pub mod tabs;
 pub mod textbox;
 pub mod treeview;
 
+pub use dialog::Dialog;
 pub use gauge::Gauge;
 pub use label::Label;
 pub use list::List;
