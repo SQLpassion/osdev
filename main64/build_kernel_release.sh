@@ -73,8 +73,12 @@ fat_imgen -m -f kaos64_rust.img -i user_programs/readline/readline.bin -n READLI
 fat_imgen -m -f kaos64_rust.img -i user_programs/filedemo/filedemo.bin -n FILEDEMO.BIN
 fat_imgen -m -f kaos64_rust.img -i user_programs/shell/shell.bin -n SHELL.BIN
 fat_imgen -m -f kaos64_rust.img -i user_programs/tui_app/tui.bin -n TUI.BIN
+fat_imgen -m -f kaos64_rust.img -i user_programs/kbasic/kbasic.bin -n KBASIC.BIN
 fat_imgen -m -f kaos64_rust.img -i SFile.txt
 fat_imgen -m -f kaos64_rust.img -i BigFile.txt
+fat_imgen -m -f kaos64_rust.img -i user_programs/kbasic/src/demo.bas
+
+
 
 echo ""
 echo "  -> Disk image created successfully!"

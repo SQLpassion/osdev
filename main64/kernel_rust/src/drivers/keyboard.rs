@@ -58,12 +58,12 @@ const RAW_BUFFER_CAPACITY: usize = 64;
 
 /// Lower-case QWERTZ scan code map (printable ASCII only; 0 == ignored)
 const SCANCODES_LOWER: [u8; SCANCODE_TABLE_LEN] = [
-    // 0x00..=0x10: error, Esc, 1-9, 0, ß(no ASCII→0), ´(no ASCII→0), Backspace, Tab, q
-    0, 0x1B, b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8', b'9', b'0', 0, 0, 0x08, 0, b'q',
-    // 0x11..=0x20: w, e, r, t, z, u, i, o, p, ü(no ASCII→0), +, Enter, LCtrl, a, s, d
-    b'w', b'e', b'r', b't', b'z', b'u', b'i', b'o', b'p', 0, b'+', b'\n', 0, b'a', b's', b'd',
-    // 0x21..=0x30: f, g, h, j, k, l, ö(no ASCII→0), ä(no ASCII→0), ^, LShift, #, y, x, c, v, b
-    b'f', b'g', b'h', b'j', b'k', b'l', 0, 0, b'^', 0, b'#', b'y', b'x', b'c', b'v', b'b',
+    // 0x00..=0x10: error, Esc, 1-9, 0, ß(mapped to s), ´(mapped to =), Backspace, Tab, q
+    0, 0x1B, b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8', b'9', b'0', b's', b'=', 0x08, 0, b'q',
+    // 0x11..=0x20: w, e, r, t, z, u, i, o, p, ü(mapped to [), +, Enter, LCtrl, a, s, d
+    b'w', b'e', b'r', b't', b'z', b'u', b'i', b'o', b'p', b'[', b'+', b'\n', 0, b'a', b's', b'd',
+    // 0x21..=0x30: f, g, h, j, k, l, ö(mapped to {), ä(mapped to ~), <, LShift, #, y, x, c, v, b
+    b'f', b'g', b'h', b'j', b'k', b'l', b'{', b'~', b'<', 0, b'#', b'y', b'x', b'c', b'v', b'b',
     // 0x31..=0x3F: n, m, ',', '.', -, RShift, Keypad-*, LAlt, Space, CapsLock, F1..F10
     b'n', b'm', b',', b'.', b'-', 0, b'*', 0, b' ', 0, 0, 0, 0, 0, 0,
     // 0x40..=0x4F: F6..F10, NumLock, ScrollLock, Keypad 7..9, Keypad-, Keypad 4..6, Keypad+
@@ -76,10 +76,10 @@ const SCANCODES_LOWER: [u8; SCANCODE_TABLE_LEN] = [
 const SCANCODES_UPPER: [u8; SCANCODE_TABLE_LEN] = [
     // 0x00..=0x10: error, Esc, !"§$%&/()=?, ?(Shift+ß), ´→backtick(Shift+´), Backspace, Tab, Q
     0, 0x1B, b'!', b'"', b'\x00', b'$', b'%', b'&', b'/', b'(', b')', b'=', b'?', b'`', 0x08, 0, b'Q',
-    // 0x11..=0x20: W, E, R, T, Z, U, I, O, P, Ü(no ASCII→0), *, Enter, LCtrl, A, S, D
-    b'W', b'E', b'R', b'T', b'Z', b'U', b'I', b'O', b'P', 0, b'*', b'\n', 0, b'A', b'S', b'D',
-    // 0x21..=0x30: F, G, H, J, K, L, Ö(no ASCII→0), Ä(no ASCII→0), °(no ASCII→0), LShift, ', Y, X, C, V, B
-    b'F', b'G', b'H', b'J', b'K', b'L', 0, 0, 0, 0, b'\\', b'Y', b'X', b'C', b'V', b'B',
+    // 0x11..=0x20: W, E, R, T, Z, U, I, O, P, Ü(mapped to ]), *, Enter, LCtrl, A, S, D
+    b'W', b'E', b'R', b'T', b'Z', b'U', b'I', b'O', b'P', b']', b'*', b'\n', 0, b'A', b'S', b'D',
+    // 0x21..=0x30: F, G, H, J, K, L, Ö(mapped to }), Ä(mapped to @), >, LShift, ', Y, X, C, V, B
+    b'F', b'G', b'H', b'J', b'K', b'L', b'}', b'@', b'>', 0, b'\\', b'Y', b'X', b'C', b'V', b'B',
     // 0x31..=0x3F: N, M, ;, :, _, RShift, Keypad-*, LAlt, Space, CapsLock, F1..F10
     b'N', b'M', b';', b':', b'_', 0, b'*', 0, b' ', 0, 0, 0, 0, 0, 0,
     // 0x40..=0x4F: F6..F10, NumLock, ScrollLock, Keypad 7..9, Keypad-, Keypad 4..6, Keypad+
@@ -87,6 +87,7 @@ const SCANCODES_UPPER: [u8; SCANCODE_TABLE_LEN] = [
     // 0x50..=0x58: Keypad 2..3, Keypad-0, Keypad-Del, Alt-SysRq, 0x55, >(ISO key Shift), F11, F12
     0, 0, 0, 0, 0, 0, b'>', 0, 0,
 ];
+
 
 #[derive(Debug, Clone, Copy)]
 struct KeyboardState {

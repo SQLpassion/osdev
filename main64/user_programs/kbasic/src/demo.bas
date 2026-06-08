@@ -1,0 +1,6 @@
+LET A = 5
+LET B = 10
+LET C$ = "Hello KAOS!"
+PRINT C$
+PRINT A
+IF A > 3 THEN PRINT B

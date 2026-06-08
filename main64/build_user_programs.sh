@@ -120,3 +120,26 @@ llvm-objcopy -O binary "$INPUT_ELF" tui.bin 2>/dev/null || \
 echo "-> Built: $TUI_DIR/tui.bin"
 ls -la tui.bin
 
+
+KBASIC_DIR="$SCRIPT_DIR/user_programs/kbasic"
+echo ""
+echo "-> Building kbasic user program..."
+
+cd "$KBASIC_DIR"
+
+if [ "$PROFILE" = "release" ]; then
+    cargo +nightly build --release --target x86_64-unknown-none -Z build-std=core,alloc
+    INPUT_ELF="target/x86_64-unknown-none/release/kbasic"
+else
+    cargo +nightly build --target x86_64-unknown-none
+    INPUT_ELF="target/x86_64-unknown-none/debug/kbasic"
+fi
+
+llvm-objcopy -O binary "$INPUT_ELF" kbasic.bin 2>/dev/null || \
+    rust-objcopy -O binary "$INPUT_ELF" kbasic.bin 2>/dev/null || \
+    objcopy -O binary "$INPUT_ELF" kbasic.bin
+
+echo "-> Built: $KBASIC_DIR/kbasic.bin"
+ls -la kbasic.bin
+
+

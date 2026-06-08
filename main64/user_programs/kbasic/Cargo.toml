@@ -1,0 +1,22 @@
+[package]
+name = "kbasic_user_program"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+kernel = []
+
+[dependencies]
+lib_kaos = { path = "../../lib_kaos" }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+
+[[bin]]
+name = "kbasic"
+path = "src/main.rs"
+test = false
+bench = false

@@ -61,10 +61,14 @@ fn execute_command(line: &str) {
             println!("  cat <file>      - read and print the contents of a file");
             println!("  exec <file>     - run a program in the foreground");
             println!("  fputest         - run FPU/SSE smoke test (ring 3)");
+            println!("  kbasic          - run the BASIC interpreter");
             println!("  date            - show the current calendar date");
             println!("  time            - show the current system time");
             println!("  exit            - exit this shell instance");
             println!("  shutdown        - shutdown the system");
+        }
+        "kbasic" => {
+            run_program("kbasic.bin");
         }
         "date" => {
             let mut udt = lib_kaos::time::UserDateTime {
