@@ -502,3 +502,46 @@ pub unsafe fn sys_get_pci_device(index: usize, out: *mut super::types::UserPciDe
     }
 }
 
+/// Queries the total count of BIOS memory map entries.
+#[inline(always)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn sys_get_bios_memory_map_entry_count() -> Result<usize, SysError> {
+    let raw_value = unsafe {
+        // SAFETY:
+        // - This requires `unsafe` because syscall entry executes raw ABI-level interrupt machinery.
+        // - The wrapper runs only in environments where the `int 0x80` entry is configured.
+        abi::syscall0(SyscallId::GetBiosMemoryMapEntryCount as u64)
+    };
+
+    match raw_value {
+        SYSCALL_ERR_UNSUPPORTED => Err(SysError::UnsupportedSyscall),
+        SYSCALL_ERR_INVALID_ARG => Err(SysError::InvalidArgument),
+        x if x >= SYSCALL_ERR_INVALID_ARG => Err(SysError::Unknown(x)),
+        count => Ok(count as usize),
+    }
+}
+
+/// Copies the BIOS memory map entry metadata at `index` into the user-provided structure.
+///
+/// # Safety
+/// - This function is marked `unsafe` because it writes to a raw pointer. The caller
+///   must ensure `out` points to a valid `UserBiosMemoryRegion` buffer.
+#[inline(always)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub unsafe fn sys_get_bios_memory_map_entry(index: usize, out: *mut super::types::UserBiosMemoryRegion) -> Result<(), SysError> {
+    let raw_value = unsafe {
+        // SAFETY:
+        // - This requires `unsafe` because syscall entry executes raw ABI-level interrupt machinery.
+        // - The wrapper runs only in environments where the `int 0x80` entry is configured.
+        abi::syscall2(SyscallId::GetBiosMemoryMapEntry as u64, index as u64, out as u64)
+    };
+
+    match raw_value {
+        SYSCALL_ERR_UNSUPPORTED => Err(SysError::UnsupportedSyscall),
+        SYSCALL_ERR_INVALID_ARG => Err(SysError::InvalidArgument),
+        x if x >= SYSCALL_ERR_INVALID_ARG => Err(SysError::Unknown(x)),
+        _ => Ok(()),
+    }
+}
+
+

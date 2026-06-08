@@ -52,6 +52,10 @@ pub enum SyscallId {
     GetPciDeviceCount = 23,
     /// Retrieve metadata for a specific PCI device by its index.
     GetPciDevice = 24,
+    /// Retrieve the number of entries in the BIOS memory map.
+    GetBiosMemoryMapEntryCount = 25,
+    /// Retrieve metadata for a specific BIOS memory map entry by its index.
+    GetBiosMemoryMapEntry = 26,
 }
 
 impl SyscallId {
@@ -125,6 +129,10 @@ impl SyscallId {
     pub const GET_PCI_DEVICE_COUNT: u64 = Self::GetPciDeviceCount as u64;
     /// Syscall number for GetPciDevice (PCI device metadata query).
     pub const GET_PCI_DEVICE: u64 = Self::GetPciDevice as u64;
+    /// Syscall number for GetBiosMemoryMapEntryCount (BIOS memory map entry count query).
+    pub const GET_BIOS_MEMORY_MAP_ENTRY_COUNT: u64 = Self::GetBiosMemoryMapEntryCount as u64;
+    /// Syscall number for GetBiosMemoryMapEntry (BIOS memory map entry query).
+    pub const GET_BIOS_MEMORY_MAP_ENTRY: u64 = Self::GetBiosMemoryMapEntry as u64;
 }
 
 /// Unknown syscall number.
@@ -359,4 +367,19 @@ pub struct UserPciDevice {
     /// Up to 6 Base Address Registers for this device.
     pub bars: [UserPciBar; 6],
 }
+
+/// User-space representation of a BIOS memory map region.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UserBiosMemoryRegion {
+    /// Physical start address of the region
+    pub start: u64,
+    /// Size of the region in bytes
+    pub size: u64,
+    /// Region type (1 = usable, others reserved/ACPI/etc.)
+    pub region_type: u32,
+    /// Explicit padding for 8-byte alignment structure size matching.
+    pub _padding: u32,
+}
+
 

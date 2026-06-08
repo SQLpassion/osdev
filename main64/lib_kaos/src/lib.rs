@@ -28,6 +28,7 @@ pub const MAX_PATH_LEN: usize = 128;
 
 mod raw;
 
+pub mod bios;
 pub mod console;
 pub mod fs;
 pub mod heap;

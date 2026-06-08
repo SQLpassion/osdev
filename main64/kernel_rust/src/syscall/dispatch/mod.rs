@@ -18,6 +18,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use crate::logging;
 use crate::syscall::{syscall_result_to_raw, SyscallId, SyscallResult, SyscallError};
 
+pub mod bios;
 pub mod console;
 pub mod fs;
 pub mod pci;
@@ -68,6 +69,8 @@ pub const fn syscall_name_for_number(syscall_nr: u64) -> &'static str {
         SyscallId::SET_VGA_MODE => "SetVgaMode",
         SyscallId::GET_PCI_DEVICE_COUNT => "GetPciDeviceCount",
         SyscallId::GET_PCI_DEVICE => "GetPciDevice",
+        SyscallId::GET_BIOS_MEMORY_MAP_ENTRY_COUNT => "GetBiosMemoryMapEntryCount",
+        SyscallId::GET_BIOS_MEMORY_MAP_ENTRY => "GetBiosMemoryMapEntry",
         _ => "Unknown",
     }
 }
@@ -115,6 +118,8 @@ pub fn dispatch_checked(
         SyscallId::SET_VGA_MODE => console::syscall_set_vga_mode_impl(arg0),
         SyscallId::GET_PCI_DEVICE_COUNT => pci::syscall_get_pci_device_count_impl(),
         SyscallId::GET_PCI_DEVICE => pci::syscall_get_pci_device_impl(arg0, arg1 as *mut crate::syscall::types::UserPciDevice),
+        SyscallId::GET_BIOS_MEMORY_MAP_ENTRY_COUNT => bios::syscall_get_bios_memory_map_entry_count_impl(),
+        SyscallId::GET_BIOS_MEMORY_MAP_ENTRY => bios::syscall_get_bios_memory_map_entry_impl(arg0, arg1 as *mut crate::syscall::types::UserBiosMemoryRegion),
         _ => Err(SyscallError::Unsupported),
     };
 

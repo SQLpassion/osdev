@@ -104,6 +104,14 @@ fn test_syscall_ids_are_stable() {
         SyscallId::GetPciDevice as u64 == 24,
         "GetPciDevice syscall id changed"
     );
+    assert!(
+        SyscallId::GetBiosMemoryMapEntryCount as u64 == 25,
+        "GetBiosMemoryMapEntryCount syscall id changed"
+    );
+    assert!(
+        SyscallId::GetBiosMemoryMapEntry as u64 == 26,
+        "GetBiosMemoryMapEntry syscall id changed"
+    );
 }
 
 /// Contract: syscall number-to-name mapping for dispatcher logs stays stable.
@@ -208,6 +216,14 @@ fn test_syscall_name_mapping_for_logging_is_stable() {
     assert!(
         syscall::syscall_name_for_number(SyscallId::GetPciDevice as u64) == "GetPciDevice",
         "GetPciDevice mapping must stay stable for syscall trace output"
+    );
+    assert!(
+        syscall::syscall_name_for_number(SyscallId::GetBiosMemoryMapEntryCount as u64) == "GetBiosMemoryMapEntryCount",
+        "GetBiosMemoryMapEntryCount mapping must stay stable for syscall trace output"
+    );
+    assert!(
+        syscall::syscall_name_for_number(SyscallId::GetBiosMemoryMapEntry as u64) == "GetBiosMemoryMapEntry",
+        "GetBiosMemoryMapEntry mapping must stay stable for syscall trace output"
     );
     assert!(
         syscall::syscall_name_for_number(0xDEAD) == "Unknown",
@@ -996,4 +1012,81 @@ fn test_pci_query_syscalls() {
         );
     }
 }
+
+/// Contract: public BIOS syscall constants match enum discriminants.
+#[test_case]
+fn test_bios_constants_match_enum_ids() {
+    assert!(
+        SyscallId::GET_BIOS_MEMORY_MAP_ENTRY_COUNT == SyscallId::GetBiosMemoryMapEntryCount as u64,
+        "GET_BIOS_MEMORY_MAP_ENTRY_COUNT constant must match GetBiosMemoryMapEntryCount enum value"
+    );
+    assert!(
+        SyscallId::GET_BIOS_MEMORY_MAP_ENTRY == SyscallId::GetBiosMemoryMapEntry as u64,
+        "GET_BIOS_MEMORY_MAP_ENTRY constant must match GetBiosMemoryMapEntry enum value"
+    );
+}
+
+/// Contract: BIOS query syscalls correctly report entry count and copy metadata to user buffers.
+#[test_case]
+fn test_bios_memory_map_query_syscalls() {
+    let count_ret = syscall::dispatch(
+        SyscallId::GetBiosMemoryMapEntryCount as u64,
+        0,
+        0,
+        0,
+        0,
+    );
+    assert!(
+        count_ret != syscall::SYSCALL_ERR_UNSUPPORTED,
+        "GetBiosMemoryMapEntryCount must be supported"
+    );
+
+    let count = count_ret as usize;
+
+    let invalid_idx = count as u64;
+    let ret = syscall::dispatch(
+        SyscallId::GetBiosMemoryMapEntry as u64,
+        invalid_idx,
+        0,
+        0,
+        0,
+    );
+    assert!(
+        ret == syscall::SYSCALL_ERR_INVALID_ARG,
+        "querying out-of-bounds BIOS memory map index must return invalid argument"
+    );
+
+    if count > 0 {
+        let phys = kaos_kernel::memory::vmm::page_table::alloc_frame_phys().unwrap();
+        let pfn = kaos_kernel::memory::vmm::page_table::phys_to_pfn(phys);
+        let user_va = kaos_kernel::memory::vmm::USER_CODE_BASE + 0x2000;
+
+        kaos_kernel::memory::vmm::map_user_page(user_va, pfn, true).unwrap();
+
+        let ret = syscall::dispatch(
+            SyscallId::GetBiosMemoryMapEntry as u64,
+            0,
+            user_va,
+            0,
+            0,
+        );
+        assert!(
+            ret == syscall::SYSCALL_OK,
+            "querying index 0 with valid user buffer must return OK"
+        );
+
+        let user_region = user_va as *const kaos_kernel::syscall::UserBiosMemoryRegion;
+        // SAFETY:
+        // - `user_va` has been mapped to physical memory and populated by the kernel.
+        // - We hold read-only access to this memory block.
+        let size = unsafe { (*user_region).size };
+        let region = kaos_kernel::memory::bios::MEMORYMAP_OFFSET as *const kaos_kernel::memory::bios::BiosMemoryRegion;
+        let kernel_entry = unsafe { &*region };
+        assert!(
+            size == kernel_entry.size,
+            "user-copied region size must match kernel BIOS region size"
+        );
+    }
+}
+
 

@@ -37,10 +37,6 @@ pub struct TuiApp {
     info_box: TextBox,
     /// Tab 1: Section title label for the memory tab.
     mem_header: Label,
-    /// Tab 1: Horizontal meter visualizing kernel heap allocation status.
-    heap_gauge: Gauge,
-    /// Tab 1: Horizontal meter visualizing PMM page allocation status.
-    pmm_gauge: Gauge,
     /// Tab 1: Table displaying physical & virtual memory region maps.
     mem_table: Table,
     /// Tab 2: Section title label for system metrics.
@@ -76,8 +72,6 @@ impl TuiApp {
         tabs: Tabs,
         info_box: TextBox,
         mem_header: Label,
-        heap_gauge: Gauge,
-        pmm_gauge: Gauge,
         mem_table: Table,
         sys_header: Label,
         sys_bar_header: Label,
@@ -96,8 +90,6 @@ impl TuiApp {
             tabs,
             info_box,
             mem_header,
-            heap_gauge,
-            pmm_gauge,
             mem_table,
             sys_header,
             sys_bar_header,
@@ -135,9 +127,10 @@ impl TuiApp {
                 // Up/Down: Scroll current tab list/table widgets.
                 Key::ArrowUp => self.navigate_up(),
                 Key::ArrowDown => self.navigate_down(),
-                // Enter: Perform actions on active tab widgets (e.g. toggle tree nodes).
                 Key::Enter => {
-                    if self.tabs.active() == 3 {
+                    if self.tabs.active() == 1 {
+                        self.show_mem_detail_dialog();
+                    } else if self.tabs.active() == 3 {
                         if let Some((label, has_children)) = self.tree_view.selected_node_info() {
                             if has_children {
                                 self.tree_view.toggle_selected();
@@ -177,8 +170,6 @@ impl TuiApp {
             }
             1 => {
                 self.mem_header.draw();
-                self.heap_gauge.draw();
-                self.pmm_gauge.draw();
                 self.mem_table.draw();
             }
             2 => {
@@ -388,6 +379,65 @@ impl TuiApp {
             }
         }
     }
+
+    /// Displays a modal dialog with details for the selected memory region.
+    fn show_mem_detail_dialog(&self) {
+        let selected_idx = self.mem_table.selected();
+
+        // Query the BIOS memory map using our new system call
+        if let Ok(count) = lib_kaos::bios::get_bios_memory_map_entry_count() {
+            if selected_idx < count {
+                let mut region = lib_kaos::bios::UserBiosMemoryRegion {
+                    start: 0,
+                    size: 0,
+                    region_type: 0,
+                    _padding: 0,
+                };
+                if lib_kaos::bios::get_bios_memory_map_entry(selected_idx, &mut region).is_ok() {
+                    use alloc::format;
+                    use alloc::vec;
+
+                    let type_str = match region.region_type {
+                        1 => "Usable (available RAM for OS)",
+                        2 => "Reserved (reserved by BIOS/hardware)",
+                        3 => "ACPI Reclaimable (tables/data)",
+                        4 => "ACPI NVS (non-volatile storage)",
+                        _ => "Unknown (unclassified or reserved)",
+                    };
+
+                    let end_addr = region.start.wrapping_add(region.size).wrapping_sub(1);
+                    let page_size = 4096u64;
+                    let pages = region.size / page_size;
+                    #[allow(clippy::manual_is_multiple_of)]
+                    let is_aligned = (region.start % page_size == 0) && (region.size % page_size == 0);
+
+                    let lines = vec![
+                        format!("Index:             {}", selected_idx),
+                        format!("Start Address:     {:#018x}", region.start),
+                        format!("End Address:       {:#018x}", end_addr),
+                        format!("Size in Bytes:     {} Bytes", region.size),
+                        format!("Size in KB:        {} KB", region.size / 1024),
+                        format!("Size in MB:        {} MB", region.size / 1024 / 1024),
+                        format!("Physical Pages:    {} (4 KiB frames)", pages),
+                        format!("Page-Aligned:      {}", if is_aligned { "Yes" } else { "No" }),
+                        format!("Region Type:       {} (Raw: {})", type_str, region.region_type),
+                    ];
+
+                    let dialog = lib_tui::Dialog::new(4, 10, 60, 16, "Memory Region Details", lines);
+                    dialog.draw();
+                    with_screen(|screen| screen.flush());
+
+                    loop {
+                        let k = console::read_key().unwrap_or(Key::Unknown);
+                        match k {
+                            Key::Enter | Key::Escape | Key::Char(b'q') | Key::Char(b'Q') => break,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Build and run the five-tab TUI demo with static data.
@@ -438,7 +488,7 @@ pub fn run_demo() {
     );
 
     // ------------------------------------------------------------------
-    // Tab 1 — Memory (Gauge × 2 + Table)
+    // Tab 1 — Memory (Table)
     // ------------------------------------------------------------------
     let mem_header = Label::new(
         1,
@@ -448,47 +498,64 @@ pub fn run_demo() {
         Color::Black,
         Color::LightGreen,
     );
-    let heap_gauge = Gauge::new(
-        3,
-        2,
-        76,
-        "Heap Memory:     ",
-        18,
-        62,
-        Color::LightCyan,
-        Color::LightGreen,
-    );
-    let pmm_gauge = Gauge::new(
-        4,
-        2,
-        76,
-        "Physical Pages:  ",
-        18,
-        44,
-        Color::LightCyan,
-        Color::Yellow,
-    );
 
     let mut mem_table = Table::new(
-        6,
+        3,
         0,
         80,
-        18,
+        21,
         &["Region", "Address", "Size / Type"],
         &[22, 20, 28],
     );
-    mem_table.add_row(&["Low Memory", "0x00000000", "640 KB | Usable"]);
-    mem_table.add_row(&["BIOS ROM Area", "0x000A0000", "384 KB | Reserved"]);
-    mem_table.add_row(&["VGA Buffer", "0x000B8000", "32 KB | MMIO"]);
-    mem_table.add_row(&["Kernel Image", "0x00100000", "~1 MB | Kernel"]);
-    mem_table.add_row(&["Extended Memory", "0x00200000", "~126 MB | Usable"]);
-    mem_table.add_row(&["APIC MMIO", "0xFEE00000", "1 MB | MMIO"]);
-    mem_table.add_row(&["ACPI Tables", "0x7FC00000", "4 MB | ACPI Reclaim"]);
-    mem_table.add_row(&[
-        "Higher-Half Mapping",
-        "0xFFFF800000000000",
-        "Kernel VA | Virtual",
-    ]);
+    let leak_str = |s: alloc::string::String| -> &'static str {
+        alloc::boxed::Box::leak(s.into_boxed_str())
+    };
+
+    use alloc::format;
+
+    if let Ok(count) = lib_kaos::bios::get_bios_memory_map_entry_count() {
+        for idx in 0..count {
+            let mut region = lib_kaos::bios::UserBiosMemoryRegion {
+                start: 0,
+                size: 0,
+                region_type: 0,
+                _padding: 0,
+            };
+            if lib_kaos::bios::get_bios_memory_map_entry(idx, &mut region).is_ok() {
+                let name = leak_str(format!("BIOS Region #{}", idx));
+                let addr_str = leak_str(format!("{:#010x}", region.start));
+                let type_str = match region.region_type {
+                    1 => "Usable",
+                    2 => "Reserved",
+                    3 => "ACPI Reclaim",
+                    4 => "ACPI NVS",
+                    _ => "Unknown",
+                };
+                let size_mb = region.size / (1024 * 1024);
+                let size_kb = region.size / 1024;
+                let size_str = if size_mb > 0 {
+                    leak_str(format!("{} MB | {}", size_mb, type_str))
+                } else {
+                    leak_str(format!("{} KB | {}", size_kb, type_str))
+                };
+                mem_table.add_row(&[name, addr_str, size_str]);
+            }
+        }
+    } else {
+        mem_table.add_row(&["Low Memory", "0x00000000", "640 KB | Usable"]);
+        mem_table.add_row(&["BIOS ROM Area", "0x000A0000", "384 KB | Reserved"]);
+        mem_table.add_row(&["VGA Buffer", "0x000B8000", "32 KB | MMIO"]);
+        mem_table.add_row(&["Kernel Image", "0x00100000", "~1 MB | Kernel"]);
+        mem_table.add_row(&["Extended Memory", "0x00200000", "~126 MB | Usable"]);
+        mem_table.add_row(&["APIC MMIO", "0xFEE00000", "1 MB | MMIO"]);
+        mem_table.add_row(&["ACPI Tables", "0x7FC00000", "4 MB | ACPI Reclaim"]);
+        mem_table.add_row(&[
+            "Higher-Half Mapping",
+            "0xFFFF800000000000",
+            "Kernel VA | Virtual",
+        ]);
+    }
+
 
 
 
@@ -578,7 +645,6 @@ pub fn run_demo() {
     // ------------------------------------------------------------------
     // Tab 4 — PCI Tree (dynamic hardware data)
     // ------------------------------------------------------------------
-    use alloc::format;
 
     let mut storage_devices = vec![];
     let mut network_devices = vec![];
@@ -662,8 +728,6 @@ pub fn run_demo() {
         tabs,
         info_box,
         mem_header,
-        heap_gauge,
-        pmm_gauge,
         mem_table,
         sys_header,
         sys_bar_header,
