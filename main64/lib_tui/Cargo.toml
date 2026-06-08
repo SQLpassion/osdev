@@ -1,0 +1,20 @@
+[package]
+name = "lib_tui"
+version = "0.1.0"
+edition = "2021"
+authors = ["Klaus Aschenbrenner"]
+
+[lib]
+crate-type = ["rlib"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("kernel"))'] }
+
+[dependencies]
+lib_kaos = { path = "../lib_kaos" }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

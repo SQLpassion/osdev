@@ -302,8 +302,8 @@ fn test_map_program_image_into_user_address_space_maps_copy_and_permissions() {
             let code_flags = vmm::debug_mapping_flags_for_va(code_page_va)
                 .expect("mapped code page must expose mapping flags");
             assert!(
-                code_flags == (true, true, true, true, false),
-                "code page must be user-accessible and read-only after copy"
+                code_flags == (true, true, true, true, true),
+                "code page must be user-accessible and writable after copy"
             );
 
             let mapped_pfn = vmm::debug_mapped_pfn_for_va(code_page_va)

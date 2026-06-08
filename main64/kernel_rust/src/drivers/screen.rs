@@ -261,6 +261,20 @@ impl Screen {
         }
     }
 
+    /// Overwrite the back-buffer with a flat 80×25 frame transmitted from user space.
+    ///
+    /// Each element of `cells` encodes one VGA text cell as `(attr << 8) | ascii`,
+    /// matching the `WriteFramebuffer` syscall ABI.
+    pub fn blit_framebuffer(&mut self, cells: &[u16]) {
+        let count = cells.len().min(self.num_rows * self.num_cols);
+        for (i, &cell) in cells[..count].iter().enumerate() {
+            self.back_buffer[i] = VgaChar {
+                character: cell as u8,
+                attribute: (cell >> 8) as u8,
+            };
+        }
+    }
+
     /// Set the current text color
     pub fn set_color(&mut self, color: Color) {
         self.foreground = color;

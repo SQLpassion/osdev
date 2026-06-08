@@ -71,6 +71,12 @@ pub fn syscall_getchar_impl() -> SyscallResult<u64> {
 /// for process wait semantics is added, the exit code parameter can be
 /// reintroduced and stored in the task entry for retrieval by a parent task.
 pub fn syscall_exit_impl() -> SyscallResult<u64> {
+    // Step 1: Drain all legacy and key buffers to prevent input typed during
+    // the process execution from bleeding into the parent shell/REPL.
+    keyboard::clear_buffers();
+
+    // Step 2: Transition the task state to Zombie so that the scheduler ignores
+    // it in subsequent ticks and reaps its resource slot cleanly.
     scheduler::mark_current_as_zombie();
     Ok(SYSCALL_OK)
 }
@@ -220,13 +226,17 @@ pub fn syscall_mmap_impl(addr: u64, length: usize) -> SyscallResult<u64> {
 pub fn syscall_exec_impl(name_ptr: *const u8) -> SyscallResult<u64> {
     use crate::process::ExecError;
 
-    // Step 1: Decode the null-terminated string from user-space memory.
+    // Step 1: Clear global keyboard buffers so that any leftover shell keystrokes
+    // or enter press from spawning do not bleed into the newly executed process.
+    keyboard::clear_buffers();
+
+    // Step 2: Decode the null-terminated string from user-space memory.
     let name = super::fs::read_user_string(name_ptr, 128)?;
 
-    // Step 2: Attempt to load the program image and spawn a user task.
+    // Step 3: Attempt to load the program image and spawn a user task.
     let result = crate::process::exec_from_fat12(&name);
 
-    // Step 3: Log the outcome to serial so failures are visible without a debugger.
+    // Step 4: Log the outcome to serial so failures are visible without a debugger.
     match &result {
         Ok(tid) => {
             crate::logging::logln(
@@ -242,7 +252,7 @@ pub fn syscall_exec_impl(name_ptr: *const u8) -> SyscallResult<u64> {
         }
     }
 
-    // Step 4: Map ExecError variants to distinct SyscallError codes.
+    // Step 5: Map ExecError variants to distinct SyscallError codes.
     result.map(|tid| tid as u64).map_err(|e| match e {
         ExecError::InvalidName => SyscallError::InvalidArg,
         ExecError::NotFound => SyscallError::InvalidArg,
@@ -268,5 +278,13 @@ pub fn syscall_wait_impl(task_id: u64) -> SyscallResult<u64> {
 pub fn syscall_shutdown_impl() -> SyscallResult<u64> {
     // Step 1: Trigger system shutdown.
     crate::arch::power::shutdown();
+}
+
+/// Implements `ReadKey()`.
+///
+/// Blocks the calling task until a key event is available, then returns the
+/// encoded key byte. See `keyboard::read_key_blocking_encoded` for the encoding.
+pub fn syscall_read_key_impl() -> SyscallResult<u64> {
+    Ok(keyboard::read_key_blocking_encoded() as u64)
 }
 

@@ -231,6 +231,22 @@ pub fn read_key() -> Option<Key> {
     KEYBOARD.key_buffer.pop().map(decode_key)
 }
 
+/// Read a blocking key event and return it as an encoded byte for the `ReadKey` syscall.
+///
+/// Encoding:
+/// - `0x01`–`0x7F` → printable ASCII character
+/// - `0x80`        → Escape
+/// - `0x81`        → Backspace
+/// - `0x82`        → Enter
+/// - `0x83`        → ArrowUp
+/// - `0x84`        → ArrowDown
+/// - `0x85`        → ArrowLeft
+/// - `0x86`        → ArrowRight
+/// - `0x90`–`0x9B` → F(1)–F(12)
+pub fn read_key_blocking_encoded() -> u8 {
+    encode_key(read_key_blocking())
+}
+
 /// Block the calling task until a `Key` event is available.
 ///
 /// Mirrors `read_char_blocking` but drains from the extended key-event buffer

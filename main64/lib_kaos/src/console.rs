@@ -2,7 +2,7 @@
 
 use crate::{
     decode_result,
-    raw::{syscall0, syscall2},
+    raw::{syscall0, syscall1, syscall2},
     SyscallId, SysError,
 };
 
@@ -126,4 +126,92 @@ impl core::fmt::Write for ConsoleWriter {
 pub fn _print(args: core::fmt::Arguments) {
     use core::fmt::Write;
     let _ = ConsoleWriter.write_fmt(args);
+}
+
+/// Extended key event decoded from the `ReadKey` syscall return value.
+///
+/// The kernel encodes key events as a single byte:
+/// - `0x01`–`0x7F` → `Char(byte)` (printable ASCII)
+/// - `0x80`        → `Escape`
+/// - `0x81`        → `Backspace`
+/// - `0x82`        → `Enter`
+/// - `0x83`        → `ArrowUp`
+/// - `0x84`        → `ArrowDown`
+/// - `0x85`        → `ArrowLeft`
+/// - `0x86`        → `ArrowRight`
+/// - `0x90`–`0x9B` → `F(1)`–`F(12)`
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Key {
+    Unknown,
+    Char(u8),
+    Escape,
+    Backspace,
+    Enter,
+    ArrowUp,
+    ArrowDown,
+    ArrowLeft,
+    ArrowRight,
+    F(u8),
+}
+
+impl Key {
+    fn from_raw(byte: u8) -> Self {
+        match byte {
+            0x00        => Key::Unknown,
+            0x80        => Key::Escape,
+            0x81        => Key::Backspace,
+            0x82        => Key::Enter,
+            0x83        => Key::ArrowUp,
+            0x84        => Key::ArrowDown,
+            0x85        => Key::ArrowLeft,
+            0x86        => Key::ArrowRight,
+            b if b >= 0x90 => Key::F(b.wrapping_sub(0x8F)),
+            b           => Key::Char(b),
+        }
+    }
+}
+
+/// Read a single extended key event from the keyboard (blocking).
+///
+/// Blocks until a key is available, then decodes and returns it.
+#[inline(always)]
+pub fn read_key() -> Result<Key, SysError> {
+    let raw = unsafe {
+        // SAFETY: `ReadKey` takes no pointer arguments.
+        syscall0(SyscallId::ReadKey as u64)
+    };
+    decode_result(raw).map(|v| Key::from_raw(v as u8))
+}
+
+/// Blit a full 80×25 frame buffer to VGA in a single syscall.
+///
+/// Each element of `cells` encodes one VGA cell as `(attr << 8) | ascii`.
+#[inline(always)]
+pub fn flush_screen(cells: &[u16; 2000]) -> Result<(), SysError> {
+    let raw = unsafe {
+        // SAFETY: `cells` is a valid fixed-size array; pointer and length are
+        //         passed to the kernel for a bounds-checked read.
+        syscall2(
+            SyscallId::WriteFramebuffer as u64,
+            cells.as_ptr() as u64,
+            2000u64,
+        )
+    };
+    decode_result(raw).map(|_| ())
+}
+
+/// Configure VGA text-mode hardware settings.
+///
+/// `flags` bitmap:
+/// - bit 0: hardware cursor (1 = enabled, 0 = disabled)
+/// - bit 1: blink mode     (1 = enabled, 0 = disabled)
+///
+/// Use `0b00` to enter TUI mode (cursor + blink off), `0b11` to restore defaults.
+#[inline(always)]
+pub fn set_vga_mode(flags: u64) -> Result<(), SysError> {
+    let raw = unsafe {
+        // SAFETY: `SetVgaMode` takes only an integer flag argument (no pointers).
+        syscall1(SyscallId::SetVgaMode as u64, flags)
+    };
+    decode_result(raw).map(|_| ())
 }

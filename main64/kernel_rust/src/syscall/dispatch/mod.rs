@@ -62,6 +62,9 @@ pub const fn syscall_name_for_number(syscall_nr: u64) -> &'static str {
         SyscallId::EXEC => "Exec",
         SyscallId::WAIT => "Wait",
         SyscallId::SHUTDOWN => "Shutdown",
+        SyscallId::WRITE_FRAMEBUFFER => "WriteFramebuffer",
+        SyscallId::READ_KEY => "ReadKey",
+        SyscallId::SET_VGA_MODE => "SetVgaMode",
         _ => "Unknown",
     }
 }
@@ -104,6 +107,9 @@ pub fn dispatch_checked(
         SyscallId::EXEC => process::syscall_exec_impl(arg0 as *const u8),
         SyscallId::WAIT => process::syscall_wait_impl(arg0),
         SyscallId::SHUTDOWN => process::syscall_shutdown_impl(),
+        SyscallId::WRITE_FRAMEBUFFER => console::syscall_write_framebuffer_impl(arg0 as *const u16, arg1 as usize),
+        SyscallId::READ_KEY => process::syscall_read_key_impl(),
+        SyscallId::SET_VGA_MODE => console::syscall_set_vga_mode_impl(arg0),
         _ => Err(SyscallError::Unsupported),
     };
 

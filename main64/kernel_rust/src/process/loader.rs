@@ -221,20 +221,11 @@ fn try_map_program_image(user_cr3: u64, image: &[u8], state: &mut MapState) -> E
             }
         }
 
-        // Step 2e: Tighten code pages to read-only after copy.
-        for (idx, pfn) in state.code_pfns.iter().copied().enumerate() {
-            let page_va = USER_PROGRAM_ENTRY_RIP + idx as u64 * pmm::PAGE_SIZE;
-            vmm::map_user_page(page_va, pfn, false).map_err(|e| {
-                crate::logging::logln(
-                    "loader",
-                    format_args!(
-                        "LOADER: map_user_page(code page {}, va={:#x}, pfn={:#x}, writable=false) failed: {:?}",
-                        idx, page_va, pfn, e
-                    ),
-                );
-                ExecError::MappingFailed
-            })?;
-        }
+        // Note: flat binaries mix code and data in the same page range with no
+        // ELF segment headers to distinguish them.  Re-protecting pages as
+        // read-only would silently break any mutable static in the .data or
+        // .bss sections.  When ELF loading is introduced the writable flag can
+        // be derived from PT_LOAD segment flags instead.
 
         Ok(())
     })?;

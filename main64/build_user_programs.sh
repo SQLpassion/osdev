@@ -99,3 +99,24 @@ llvm-objcopy -O binary "$INPUT_ELF" shell.bin 2>/dev/null || \
 echo "-> Built: $SHELL_DIR/shell.bin"
 ls -la shell.bin
 
+TUI_DIR="$SCRIPT_DIR/user_programs/tui_app"
+echo ""
+echo "-> Building tui user program..."
+
+cd "$TUI_DIR"
+
+if [ "$PROFILE" = "release" ]; then
+    cargo +nightly build --release --target x86_64-unknown-none -Z build-std=core,alloc
+    INPUT_ELF="target/x86_64-unknown-none/release/tui"
+else
+    cargo +nightly build --target x86_64-unknown-none
+    INPUT_ELF="target/x86_64-unknown-none/debug/tui"
+fi
+
+llvm-objcopy -O binary "$INPUT_ELF" tui.bin 2>/dev/null || \
+    rust-objcopy -O binary "$INPUT_ELF" tui.bin 2>/dev/null || \
+    objcopy -O binary "$INPUT_ELF" tui.bin
+
+echo "-> Built: $TUI_DIR/tui.bin"
+ls -la tui.bin
+

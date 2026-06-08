@@ -59,4 +59,5 @@ dkms.conf
 main64/kernel_rust/target/*
 main64/user_programs/*/target/*
 main64/lib_kaos/target/*
+main64/lib_tui/target/*
 .antigravitycli

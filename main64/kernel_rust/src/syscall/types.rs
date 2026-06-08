@@ -42,6 +42,12 @@ pub enum SyscallId {
     Wait = 18,
     /// Shutdown the system.
     Shutdown = 19,
+    /// Blit a full 80×25 frame buffer from user space to VGA in one step.
+    WriteFramebuffer = 20,
+    /// Read a single extended key event from the keyboard (blocking).
+    ReadKey = 21,
+    /// Configure VGA text-mode settings (cursor visibility, blink mode).
+    SetVgaMode = 22,
 }
 
 impl SyscallId {
@@ -104,6 +110,13 @@ impl SyscallId {
 
     /// Syscall number for Shutdown.
     pub const SHUTDOWN: u64 = Self::Shutdown as u64;
+
+    /// Syscall number for WriteFramebuffer (frame blit to VGA).
+    pub const WRITE_FRAMEBUFFER: u64 = Self::WriteFramebuffer as u64;
+    /// Syscall number for ReadKey (extended key event).
+    pub const READ_KEY: u64 = Self::ReadKey as u64;
+    /// Syscall number for SetVgaMode (VGA mode configuration).
+    pub const SET_VGA_MODE: u64 = Self::SetVgaMode as u64;
 }
 
 /// Unknown syscall number.

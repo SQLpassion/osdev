@@ -12,6 +12,8 @@ pub const MAX_SERIAL_WRITE_LEN: usize = 4096;
 /// Maximum number of bytes that can be written in a single WriteConsole syscall.
 /// Same DoS/fairness rationale as `MAX_SERIAL_WRITE_LEN`.
 pub const MAX_CONSOLE_WRITE_LEN: usize = 4096;
+/// Expected number of cells in a full 80×25 VGA frame.
+const VGA_FRAME_CELLS: usize = 80 * 25;
 
 /// Implements `WriteSerial(ptr, len)`.
 ///
@@ -123,6 +125,64 @@ pub fn syscall_set_cursor_impl(row: usize, col: usize) -> SyscallResult<u64> {
 pub fn syscall_clear_screen_impl() -> SyscallResult<u64> {
     with_screen(|screen| {
         screen.clear();
+    });
+    Ok(SYSCALL_OK)
+}
+
+/// Implements `WriteFramebuffer(ptr, len)`.
+///
+/// Blits a user-supplied `[u16; 2000]` frame buffer to the VGA back-buffer
+/// and flushes it to screen in one step. Each `u16` encodes `(attr << 8) | ascii`.
+///
+/// Returns `SYSCALL_ERR_INVALID_ARG` if `len != 2000`, if `ptr` is misaligned,
+/// or if the buffer does not lie entirely within user canonical space.
+pub fn syscall_write_framebuffer_impl(ptr: *const u16, len: usize) -> SyscallResult<u64> {
+    if len != VGA_FRAME_CELLS {
+        return Err(SyscallError::InvalidArg);
+    }
+
+    // Validate 2-byte alignment required for a u16 slice.
+    if !(ptr as u64).is_multiple_of(2) {
+        return Err(SyscallError::InvalidArg);
+    }
+
+    // Validate the full byte range lies within user canonical space.
+    if !is_valid_user_buffer(ptr as *const u8, len * 2) {
+        return Err(SyscallError::InvalidArg);
+    }
+
+    let cells = unsafe {
+        // SAFETY:
+        // - `is_valid_user_buffer` verified the byte range is within user canonical space.
+        // - Alignment was verified above (ptr is 2-byte aligned).
+        // - `ptr..ptr + len` covers exactly `len * 2` bytes of valid user memory.
+        core::slice::from_raw_parts(ptr, len)
+    };
+
+    with_screen(|screen| {
+        screen.blit_framebuffer(cells);
+    });
+
+    Ok(SYSCALL_OK)
+}
+
+/// Implements `SetVgaMode(flags)`.
+///
+/// Configures VGA text-mode hardware settings requested by TUI applications:
+/// - bit 0: hardware cursor  (1 = enabled,  0 = disabled)
+/// - bit 1: blink mode       (1 = enabled,  0 = disabled)
+pub fn syscall_set_vga_mode_impl(flags: u64) -> SyscallResult<u64> {
+    with_screen(|screen| {
+        if flags & 0b01 != 0 {
+            screen.enable_hw_cursor();
+        } else {
+            screen.disable_hw_cursor();
+        }
+        if flags & 0b10 != 0 {
+            screen.enable_blink_mode();
+        } else {
+            screen.disable_blink_mode();
+        }
     });
     Ok(SYSCALL_OK)
 }

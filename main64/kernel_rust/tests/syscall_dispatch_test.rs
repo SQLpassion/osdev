@@ -13,6 +13,8 @@ use kaos_kernel::syscall::{self, is_valid_user_buffer, SysError, SyscallId};
 #[link_section = ".text.boot"]
 pub extern "C" fn KernelMain(_kernel_size: u64) -> ! {
     kaos_kernel::drivers::serial::init();
+    kaos_kernel::memory::pmm::init(false);
+    kaos_kernel::memory::vmm::init(false);
     kaos_kernel::syscall::set_syscall_trace_enabled(false);
     test_main();
     loop {
@@ -84,6 +86,15 @@ fn test_syscall_ids_are_stable() {
     assert!(SyscallId::Exec as u64 == 17, "Exec syscall id changed");
     assert!(SyscallId::Wait as u64 == 18, "Wait syscall id changed");
     assert!(SyscallId::Shutdown as u64 == 19, "Shutdown syscall id changed");
+    assert!(
+        SyscallId::WriteFramebuffer as u64 == 20,
+        "WriteFramebuffer syscall id changed"
+    );
+    assert!(SyscallId::ReadKey as u64 == 21, "ReadKey syscall id changed");
+    assert!(
+        SyscallId::SetVgaMode as u64 == 22,
+        "SetVgaMode syscall id changed"
+    );
 }
 
 /// Contract: syscall number-to-name mapping for dispatcher logs stays stable.
@@ -168,6 +179,18 @@ fn test_syscall_name_mapping_for_logging_is_stable() {
     assert!(
         syscall::syscall_name_for_number(SyscallId::Shutdown as u64) == "Shutdown",
         "Shutdown mapping must stay stable for syscall trace output"
+    );
+    assert!(
+        syscall::syscall_name_for_number(SyscallId::WriteFramebuffer as u64) == "WriteFramebuffer",
+        "WriteFramebuffer mapping must stay stable for syscall trace output"
+    );
+    assert!(
+        syscall::syscall_name_for_number(SyscallId::ReadKey as u64) == "ReadKey",
+        "ReadKey mapping must stay stable for syscall trace output"
+    );
+    assert!(
+        syscall::syscall_name_for_number(SyscallId::SetVgaMode as u64) == "SetVgaMode",
+        "SetVgaMode mapping must stay stable for syscall trace output"
     );
     assert!(
         syscall::syscall_name_for_number(0xDEAD) == "Unknown",
@@ -703,6 +726,180 @@ fn test_wait_for_invalid_task_returns_ok() {
     assert!(
         ret == syscall::SYSCALL_OK,
         "wait for invalid task ID must return OK immediately"
+    );
+}
+
+/// Contract: public WriteFramebuffer syscall constant matches enum discriminant.
+#[test_case]
+fn test_write_framebuffer_constant_matches_enum_id() {
+    assert!(
+        SyscallId::WRITE_FRAMEBUFFER == SyscallId::WriteFramebuffer as u64,
+        "WRITE_FRAMEBUFFER constant must match WriteFramebuffer enum value"
+    );
+}
+
+/// Contract: public ReadKey syscall constant matches enum discriminant.
+#[test_case]
+fn test_read_key_constant_matches_enum_id() {
+    assert!(
+        SyscallId::READ_KEY == SyscallId::ReadKey as u64,
+        "READ_KEY constant must match ReadKey enum value"
+    );
+}
+
+/// Contract: public SetVgaMode syscall constant matches enum discriminant.
+#[test_case]
+fn test_set_vga_mode_constant_matches_enum_id() {
+    assert!(
+        SyscallId::SET_VGA_MODE == SyscallId::SetVgaMode as u64,
+        "SET_VGA_MODE constant must match SetVgaMode enum value"
+    );
+}
+
+/// Contract: write_framebuffer rejects invalid lengths.
+#[test_case]
+fn test_write_framebuffer_rejects_invalid_len() {
+    let buf = [0u16; 2000];
+    let ret = syscall::dispatch(
+        SyscallId::WriteFramebuffer as u64,
+        buf.as_ptr() as u64,
+        1999,
+        0,
+        0,
+    );
+    assert!(
+        ret == syscall::SYSCALL_ERR_INVALID_ARG,
+        "write_framebuffer with len != 2000 must return EINVAL"
+    );
+}
+
+/// Contract: write_framebuffer rejects misaligned pointers.
+#[test_case]
+fn test_write_framebuffer_rejects_misaligned_pointer() {
+    let ret = syscall::dispatch(
+        SyscallId::WriteFramebuffer as u64,
+        0x1001,
+        2000,
+        0,
+        0,
+    );
+    assert!(
+        ret == syscall::SYSCALL_ERR_INVALID_ARG,
+        "write_framebuffer with misaligned ptr must return EINVAL"
+    );
+}
+
+/// Contract: write_framebuffer rejects non-canonical or kernel pointers.
+#[test_case]
+fn test_write_framebuffer_rejects_non_canonical() {
+    let ret = syscall::dispatch(
+        SyscallId::WriteFramebuffer as u64,
+        0xFFFF_8000_0000_0000u64,
+        2000,
+        0,
+        0,
+    );
+    assert!(
+        ret == syscall::SYSCALL_ERR_INVALID_ARG,
+        "write_framebuffer with non-canonical/kernel ptr must return EINVAL"
+    );
+}
+
+/// Contract: write_framebuffer succeeds with a valid 80x25 buffer.
+#[test_case]
+fn test_write_framebuffer_success() {
+    let phys = kaos_kernel::memory::vmm::page_table::alloc_frame_phys().unwrap();
+    let pfn = kaos_kernel::memory::vmm::page_table::phys_to_pfn(phys);
+    let user_va = kaos_kernel::memory::vmm::USER_CODE_BASE;
+
+    kaos_kernel::memory::vmm::map_user_page(user_va, pfn, true).unwrap();
+
+    let ptr = user_va as *mut u16;
+    unsafe {
+        // SAFETY:
+        // - `user_va` was just mapped above and is valid and writable.
+        // - Loop writes 2000 elements (4000 bytes), which is within the 4096-byte page size.
+        for i in 0..2000 {
+            ptr.add(i).write_volatile(0x0741);
+        }
+    }
+
+    let ret = syscall::dispatch(
+        SyscallId::WriteFramebuffer as u64,
+        user_va,
+        2000,
+        0,
+        0,
+    );
+    assert!(
+        ret == syscall::SYSCALL_OK,
+        "write_framebuffer with valid buffer must return OK"
+    );
+}
+
+/// Contract: set_vga_mode succeeds with valid flags.
+#[test_case]
+fn test_set_vga_mode_success() {
+    let ret = syscall::dispatch(
+        SyscallId::SetVgaMode as u64,
+        0,
+        0,
+        0,
+        0,
+    );
+    assert!(
+        ret == syscall::SYSCALL_OK,
+        "set_vga_mode with 0 must return OK"
+    );
+
+    let ret = syscall::dispatch(
+        SyscallId::SetVgaMode as u64,
+        3,
+        0,
+        0,
+        0,
+    );
+    assert!(
+        ret == syscall::SYSCALL_OK,
+        "set_vga_mode with 3 must return OK"
+    );
+}
+
+/// Contract: Exec system call clears the keyboard buffers even on invalid arguments.
+#[test_case]
+fn test_exec_clears_keyboard_buffers() {
+    kaos_kernel::drivers::keyboard::init();
+
+    // Enqueue 'a' make code (0x1e)
+    kaos_kernel::drivers::keyboard::enqueue_raw_scancode(0x1e);
+    assert!(
+        kaos_kernel::drivers::keyboard::process_pending_scancodes(),
+        "worker iteration should process queued scancode"
+    );
+    assert!(
+        kaos_kernel::drivers::keyboard::read_char().is_some(),
+        "precondition: character should be present in buffer"
+    );
+
+    // Re-populate buffer (since reading it consumed it)
+    kaos_kernel::drivers::keyboard::enqueue_raw_scancode(0x1e);
+    kaos_kernel::drivers::keyboard::process_pending_scancodes();
+
+    // Invoke Exec syscall with invalid arguments (null pointer)
+    let ret = syscall::dispatch(SyscallId::Exec as u64, 0, 0, 0, 0);
+    assert!(
+        ret == syscall::SYSCALL_ERR_INVALID_ARG,
+        "exec with null pointer must return invalid argument error"
+    );
+
+    // Verify keyboard buffers are now empty
+    assert!(
+        kaos_kernel::drivers::keyboard::read_char().is_none(),
+        "exec syscall must clear legacy keyboard buffer"
+    );
+    assert!(
+        kaos_kernel::drivers::keyboard::read_key().is_none(),
+        "exec syscall must clear key event buffer"
     );
 }
 

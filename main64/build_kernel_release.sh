@@ -72,6 +72,7 @@ fat_imgen -m -f kaos64_rust.img -i user_programs/hello/hello.bin -n HELLO.BIN
 fat_imgen -m -f kaos64_rust.img -i user_programs/readline/readline.bin -n READLINE.BIN
 fat_imgen -m -f kaos64_rust.img -i user_programs/filedemo/filedemo.bin -n FILEDEMO.BIN
 fat_imgen -m -f kaos64_rust.img -i user_programs/shell/shell.bin -n SHELL.BIN
+fat_imgen -m -f kaos64_rust.img -i user_programs/tui_app/tui.bin -n TUI.BIN
 fat_imgen -m -f kaos64_rust.img -i SFile.txt
 fat_imgen -m -f kaos64_rust.img -i BigFile.txt
 

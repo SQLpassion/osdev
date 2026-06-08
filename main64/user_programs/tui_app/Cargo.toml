@@ -1,0 +1,23 @@
+[package]
+name = "tui_user_program"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+kernel = []
+
+[dependencies]
+lib_kaos = { path = "../../lib_kaos" }
+lib_tui  = { path = "../../lib_tui" }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+
+[[bin]]
+name = "tui"
+path = "src/main.rs"
+test = false
+bench = false
