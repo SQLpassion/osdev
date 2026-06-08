@@ -32,6 +32,7 @@ pub mod console;
 pub mod fs;
 pub mod heap;
 pub mod memory;
+pub mod pci;
 pub mod process;
 
 #[macro_export]

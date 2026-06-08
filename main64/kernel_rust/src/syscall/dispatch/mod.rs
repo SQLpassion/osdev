@@ -20,6 +20,7 @@ use crate::syscall::{syscall_result_to_raw, SyscallId, SyscallResult, SyscallErr
 
 pub mod console;
 pub mod fs;
+pub mod pci;
 pub mod process;
 
 /// Global switch for per-syscall trace logging (`[SYSCALL] ...` lines).
@@ -65,6 +66,8 @@ pub const fn syscall_name_for_number(syscall_nr: u64) -> &'static str {
         SyscallId::WRITE_FRAMEBUFFER => "WriteFramebuffer",
         SyscallId::READ_KEY => "ReadKey",
         SyscallId::SET_VGA_MODE => "SetVgaMode",
+        SyscallId::GET_PCI_DEVICE_COUNT => "GetPciDeviceCount",
+        SyscallId::GET_PCI_DEVICE => "GetPciDevice",
         _ => "Unknown",
     }
 }
@@ -110,6 +113,8 @@ pub fn dispatch_checked(
         SyscallId::WRITE_FRAMEBUFFER => console::syscall_write_framebuffer_impl(arg0 as *const u16, arg1 as usize),
         SyscallId::READ_KEY => process::syscall_read_key_impl(),
         SyscallId::SET_VGA_MODE => console::syscall_set_vga_mode_impl(arg0),
+        SyscallId::GET_PCI_DEVICE_COUNT => pci::syscall_get_pci_device_count_impl(),
+        SyscallId::GET_PCI_DEVICE => pci::syscall_get_pci_device_impl(arg0, arg1 as *mut crate::syscall::types::UserPciDevice),
         _ => Err(SyscallError::Unsupported),
     };
 

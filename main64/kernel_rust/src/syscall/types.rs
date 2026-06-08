@@ -48,6 +48,10 @@ pub enum SyscallId {
     ReadKey = 21,
     /// Configure VGA text-mode settings (cursor visibility, blink mode).
     SetVgaMode = 22,
+    /// Retrieve the number of discovered PCI devices.
+    GetPciDeviceCount = 23,
+    /// Retrieve metadata for a specific PCI device by its index.
+    GetPciDevice = 24,
 }
 
 impl SyscallId {
@@ -117,6 +121,10 @@ impl SyscallId {
     pub const READ_KEY: u64 = Self::ReadKey as u64;
     /// Syscall number for SetVgaMode (VGA mode configuration).
     pub const SET_VGA_MODE: u64 = Self::SetVgaMode as u64;
+    /// Syscall number for GetPciDeviceCount (PCI device count query).
+    pub const GET_PCI_DEVICE_COUNT: u64 = Self::GetPciDeviceCount as u64;
+    /// Syscall number for GetPciDevice (PCI device metadata query).
+    pub const GET_PCI_DEVICE: u64 = Self::GetPciDevice as u64;
 }
 
 /// Unknown syscall number.
@@ -298,5 +306,57 @@ pub fn decode_result(raw: u64) -> Result<u64, SysError> {
         x if x >= SYSCALL_ERR_OUT_OF_MEMORY => Err(SysError::Unknown(x)),
         value => Ok(value),
     }
+}
+
+/// User-space representation of a PCI Base Address Register (BAR).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UserPciBar {
+    /// The type of BAR (0 = None, 1 = Io, 2 = Memory32, 3 = Memory64).
+    pub bar_type: u32,
+    /// Memory prefetchable flag (1 if true, 0 if false).
+    pub flags: u32,
+    /// Base physical address or I/O port address.
+    pub address: u64,
+    /// Size of the address space in bytes.
+    pub size: u64,
+    /// Raw configuration register value.
+    pub raw_value: u32,
+    /// Explicit padding for 8-byte alignment structure size matching.
+    pub _padding: u32,
+}
+
+/// User-space representation of a scanned PCI device.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UserPciDevice {
+    /// PCI Bus ID (0..=255).
+    pub bus: u8,
+    /// PCI Device/Slot ID (0..=31).
+    pub device: u8,
+    /// PCI Function ID (0..=7).
+    pub function: u8,
+    /// Device class code.
+    pub class_code: u8,
+    /// Device subclass code.
+    pub subclass: u8,
+    /// Programming Interface of the device.
+    pub prog_if: u8,
+    /// Revision number of the device.
+    pub revision_id: u8,
+    /// Header Type configuration byte.
+    pub header_type: u8,
+    /// Vendor ID.
+    pub vendor_id: u16,
+    /// Device ID.
+    pub device_id: u16,
+    /// Interrupt Line vector.
+    pub interrupt_line: u8,
+    /// Interrupt Pin value.
+    pub interrupt_pin: u8,
+    /// Explicit padding to align bars to 8-byte boundary.
+    pub _padding: [u8; 2],
+    /// Up to 6 Base Address Registers for this device.
+    pub bars: [UserPciBar; 6],
 }
 

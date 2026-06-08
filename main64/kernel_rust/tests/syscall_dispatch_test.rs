@@ -15,6 +15,7 @@ pub extern "C" fn KernelMain(_kernel_size: u64) -> ! {
     kaos_kernel::drivers::serial::init();
     kaos_kernel::memory::pmm::init(false);
     kaos_kernel::memory::vmm::init(false);
+    kaos_kernel::memory::heap::init(false);
     kaos_kernel::syscall::set_syscall_trace_enabled(false);
     test_main();
     loop {
@@ -94,6 +95,14 @@ fn test_syscall_ids_are_stable() {
     assert!(
         SyscallId::SetVgaMode as u64 == 22,
         "SetVgaMode syscall id changed"
+    );
+    assert!(
+        SyscallId::GetPciDeviceCount as u64 == 23,
+        "GetPciDeviceCount syscall id changed"
+    );
+    assert!(
+        SyscallId::GetPciDevice as u64 == 24,
+        "GetPciDevice syscall id changed"
     );
 }
 
@@ -191,6 +200,14 @@ fn test_syscall_name_mapping_for_logging_is_stable() {
     assert!(
         syscall::syscall_name_for_number(SyscallId::SetVgaMode as u64) == "SetVgaMode",
         "SetVgaMode mapping must stay stable for syscall trace output"
+    );
+    assert!(
+        syscall::syscall_name_for_number(SyscallId::GetPciDeviceCount as u64) == "GetPciDeviceCount",
+        "GetPciDeviceCount mapping must stay stable for syscall trace output"
+    );
+    assert!(
+        syscall::syscall_name_for_number(SyscallId::GetPciDevice as u64) == "GetPciDevice",
+        "GetPciDevice mapping must stay stable for syscall trace output"
     );
     assert!(
         syscall::syscall_name_for_number(0xDEAD) == "Unknown",
@@ -901,5 +918,82 @@ fn test_exec_clears_keyboard_buffers() {
         kaos_kernel::drivers::keyboard::read_key().is_none(),
         "exec syscall must clear key event buffer"
     );
+}
+
+/// Contract: public PCI syscall constants match enum discriminants.
+#[test_case]
+fn test_pci_constants_match_enum_ids() {
+    assert!(
+        SyscallId::GET_PCI_DEVICE_COUNT == SyscallId::GetPciDeviceCount as u64,
+        "GET_PCI_DEVICE_COUNT constant must match GetPciDeviceCount enum value"
+    );
+    assert!(
+        SyscallId::GET_PCI_DEVICE == SyscallId::GetPciDevice as u64,
+        "GET_PCI_DEVICE constant must match GetPciDevice enum value"
+    );
+}
+
+/// Contract: PCI query syscalls correctly report device count and copy metadata to user buffers.
+#[test_case]
+fn test_pci_query_syscalls() {
+    kaos_kernel::drivers::pci::init();
+
+    let count_ret = syscall::dispatch(
+        SyscallId::GetPciDeviceCount as u64,
+        0,
+        0,
+        0,
+        0,
+    );
+    assert!(
+        count_ret != syscall::SYSCALL_ERR_UNSUPPORTED,
+        "GetPciDeviceCount must be supported"
+    );
+
+    let count = count_ret as usize;
+
+    let invalid_idx = count as u64;
+    let ret = syscall::dispatch(
+        SyscallId::GetPciDevice as u64,
+        invalid_idx,
+        0,
+        0,
+        0,
+    );
+    assert!(
+        ret == syscall::SYSCALL_ERR_INVALID_ARG,
+        "querying out-of-bounds pci index must return invalid argument"
+    );
+
+    if count > 0 {
+        let phys = kaos_kernel::memory::vmm::page_table::alloc_frame_phys().unwrap();
+        let pfn = kaos_kernel::memory::vmm::page_table::phys_to_pfn(phys);
+        let user_va = kaos_kernel::memory::vmm::USER_CODE_BASE + 0x1000;
+
+        kaos_kernel::memory::vmm::map_user_page(user_va, pfn, true).unwrap();
+
+        let ret = syscall::dispatch(
+            SyscallId::GetPciDevice as u64,
+            0,
+            user_va,
+            0,
+            0,
+        );
+        assert!(
+            ret == syscall::SYSCALL_OK,
+            "querying index 0 with valid user buffer must return OK"
+        );
+
+        let user_dev = user_va as *const kaos_kernel::syscall::UserPciDevice;
+        // SAFETY:
+        // - `user_va` has been mapped to physical memory and populated by the kernel.
+        // - We hold read-only access to this memory block.
+        let bus = unsafe { (*user_dev).bus };
+        let kernel_devs = kaos_kernel::drivers::pci::get_devices();
+        assert!(
+            bus == kernel_devs[0].bus,
+            "user-copied device bus must match kernel-scanned device bus"
+        );
+    }
 }
 

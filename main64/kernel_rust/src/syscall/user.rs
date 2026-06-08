@@ -459,3 +459,46 @@ pub unsafe fn sys_mmap(addr: u64, length: usize) -> Result<*mut u8, SysError> {
         ptr => Ok(ptr as *mut u8),
     }
 }
+
+/// Queries the total count of discovered PCI devices.
+#[inline(always)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn sys_get_pci_device_count() -> Result<usize, SysError> {
+    let raw_value = unsafe {
+        // SAFETY:
+        // - This requires `unsafe` because syscall entry executes raw ABI-level interrupt machinery.
+        // - The wrapper runs only in environments where the `int 0x80` entry is configured.
+        abi::syscall0(SyscallId::GetPciDeviceCount as u64)
+    };
+
+    match raw_value {
+        SYSCALL_ERR_UNSUPPORTED => Err(SysError::UnsupportedSyscall),
+        SYSCALL_ERR_INVALID_ARG => Err(SysError::InvalidArgument),
+        x if x >= SYSCALL_ERR_INVALID_ARG => Err(SysError::Unknown(x)),
+        count => Ok(count as usize),
+    }
+}
+
+/// Copies the PCI device metadata at `index` into the user-provided structure.
+///
+/// # Safety
+/// - This function is marked `unsafe` because it writes to a raw pointer. The caller
+///   must ensure `out` points to a valid `UserPciDevice` buffer.
+#[inline(always)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub unsafe fn sys_get_pci_device(index: usize, out: *mut super::types::UserPciDevice) -> Result<(), SysError> {
+    let raw_value = unsafe {
+        // SAFETY:
+        // - This requires `unsafe` because syscall entry executes raw ABI-level interrupt machinery.
+        // - The wrapper runs only in environments where the `int 0x80` entry is configured.
+        abi::syscall2(SyscallId::GetPciDevice as u64, index as u64, out as u64)
+    };
+
+    match raw_value {
+        SYSCALL_ERR_UNSUPPORTED => Err(SysError::UnsupportedSyscall),
+        SYSCALL_ERR_INVALID_ARG => Err(SysError::InvalidArgument),
+        x if x >= SYSCALL_ERR_INVALID_ARG => Err(SysError::Unknown(x)),
+        _ => Ok(()),
+    }
+}
+
