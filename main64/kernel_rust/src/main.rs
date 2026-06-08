@@ -108,6 +108,11 @@ pub extern "C" fn KernelMain(kernel_size: u64) -> ! {
     drivers::pci::init();
     debugln!("PCI subsystem initialized");
 
+    // Initialize the high-precision time driver
+    drivers::time::init();
+    debugln!("Time driver initialized");
+
+
     // Initialize the ATA PIO driver
     drivers::ata::init();
     debugln!("ATA PIO driver initialized");

@@ -183,6 +183,19 @@ pub fn read_key() -> Result<Key, SysError> {
     decode_result(raw).map(|v| Key::from_raw(v as u8))
 }
 
+/// Non-blocking check for a keyboard key event.
+///
+/// Returns `Ok(Key::Char(byte))` etc if a key is available, or `Ok(Key::Unknown)` if empty.
+#[inline(always)]
+pub fn poll_key() -> Result<Key, SysError> {
+    let raw = unsafe {
+        // SAFETY: `PollKey` takes no pointer arguments.
+        syscall0(SyscallId::PollKey as u64)
+    };
+
+    decode_result(raw).map(|v| Key::from_raw(v as u8))
+}
+
 /// Blit a full 80×25 frame buffer to VGA in a single syscall.
 ///
 /// Each element of `cells` encodes one VGA cell as `(attr << 8) | ascii`.

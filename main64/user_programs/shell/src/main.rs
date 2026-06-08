@@ -61,8 +61,42 @@ fn execute_command(line: &str) {
             println!("  cat <file>      - read and print the contents of a file");
             println!("  exec <file>     - run a program in the foreground");
             println!("  fputest         - run FPU/SSE smoke test (ring 3)");
+            println!("  date            - show the current calendar date");
+            println!("  time            - show the current system time");
             println!("  exit            - exit this shell instance");
             println!("  shutdown        - shutdown the system");
+        }
+        "date" => {
+            let mut udt = lib_kaos::time::UserDateTime {
+                year: 0,
+                month: 0,
+                day: 0,
+                hour: 0,
+                minute: 0,
+                second: 0,
+                _padding: [0; 7],
+            };
+            if lib_kaos::time::get_time(&mut udt).is_ok() {
+                println!("{:04}-{:02}-{:02}", udt.year, udt.month, udt.day);
+            } else {
+                println!("Error: Failed to retrieve system date.");
+            }
+        }
+        "time" => {
+            let mut udt = lib_kaos::time::UserDateTime {
+                year: 0,
+                month: 0,
+                day: 0,
+                hour: 0,
+                minute: 0,
+                second: 0,
+                _padding: [0; 7],
+            };
+            if lib_kaos::time::get_time(&mut udt).is_ok() {
+                println!("{:02}:{:02}:{:02}", udt.hour, udt.minute, udt.second);
+            } else {
+                println!("Error: Failed to retrieve system time.");
+            }
         }
         "echo" => {
             let rest = line[cmd.len()..].trim_start();

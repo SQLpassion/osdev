@@ -35,6 +35,8 @@ pub mod heap;
 pub mod memory;
 pub mod pci;
 pub mod process;
+pub mod time;
+
 
 #[macro_export]
 macro_rules! print {

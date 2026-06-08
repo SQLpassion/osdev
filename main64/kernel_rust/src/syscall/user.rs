@@ -544,4 +544,50 @@ pub unsafe fn sys_get_bios_memory_map_entry(index: usize, out: *mut super::types
     }
 }
 
+/// Copies the current high-precision calendar date and time into the user-provided structure.
+///
+/// # Safety
+/// - This function is marked `unsafe` because it writes to a raw pointer. The caller
+///   must ensure `out` points to a valid `UserDateTime` buffer.
+#[inline(always)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub unsafe fn sys_get_time(out: *mut super::types::UserDateTime) -> Result<(), SysError> {
+    let raw_value = unsafe {
+        // SAFETY:
+        // - This requires `unsafe` because syscall entry executes raw ABI-level interrupt machinery.
+        // - The wrapper runs only in environments where the `int 0x80` entry is configured.
+        abi::syscall1(SyscallId::GetTime as u64, out as u64)
+    };
+
+    match raw_value {
+        SYSCALL_ERR_UNSUPPORTED => Err(SysError::UnsupportedSyscall),
+        SYSCALL_ERR_INVALID_ARG => Err(SysError::InvalidArgument),
+        x if x >= SYSCALL_ERR_INVALID_ARG => Err(SysError::Unknown(x)),
+        _ => Ok(()),
+    }
+}
+
+/// Non-blocking check for a keyboard key event.
+///
+/// Returns `Ok(byte)` containing the encoded key if available, or `Ok(0)` if empty.
+#[inline(always)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn sys_poll_key() -> Result<u8, SysError> {
+    let raw_value = unsafe {
+        // SAFETY:
+        // - This requires `unsafe` because syscall entry executes raw ABI-level interrupt machinery.
+        // - The wrapper runs only in environments where the `int 0x80` entry is configured.
+        abi::syscall0(SyscallId::PollKey as u64)
+    };
+
+    match raw_value {
+        SYSCALL_ERR_UNSUPPORTED => Err(SysError::UnsupportedSyscall),
+        SYSCALL_ERR_INVALID_ARG => Err(SysError::InvalidArgument),
+        x if x >= SYSCALL_ERR_INVALID_ARG => Err(SysError::Unknown(x)),
+        byte => Ok(byte as u8),
+    }
+}
+
+
+
 

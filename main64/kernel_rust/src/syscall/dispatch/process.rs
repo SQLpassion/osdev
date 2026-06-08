@@ -288,3 +288,15 @@ pub fn syscall_read_key_impl() -> SyscallResult<u64> {
     Ok(keyboard::read_key_blocking_encoded() as u64)
 }
 
+/// Implements `PollKey()`: non-blocking key check.
+///
+/// Returns the encoded key byte if available, or `0` if the key buffer is empty.
+pub fn syscall_poll_key_impl() -> SyscallResult<u64> {
+    if let Some(key) = keyboard::read_key() {
+        Ok(keyboard::encode_key(key) as u64)
+    } else {
+        Ok(0)
+    }
+}
+
+

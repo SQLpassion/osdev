@@ -64,3 +64,41 @@ pub fn syscall_get_bios_memory_map_entry_impl(
 
     Ok(0)
 }
+
+/// Implements `GetTime()`.
+///
+/// Copies the current high-precision calendar date and time into the user-space output pointer.
+pub fn syscall_get_time_impl(
+    out_ptr: *mut crate::syscall::types::UserDateTime,
+) -> SyscallResult<u64> {
+    // Step 1: Verify that the user-space output pointer represents a valid,
+    // writable memory range in the Ring-3 address space.
+    let struct_size = core::mem::size_of::<crate::syscall::types::UserDateTime>();
+    if !is_valid_user_buffer(out_ptr as *const u8, struct_size) {
+        return Err(SyscallError::InvalidArg);
+    }
+
+    // Step 2: Query the high-precision system time from the time driver.
+    let current = crate::drivers::time::get_time();
+
+    let user_dt = crate::syscall::types::UserDateTime {
+        year: current.year,
+        month: current.month,
+        day: current.day,
+        hour: current.hour,
+        minute: current.minute,
+        second: current.second,
+        _padding: [0; 7],
+    };
+
+    // SAFETY:
+    // - `out_ptr` has been validated to point entirely within user canonical space.
+    // - The memory alignment is handled by `UserDateTime` being `#[repr(C)]`.
+    // - Memory safety is preserved since the caller owns the memory range in user space.
+    unsafe {
+        out_ptr.write(user_dt);
+    }
+
+    Ok(0)
+}
+

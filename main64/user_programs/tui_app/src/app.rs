@@ -26,8 +26,6 @@ use lib_tui::{
 #[path = "../../../kernel_rust/src/drivers/pci/database.rs"]
 mod pci_database;
 
-/// Number of demo tabs.
-const TAB_COUNT: usize = 4;
 
 /// Top-level TUI application — owns every widget across all four tabs.
 pub struct TuiApp {
@@ -106,14 +104,39 @@ impl TuiApp {
         }
     }
 
-    /// Enter the main blocking event loop.
+    /// Enter the main event loop.
     pub fn run(&mut self) {
         // Step 1: Draw the initial frame prior to waiting for keys.
         self.draw_frame();
 
-        // Step 2: Loop indefinitely, blocking on keyboard events.
+        let mut last_second = 99;
+
+        // Step 2: Loop indefinitely, checking keys and clock.
         loop {
-            let key = console::read_key().unwrap_or(Key::Unknown);
+            // Check if a key is pressed (non-blocking).
+            let key = console::poll_key().unwrap_or(Key::Unknown);
+
+            // If no key is pressed, check if the second has changed to update the status bar clock.
+            if key == Key::Unknown {
+                let mut udt = lib_kaos::time::UserDateTime {
+                    year: 0,
+                    month: 0,
+                    day: 0,
+                    hour: 0,
+                    minute: 0,
+                    second: 0,
+                    _padding: [0; 7],
+                };
+                if lib_kaos::time::get_time(&mut udt).is_ok() && udt.second != last_second {
+                    last_second = udt.second;
+                    self.draw_frame();
+                }
+
+                // Yield CPU to prevent a 100% busy loop.
+                lib_kaos::process::yield_now();
+                continue;
+            }
+
             match key {
                 // Left/Right: Navigate between tabs.
                 Key::ArrowLeft => {
@@ -247,26 +270,57 @@ impl TuiApp {
                 Color::LightGray,
             );
 
-            // Format current tab index fraction (e.g. "Tab 3/5") and print it right-aligned.
-            let active = self.tabs.active() + 1;
-            let total = TAB_COUNT;
-            let mut buf = [b' '; 8];
-            buf[0] = b'T';
-            buf[1] = b'a';
-            buf[2] = b'b';
-            buf[3] = b' ';
-            buf[4] = b'0' + active as u8;
-            buf[5] = b'/';
-            buf[6] = b'0' + total as u8;
-            let start = SCREEN_COLS - 9;
-            for (i, &byte) in buf.iter().enumerate() {
-                screen.draw_char_at(
-                    SCREEN_ROWS - 1,
-                    start + i,
-                    byte,
-                    Color::Black,
-                    Color::LightGray,
-                );
+            // Print date and time if available
+            let mut udt = lib_kaos::time::UserDateTime {
+                year: 0,
+                month: 0,
+                day: 0,
+                hour: 0,
+                minute: 0,
+                second: 0,
+                _padding: [0; 7],
+            };
+            if lib_kaos::time::get_time(&mut udt).is_ok() {
+                // Format: "2026-06-08 19:30:13" (19 chars)
+                let mut time_buf = [0u8; 19];
+                
+                // Format Year
+                let y = udt.year;
+                time_buf[0] = b'0' + ((y / 1000) % 10) as u8;
+                time_buf[1] = b'0' + ((y / 100) % 10) as u8;
+                time_buf[2] = b'0' + ((y / 10) % 10) as u8;
+                time_buf[3] = b'0' + (y % 10) as u8;
+                time_buf[4] = b'-';
+                
+                time_buf[5] = b'0' + (udt.month / 10);
+                time_buf[6] = b'0' + (udt.month % 10);
+                time_buf[7] = b'-';
+                
+                time_buf[8] = b'0' + (udt.day / 10);
+                time_buf[9] = b'0' + (udt.day % 10);
+                time_buf[10] = b' ';
+                
+                time_buf[11] = b'0' + (udt.hour / 10);
+                time_buf[12] = b'0' + (udt.hour % 10);
+                time_buf[13] = b':';
+                
+                time_buf[14] = b'0' + (udt.minute / 10);
+                time_buf[15] = b'0' + (udt.minute % 10);
+                time_buf[16] = b':';
+                
+                time_buf[17] = b'0' + (udt.second / 10);
+                time_buf[18] = b'0' + (udt.second % 10);
+
+                let start_time = SCREEN_COLS - 21;
+                for (i, &byte) in time_buf.iter().enumerate() {
+                    screen.draw_char_at(
+                        SCREEN_ROWS - 1,
+                        start_time + i,
+                        byte,
+                        Color::Black,
+                        Color::LightGray,
+                    );
+                }
             }
         });
     }

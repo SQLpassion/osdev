@@ -56,6 +56,10 @@ pub enum SyscallId {
     GetBiosMemoryMapEntryCount = 25,
     /// Retrieve metadata for a specific BIOS memory map entry by its index.
     GetBiosMemoryMapEntry = 26,
+    /// Retrieve the current high-precision calendar date and time.
+    GetTime = 27,
+    /// Read a single extended key event from the keyboard (non-blocking).
+    PollKey = 28,
 }
 
 impl SyscallId {
@@ -133,6 +137,10 @@ impl SyscallId {
     pub const GET_BIOS_MEMORY_MAP_ENTRY_COUNT: u64 = Self::GetBiosMemoryMapEntryCount as u64;
     /// Syscall number for GetBiosMemoryMapEntry (BIOS memory map entry query).
     pub const GET_BIOS_MEMORY_MAP_ENTRY: u64 = Self::GetBiosMemoryMapEntry as u64;
+    /// Syscall number for GetTime (calendar date and time query).
+    pub const GET_TIME: u64 = Self::GetTime as u64;
+    /// Syscall number for PollKey (non-blocking keyboard query).
+    pub const POLL_KEY: u64 = Self::PollKey as u64;
 }
 
 /// Unknown syscall number.
@@ -381,5 +389,26 @@ pub struct UserBiosMemoryRegion {
     /// Explicit padding for 8-byte alignment structure size matching.
     pub _padding: u32,
 }
+
+/// User-space representation of the calendar date and time.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UserDateTime {
+    /// Calendar year (e.g. 2026).
+    pub year: i32,
+    /// Calendar month (1..=12).
+    pub month: u8,
+    /// Calendar day of month (1..=31).
+    pub day: u8,
+    /// Calendar hour (0..=23).
+    pub hour: u8,
+    /// Calendar minute (0..=59).
+    pub minute: u8,
+    /// Calendar second (0..=59).
+    pub second: u8,
+    /// Explicit padding for 8-byte alignment structure size matching.
+    pub _padding: [u8; 7],
+}
+
 
 

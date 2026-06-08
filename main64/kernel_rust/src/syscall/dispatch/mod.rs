@@ -71,6 +71,8 @@ pub const fn syscall_name_for_number(syscall_nr: u64) -> &'static str {
         SyscallId::GET_PCI_DEVICE => "GetPciDevice",
         SyscallId::GET_BIOS_MEMORY_MAP_ENTRY_COUNT => "GetBiosMemoryMapEntryCount",
         SyscallId::GET_BIOS_MEMORY_MAP_ENTRY => "GetBiosMemoryMapEntry",
+        SyscallId::GET_TIME => "GetTime",
+        SyscallId::POLL_KEY => "PollKey",
         _ => "Unknown",
     }
 }
@@ -120,6 +122,8 @@ pub fn dispatch_checked(
         SyscallId::GET_PCI_DEVICE => pci::syscall_get_pci_device_impl(arg0, arg1 as *mut crate::syscall::types::UserPciDevice),
         SyscallId::GET_BIOS_MEMORY_MAP_ENTRY_COUNT => bios::syscall_get_bios_memory_map_entry_count_impl(),
         SyscallId::GET_BIOS_MEMORY_MAP_ENTRY => bios::syscall_get_bios_memory_map_entry_impl(arg0, arg1 as *mut crate::syscall::types::UserBiosMemoryRegion),
+        SyscallId::GET_TIME => bios::syscall_get_time_impl(arg0 as *mut crate::syscall::types::UserDateTime),
+        SyscallId::POLL_KEY => process::syscall_poll_key_impl(),
         _ => Err(SyscallError::Unsupported),
     };
 

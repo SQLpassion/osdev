@@ -287,7 +287,7 @@ pub fn read_key_blocking() -> Key {
 //   0x90–0x9B  → F(1)–F(12)  (0x90 + n - 1)
 // ---------------------------------------------------------------------------
 
-fn encode_key(key: Key) -> u8 {
+pub fn encode_key(key: Key) -> u8 {
     match key {
         Key::Unknown        => 0x00,
         Key::Char(b)        => b,

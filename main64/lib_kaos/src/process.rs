@@ -62,3 +62,13 @@ pub fn shutdown() -> ! {
         core::hint::spin_loop();
     }
 }
+
+/// Yields the CPU cooperatively to allow other tasks to run.
+#[inline(always)]
+pub fn yield_now() {
+    unsafe {
+        // SAFETY: Yield is a safe syscall that does not access memory.
+        let _ = syscall0(SyscallId::Yield as u64);
+    }
+}
+

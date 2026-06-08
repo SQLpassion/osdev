@@ -22,6 +22,6 @@ pub use dispatch::{
 pub use types::{
     decode_result, is_valid_user_buffer, syscall_error_to_raw, syscall_result_to_raw, user_alias_rip,
     user_alias_va_for_kernel, SysError, SyscallError, SyscallId, SyscallResult, UserPciBar, UserPciDevice,
-    UserBiosMemoryRegion, SYSCALL_ERR_INVALID_ARG, SYSCALL_ERR_IO, SYSCALL_ERR_OUT_OF_MEMORY,
+    UserBiosMemoryRegion, UserDateTime, SYSCALL_ERR_INVALID_ARG, SYSCALL_ERR_IO, SYSCALL_ERR_OUT_OF_MEMORY,
     SYSCALL_ERR_UNSUPPORTED, SYSCALL_OK,
 };
