@@ -183,6 +183,27 @@ pub fn syscall_mmap_impl(addr: u64, length: usize) -> SyscallResult<u64> {
                 map_failed = true;
                 break;
             }
+
+            // Zero the freshly mapped page.  PMM hands out recycled physical
+            // frames whose contents are not architecturally guaranteed to be
+            // zero on real hardware (QEMU happens to zero RAM at boot, which
+            // hides this bug).  The user heap allocator assumes new memory
+            // looks like an uninitialized block header (in_use=0, size=0) and
+            // treats anything else as a "free" block with garbage prev/next
+            // pointers, leading to non-canonical dereferences in
+            // `remove_free_block`.
+            //
+            // SAFETY:
+            // - The page is freshly mapped writable + user in the active
+            //   address space (just installed above).
+            // - `page_size` matches the architectural page size used by
+            //   `map_user_page`.
+            // - No concurrent access: interrupts are disabled in the VMM
+            //   critical section provided by `with_address_space`.
+            unsafe {
+                core::ptr::write_bytes(page_va as *mut u8, 0, page_size as usize);
+            }
+
             mapped_count += 1;
         }
 

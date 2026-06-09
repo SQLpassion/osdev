@@ -9,6 +9,9 @@ use crate::arch::interrupts::dispatch_irq;
 const VGA_TEXT_BUFFER: usize = 0xFFFF_8000_000B_8000;
 const VGA_COLS: usize = 80;
 
+/// White-on-red attribute byte used for fatal exception banners.
+const VGA_ATTR_FATAL: u8 = 0x4F;
+
 #[no_mangle]
 pub extern "C" fn page_fault_handler_rust(faulting_address: u64, error_code: u64) {
     crate::memory::vmm::handle_page_fault(faulting_address, error_code);
@@ -46,53 +49,66 @@ const fn hex_nibble_ascii(nibble: u8) -> u8 {
     }
 }
 
-fn write_exception_banner(vector: u8, error_code: u64, frame: *const SavedRegisters) {
-    let mut line = [b' '; VGA_COLS];
-    line[0] = b'!';
-    line[1] = b'!';
-    line[2] = b' ';
-    line[3] = b'E';
-    line[4] = b'X';
-    line[5] = b'C';
-    line[6] = b' ';
-    line[7] = b'v';
-    line[8] = b'e';
-    line[9] = b'c';
-    line[10] = b'=';
-    line[11] = hex_nibble_ascii((vector >> 4) & 0x0F);
-    line[12] = hex_nibble_ascii(vector & 0x0F);
-    line[13] = b' ';
-    line[14] = b'e';
-    line[15] = b'r';
-    line[16] = b'r';
-    line[17] = b'=';
-    for i in 0..16 {
-        let shift = (15 - i) * 4;
-        line[18 + i] = hex_nibble_ascii(((error_code >> shift) & 0x0F) as u8);
+/// Writes `key=hex(value)` into `buf` starting at `offset` and returns the
+/// position right after the written hex digits.
+///
+/// `nibbles` controls the zero-padded hex width (2 for a byte, 4 for u16,
+/// 16 for u64).  No bounds checking is performed; callers must ensure the
+/// destination range fits inside `buf`.
+fn write_field(buf: &mut [u8], offset: usize, key: &[u8], value: u64, nibbles: usize) -> usize {
+    let mut pos = offset;
+    for &c in key {
+        buf[pos] = c;
+        pos += 1;
     }
-    line[34] = b' ';
-    line[35] = b'f';
-    line[36] = b'r';
-    line[37] = b'm';
-    line[38] = b'=';
-    let frame_u64 = frame as u64;
-    for i in 0..16 {
-        let shift = (15 - i) * 4;
-        line[39 + i] = hex_nibble_ascii(((frame_u64 >> shift) & 0x0F) as u8);
+    buf[pos] = b'=';
+    pos += 1;
+    for i in 0..nibbles {
+        let shift = (nibbles - 1 - i) * 4;
+        buf[pos + i] = hex_nibble_ascii(((value >> shift) & 0x0F) as u8);
     }
+    pos + nibbles
+}
 
+/// Writes one 80-cell VGA row using the fatal-banner color attribute.
+fn write_vga_row(row: usize, line: &[u8; VGA_COLS]) {
     // SAFETY:
     // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
     // - VGA text memory is MMIO-mapped at `VGA_TEXT_BUFFER`.
-    // - We only write one in-bounds row (0..80 cells).
+    // - We only write one in-bounds row (0..80 cells) at the given `row`.
     // - Volatile writes are required for MMIO ordering/visibility.
     unsafe {
+        let row_base = VGA_TEXT_BUFFER + row * VGA_COLS * 2;
         for (col, ch) in line.iter().enumerate() {
-            let cell = VGA_TEXT_BUFFER + col * 2;
+            let cell = row_base + col * 2;
             core::ptr::write_volatile(cell as *mut u8, *ch);
-            core::ptr::write_volatile((cell + 1) as *mut u8, 0x4F);
+            core::ptr::write_volatile((cell + 1) as *mut u8, VGA_ATTR_FATAL);
         }
     }
+}
+
+fn write_exception_banner(
+    vector: u8,
+    error_code: u64,
+    frame: *const SavedRegisters,
+    iret: &InterruptStackFrame,
+) {
+    // Row 0: "!! EXC vec=XX err=...16... frm=...16... rip=...16..." (76 cols)
+    let mut line0 = [b' '; VGA_COLS];
+    line0[0..7].copy_from_slice(b"!! EXC ");
+    let mut p = write_field(&mut line0, 7, b"vec", vector as u64, 2);
+    p = write_field(&mut line0, p + 1, b"err", error_code, 16);
+    p = write_field(&mut line0, p + 1, b"frm", frame as u64, 16);
+    let _ = write_field(&mut line0, p + 1, b"rip", iret.rip, 16);
+    write_vga_row(0, &line0);
+
+    // Row 1: "   cs=XXXX rflags=...16... rsp=...16... ss=XXXX" (63 cols)
+    let mut line1 = [b' '; VGA_COLS];
+    let mut p = write_field(&mut line1, 3, b"cs", iret.cs, 4);
+    p = write_field(&mut line1, p + 1, b"rflags", iret.rflags, 16);
+    p = write_field(&mut line1, p + 1, b"rsp", iret.rsp, 16);
+    let _ = write_field(&mut line1, p + 1, b"ss", iret.ss, 4);
+    write_vga_row(1, &line1);
 }
 
 /// Fatal exception sink for vectors with dedicated stubs.
@@ -126,7 +142,7 @@ pub extern "C" fn exception_handler_rust(
         iret_frame.cs,
         iret_frame.rflags
     ));
-    write_exception_banner(vector, error_code, frame);
+    write_exception_banner(vector, error_code, frame, iret_frame);
 
     loop {
         // SAFETY:
