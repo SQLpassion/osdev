@@ -58,12 +58,12 @@ const RAW_BUFFER_CAPACITY: usize = 64;
 
 /// Lower-case QWERTZ scan code map (printable ASCII only; 0 == ignored)
 const SCANCODES_LOWER: [u8; SCANCODE_TABLE_LEN] = [
-    // 0x00..=0x10: error, Esc, 1-9, 0, ß(mapped to s), ´(mapped to =), Backspace, Tab, q
-    0, 0x1B, b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8', b'9', b'0', b's', b'=', 0x08, 0, b'q',
+    // 0x00..=0x10: error, Esc, 1-9, 0, ß(no ASCII), ´(mapped to =), Backspace, Tab, q
+    0, 0x1B, b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8', b'9', b'0', 0, b'=', 0x08, 0, b'q',
     // 0x11..=0x20: w, e, r, t, z, u, i, o, p, ü(mapped to [), +, Enter, LCtrl, a, s, d
     b'w', b'e', b'r', b't', b'z', b'u', b'i', b'o', b'p', b'[', b'+', b'\n', 0, b'a', b's', b'd',
-    // 0x21..=0x30: f, g, h, j, k, l, ö(mapped to {), ä(mapped to ~), <, LShift, #, y, x, c, v, b
-    b'f', b'g', b'h', b'j', b'k', b'l', b'{', b'~', b'<', 0, b'#', b'y', b'x', b'c', b'v', b'b',
+    // 0x21..=0x30: f, g, h, j, k, l, ö(mapped to {), ä(mapped to ~), ^(caret), LShift, #, y, x, c, v, b
+    b'f', b'g', b'h', b'j', b'k', b'l', b'{', b'~', b'^', 0, b'#', b'y', b'x', b'c', b'v', b'b',
     // 0x31..=0x3F: n, m, ',', '.', -, RShift, Keypad-*, LAlt, Space, CapsLock, F1..F10
     b'n', b'm', b',', b'.', b'-', 0, b'*', 0, b' ', 0, 0, 0, 0, 0, 0,
     // 0x40..=0x4F: F6..F10, NumLock, ScrollLock, Keypad 7..9, Keypad-, Keypad 4..6, Keypad+
