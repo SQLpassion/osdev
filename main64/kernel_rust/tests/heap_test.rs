@@ -779,3 +779,88 @@ fn test_heap_environment_grow_failure() {
     let ptr2 = test_heap.allocate(layout_big);
     assert!(ptr2.is_null(), "second allocation must fail when environment rejects growth");
 }
+
+/// Contract: heap growth after a tail-merging free yields non-overlapping allocations.
+/// Given: A generic `Heap` (the user-space configuration) whose last physical block
+///        is consumed by a forward-coalescing `deallocate`, followed by an
+///        allocation large enough to require `grow_heap`.
+/// When: Further allocations are served from the grown arena.
+/// Then: All live payload ranges must be pairwise disjoint.
+/// Failure Impact: A stale `tail_block_addr` after coalescing makes `grow_heap`
+///        stamp a wrong `prev_size` onto the growth block, producing overlapping
+///        free blocks and ultimately corrupted free-list nodes.  This is the
+///        exact corruption observed as an intermittent ring-3 #GP(0) inside
+///        `remove_free_block` in TUI.BIN on physical hardware (more BIOS E820
+///        entries than QEMU drive more alloc/free churn during startup).
+#[test_case]
+fn test_generic_heap_grow_after_tail_merging_free_keeps_allocations_disjoint() {
+    /// Heap arena backing store, aligned like real heap pages.
+    #[repr(align(16))]
+    struct AlignedArena([u8; 16384]);
+
+    let mut arena = AlignedArena([0u8; 16384]);
+    let start = arena.0.as_mut_ptr() as usize;
+    let env = DummyHeapEnv { max_size: 16384 };
+    let mut user_heap = heap::Heap::new(env);
+    user_heap.init(start, 4096).expect("init should succeed");
+
+    let layout_small = Layout::from_size_align(512, 8).unwrap();
+    let layout_grow = Layout::from_size_align(3800, 8).unwrap();
+    let layout_medium = Layout::from_size_align(2700, 8).unwrap();
+
+    // Step 1: Two small allocations leave a free tail block at the arena end.
+    let a = user_heap.allocate(layout_small);
+    let b = user_heap.allocate(layout_small);
+    assert!(!a.is_null() && !b.is_null(), "setup allocations must succeed");
+
+    // Step 2: Freeing `b` coalesces it forward with the free tail block.  The
+    // merged block now starts at `b`'s block address and ends at heap_end —
+    // it IS the new tail block and the cached tail pointer must follow it.
+    // SAFETY:
+    // - `b` was allocated above with `layout_small` and is freed exactly once.
+    unsafe { user_heap.deallocate(b, layout_small) };
+
+    // Step 3: This request does not fit in the merged free block and forces
+    // `grow_heap`, which derives the growth block's `prev_size` from the
+    // cached tail pointer.  With a stale tail this plants a wrong boundary
+    // tag and the free lists start describing overlapping memory.
+    let big = user_heap.allocate(layout_grow);
+    assert!(!big.is_null(), "growth allocation must succeed");
+
+    // SAFETY:
+    // - `a` was allocated above with `layout_small` and is freed exactly once.
+    unsafe { user_heap.deallocate(a, layout_small) };
+
+    // Step 4: Churn allocations.  On a corrupted heap one of these is carved
+    // out of a free block that overlaps `big`'s live payload.
+    let g = user_heap.allocate(layout_medium);
+    let h = user_heap.allocate(layout_small);
+    let i = user_heap.allocate(layout_small);
+    let j = user_heap.allocate(layout_small);
+    let k = user_heap.allocate(layout_small);
+
+    let live: [(*mut u8, usize); 6] = [
+        (big, 3800),
+        (g, 2700),
+        (h, 512),
+        (i, 512),
+        (j, 512),
+        (k, 512),
+    ];
+
+    for (ptr, _) in live.iter() {
+        assert!(!ptr.is_null(), "churn allocations must succeed");
+    }
+
+    // Step 5: Every live payload range must be pairwise disjoint.
+    for (idx1, &(p1, s1)) in live.iter().enumerate() {
+        for &(p2, s2) in live.iter().skip(idx1 + 1) {
+            let (a1, e1) = (p1 as usize, p1 as usize + s1);
+            let (a2, e2) = (p2 as usize, p2 as usize + s2);
+            assert!(
+                e1 <= a2 || e2 <= a1,
+                "allocations must not overlap after tail-merging free + growth"
+            );
+        }
+    }
+}

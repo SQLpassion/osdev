@@ -537,6 +537,17 @@ pub(crate) fn coalesce_free_block(state: &mut HeapState, block: *mut HeapBlockHe
     let final_size = unsafe { (&*coalesced).size() };
     update_next_prev_size(state, coalesced as usize, final_size);
 
+    // Step 4: Repair the cached tail pointer when the merge changed the last
+    // physical block.  If the merged block ends at `heap_end`, its start is
+    // now the tail — the previous `tail_block_addr` may point into the
+    // *interior* of the merged block (e.g. the absorbed old tail's header).
+    // Leaving it stale makes the next `grow_heap` read a leftover header
+    // there and stamp a wrong `prev_size` onto the growth block, which later
+    // coalesces into overlapping free blocks and corrupts the free lists.
+    if (coalesced as usize).saturating_add(final_size) == state.heap_end {
+        state.tail_block_addr = coalesced as usize;
+    }
+
     coalesced
 }
 
@@ -583,7 +594,27 @@ pub(crate) fn grow_heap(state: &mut HeapState, amount: usize, env: &impl HeapEnv
         if size < HEADER_SIZE {
             return false;
         }
-        size
+
+        // Defensive invariant check: the tail block must end exactly at the
+        // old heap end.  A mismatch means `tail_block_addr` is stale and the
+        // header just read is not the real last block.  Stamping its size as
+        // `prev_size` would let the new block coalesce backwards into the
+        // interior of another block — the corruption this guards against.
+        // Degrade gracefully: `prev_size = 0` (< HEADER_SIZE) disables the
+        // backward merge for this growth step, which only costs coalescing
+        // opportunity, never correctness.
+        debug_assert!(
+            state.tail_block_addr.saturating_add(size) == old_end,
+            "grow_heap: stale tail_block_addr {:#x} (size {:#x}, heap_end {:#x})",
+            state.tail_block_addr,
+            size,
+            old_end,
+        );
+        if state.tail_block_addr.saturating_add(size) != old_end {
+            0
+        } else {
+            size
+        }
     };
 
     // Step 2: Materialize a new free block in the freshly extended range.
