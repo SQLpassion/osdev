@@ -136,3 +136,17 @@ fn test_interpreter_print_execution() {
     interpreter.execute(&tokenize_line("PRINT \"literal\""));
     interpreter.execute(&tokenize_line("PRINT 456"));
 }
+
+#[test]
+fn test_interpreter_execute_script() {
+    let mut interpreter = Interpreter::new();
+    let script = "
+        LET A = 25
+        LET B = 35
+        IF A < B THEN LET C = 999
+    ";
+    interpreter.execute_script(script);
+    assert_eq!(interpreter.numeric_variables[0], 25);
+    assert_eq!(interpreter.numeric_variables[1], 35);
+    assert_eq!(interpreter.numeric_variables[2], 999);
+}

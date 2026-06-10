@@ -25,6 +25,17 @@ impl Interpreter {
         }
     }
 
+    /// Executes multiple lines of BASIC code from a script content string.
+    pub fn execute_script(&mut self, script: &str) {
+        for line in script.lines() {
+            let line_trimmed = line.trim();
+            if !line_trimmed.is_empty() {
+                let tokens = crate::token::tokenize_line(line_trimmed);
+                self.execute(&tokens);
+            }
+        }
+    }
+
     fn eval_expression(&self, tokens: &[Token], index: &mut usize) -> i32 {
         if *index >= tokens.len() {
             return 0;
