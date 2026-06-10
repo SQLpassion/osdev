@@ -331,6 +331,12 @@ int80_syscall_stub:
     // Disable interrupts again before restoring registers and returning.
     // This prevents a timer IRQ from observing a partially-restored GPR state
     // on the kernel stack between the last pop and iretq.
+    //
+    // Note: for Yield/Exit, syscall_rust_dispatch already executed cli BEFORE
+    // calling into the scheduler (this cli alone would be too late — the
+    // scheduler may return a different task's frame, and an IRQ between frame
+    // selection and this point would consume that frame and leave a stale
+    // pointer in rax).  For all other syscalls this cli is the only one needed.
     cli
     mov rsp, rax
 

@@ -3,6 +3,9 @@
 use core::mem::size_of;
 use core::ptr;
 
+extern crate alloc;
+use alloc::vec::Vec;
+
 use crate::arch::fpu;
 use crate::arch::interrupts::{InterruptStackFrame, SavedRegisters};
 use crate::memory::vmm;
@@ -351,13 +354,17 @@ pub(crate) fn select_next_task(
     // Step 1: Close out the previous running mark before selecting the next slot.
     // Keep explicit non-running states (Blocked/Zombie) untouched.
     if let Some(previous_slot) = meta.running_slot {
-        if previous_slot < meta.slots.len()
-            && meta.slots[previous_slot].used
-            && meta.slots[previous_slot].state == TaskState::Running
-        {
-            meta.slots[previous_slot].state = TaskState::Ready;
-
-            // Lazy FPU: if the outgoing task was the FPU owner, save its state.
+        if previous_slot < meta.slots.len() && meta.slots[previous_slot].used {
+            // Lazy FPU: if the outgoing task is the FPU owner, save its state.
+            //
+            // This must happen regardless of the task's scheduling state: a
+            // task that blocked itself (e.g. a blocking syscall sets `Blocked`
+            // before yielding) is no longer `Running` here, but its FPU/SSE
+            // registers are still live in the CPU.  Skipping the save would
+            // silently destroy the blocked task's FPU state — either when
+            // another task triggers `#NM` and takes over ownership, or when
+            // the blocked task resumes and `#NM` restores its stale buffer
+            // over the (still correct) live registers.
             //
             // FXSAVE64 does not check CR0.TS, so it is safe to call here
             // regardless of the current CR0.TS value.  The CPU FPU registers
@@ -376,6 +383,10 @@ pub(crate) fn select_next_task(
                 }
 
                 meta.fpu_owner = None;
+            }
+
+            if meta.slots[previous_slot].state == TaskState::Running {
+                meta.slots[previous_slot].state = TaskState::Ready;
             }
         }
     }
@@ -457,6 +468,45 @@ pub(crate) fn select_next_task(
         meta.running_slot = None;
         bootstrap_or_current(meta, current_frame)
     }
+}
+
+/// Drains `pending_free_stacks` for deallocation, re-queueing any stack that
+/// still hosts `current_frame`.
+///
+/// `remove_task` defers stack frees precisely because the terminating call may
+/// still be executing on the removed task's stack (e.g. `terminate_task` on
+/// the caller's own ID).  If the next timer tick interrupts that execution,
+/// the interrupted frame — and all code that runs until the IRQ stub finally
+/// switches RSP via `mov rsp, rax` — still lives inside one of the pending
+/// stacks.  Freeing that stack would hand it to the heap (free-list node and
+/// header writes at the block base, possible coalescing of neighbors) while
+/// the CPU is executing on it: a use-after-free.
+///
+/// Pending stacks never overlap, so at most one entry can contain
+/// `current_frame`; a single `position` scan suffices.  The match is re-queued
+/// for the next tick, by which point execution has provably moved off it (the
+/// tick that re-queues it returns a different frame).  `try_reserve` keeps the
+/// re-queue OOM-safe; on allocation failure the stack is intentionally leaked —
+/// a bounded leak is strictly safer than freeing the active stack.
+pub(crate) fn take_pending_stacks_for_free(
+    meta: &mut SchedulerMetadata,
+    current_frame: *const SavedRegisters,
+) -> Vec<(*mut u8, usize)> {
+    let mut stacks = core::mem::take(&mut meta.pending_free_stacks);
+
+    let frame_addr = current_frame as usize;
+    if let Some(index) = stacks.iter().position(|&(base, size)| {
+        let start = base as usize;
+        !base.is_null() && frame_addr >= start && frame_addr < start + size
+    }) {
+        let still_in_use = stacks.swap_remove(index);
+
+        if meta.pending_free_stacks.try_reserve(1).is_ok() {
+            meta.pending_free_stacks.push(still_in_use);
+        }
+    }
+
+    stacks
 }
 
 /// Frees heap-allocated task stacks outside the scheduler lock.

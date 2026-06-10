@@ -57,7 +57,7 @@ pub use api::{
 
 use manager::{
     bootstrap_or_current, find_entry_by_frame, frame_within_any_task_stack, free_pending_stacks,
-    reap_zombies, select_next_task,
+    reap_zombies, select_next_task, take_pending_stacks_for_free,
 };
 #[cfg(debug_assertions)]
 use manager::reset_scheduler_state;
@@ -318,7 +318,7 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
 
         if meta.run_queue.is_empty() {
             meta.running_slot = None;
-            stacks_to_free = core::mem::take(&mut meta.pending_free_stacks);
+            stacks_to_free = take_pending_stacks_for_free(meta, current_frame);
             let frame = bootstrap_or_current(meta, current_frame);
             drop(sched);
             free_pending_stacks(&stacks_to_free);
@@ -343,9 +343,10 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
         }
 
         // Bootstrap frame detection is done; take pending-free stacks for
-        // deallocation after the lock is released.  `mem::take` replaces
-        // `pending_free_stacks` with an empty Vec (no allocation).
-        stacks_to_free = core::mem::take(&mut meta.pending_free_stacks);
+        // deallocation after the lock is released.  Any stack that still
+        // hosts `current_frame` (self-termination via `terminate_task`) is
+        // re-queued for the next tick instead of being freed under the CPU.
+        stacks_to_free = take_pending_stacks_for_free(meta, current_frame);
 
         #[cfg(debug_assertions)]
         if TEST_STOP_REQUESTED.swap(false, Ordering::AcqRel) {
@@ -406,8 +407,10 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
 /// executed by a task raises `#NM`.  This function:
 ///
 /// 1. Clears `CR0.TS` so `FXRSTOR64` itself does not raise a recursive `#NM`.
-/// 2. Restores the current task's saved FPU state via `FXRSTOR64`.
-/// 3. Records the task as the new FPU owner so the *next* context switch knows
+/// 2. Defensively saves the previous owner's live FPU registers if ownership
+///    was not handed off at switch time (classic lazy-FPU protocol).
+/// 3. Restores the current task's saved FPU state via `FXRSTOR64`.
+/// 4. Records the task as the new FPU owner so the *next* context switch knows
 ///    whose state to save.
 ///
 /// After returning the `isr7_nm_stub` executes `iretq`, which re-runs the
@@ -435,7 +438,41 @@ pub fn handle_fpu_trap() {
         }
     };
 
-    // Step 2: Restore the task's saved FPU state.
+    // Step 2: Defensive save (classic lazy-FPU protocol): if another task
+    // still owns the live FPU registers, save them into that task's buffer
+    // before the restore below overwrites them.  With the unconditional save
+    // in `select_next_task` ownership should always be handed off at switch
+    // time, so this is a safety net against any future path that switches
+    // contexts without saving — losing a blocked task's FPU state would
+    // otherwise be a silent data corruption.
+    if let Some(owner) = meta.fpu_owner {
+        if owner == running_slot {
+            // The live registers already belong to the current task; restoring
+            // the saved buffer would overwrite newer live state with stale
+            // data.  CR0.TS is cleared, so the retried instruction proceeds.
+            return;
+        }
+
+        if owner < meta.slots.len() && meta.slots[owner].used {
+            let owner_ptr = meta.slots[owner].fpu_state;
+
+            if !owner_ptr.is_null() {
+                // SAFETY:
+                // - This requires `unsafe` because it executes privileged inline
+                //   assembly (FXSAVE64) and dereferences a raw pointer.
+                // - `owner_ptr` is a valid, 16-byte-aligned 512-byte buffer.
+                // - The owner's FPU state is still live in the CPU registers:
+                //   ownership only changes in this function or at FXSAVE time
+                //   in `select_next_task`, both of which update `fpu_owner`.
+                // - FXSAVE64 does not check CR0.TS (already cleared above).
+                unsafe { (*owner_ptr).save() };
+            }
+        }
+
+        meta.fpu_owner = None;
+    }
+
+    // Step 3: Restore the task's saved FPU state.
     let fpu_ptr = meta.slots[running_slot].fpu_state;
     if !fpu_ptr.is_null() {
         // SAFETY:
@@ -448,7 +485,7 @@ pub fn handle_fpu_trap() {
         unsafe { (*fpu_ptr).restore() };
     }
 
-    // Step 3: Record this task as the FPU owner.
+    // Step 4: Record this task as the FPU owner.
     meta.fpu_owner = Some(running_slot);
 }
 

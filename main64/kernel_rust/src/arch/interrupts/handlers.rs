@@ -223,6 +223,19 @@ pub unsafe extern "C" fn syscall_rust_dispatch(frame: *mut SavedRegisters) -> *m
     if syscall_nr == crate::syscall::SyscallId::Yield as u64
         || syscall_nr == crate::syscall::SyscallId::Exit as u64
     {
+        // Disable interrupts before entering the scheduler and keep them
+        // disabled until `iretq`.  The stub executed `sti` after saving the
+        // GPRs, so without this `cli` the `SCHED` guard inside `on_timer_tick`
+        // would re-enable interrupts on drop — after the scheduler has already
+        // committed to the next task (running_slot/CR3/RSP0 switched, its
+        // frame pointer about to be returned) but before the stub's own `cli`.
+        // A timer IRQ in that window would consume the selected task's frame
+        // and leave this task's saved `rax` pointing at a stale frame,
+        // corrupting the resume path.  The invariant is: IF stays 0 from frame
+        // selection until `iretq` — exactly what the hardware IRQ path already
+        // guarantees via its interrupt gate.  `iretq` restores the task's
+        // RFLAGS image (IF=1), so user-mode interrupt delivery is unaffected.
+        crate::arch::interrupts::disable();
         return crate::scheduler::on_timer_tick(frame as *mut SavedRegisters);
     }
 
