@@ -112,12 +112,18 @@ impl Interpreter {
             Token::If => {
                 index += 1;
                 let left = self.eval_expression(tokens, &mut index);
-                if index < tokens.len() && tokens[index] == Token::Greater {
+                if index < tokens.len() && (tokens[index] == Token::Greater || tokens[index] == Token::Less) {
+                    let op = tokens[index].clone();
                     index += 1;
                     let right = self.eval_expression(tokens, &mut index);
                     if index < tokens.len() && tokens[index] == Token::Then {
                         index += 1;
-                        if left > right {
+                        let condition = match op {
+                            Token::Greater => left > right,
+                            Token::Less => left < right,
+                            _ => false,
+                        };
+                        if condition {
                             // Execute remaining tokens starting from `index`
                             self.execute(&tokens[index..]);
                         }
@@ -128,3 +134,7 @@ impl Interpreter {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests/interpreter.rs"]
+mod tests;

@@ -1,16 +1,20 @@
-#![no_std]
-#![no_main]
+#![cfg_attr(not(test), no_std)]
+#![cfg_attr(not(test), no_main)]
 
 extern crate alloc;
 
 mod token;
 mod interpreter;
 
+#[cfg(not(test))]
 use lib_kaos::{print, println, console};
+#[cfg(not(test))]
 use token::tokenize_line;
+#[cfg(not(test))]
 use interpreter::Interpreter;
 
 /// The main entry point of the user-space basic interpreter.
+#[cfg(not(test))]
 #[no_mangle]
 #[link_section = ".ltext._start"]
 pub extern "C" fn _start() -> ! {
@@ -54,6 +58,7 @@ pub extern "C" fn _start() -> ! {
     lib_kaos::process::exit();
 }
 
+#[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     lib_kaos::process::exit()

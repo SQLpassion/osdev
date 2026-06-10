@@ -85,11 +85,16 @@ impl kernel_heap::HeapEnvironment for UserHeapEnv {
 #[inline(never)]
 unsafe fn get_heap_mut() -> &'static mut kernel_heap::Heap<UserHeapEnv> {
     let heap_addr: usize;
+    #[cfg(target_arch = "x86_64")]
     // SAFETY:
     // - Inline assembly loads the constant through a register, defeating LLVM
     //   provenance analysis that would otherwise nullify the cast.
     unsafe {
         core::arch::asm!("mov {}, {}", out(reg) heap_addr, const USER_HEAP_BASE);
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        heap_addr = USER_HEAP_BASE;
     }
     // SAFETY:
     // - `heap_addr` == `USER_HEAP_BASE`.
@@ -187,6 +192,7 @@ unsafe impl GlobalAlloc for SafeUserHeapAllocator {
     }
 }
 
+#[cfg(target_os = "none")]
 #[global_allocator]
 pub static ALLOCATOR: SafeUserHeapAllocator = SafeUserHeapAllocator;
 

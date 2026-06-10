@@ -12,6 +12,7 @@ pub enum Token {
     StringLiteral(String),
     Equals,
     Greater,
+    Less,
     Eof,
 }
 
@@ -85,9 +86,20 @@ pub fn tokenize_line(line: &str) -> Vec<Token> {
             continue;
         }
 
+        // Less than
+        if chars[i] == '<' {
+            tokens.push(Token::Less);
+            i += 1;
+            continue;
+        }
+
         // Unknown character
         i += 1;
     }
     tokens.push(Token::Eof);
     tokens
 }
+
+#[cfg(test)]
+#[path = "tests/tokenizer.rs"]
+mod tests;

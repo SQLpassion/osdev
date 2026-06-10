@@ -18,5 +18,4 @@ panic = "abort"
 [[bin]]
 name = "kbasic"
 path = "src/main.rs"
-test = false
 bench = false
