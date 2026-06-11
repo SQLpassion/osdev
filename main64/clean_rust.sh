@@ -18,8 +18,8 @@ cd kernel_rust
 echo "  -> Running cargo clean..."
 cargo clean
 
-cd ../kaosldr_64_rust
-echo "  -> Running cargo clean on kaosldr_64_rust..."
+cd ../kaosldr_64
+echo "  -> Running cargo clean on kaosldr_64..."
 cargo clean
 
 echo "[2/2] Cleaning everything else..."

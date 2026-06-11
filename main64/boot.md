@@ -34,7 +34,7 @@ The KAOS boot process is divided into three successive stages. Each stage has a 
                               |
                               v (64-Bit jump to 0x3000)
 +------------------------------------------------------------+
-| STAGE 3: 64-Bit Loader (kaosldr_64_rust / Rust Loader)     |
+| STAGE 3: 64-Bit Loader (kaosldr_64 / Rust Loader)     |
 | - Mode: 64-Bit Long Mode (Ring 0)                          |
 | - Initializes stack at 0x400000                            |
 | - Reads FAT12 filesystem via direct ATA PIO ports          |
@@ -118,7 +118,7 @@ Address           Size        Description
      * Sets the 64-bit stack pointer `RSP` to `0x400000`.
      * Jumps via `JMP 0x3000` into the loaded `KLDR64.BIN`.
 
-### Stage 3: 64-Bit Loader (`kaosldr_64_rust`)
+### Stage 3: 64-Bit Loader (`kaosldr_64`)
 * **Initial State:** Starts in 64-bit Long Mode at address `0x3000`. The code is written in Rust (`no_std`, `no_main`).
 * **Flow:**
   1. **Stack & VGA Initialization:** Establishes stack access and initializes the VGA text writer class for error printing.
