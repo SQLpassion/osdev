@@ -101,7 +101,7 @@ If the user asks to "document function X", ensure every non-trivial block in tha
 
 ### 6.1 Canonical style reference
 The canonical formatting/style reference is:
-- `main64/kernel_rust/src/memory/vmm.rs`
+- `main64/kernel/src/memory/vmm.rs`
 
 All newly generated Rust kernel code MUST match this look & feel.
 

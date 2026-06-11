@@ -23,7 +23,7 @@ use lib_tui::{
     SCREEN_COLS, SCREEN_ROWS,
 };
 
-#[path = "../../../kernel_rust/src/drivers/pci/database.rs"]
+#[path = "../../../kernel/src/drivers/pci/database.rs"]
 mod pci_database;
 
 

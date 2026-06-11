@@ -17,7 +17,7 @@
 #![allow(dead_code)]
 
 // Pull in kernel ABI types via path import — no separate Cargo crate needed.
-#[path = "../../kernel_rust/src/syscall/types.rs"]
+#[path = "../../kernel/src/syscall/types.rs"]
 mod kernel_types;
 
 pub use kernel_types::SysError;
@@ -46,7 +46,6 @@ pub mod time;
 #[no_mangle]
 #[link_section = ".data.keep"]
 static DUMMY_PROGBITS_FORCE_DATA: u8 = 1;
-
 
 #[macro_export]
 macro_rules! print {

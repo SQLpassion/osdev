@@ -5,7 +5,7 @@
       "name": "Debug KAOS Rust x64 via QEMU GDB Stub",
       "type": "cppdbg",
       "request": "launch",
-      "program": "${workspaceFolder}/main64/kernel_rust/target/x86_64-unknown-none/debug/kaos_kernel",
+      "program": "${workspaceFolder}/main64/kernel/target/x86_64-unknown-none/debug/kaos_kernel",
       "cwd": "${workspaceFolder}",
       "MIMode": "gdb",
       "miDebuggerPath": "rust-gdb",
@@ -20,7 +20,7 @@
         },
         {
           "description": "Load Rust kernel symbols at virtual address",
-          "text": "-interpreter-exec console \"add-symbol-file ${workspaceFolder}/main64/kernel_rust/target/x86_64-unknown-none/debug/kaos_kernel 0xFFFF800000100000\""
+          "text": "-interpreter-exec console \"add-symbol-file ${workspaceFolder}/main64/kernel/target/x86_64-unknown-none/debug/kaos_kernel 0xFFFF800000100000\""
         },
         {
           "description": "Load FILEDEMO user program symbols at virtual address",

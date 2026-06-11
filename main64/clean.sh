@@ -1,23 +1,34 @@
-# Remove the built KLDR16.BIN
-cd /src/main64/kaosldr_16
-make clean
+#!/bin/bash
 
-# Remove the built KLDR64.BIN
-cd /src/main64/kaosldr_64
-make clean
+set -e  # Exit on error
 
-# Remove the built kernel
-cd /src/main64/kernel
-make clean
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR"
 
-# Remove the program1
-cd /src/main64/programs/program1
-make clean
+echo "========================================"
+echo "  KAOS Clean-up Script"
+echo "========================================"
+echo ""
 
-# Remove the program2
-cd /src/main64/programs/program2
-make clean
+# Step 1: Clean the Rust kernel locally
+echo "[1/2] Cleaning Rust kernel..."
+echo "-----------------------------"
+cd kernel
 
-# Removes the command shell
-cd /src/main64/programs/shell
-make clean
+echo "  -> Running cargo clean..."
+cargo clean
+
+cd ../kaosldr_64
+echo "  -> Running cargo clean on kaosldr_64..."
+cargo clean
+
+echo "[2/2] Cleaning everything else..."
+echo "---------------------------------"
+cd ..
+rm -f boot/bootsector.bin
+rm -f kaosldr_16/kldr16.bin
+rm -f kaosldr_16/*.o
+rm -f kaosldr_64/kldr64.bin
+rm -f kaosldr_64/*.o
+rm -f kaos64.img
+rm -f kaos64.qcow2

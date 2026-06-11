@@ -12,10 +12,10 @@
 
 extern crate alloc;
 
-#[path = "../../kernel_rust/src/memory/vmm/vmm_constants.rs"]
+#[path = "../../kernel/src/memory/vmm/vmm_constants.rs"]
 mod vmm_constants;
 
-#[path = "../../kernel_rust/src/memory/heap/mod.rs"]
+#[path = "../../kernel/src/memory/heap/mod.rs"]
 mod kernel_heap;
 
 use core::alloc::{GlobalAlloc, Layout};
