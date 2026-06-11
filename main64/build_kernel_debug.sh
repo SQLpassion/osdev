@@ -29,6 +29,23 @@ ls -la target/x86_64-unknown-none/debug/kernel.bin
 cd "$SCRIPT_DIR"
 echo ""
 
+# Step 1b: Build Rust 64-bit kernel loader locally (debug mode)
+echo "[1b/3] Building Rust 64-bit kernel loader locally (debug)..."
+echo "--------------------------------------"
+cd kaosldr_64_rust
+
+echo "  -> Running cargo build (debug)..."
+cargo build
+
+echo "  -> Extracting flat binary with cargo objcopy..."
+cargo objcopy -- -O binary target/x86_64-unknown-none/debug/kldr64.bin
+
+echo "  -> Rust kernel loader built: kaosldr_64_rust/target/x86_64-unknown-none/debug/kldr64.bin"
+ls -la target/x86_64-unknown-none/debug/kldr64.bin
+
+cd "$SCRIPT_DIR"
+echo ""
+
 # Step 2: Build user-mode programs
 echo "[2/3] Building user-mode programs..."
 echo "------------------------------------"
@@ -53,19 +70,13 @@ cd kaosldr_16
 nasm -fbin kaosldr_entry.asm -o kldr16.bin
 cd ..
 
-echo "  -> Building kldr64.bin..."
-cd kaosldr_64
-make clean
-make
-cd ..
-
 echo "  -> Removing old disk image if exists..."
 rm -f kaos64_rust.img
 
 echo "  -> Creating FAT12 disk image..."
 fat_imgen -c -s boot/bootsector.bin -f kaos64_rust.img
 fat_imgen -m -f kaos64_rust.img -i kaosldr_16/kldr16.bin
-fat_imgen -m -f kaos64_rust.img -i kaosldr_64/kldr64.bin
+fat_imgen -m -f kaos64_rust.img -i kaosldr_64_rust/target/x86_64-unknown-none/debug/kldr64.bin
 fat_imgen -m -f kaos64_rust.img -i kernel_rust/target/x86_64-unknown-none/debug/kernel.bin
 fat_imgen -m -f kaos64_rust.img -i user_programs/hello/hello.bin -n HELLO.BIN
 fat_imgen -m -f kaos64_rust.img -i user_programs/readline/readline.bin -n READLINE.BIN

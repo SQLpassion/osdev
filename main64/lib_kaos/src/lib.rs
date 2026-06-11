@@ -37,6 +37,16 @@ pub mod pci;
 pub mod process;
 pub mod time;
 
+/// Non-zero dummy variable to force the `.data` output section of all user programs
+/// to be compiled as `SHT_PROGBITS` instead of `SHT_NOBITS`. This prevents `objcopy`
+/// from stripping the `.data` (and merged `.bss`) section, ensuring the flat binary
+/// file has the correct size, which is needed so the kernel loader pre-maps all
+/// required user memory pages.
+#[used]
+#[no_mangle]
+#[link_section = ".data.keep"]
+static DUMMY_PROGBITS_FORCE_DATA: u8 = 1;
+
 
 #[macro_export]
 macro_rules! print {

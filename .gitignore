@@ -56,6 +56,7 @@ Mkfile.old
 dkms.conf
 
 *.generated
+main64/kaosldr_64_rust/target/*
 main64/kernel_rust/target/*
 main64/user_programs/*/target/*
 main64/lib_kaos/target/*

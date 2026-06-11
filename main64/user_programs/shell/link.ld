@@ -29,6 +29,9 @@ SECTIONS
 
     .data : AT(ADDR(.data))
     {
+        /* Force section to be PROGBITS by keeping the dummy static from lib_kaos */
+        KEEP(*(.data.keep))
+
         /* Initialized writable globals. */
         *(.data .data.*)
     }
