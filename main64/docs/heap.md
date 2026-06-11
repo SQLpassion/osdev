@@ -1,7 +1,7 @@
 # Heap Manager Documentation
 
 This document describes the current heap manager implementation in
-[main64/kernel_rust/src/memory/heap/](../src/memory/heap/) in detail.
+[main64/kernel/src/memory/heap/](../src/memory/heap/) in detail.
 
 ## Table of Contents
 
@@ -660,7 +660,7 @@ the allocator is not yet initialized.
 
 ## 18. Integration Test Coverage
 
-`main64/kernel_rust/tests/heap_test.rs` covers:
+`main64/kernel/tests/heap_test.rs` covers:
 
 - Basic alloc/free round trip.
 - Reuse after free.
@@ -1035,7 +1035,7 @@ bi-directional coalescing that drains both bins and restores the original block.
 
 ## 24. Module Structure & File Splitting
 
-To improve code maintainability and avoid compiler warnings (`dead_code`) for generic components compiled under the kernel target, the heap manager has been refactored from a single file into a directory module at [main64/kernel_rust/src/memory/heap/](../src/memory/heap/).
+To improve code maintainability and avoid compiler warnings (`dead_code`) for generic components compiled under the kernel target, the heap manager has been refactored from a single file into a directory module at [main64/kernel/src/memory/heap/](../src/memory/heap/).
 
 ### 24.1 File Overview
 * **[mod.rs](../src/memory/heap/mod.rs)**: Entry point of the module. Declares the submodules and re-exports public items (such as `Heap` and `HeapEnvironment`) to preserve the stable API.
@@ -1050,11 +1050,11 @@ By isolating the generic core logic (`generic.rs` and `types.rs`) from bare-meta
 
 ## 25. User-Space Heap Manager
 
-The user-space programs (`hello`, `readline`, `filedemo`) utilize the same underlying segregated free-list allocator core logic ([kernel_rust/src/memory/heap/mod.rs](../src/memory/heap/mod.rs)) as the kernel. This is implemented via a proxy and module-level re-exports to avoid duplicating the complex allocation code.
+The user-space programs (`hello`, `readline`, `filedemo`) utilize the same underlying segregated free-list allocator core logic ([kernel/src/memory/heap/mod.rs](../src/memory/heap/mod.rs)) as the kernel. This is implemented via a proxy and module-level re-exports to avoid duplicating the complex allocation code.
 
 ### 25.1 Architecture & Integration
 The user-mode heap allocator is defined in [user_programs/common/heap.rs](../../user_programs/common/heap.rs):
-- **Crate Re-use**: The module path `#[path = "../../kernel_rust/src/memory/heap/mod.rs"] pub mod kernel_heap;` is imported directly.
+- **Crate Re-use**: The module path `#[path = "../../kernel/src/memory/heap/mod.rs"] pub mod kernel_heap;` is imported directly.
 - **Environment Abstraction**: `UserHeapEnv` implements the `kernel_heap::HeapEnvironment` trait:
   - `map_memory(start, end)`: Wraps the `Mmap` syscall (syscall nr=16) to map raw pages of size `INITIAL_PAGE_SIZE` (4 KiB) as needed.
   - `max_heap_size()`: Bounded to `256 MiB`.
@@ -1086,4 +1086,4 @@ The `Heap::deallocate` method receives a raw `*mut u8` pointer and reads its met
   ```rust
   pub unsafe fn deallocate(&mut self, ptr: *mut u8, layout: core::alloc::Layout)
   ```
-- **Caller Safety**: Callers in [user_programs/common/heap.rs](../../user_programs/common/heap.rs) and [kernel_rust/tests/heap_test.rs](../tests/heap_test.rs) invoke this method inside an `unsafe` block with an explicit `SAFETY:` comment detailing the invariants relied upon.
+- **Caller Safety**: Callers in [user_programs/common/heap.rs](../../user_programs/common/heap.rs) and [kernel/tests/heap_test.rs](../tests/heap_test.rs) invoke this method inside an `unsafe` block with an explicit `SAFETY:` comment detailing the invariants relied upon.

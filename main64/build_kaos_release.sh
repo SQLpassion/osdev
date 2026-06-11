@@ -96,6 +96,14 @@ echo "  -> Disk image created successfully!"
 ls -la kaos64.img
 '
 
+echo "  -> Creating qcow2 image for UTM..."
+cd "$SCRIPT_DIR"
+qemu-img convert -O qcow2 kaos64.img kaos64.qcow2 
+cp kaos64.qcow2 "$HOME/Library/Containers/com.utmapp.UTM/Data/Documents/KAOS x64.utm/Data/kaos64.qcow2"
+echo ""
+echo "  -> qcow2 image created successfully!"
+ls -la kaos64.qcow2
+
 echo ""
 echo "========================================"
 echo "  Release Build Complete!"

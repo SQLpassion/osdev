@@ -343,7 +343,7 @@ failed. `cargo test` reports the result accordingly.
 ## File Overview
 
 ```
-kernel_rust/
+kernel/
 ├── .cargo/config.toml         ← Target, linker flags, runner = "tests/test_runner.sh"
 ├── Cargo.toml                 ← [[test]] entries for each integration test
 ├── link.ld                    ← Linker script (shared by kernel and test binaries)

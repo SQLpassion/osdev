@@ -49,12 +49,12 @@ Anything an ELF loader needs to replace, modify, or interoperate with:
 
 | Concern | File | Notes |
 |---|---|---|
-| Loader entry points | `main64/kernel_rust/src/process/loader.rs` | `load_program_image`, `map_program_image_into_user_address_space`, `exec_from_fat12` |
-| Process descriptor | `main64/kernel_rust/src/process/types.rs` | `LoadedProgram`, `USER_PROGRAM_ENTRY_RIP`, `USER_PROGRAM_INITIAL_RSP`, `image_fits_user_code()` |
-| Address-space layout | `main64/kernel_rust/src/memory/vmm/vmm_constants.rs` | `USER_CODE_BASE/SIZE`, `USER_STACK_BASE/TOP`, `USER_HEAP_BASE/END` |
-| Region classifier | `main64/kernel_rust/src/memory/vmm/mod.rs` | `classify_user_region()` returns `UserRegion::{Code,Stack,Guard,Heap}` |
-| Demand-paging policy | `main64/kernel_rust/src/memory/vmm/page_fault.rs` | derives `writable` and `no_execute` from `UserRegion` — coupled to today's "code-only" assumption |
-| Page-table primitives | `main64/kernel_rust/src/memory/vmm/mapping.rs`, `page_table.rs` | `map_user_page(va, pfn, writable)`, `destroy_user_address_space_with_page_counts()` |
+| Loader entry points | `main64/kernel/src/process/loader.rs` | `load_program_image`, `map_program_image_into_user_address_space`, `exec_from_fat12` |
+| Process descriptor | `main64/kernel/src/process/types.rs` | `LoadedProgram`, `USER_PROGRAM_ENTRY_RIP`, `USER_PROGRAM_INITIAL_RSP`, `image_fits_user_code()` |
+| Address-space layout | `main64/kernel/src/memory/vmm/vmm_constants.rs` | `USER_CODE_BASE/SIZE`, `USER_STACK_BASE/TOP`, `USER_HEAP_BASE/END` |
+| Region classifier | `main64/kernel/src/memory/vmm/mod.rs` | `classify_user_region()` returns `UserRegion::{Code,Stack,Guard,Heap}` |
+| Demand-paging policy | `main64/kernel/src/memory/vmm/page_fault.rs` | derives `writable` and `no_execute` from `UserRegion` — coupled to today's "code-only" assumption |
+| Page-table primitives | `main64/kernel/src/memory/vmm/mapping.rs`, `page_table.rs` | `map_user_page(va, pfn, writable)`, `destroy_user_address_space_with_page_counts()` |
 | Build pipeline | `main64/build_user_programs.sh` | `cargo build` → `objcopy -O binary` for every user program |
 | User-program linker scripts | `main64/user_programs/*/link.ld` | currently merge `.bss/.lbss/COMMON` into `.data` as a workaround |
 
@@ -319,12 +319,12 @@ linker script. Verify with `llvm-readelf -l` after each script change.
 ## 9. Estimated Touch List
 
 ```
-main64/kernel_rust/src/process/loader.rs            (rewrite map/copy/teardown)
-main64/kernel_rust/src/process/types.rs             (LoadedProgram, entry RIP)
-main64/kernel_rust/src/memory/vmm/page_fault.rs     (drop USER_CODE demand-paging)
-main64/kernel_rust/src/memory/vmm/mapping.rs        (per-segment teardown API)
-main64/kernel_rust/src/memory/vmm/mod.rs            (classify_user_region naming)
-main64/kernel_rust/src/scheduler/roundrobin.rs      (TaskEntry segment list, if chosen)
+main64/kernel/src/process/loader.rs            (rewrite map/copy/teardown)
+main64/kernel/src/process/types.rs             (LoadedProgram, entry RIP)
+main64/kernel/src/memory/vmm/page_fault.rs     (drop USER_CODE demand-paging)
+main64/kernel/src/memory/vmm/mapping.rs        (per-segment teardown API)
+main64/kernel/src/memory/vmm/mod.rs            (classify_user_region naming)
+main64/kernel/src/scheduler/roundrobin.rs      (TaskEntry segment list, if chosen)
 main64/build_user_programs.sh                       (drop objcopy, ship ELF)
 main64/build_kernel_debug.sh                        (copy ELF instead of .bin)
 main64/build_kernel_release.sh                      (copy ELF instead of .bin)
@@ -335,7 +335,7 @@ main64/user_programs/*/link.ld                      (undo .bss-merge workaround,
 External crate to consider: `goblin` is unsuitable (`std`). A
 hand-rolled `ELF64Header` + `ProgramHeader` parser in `no_std` is small
 (< 200 lines) and avoids a heavy dependency. Place it under
-`main64/kernel_rust/src/process/elf.rs` next to the loader.
+`main64/kernel/src/process/elf.rs` next to the loader.
 
 ---
 

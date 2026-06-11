@@ -1,11 +1,11 @@
 # KAOS Kernel — Technical Code Review (2026-06-10)
 
-**Scope:** Full review of `main64/kernel_rust/src/` (memory, scheduler/sync/FPU, syscall/process,
+**Scope:** Full review of `main64/kernel/src/` (memory, scheduler/sync/FPU, syscall/process,
 arch/interrupts, drivers/FAT12). Focus: bugs and security vulnerabilities.
 **Methodology:** Five parallel deep reviews per subsystem, each verifying the actual code paths including
 assembly stubs, callers, and lock nesting. Speculative findings without a concrete failure scenario were discarded.
 
-**Build/Test:** `cargo build` / `cargo test` from `main64/kernel_rust/` (integration tests run as
+**Build/Test:** `cargo build` / `cargo test` from `main64/kernel/` (integration tests run as
 separate kernels in QEMU, see the `[[test]]` entries in `Cargo.toml`).
 
 ---

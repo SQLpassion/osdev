@@ -44,7 +44,7 @@ The KAOS boot process is divided into three successive stages. Each stage has a 
                               |
                               v
 +------------------------------------------------------------+
-|                  KAOS Rust Kernel (kernel_rust)            |
+|                  KAOS Rust Kernel (kernel)                 |
 +------------------------------------------------------------+
 ```
 
