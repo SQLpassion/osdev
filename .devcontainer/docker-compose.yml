@@ -9,7 +9,22 @@ services:
     container_name: kaos-devcontainer
     volumes:
       - ..:/workspace:cached
+      # Schnellere Build-Performance durch Vermeidung des macOS Host I/O Syncs auf die Target-Ordner:
+      - kernel-target:/workspace/main64/kernel/target
+      - kaosldr-target:/workspace/main64/kaosldr_64/target
+      - libkaos-target:/workspace/main64/lib_kaos/target
+      - libtui-target:/workspace/main64/lib_tui/target
+      - user-programs-target:/workspace/main64/user_programs
+      - cargo-cache:/root/.cargo
     network_mode: bridge
     extra_hosts:
       - "host.docker.internal:host-gateway"
     command: /bin/sh -c "while sleep 1000; do :; done"
+
+volumes:
+  kernel-target:
+  kaosldr-target:
+  libkaos-target:
+  libtui-target:
+  user-programs-target:
+  cargo-cache:
