@@ -6,6 +6,30 @@
     ./build_kaos_release.sh && qemu-system-x86_64 -drive format=raw,file=../kaos64.img --serial stdio
     ./build_kaos_debug.sh && qemu-system-x86_64 -drive format=raw,file=../kaos64.img -display curses
 
+####################################
+# Building inside the Dev Container
+####################################
+- Inside the Dev Container:
+    ./build.sh && qemu-system-x86_64 -drive format=raw,file=kaos64.img -display curses
+- On the host OS:
+    docker exec -it kaos-devcontainer /workspace/main64/build.sh
+
+#####################################
+# Debugging inside the Dev Container
+#####################################
+- Start QEMU on the host OS:
+    ./debug_qemu.sh
+- Inside the Dev Container:
+    Run the task "Attach to QEMU on host OS" in VScode
+
+#####################################
+# Run Tests
+#####################################
+- On the host OS (inside the folder main64/kernel):
+    cargo test 
+- Inside the Dev Container:
+    Currently not supported...
+
 ###########################
 # Run on physical Notebook
 ###########################
@@ -17,15 +41,6 @@
         wmic diskdrive list brief
         ./dd.exe if=d:\github\sqlpassion\osdev\main64\kaos64.img of=\\.\PhysicalDrive2 (where \\.\PhysicalDrive2 is the attached physical hard disk!)
         ./dd.exe if=\\.\PhysicalDrive2 of=d:\kaos64.ima bs=512 count=2880
-
-#####################
-# Debugging with GDB
-#####################
-- Run the following commands in osdev/main:
-    qemu-system-x86_64 -drive format=raw,file=kaos64.img -s -S
-    x86_64-elf-gdb -tui
-- break PrintRootDirectory
-- break shell_cls
 
 ###############
 # Git Commands

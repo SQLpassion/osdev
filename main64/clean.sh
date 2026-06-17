@@ -10,19 +10,41 @@ echo "  KAOS Clean-up Script"
 echo "========================================"
 echo ""
 
-# Step 1: Clean the Rust kernel locally
-echo "[1/2] Cleaning Rust kernel..."
-echo "-----------------------------"
+# Step 1: Clean the Rust kernel and loaders locally
+echo "[1/3] Cleaning Rust kernel and loader..."
+echo "----------------------------------------"
 cd kernel
-
-echo "  -> Running cargo clean..."
+echo "  -> Running cargo clean on kernel..."
 cargo clean
 
 cd ../kaosldr_64
 echo "  -> Running cargo clean on kaosldr_64..."
 cargo clean
 
-echo "[2/2] Cleaning everything else..."
+# Step 2: Clean Rust libraries and user programs
+echo "[2/3] Cleaning libraries and user programs..."
+echo "---------------------------------------------"
+cd ../lib_kaos
+if [ -f "Cargo.toml" ]; then
+    echo "  -> Running cargo clean on lib_kaos..."
+    cargo clean
+fi
+
+cd ../lib_tui
+if [ -f "Cargo.toml" ]; then
+    echo "  -> Running cargo clean on lib_tui..."
+    cargo clean
+fi
+
+cd ../user_programs
+for dir in */ ; do
+    if [ -f "${dir}Cargo.toml" ]; then
+        echo "  -> Running cargo clean on user_programs/${dir%/}"
+        (cd "$dir" && cargo clean)
+    fi
+done
+
+echo "[3/3] Cleaning build artifacts..."
 echo "---------------------------------"
 cd ..
 rm -f boot/bootsector.bin

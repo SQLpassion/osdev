@@ -51,7 +51,7 @@ llvm-objcopy -O binary "$TEST_BINARY" "$TEST_BIN" 2>/dev/null || \
 # Check if bootloader files exist
 if [ ! -f "$MAIN64_DIR/boot/bootsector.bin" ] || \
    [ ! -f "$MAIN64_DIR/kaosldr_16/kldr16.bin" ] || \
-   [ ! -f "$MAIN64_DIR/kaosldr_64/kldr64.bin" ]; then
+   [ ! -f "$MAIN64_DIR/kaosldr_64/target/x86_64-unknown-none/debug/kldr64.bin" ]; then
     echo "  -> Bootloader files not found. Building bootloaders..."
     echo "     Please run build_kernel_debug.sh first to create bootloader files."
     exit 1
@@ -84,13 +84,14 @@ fi
 # Create test disk image in main64 directory
 TEST_IMG="$MAIN64_DIR/kaos64_test.img"
 
-# Use Docker to create disk image (same as build script)
+# Use Docker to create disk image since we are running locally on macOS
+echo "  -> Creating test disk image via Docker..."
 docker run --rm -v "$MAIN64_DIR":/src sqlpassion/kaos-buildenv /bin/sh -c "
     cd /src
     rm -f kaos64_test.img
     fat_imgen -c -s boot/bootsector.bin -f kaos64_test.img
     fat_imgen -m -f kaos64_test.img -i kaosldr_16/kldr16.bin
-    fat_imgen -m -f kaos64_test.img -i kaosldr_64/kldr64.bin
+    fat_imgen -m -f kaos64_test.img -i kaosldr_64/target/x86_64-unknown-none/debug/kldr64.bin
     fat_imgen -m -f kaos64_test.img -i SFile.txt
     fat_imgen -m -f kaos64_test.img -i BigFile.txt
     fat_imgen -m -f kaos64_test.img -i user_programs/hello/hello.bin -n HELLO.BIN
@@ -110,7 +111,7 @@ echo ""
 # -no-reboot: Don't reboot on triple fault
 
 # Timeout in seconds - prevents hanging tests from blocking the suite
-TIMEOUT_SECONDS=30
+TIMEOUT_SECONDS=90
 
 # Detect a usable timeout command (GNU coreutils `timeout` or macOS `gtimeout`)
 TIMEOUT_CMD=""

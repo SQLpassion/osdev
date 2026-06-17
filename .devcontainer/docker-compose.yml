@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  devenv:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sqlpassion/kaos-devenv:latest
+    container_name: kaos-devcontainer
+    volumes:
+      - ..:/workspace:cached
+    network_mode: bridge
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: /bin/sh -c "while sleep 1000; do :; done"

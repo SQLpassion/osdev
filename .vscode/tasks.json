@@ -2,26 +2,23 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "Build KAOS Rust Kernel",
-            "type": "shell",
-            "command": "${workspaceFolder}/main64/build_kaos_debug.sh",
-            "options": {
-                "cwd": "${workspaceFolder}/main64"
-            },
-            "problemMatcher": "$rustc",
-            "group": {
-                "kind": "build",
-                "isDefault": true
-            }
-        },
-        {
-            "label": "Build & Debug KAOS Rust",
+            "label": "Build & Run KAOS Rust",
             "type": "shell",
             "command": "${workspaceFolder}/main64/build_kaos_debug.sh && qemu-img convert -O qcow2 ${workspaceFolder}/main64/kaos64.img ${workspaceFolder}/main64/kaos64.qcow2 && cp ${workspaceFolder}/main64/kaos64.qcow2 \"$HOME/Library/Containers/com.utmapp.UTM/Data/Documents/KAOS x64.utm/Data/kaos64.qcow2\" && qemu-system-x86_64 -drive format=raw,file=${workspaceFolder}/main64/kaos64.img -gdb tcp::12345 -S",
             "options": {
                 "cwd": "${workspaceFolder}/main64"
             },
-            "problemMatcher": "$rustc",
+            "problemMatcher": {
+                "owner": "custom",
+                "pattern": {
+                    "regexp": "^.*$"
+                },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": "^.*$",
+                    "endsPattern": "^.*$"
+                }
+            },
             "group": "build",
             "isBackground": true
         }

@@ -1,0 +1,15 @@
+{
+    "name": "KAOS Rust OS Development",
+    "dockerComposeFile": "docker-compose.yml",
+    "service": "devenv",
+    "workspaceFolder": "/workspace",
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "rust-lang.rust-analyzer",
+                "ms-vscode.cpptools",
+                "hweng.nasm"
+            ]
+        }
+    }
+}
