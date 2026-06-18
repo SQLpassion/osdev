@@ -1,0 +1,9 @@
+[build]
+# The UEFI target produces a PE32+ executable (a *.efi file) with the PE subsystem set to
+# "EFI Application" and the entry point fixed to the `efi_main` symbol. Unlike the legacy
+# x86_64-unknown-none loaders, no custom linker script (link.ld) is required: the layout is
+# handled by the UEFI target and rust-lld.
+target = "x86_64-unknown-uefi"
+
+[target.x86_64-unknown-uefi]
+linker = "rust-lld"

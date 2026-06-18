@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -E \"\\\\.\\(sh|py|c|rs|asm\\)$\")",
+      "Bash(chmod +x run_uefi.sh)",
+      "Bash(cargo build *)"
+    ]
+  }
+}

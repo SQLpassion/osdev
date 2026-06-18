@@ -62,13 +62,22 @@ RUN apt-get update && apt-get install -y \
     libmpfr-dev \
     libmpc-dev \
     qemu-system-x86 \
+    ovmf \
     libncursesw5-dev \
     ca-certificates
 
-# 2. Rustup und Rust Nightly für x86_64-unknown-none (Bare Metal)
+# 2. Rustup und Rust Nightly für die Bare-Metal-/UEFI-Targets
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain nightly
 ENV PATH="/root/.cargo/bin:${PATH}"
-RUN rustup target add x86_64-unknown-none
+# Alle Targets und Komponenten, die die rust-toolchain.toml-Dateien der Crates anfordern,
+# werden hier zur Image-Build-Zeit installiert. Dadurch muss rustup zur Laufzeit nie den
+# Toolchain-Stand verändern – das vermeidet den "cross-device link"-Fehler (os error 18),
+# der auftritt, wenn rustup im laufenden Container Dateien zwischen .rustup/toolchains und
+# .rustup/tmp (auf unterschiedlichen Mounts) verschieben will.
+#   - x86_64-unknown-none: kaosldr_64, kernel, user_programs (Bare Metal)
+#   - x86_64-unknown-uefi: kaosldr_uefi (UEFI-Loader)
+RUN rustup target add x86_64-unknown-none x86_64-unknown-uefi
+RUN rustup component add rust-src llvm-tools-preview
 RUN cargo install cargo-binutils
 
 # 3. Kopiere die Cross-Compiler-Toolchain & fat_imgen aus Phase 1

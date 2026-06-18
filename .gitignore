@@ -57,6 +57,9 @@ dkms.conf
 
 *.generated
 main64/kaosldr_64/target/*
+main64/kaosldr_uefi/target/*
+main64/kaosldr_uefi/esp/*
+main64/kaosldr_uefi/ovmf_vars.fd
 main64/kernel/target/*
 main64/user_programs/*/target/*
 main64/lib_kaos/target/*
