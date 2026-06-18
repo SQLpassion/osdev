@@ -154,20 +154,22 @@ fi
 # Disable set -e temporarily to capture QEMU exit code
 set +e
 
+QEMU_LOG="$RESULTS_DIR/$TEST_NAME.log"
+
 if [ -n "$TIMEOUT_CMD" ]; then
     $TIMEOUT_CMD $TIMEOUT_SECONDS qemu-system-x86_64 \
         -drive format=raw,file="$TEST_IMG" \
         -serial stdio \
         -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
         -display none \
-        -no-reboot < /dev/null
+        -no-reboot < /dev/null > "$QEMU_LOG" 2>&1
 else
     qemu-system-x86_64 \
         -drive format=raw,file="$TEST_IMG" \
         -serial stdio \
         -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
         -display none \
-        -no-reboot < /dev/null
+        -no-reboot < /dev/null > "$QEMU_LOG" 2>&1
 fi
 
 QEMU_EXIT=$?
@@ -175,16 +177,32 @@ QEMU_EXIT=$?
 # Re-enable set -e
 set -e
 
-# Record the test result
+# Output the logs so the user sees the output in the console
+cat "$QEMU_LOG"
+
+# Extract test case counts
+total_cases=$(grep -a -oE "Total:[[:space:]]+[0-9]+" "$QEMU_LOG" | tail -n 1 | grep -oE "[0-9]+" || true)
+passed_cases=$(grep -a -oE "Passed:[[:space:]]+[0-9]+" "$QEMU_LOG" | tail -n 1 | grep -oE "[0-9]+" || true)
+if [ -z "$total_cases" ] || [ "$total_cases" -eq 0 ]; then
+    total_cases=1
+    if [ $QEMU_EXIT -eq 33 ]; then
+        passed_cases=1
+    else
+        passed_cases=0
+    fi
+fi
+[ -z "$passed_cases" ] && passed_cases=0
+
+# Record the test result with counts
 if [ $QEMU_EXIT -eq 33 ]; then
-    echo "OK" > "$RESULTS_DIR/$TEST_NAME"
+    echo "OK:$total_cases:$passed_cases" > "$RESULTS_DIR/$TEST_NAME"
 else
-    echo "FAIL" > "$RESULTS_DIR/$TEST_NAME"
+    echo "FAIL:$total_cases:$passed_cases" > "$RESULTS_DIR/$TEST_NAME"
 fi
 
 # Count how many tests have finished in this run
 TOTAL_TESTS=$(ls -1 "$SCRIPT_DIR"/*.rs 2>/dev/null | wc -l)
-FINISHED_TESTS=$(find "$RESULTS_DIR" -maxdepth 1 -type f | wc -l)
+FINISHED_TESTS=$(find "$RESULTS_DIR" -maxdepth 1 -type f ! -name "*.log" | wc -l)
 
 if [ "$FINISHED_TESTS" -eq "$TOTAL_TESTS" ]; then
     if mkdir "$RESULTS_DIR/summary.lock" 2>/dev/null; then
@@ -192,25 +210,42 @@ if [ "$FINISHED_TESTS" -eq "$TOTAL_TESTS" ]; then
         echo "=================================================="
         echo "          GLOBAL TEST RUN SUMMARY"
         echo "=================================================="
-        passed=0
-        failed=0
+        passed_files=0
+        failed_files=0
+        total_cases_sum=0
+        passed_cases_sum=0
+        
         for f in "$RESULTS_DIR"/*; do
             [ -f "$f" ] || continue
+            case "$f" in
+                *.log) continue ;;
+            esac
             tname=$(basename "$f")
-            status=$(cat "$f")
+            
+            content=$(cat "$f")
+            status=$(echo "$content" | cut -d: -f1)
+            total=$(echo "$content" | cut -d: -f2)
+            passed=$(echo "$content" | cut -d: -f3)
+            
+            [ -z "$total" ] && total=0
+            [ -z "$passed" ] && passed=0
+            
+            total_cases_sum=$((total_cases_sum + total))
+            passed_cases_sum=$((passed_cases_sum + passed))
+            
             if [ "$status" = "OK" ]; then
-                printf "  %-40s [\033[0;32mPASSED\033[0m]\n" "$tname"
-                passed=$((passed + 1))
+                printf "  %-40s [\033[0;32mPASSED\033[0m] (%d/%d cases)\n" "$tname" "$passed" "$total"
+                passed_files=$((passed_files + 1))
             else
-                printf "  %-40s [\033[0;31mFAILED\033[0m]\n" "$tname"
-                failed=$((failed + 1))
+                printf "  %-40s [\033[0;31mFAILED\033[0m] (%d/%d cases)\n" "$tname" "$passed" "$total"
+                failed_files=$((failed_files + 1))
             fi
         done
         echo "--------------------------------------------------"
-        if [ $failed -eq 0 ]; then
-            echo -e "  \033[1;32mALL TESTS PASSED ($passed/$TOTAL_TESTS test files)\033[0m"
+        if [ $failed_files -eq 0 ]; then
+            echo -e "  \033[1;32mALL TESTS PASSED ($passed_cases_sum/$total_cases_sum test cases across $passed_files test files)\033[0m"
         else
-            echo -e "  \033[1;31mSOME TESTS FAILED ($failed/$TOTAL_TESTS test files failed)\033[0m"
+            echo -e "  \033[1;31mSOME TESTS FAILED ($passed_cases_sum/$total_cases_sum test cases passed)\033[0m"
         fi
         echo "=================================================="
         echo ""
