@@ -31,6 +31,18 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 MAIN64_DIR="$(cd "$PROJECT_DIR/.." && pwd)"
 
+# Initialize test results tracking
+RESULTS_DIR="$MAIN64_DIR/target/test-results"
+PID_FILE="$MAIN64_DIR/target/test_runner_parent.pid"
+mkdir -p "$RESULTS_DIR"
+
+CURRENT_PARENT_PID=$PPID
+if [ ! -f "$PID_FILE" ] || [ "$(cat "$PID_FILE" 2>/dev/null)" != "$CURRENT_PARENT_PID" ]; then
+    echo "$CURRENT_PARENT_PID" > "$PID_FILE"
+    rm -rf "$RESULTS_DIR"/* 2>/dev/null
+fi
+
+
 # Extract test name from binary path (without hash suffix)
 TEST_NAME_FULL=$(basename "$TEST_BINARY")
 # Remove the hash suffix (e.g., basic_boot-08ffcb2841a31825 -> basic_boot)
@@ -163,4 +175,53 @@ QEMU_EXIT=$?
 # Re-enable set -e
 set -e
 
-echo ""
+# Record the test result
+if [ $QEMU_EXIT -eq 33 ]; then
+    echo "OK" > "$RESULTS_DIR/$TEST_NAME"
+else
+    echo "FAIL" > "$RESULTS_DIR/$TEST_NAME"
+fi
+
+# Count how many tests have finished in this run
+TOTAL_TESTS=$(ls -1 "$SCRIPT_DIR"/*.rs 2>/dev/null | wc -l)
+FINISHED_TESTS=$(find "$RESULTS_DIR" -maxdepth 1 -type f | wc -l)
+
+if [ "$FINISHED_TESTS" -eq "$TOTAL_TESTS" ]; then
+    if mkdir "$RESULTS_DIR/summary.lock" 2>/dev/null; then
+        echo ""
+        echo "=================================================="
+        echo "          GLOBAL TEST RUN SUMMARY"
+        echo "=================================================="
+        passed=0
+        failed=0
+        for f in "$RESULTS_DIR"/*; do
+            [ -f "$f" ] || continue
+            tname=$(basename "$f")
+            status=$(cat "$f")
+            if [ "$status" = "OK" ]; then
+                printf "  %-40s [\033[0;32mPASSED\033[0m]\n" "$tname"
+                passed=$((passed + 1))
+            else
+                printf "  %-40s [\033[0;31mFAILED\033[0m]\n" "$tname"
+                failed=$((failed + 1))
+            fi
+        done
+        echo "--------------------------------------------------"
+        if [ $failed -eq 0 ]; then
+            echo -e "  \033[1;32mALL TESTS PASSED ($passed/$TOTAL_TESTS test files)\033[0m"
+        else
+            echo -e "  \033[1;31mSOME TESTS FAILED ($failed/$TOTAL_TESTS test files failed)\033[0m"
+        fi
+        echo "=================================================="
+        echo ""
+        rm -f "$TEST_BIN" "$TEST_IMG" "$PID_FILE"
+        rmdir "$RESULTS_DIR/summary.lock" 2>/dev/null
+        rm -rf "$RESULTS_DIR"
+    fi
+fi
+
+if [ $QEMU_EXIT -eq 33 ]; then
+    exit 0
+else
+    exit 1
+fi

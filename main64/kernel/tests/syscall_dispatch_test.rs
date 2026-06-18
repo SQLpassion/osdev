@@ -12,12 +12,19 @@ use kaos_kernel::syscall::{self, is_valid_user_buffer, SysError, SyscallId};
 #[no_mangle]
 #[link_section = ".text.boot"]
 pub extern "C" fn KernelMain(_kernel_size: u64) -> ! {
+    // Step 1: Initialize essential hardware drivers (serial output) and IDT interrupts.
     kaos_kernel::drivers::serial::init();
+    kaos_kernel::arch::interrupts::init();
+
+    // Step 2: Initialize memory management layers: physical allocator, virtual page tables, and kernel heap.
     kaos_kernel::memory::pmm::init(false);
     kaos_kernel::memory::vmm::init(false);
     kaos_kernel::memory::heap::init(false);
+
+    // Step 3: Disable verbose trace logs for syscall testing and run the test harness.
     kaos_kernel::syscall::set_syscall_trace_enabled(false);
     test_main();
+
     loop {
         core::hint::spin_loop();
     }

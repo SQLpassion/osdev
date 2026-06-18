@@ -287,14 +287,21 @@ fn test_scheduler_marks_selected_task_running_and_previous_ready() {
 /// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_selecting_user_task_updates_tss_rsp0_from_task_context() {
+    // Step 1: Initialize the scheduler and retrieve the current kernel PML4 page directory address.
+    // Setting the kernel address space CR3 in the scheduler ensures the active CR3 tracker starts in a known state.
     sched::init();
+    let kernel_cr3 = vmm::get_pml4_address();
+    sched::set_kernel_address_space_cr3(kernel_cr3);
 
+    // Step 2: Spawn a dummy kernel task and retrieve its context frame pointer.
     let task_a = sched::spawn_kernel_task(dummy_task_a).expect("task A should spawn");
     let frame_a = sched::task_frame_ptr(task_a).expect("task A frame should exist");
     let expected_rsp0 = 0xFFFF_8000_0013_7000u64;
 
+    // Step 3: Configure user context using the real kernel CR3. 
+    // Using a real, valid CR3 ensures that the CPU does not switch to an unmapped page table and triple-fault if a context switch occurs.
     assert!(
-        sched::set_task_user_context(task_a, 0x0010_0000, 0x0000_7FFF_FFFF_F000, expected_rsp0),
+        sched::set_task_user_context(task_a, kernel_cr3, 0x0000_7FFF_FFFF_F000, expected_rsp0),
         "setting user context for existing task must succeed"
     );
     assert!(
@@ -302,18 +309,20 @@ fn test_selecting_user_task_updates_tss_rsp0_from_task_context() {
         "task A must be flagged as user task"
     );
     assert!(
-        sched::task_context(task_a) == Some((0x0010_0000, 0x0000_7FFF_FFFF_F000, expected_rsp0)),
+        sched::task_context(task_a) == Some((kernel_cr3, 0x0000_7FFF_FFFF_F000, expected_rsp0)),
         "stored task context must match the configured values"
     );
 
-    // Seed a different value so the test proves an update happened.
+    // Step 4: Seed a different value in the TSS.RSP0 memory field to verify it gets updated.
     gdt::set_kernel_rsp0(0xFFFF_8000_0000_1000);
 
+    // Step 5: Start the scheduler and trigger a timer tick to select task A.
     sched::start();
     let mut bootstrap = SavedRegisters::default();
     let current = sched::on_timer_tick(&mut bootstrap as *mut SavedRegisters);
     assert!(current == frame_a, "first tick should select task A");
 
+    // Step 6: Verify that the task's configured kernel stack top has successfully been copied into TSS.RSP0.
     assert!(
         gdt::kernel_rsp0() == expected_rsp0,
         "selecting a user task must update TSS.RSP0 to the task's kernel stack top"

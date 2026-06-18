@@ -157,3 +157,35 @@ macro_rules! test_assert {
         }
     };
 }
+
+/// Helper function to check if a panic message contains a specific substring.
+/// This is used by panic contract tests to verify the expected panic behavior
+/// in a no_std environment.
+pub fn panic_message_contains(info: &core::panic::PanicInfo, expected: &str) -> bool {
+    struct Searcher<'a> {
+        search: &'a str,
+        found: bool,
+    }
+
+    impl<'a> core::fmt::Write for Searcher<'a> {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            // Check if the current chunk of the formatted panic message contains the substring
+            if s.contains(self.search) {
+                self.found = true;
+            }
+            Ok(())
+        }
+    }
+
+    use core::fmt::Write;
+    let mut searcher = Searcher {
+        search: expected,
+        found: false,
+    };
+    
+    // Format the panic message into our searcher to scan for the expected substring
+    let _ = write!(&mut searcher, "{}", info.message());
+    
+    searcher.found
+}
+

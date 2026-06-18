@@ -26,10 +26,7 @@ pub extern "C" fn KernelMain(_kernel_size: u64) -> ! {
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     let expected = "read_char_blocking called outside scheduled task";
-    let matches_contract = info
-        .message()
-        .as_str()
-        .is_some_and(|m| m.contains(expected));
+    let matches_contract = kaos_kernel::testing::panic_message_contains(info, expected);
 
     if matches_contract {
         exit_qemu(QemuExitCode::Success);

@@ -20,6 +20,7 @@ pub extern "C" fn KernelMain(_kernel_size: u64) -> ! {
 
     // Minimal memory stack required by VMM routines.
     pmm::init(false);
+    kaos_kernel::arch::interrupts::init();
     vmm::init(false);
     heap::init(false);
 
@@ -32,10 +33,7 @@ pub extern "C" fn KernelMain(_kernel_size: u64) -> ! {
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     let expected = "VMM: protection page fault";
-    let matches_contract = info
-        .message()
-        .as_str()
-        .is_some_and(|m| m.contains(expected));
+    let matches_contract = kaos_kernel::testing::panic_message_contains(info, expected);
 
     if matches_contract {
         exit_qemu(QemuExitCode::Success);
