@@ -124,6 +124,15 @@ pub fn get_devices() -> Vec<PciDevice> {
     PCI_DEVICES.lock().clone()
 }
 
+/// Return a copy of a single scanned PCI device.
+pub fn get_device(index: usize) -> Option<PciDevice> {
+    // Step 1: Lock the global PCI device list.
+    let devices = PCI_DEVICES.lock();
+
+    // Step 2: Retrieve and clone only the requested device.
+    devices.get(index).cloned()
+}
+
 /// Find a PCI device by Vendor ID and Device ID.
 pub fn find_device(vendor_id: u16, device_id: u16) -> Option<PciDevice> {
     let devices = PCI_DEVICES.lock();

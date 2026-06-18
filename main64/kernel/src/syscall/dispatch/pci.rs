@@ -16,24 +16,20 @@ pub fn syscall_get_pci_device_count_impl() -> SyscallResult<u64> {
 ///
 /// Copies metadata of a specific PCI device into user space.
 pub fn syscall_get_pci_device_impl(index: u64, out_ptr: *mut UserPciDevice) -> SyscallResult<u64> {
-    // Step 1: Query the boot-time cached PCI device registry.
-    let devices = pci::get_devices();
+    // Step 1: Query the single cached PCI device directly to avoid cloning the entire vector.
+    let dev = match pci::get_device(index as usize) {
+        Some(d) => d,
+        None => return Err(SyscallError::InvalidArg),
+    };
 
-    // Step 2: Validate the index is within bounds of the discovered devices.
-    if index >= devices.len() as u64 {
-        return Err(SyscallError::InvalidArg);
-    }
-
-    // Step 3: Verify that the user-space output pointer represents a valid,
+    // Step 2: Verify that the user-space output pointer represents a valid,
     // writable memory range in the Ring-3 address space.
     let struct_size = core::mem::size_of::<UserPciDevice>();
     if !is_valid_user_buffer(out_ptr as *const u8, struct_size) {
         return Err(SyscallError::InvalidArg);
     }
 
-    let dev = &devices[index as usize];
-
-    // Step 4: Map and construct the user-compatible BAR structures.
+    // Step 3: Map and construct the user-compatible BAR structures.
     let mut bars = [UserPciBar {
         bar_type: 0,
         flags: 0,

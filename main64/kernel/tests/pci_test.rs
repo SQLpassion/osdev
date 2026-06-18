@@ -242,4 +242,23 @@ fn test_pci_filter_by_category() {
     assert!(invalid.is_empty());
 }
 
+/// Contract: PCI device lookup query by index.
+/// Given: A completed PCI bus scan.
+/// When: Getting a device by index.
+/// Then: The get_device function returns the cloned device or None if out of bounds.
+/// Failure Impact: Indicates a regression in index-based PCI device query logic.
+#[test_case]
+fn test_pci_get_device() {
+    pci::init();
+    let count = pci::get_devices().len();
+
+    for idx in 0..count {
+        let dev = pci::get_device(idx);
+        assert!(dev.is_some(), "Should retrieve device at valid index");
+    }
+
+    let dev_invalid = pci::get_device(count);
+    assert!(dev_invalid.is_none(), "Should not retrieve device at out-of-bounds index");
+}
+
 
