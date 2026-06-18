@@ -3,7 +3,8 @@
     "allow": [
       "Bash(grep -E \"\\\\.\\(sh|py|c|rs|asm\\)$\")",
       "Bash(chmod +x run_uefi.sh)",
-      "Bash(cargo build *)"
+      "Bash(cargo build *)",
+      "Bash(bash -n build_uefi.sh)"
     ]
   }
 }

@@ -63,6 +63,8 @@ RUN apt-get update && apt-get install -y \
     libmpc-dev \
     qemu-system-x86 \
     ovmf \
+    gdisk \
+    mtools \
     libncursesw5-dev \
     ca-certificates
 

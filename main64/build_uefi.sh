@@ -1,10 +1,14 @@
 #!/bin/bash
-# build_uefi.sh - build the KAOS UEFI loader (kaosldr_uefi) and boot it in QEMU under OVMF.
+# build_uefi.sh - build the KAOS UEFI loader (kaosldr_uefi), produce a bootable disk image,
+# and boot it in QEMU under OVMF.
 #
-# For testing we let QEMU expose a host directory as a FAT volume (VVFAT, "fat:rw:<dir>"),
-# so no GPT/ESP image, mtools, parted or dd is required at this stage. The firmware finds
-# the loader at /EFI/BOOT/BOOTX64.EFI inside that directory. A real GPT/ESP disk image is
-# only needed later for writing to a USB stick / real hardware.
+# This builds a real GPT disk image with a FAT32 EFI System Partition, kaos64-uefi.img, holding
+# /EFI/BOOT/BOOTX64.EFI. The same image boots in QEMU here AND can be written 1:1 to a USB stick
+# for real hardware (see docs/uefi.md).
+#
+# Required host tools: a Rust nightly with the x86_64-unknown-uefi target, QEMU + OVMF, and
+# gptfdisk (sgdisk) + mtools. All are preinstalled in the dev container; on macOS install them
+# with `brew install qemu gptfdisk mtools`.
 
 set -e
 
@@ -14,16 +18,31 @@ cd "$SCRIPT_DIR"
 PROFILE="debug"
 TARGET="x86_64-unknown-uefi"
 EFI_BIN="kaosldr_uefi/target/$TARGET/$PROFILE/bootx64.efi"
-ESP_DIR="kaosldr_uefi/esp"
+IMG="kaos64-uefi.img"
 
 # 1) Build the loader (produces bootx64.efi).
 echo "==> Building kaosldr_uefi ($TARGET, $PROFILE)..."
 ( cd kaosldr_uefi && cargo build )
 
-# 2) Stage the EFI System Partition layout: /EFI/BOOT/BOOTX64.EFI
-echo "==> Staging ESP layout in $ESP_DIR ..."
-mkdir -p "$ESP_DIR/EFI/BOOT"
-cp "$EFI_BIN" "$ESP_DIR/EFI/BOOT/BOOTX64.EFI"
+# 2) Build the bootable GPT/ESP disk image (kaos64-uefi.img): a GPT disk with one FAT32 EFI
+# System Partition holding /EFI/BOOT/BOOTX64.EFI. The same image boots in QEMU below and can be
+# flashed 1:1 to a USB stick (see docs/uefi.md). Requires gptfdisk (sgdisk) + mtools on the host.
+echo "==> Creating bootable GPT/ESP image $IMG ..."
+IMG_SIZE_MB=128
+PART_OFFSET=1M                         # the ESP starts at sector 2048 (= 1 MiB)
+rm -f "$IMG"
+# Create the backing file. dd is portable across Linux and macOS (avoids GNU `truncate`).
+dd if=/dev/zero of="$IMG" bs=1048576 count="$IMG_SIZE_MB" 2>/dev/null
+# GPT with a single EFI System Partition (type ef00) spanning the rest of the disk.
+sgdisk --clear \
+       --new=1:2048:0 --typecode=1:ef00 --change-name=1:"EFI System Partition" \
+       "$IMG" >/dev/null
+# Format that partition as FAT32 and populate it (mtools' image@@offset syntax; no root needed).
+mformat -i "$IMG@@$PART_OFFSET" -F ::
+mmd     -i "$IMG@@$PART_OFFSET" ::/EFI ::/EFI/BOOT
+mcopy   -i "$IMG@@$PART_OFFSET" "$EFI_BIN" ::/EFI/BOOT/BOOTX64.EFI
+echo "==> $IMG ready. Flash to a USB stick with (DESTRUCTIVE - pick the right device!):"
+echo "        sudo dd if=$IMG of=/dev/<your-usb> bs=4M conv=fsync"
 
 # 3) Locate the OVMF firmware (UEFI for QEMU). Honor a manually provided OVMF_CODE first;
 # otherwise search the usual locations on macOS, Linux and Windows. Firmware file names vary:
@@ -76,7 +95,7 @@ if [ -z "$OVMF_VARS_SRC" ]; then
     echo "ERROR: Found OVMF code ($OVMF_CODE) but no matching vars file." >&2
     exit 1
 fi
-OVMF_VARS="$ESP_DIR/../ovmf_vars.fd"
+OVMF_VARS="kaosldr_uefi/ovmf_vars.fd"
 cp "$OVMF_VARS_SRC" "$OVMF_VARS"
 
 # 4) Choose how QEMU presents output.
@@ -135,7 +154,7 @@ echo "==> Launching QEMU [$DISPLAY_MODE: $DISPLAY_HINT]..."
 qemu-system-x86_64 \
     -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
     -drive if=pflash,format=raw,file="$OVMF_VARS" \
-    -drive format=raw,file=fat:rw:"$ESP_DIR" \
+    -drive format=raw,file="$IMG" \
     "${QEMU_DISPLAY[@]}" \
     -net none \
     -m 256M

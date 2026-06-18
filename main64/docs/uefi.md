@@ -32,7 +32,7 @@ fixed by the `x86_64-unknown-uefi` target:
    is a UEFI application (as opposed to an EFI boot-service or runtime driver).
 3. **Entry point = `efi_main`.** The linker (`rust-lld`) wires the entry to the `efi_main`
    symbol in `src/main.rs`, declared with the `extern "efiapi"` calling convention the firmware
-   expects (see §5).
+   expects (see §4).
 
 Build details specific to this project:
 
@@ -43,12 +43,15 @@ Build details specific to this project:
   Protocol) and the COM1 serial driver are hand-declared in `src/main.rs` and `src/serial.rs`.
 
 **What `bootx64.efi` is *not*:** it is not a disk image, not a partition, and not a boot sector.
-It is just the bare executable. Turning it into something the firmware can find and start is the
-job of `build_uefi.sh` (§3–§4).
+It is just the bare executable. Turning it into a bootable medium is the job of `build_uefi.sh`
+(§2).
 
 ---
 
-## 2. The build & staging pipeline
+## 2. The build & image pipeline
+
+`build_uefi.sh` turns the loader into a **single, real bootable disk image** that is used both
+for the QEMU test and for real hardware (no separate "test vs. flash" artifacts):
 
 ```
   kaosldr_uefi/src/{main.rs, serial.rs}
@@ -57,30 +60,45 @@ job of `build_uefi.sh` (§3–§4).
             ▼
   target/x86_64-unknown-uefi/debug/bootx64.efi      ← PE32+ "EFI Application"
             │
-            │  cp                                    (build_uefi.sh, step 2)
+            │  build_uefi.sh  (dd + sgdisk + mtools, no root)
             ▼
-  kaosldr_uefi/esp/EFI/BOOT/BOOTX64.EFI             ← UEFI fallback boot path
+  kaos64-uefi.img                                   ← GPT disk image
+   ├─ protective MBR + GPT header
+   └─ partition 1: EFI System Partition, FAT32 (type ef00)
+         └─ /EFI/BOOT/BOOTX64.EFI                   ← UEFI fallback boot path
             │
-            │  staged alongside the firmware files:
-            ├─ OVMF_CODE.fd   (firmware code, read-only)        ┐
-            ├─ ovmf_vars.fd   (writable NVMR copy, step 3)      ├─ handed to QEMU (step 5)
-            └─ esp/           (exposed as a FAT disk via VVFAT) ┘
+            │  + OVMF_CODE.fd (firmware, ro)  + ovmf_vars.fd (NVRAM, writable copy)
             ▼
-  qemu-system-x86_64  -drive pflash(CODE) -drive pflash(VARS) -drive fat:rw:esp ...
+  qemu-system-x86_64  -drive pflash(CODE) -drive pflash(VARS) -drive raw(kaos64-uefi.img) ...
+            │
+            └───────────────►  same image:  dd → USB stick → real UEFI hardware
 ```
 
 ### Step 1 — Build
 `cargo build` in the crate directory → `bootx64.efi` (§1).
 
-### Step 2 — Stage the ESP layout
+### Step 2 — Build the bootable GPT/ESP image (`kaos64-uefi.img`)
+A real disk image is assembled, **without root**, using `dd` + `gptfdisk` (`sgdisk`) + `mtools`:
+
+```bash
+dd if=/dev/zero of=kaos64-uefi.img bs=1048576 count=128          # 128 MiB backing file
+sgdisk --clear \
+       --new=1:2048:0 --typecode=1:ef00 --change-name=1:"EFI System Partition" \
+       kaos64-uefi.img                                           # GPT + one ESP (type ef00)
+mformat -i kaos64-uefi.img@@1M -F ::                             # FAT32 in the partition (@1 MiB)
+mmd     -i kaos64-uefi.img@@1M ::/EFI ::/EFI/BOOT                # create /EFI/BOOT
+mcopy   -i kaos64-uefi.img@@1M bootx64.efi ::/EFI/BOOT/BOOTX64.EFI
 ```
-kaosldr_uefi/esp/EFI/BOOT/BOOTX64.EFI   ← copy of bootx64.efi
-```
+
 This encodes the **UEFI boot convention**: with no extra configuration, a UEFI firmware searches
-a FAT-formatted EFI System Partition (ESP) for the fixed *fallback / removable-media* path
-**`/EFI/BOOT/BOOTX64.EFI`** (the x86-64 default). The script reproduces exactly this directory
-tree in a host folder (`esp/`) and drops the loader there as `BOOTX64.EFI`. Nothing else is
-required for the firmware to start it.
+a FAT-formatted EFI System Partition for the fixed *fallback / removable-media* path
+**`/EFI/BOOT/BOOTX64.EFI`** (the x86-64 default). `mtools`' `image@@1M` syntax operates directly
+on the partition at byte offset 1 MiB (sector 2048), so no loop device / mount / root is needed.
+
+**Required host tools:** `gptfdisk` (`sgdisk`) and `mtools`. They are preinstalled in the dev
+container (`.devcontainer/Dockerfile`); on macOS install them with
+`brew install gptfdisk mtools`. The image-file creation uses `dd` (not GNU `truncate`) so it is
+portable across Linux and macOS.
 
 ### Step 3 — Obtain the OVMF firmware
 QEMU does **not** emulate UEFI itself — it needs a firmware image. That is **OVMF** (the EDK2
@@ -104,16 +122,16 @@ Selects only *how output is shown* (window vs. serial); irrelevant to booting. S
 qemu-system-x86_64 \
     -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \  # firmware code as flash
     -drive if=pflash,format=raw,file="$OVMF_VARS" \              # NVRAM (writable)
-    -drive format=raw,file=fat:rw:"$ESP_DIR" \                   # esp/ as a FAT "disk"
+    -drive format=raw,file="$IMG" \                              # the real GPT/ESP disk image
     "${QEMU_DISPLAY[@]}" -net none -m 256M
 ```
 The three `-drive` lines are the core:
 
 - **`pflash` (CODE + VARS):** maps OVMF as the machine's firmware flash → the VM *is* a UEFI
   machine.
-- **`fat:rw:esp` (VVFAT):** QEMU's trick — it presents the host folder `esp/` to the guest as a
-  **FAT-formatted disk**, on the fly. No real GPT/ESP image, no `mkfs`, no `dd` needed for
-  testing. The firmware sees a FAT disk, finds `/EFI/BOOT/BOOTX64.EFI`, and starts it.
+- **`-drive format=raw,file=kaos64-uefi.img`:** attaches the real disk image as a virtual disk.
+  QEMU+OVMF therefore boot **exactly the artifact you flash to USB** — the QEMU test and real
+  hardware run the same bytes.
 
 ---
 
@@ -134,7 +152,7 @@ The three `-drive` lines are the core:
         │   BDS phase: find a bootable medium
         ▼
 ┌──────────────────────────────────────────────────────────────┐
-│ VVFAT drive presented as a FAT volume                         │
+│ GPT disk (kaos64-uefi.img) → EFI System Partition (FAT32)     │
 │   firmware looks for the fallback path:                       │
 │        /EFI/BOOT/BOOTX64.EFI                                  │
 └──────────────────────────────────────────────────────────────┘
@@ -155,13 +173,25 @@ The three `-drive` lines are the core:
 This matches what the serial log shows in practice:
 `BdsDxe: starting Boot0001 …` (OVMF loads our application) → `KAOS UEFI loader: hello …`.
 
-### QEMU vs. real hardware
+### Real hardware
 
-The `fat:rw:` VVFAT drive is a **test-only** convenience. For a USB stick / real hardware
-(roadmap step 3), steps 2 and 5 are replaced by a **real GPT image with a FAT ESP**
-(`parted` / `mkfs.fat` / `mcopy`), onto which the *same* `BOOTX64.EFI` is copied to the *same*
-path. The loader binary is identical — only the "packaging" (VVFAT folder ↔ real disk image)
-differs.
+Because `build_uefi.sh` already produces a real GPT/ESP image, real hardware needs **no
+different artifact** — write the very same `kaos64-uefi.img` 1:1 to a USB stick (or SSD):
+
+```bash
+sudo dd if=kaos64-uefi.img of=/dev/<your-usb> bs=4M conv=fsync   # DESTRUCTIVE — pick the right device!
+```
+
+Then on the target machine: **disable Secure Boot** (the binary is unsigned), **disable
+CSM/legacy** (force UEFI), and boot from the stick. On real hardware the firmware renders the
+`ConOut` output directly on the monitor, so the "hello" appears on screen (serial output comes in
+addition if a serial port/adapter is present).
+
+> **The target must actually support UEFI OS boot.** Pure legacy-BIOS machines (e.g. the
+> ThinkPad W510) cannot boot this image: a legacy BIOS runs the GPT *protective MBR*, which holds
+> no boot code, so you only get a blinking text-mode caret. Note that enabling AHCI is unrelated
+> to UEFI. Check Windows `msinfo32` → "BIOS Mode": `UEFI` is required; `Legacy` means the machine
+> cannot UEFI-boot. Use UEFI-capable hardware (~2012+) or QEMU+OVMF for UEFI testing.
 
 ---
 
@@ -232,11 +262,14 @@ Microsoft-free despite being a PE/COFF file.
 
 - `cargo build` emits one artifact: `bootx64.efi`, a PE32+ "EFI Application" with entry
   `efi_main` (`extern "efiapi"`) — not a disk image.
-- `build_uefi.sh` then: builds it → stages it at `esp/EFI/BOOT/BOOTX64.EFI` (the UEFI fallback
-  path) → obtains OVMF code + a writable vars copy → launches QEMU with OVMF as `pflash` and the
-  `esp/` folder as a VVFAT FAT disk.
+- `build_uefi.sh` then: builds it → assembles a real GPT disk image `kaos64-uefi.img` with a
+  FAT32 EFI System Partition holding `/EFI/BOOT/BOOTX64.EFI` (`dd` + `sgdisk` + `mtools`, no
+  root) → obtains OVMF code + a writable vars copy → boots that image in QEMU with OVMF as
+  `pflash`.
+- The same `kaos64-uefi.img` is what you `dd` to a USB stick for real (UEFI-capable) hardware —
+  QEMU test and hardware run identical bytes. Legacy-BIOS-only machines cannot boot it.
 - At runtime: QEMU+OVMF initialise UEFI → the firmware finds `/EFI/BOOT/BOOTX64.EFI` on the FAT
-  volume → loads the PE32+ image and calls `efi_main` → the loader prints to ConOut and COM1.
+  ESP → loads the PE32+ image and calls `efi_main` → the loader prints to ConOut and COM1.
 - The PE/COFF format is a historical legacy from Intel's Itanium-era EFI; the UEFI spec
   re-specifies the subset openly, COFF itself is of Unix origin, and open toolchains produce it
   with zero Microsoft dependency. The same applies to the `efiapi` (MS x64) calling convention.
