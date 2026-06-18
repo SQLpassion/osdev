@@ -84,21 +84,39 @@ fi
 # Create test disk image in main64 directory
 TEST_IMG="$MAIN64_DIR/kaos64_test.img"
 
-# Use Docker to create disk image since we are running locally on macOS
-echo "  -> Creating test disk image via Docker..."
-docker run --rm -v "$MAIN64_DIR":/src sqlpassion/kaos-buildenv /bin/sh -c "
-    cd /src
-    rm -f kaos64_test.img
-    fat_imgen -c -s boot/bootsector.bin -f kaos64_test.img
-    fat_imgen -m -f kaos64_test.img -i kaosldr_16/kldr16.bin
-    fat_imgen -m -f kaos64_test.img -i kaosldr_64/target/x86_64-unknown-none/debug/kldr64.bin
-    fat_imgen -m -f kaos64_test.img -i SFile.txt
-    fat_imgen -m -f kaos64_test.img -i BigFile.txt
-    fat_imgen -m -f kaos64_test.img -i user_programs/hello/hello.bin -n HELLO.BIN
-    fat_imgen -m -f kaos64_test.img -i user_programs/readline/readline.bin -n READLINE.BIN
-    fat_imgen -m -f kaos64_test.img -i user_programs/filedemo/filedemo.bin -n FILEDEMO.BIN
-    fat_imgen -m -f kaos64_test.img -i test_kernel.bin -n kernel.bin
-" 2>/dev/null
+# Create test disk image
+if command -v fat_imgen &>/dev/null; then
+    echo "  -> Creating test disk image natively..."
+    (
+        cd "$MAIN64_DIR"
+        rm -f kaos64_test.img
+        fat_imgen -c -s boot/bootsector.bin -f kaos64_test.img
+        fat_imgen -m -f kaos64_test.img -i kaosldr_16/kldr16.bin
+        fat_imgen -m -f kaos64_test.img -i kaosldr_64/target/x86_64-unknown-none/debug/kldr64.bin
+        fat_imgen -m -f kaos64_test.img -i SFile.txt
+        fat_imgen -m -f kaos64_test.img -i BigFile.txt
+        fat_imgen -m -f kaos64_test.img -i user_programs/hello/hello.bin -n HELLO.BIN
+        fat_imgen -m -f kaos64_test.img -i user_programs/readline/readline.bin -n READLINE.BIN
+        fat_imgen -m -f kaos64_test.img -i user_programs/filedemo/filedemo.bin -n FILEDEMO.BIN
+        fat_imgen -m -f kaos64_test.img -i test_kernel.bin -n kernel.bin
+    )
+else
+    # Use Docker to create disk image since we are running locally on macOS
+    echo "  -> Creating test disk image via Docker..."
+    docker run --rm -v "$MAIN64_DIR":/src sqlpassion/kaos-buildenv /bin/sh -c "
+        cd /src
+        rm -f kaos64_test.img
+        fat_imgen -c -s boot/bootsector.bin -f kaos64_test.img
+        fat_imgen -m -f kaos64_test.img -i kaosldr_16/kldr16.bin
+        fat_imgen -m -f kaos64_test.img -i kaosldr_64/target/x86_64-unknown-none/debug/kldr64.bin
+        fat_imgen -m -f kaos64_test.img -i SFile.txt
+        fat_imgen -m -f kaos64_test.img -i BigFile.txt
+        fat_imgen -m -f kaos64_test.img -i user_programs/hello/hello.bin -n HELLO.BIN
+        fat_imgen -m -f kaos64_test.img -i user_programs/readline/readline.bin -n READLINE.BIN
+        fat_imgen -m -f kaos64_test.img -i user_programs/filedemo/filedemo.bin -n FILEDEMO.BIN
+        fat_imgen -m -f kaos64_test.img -i test_kernel.bin -n kernel.bin
+    " 2>/dev/null
+fi
 
 # Run QEMU with the test kernel
 echo ""
@@ -130,14 +148,14 @@ if [ -n "$TIMEOUT_CMD" ]; then
         -serial stdio \
         -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
         -display none \
-        -no-reboot
+        -no-reboot < /dev/null
 else
     qemu-system-x86_64 \
         -drive format=raw,file="$TEST_IMG" \
         -serial stdio \
         -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
         -display none \
-        -no-reboot
+        -no-reboot < /dev/null
 fi
 
 QEMU_EXIT=$?

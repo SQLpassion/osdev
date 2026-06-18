@@ -28,7 +28,7 @@
 - On the host OS (inside the folder main64/kernel):
     cargo test 
 - Inside the Dev Container:
-    Currently not supported...
+    cargo test
 
 ###########################
 # Run on physical Notebook
