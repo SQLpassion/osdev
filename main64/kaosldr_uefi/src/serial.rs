@@ -36,7 +36,7 @@ pub fn init() {
     unsafe {
         outb(COM1 + 1, 0x00); // Disable all UART interrupts.
         outb(COM1 + 3, 0x80); // Enable DLAB to program the baud-rate divisor.
-        outb(COM1 + 0, 0x03); // Divisor low byte  (115200 / 3 = 38400 baud).
+        outb(COM1, 0x03);     // Divisor low byte  (115200 / 3 = 38400 baud).
         outb(COM1 + 1, 0x00); // Divisor high byte.
         outb(COM1 + 3, 0x03); // 8N1; also clears DLAB.
         outb(COM1 + 2, 0xC7); // Enable and clear the FIFO, 14-byte trigger threshold.

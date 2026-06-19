@@ -1,9 +1,11 @@
 //! Physical memory manager implementation.
 
+use crate::boot_info::{BootInfo, UnifiedMemoryEntry, BOOT_INFO_PTR};
 use crate::memory::bios::{self, BiosInformationBlock, BiosMemoryRegion};
 use super::types::{
     align_up, clear_bit, set_bit, virt_to_phys, PageFrame, PmmLayoutHeader, PmmRegion, KERNEL_OFFSET, PAGE_SIZE, STACK_TOP
 };
+use core::sync::atomic::Ordering;
 
 extern "C" {
     /// Linker-defined symbol marking the end of the kernel BSS section
@@ -39,18 +41,6 @@ impl PhysicalMemoryManager {
     /// Constructs the PMM layout and initializes region metadata.
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
-        // SAFETY:
-        // - Bootloader populated BIOS data at fixed offsets before kernel entry.
-        // - `BIB_OFFSET` and `MEMORYMAP_OFFSET` point to valid static data.
-        let (bib, region) = unsafe {
-            (
-                (bios::BIB_OFFSET as *mut BiosInformationBlock)
-                    .as_mut()
-                    .unwrap(),
-                bios::MEMORYMAP_OFFSET as *const BiosMemoryRegion,
-            )
-        };
-
         // Place PMM layout right after the kernel image (including BSS), aligned to 4K.
         // SAFETY: `__bss_end` is a linker-defined symbol with static lifetime.
         let kernel_end_virt = unsafe { &__bss_end as *const u8 as u64 };
@@ -70,49 +60,105 @@ impl PhysicalMemoryManager {
 
         let mut pmm = Self { header };
 
-        // Count usable regions first
+        // Count usable regions and initialize region array
         let mut count = 0u32;
+        let boot_info_raw = BOOT_INFO_PTR.load(Ordering::Acquire);
 
-        for i in 0..bib.memory_map_entries as usize {
+        if boot_info_raw != 0 {
             // SAFETY:
-            // - `i` is bounded by `memory_map_entries`.
-            // - `region` points to a contiguous BIOS memory map array.
-            let r = unsafe { &*region.add(i) };
-            if r.region_type == 1 && r.start >= KERNEL_OFFSET {
-                count += 1;
+            // - `boot_info_raw` contains a valid pointer to the unified BootInfo structure.
+            // - The memory map array it references contains valid, aligned records in low memory.
+            unsafe {
+                let boot_info = &*(boot_info_raw as *const BootInfo);
+                let entries = boot_info.memory_map_len as usize;
+                let entry_ptr = boot_info.memory_map_addr as *const UnifiedMemoryEntry;
+
+                // Step 1: Count usable regions above 1MB
+                for i in 0..entries {
+                    let entry = &*entry_ptr.add(i);
+                    if entry.is_usable && entry.start >= KERNEL_OFFSET {
+                        count += 1;
+                    }
+                }
+
+                (*header).region_count = count;
+                let regions = pmm.regions();
+                let mut idx = 0usize;
+
+                // Step 2: Populate the region table from the unified map
+                for i in 0..entries {
+                    let entry = &*entry_ptr.add(i);
+                    if entry.is_usable && entry.start >= KERNEL_OFFSET {
+                        let frames = entry.size / PAGE_SIZE;
+                        let bitmap_bytes = align_up(frames.div_ceil(8), 8);
+
+                        regions[idx] = PmmRegion {
+                            start: entry.start,
+                            frames_total: frames,
+                            frames_free: frames,
+                            bitmap_start: 0,
+                            bitmap_bytes,
+                        };
+                        idx += 1;
+                    }
+                }
             }
-        }
-        
-        // SAFETY: `header` is valid and writable during PMM initialization.
-        unsafe {
-            (*header).region_count = count;
+        } else {
+            // SAFETY:
+            // - Bootloader populated BIOS data at fixed offsets before kernel entry.
+            // - `BIB_OFFSET` and `MEMORYMAP_OFFSET` point to valid static data.
+            let (bib, region) = unsafe {
+                (
+                    (bios::BIB_OFFSET as *mut BiosInformationBlock)
+                        .as_mut()
+                        .unwrap(),
+                    bios::MEMORYMAP_OFFSET as *const BiosMemoryRegion,
+                )
+            };
+
+            // Step 1: Count usable regions above 1MB
+            for i in 0..bib.memory_map_entries as usize {
+                // SAFETY:
+                // - `i` is bounded by `memory_map_entries`.
+                // - `region` points to a contiguous BIOS memory map array.
+                let r = unsafe { &*region.add(i) };
+                if r.region_type == 1 && r.start >= KERNEL_OFFSET {
+                    count += 1;
+                }
+            }
+            
+            // SAFETY: `header` is valid and writable during PMM initialization.
+            unsafe {
+                (*header).region_count = count;
+            }
+
+            let regions = pmm.regions();
+            let mut idx = 0usize;
+
+            // Step 2: Populate the region table from the BIOS map
+            for i in 0..bib.memory_map_entries as usize {
+                // SAFETY:
+                // - `i` is bounded by `memory_map_entries`.
+                // - `region` points to a contiguous BIOS memory map array.
+                let r = unsafe { &*region.add(i) };
+
+                if r.region_type == 1 && r.start >= KERNEL_OFFSET {
+                    let frames = r.size / PAGE_SIZE;
+                    let bitmap_bytes = align_up(frames.div_ceil(8), 8);
+
+                    regions[idx] = PmmRegion {
+                        start: r.start,
+                        frames_total: frames,
+                        frames_free: frames,
+                        bitmap_start: 0,
+                        bitmap_bytes,
+                    };
+                    idx += 1;
+                }
+            }
         }
 
         let regions = pmm.regions();
-
-        // Fill regions
-        let mut idx = 0usize;
-
-        for i in 0..bib.memory_map_entries as usize {
-            // SAFETY:
-            // - `i` is bounded by `memory_map_entries`.
-            // - `region` points to a contiguous BIOS memory map array.
-            let r = unsafe { &*region.add(i) };
-
-            if r.region_type == 1 && r.start >= KERNEL_OFFSET {
-                let frames = r.size / PAGE_SIZE;
-                let bitmap_bytes = align_up(frames.div_ceil(8), 8);
-
-                regions[idx] = PmmRegion {
-                    start: r.start,
-                    frames_total: frames,
-                    frames_free: frames,
-                    bitmap_start: 0,
-                    bitmap_bytes,
-                };
-                idx += 1;
-            }
-        }
 
         // Bitmaps right after the region array.
         let mut bitmap_base =

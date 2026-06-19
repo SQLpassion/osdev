@@ -46,3 +46,10 @@ pub struct BootInfo {
     /// Total kernel size loaded into memory
     pub kernel_size: u64,
 }
+
+/// Global atomic pointer to the active BootInfo structure.
+///
+/// Set in `KernelMain` during boot initialization if a unified BootInfo structure
+/// was detected, allowing subsystems like the physical memory manager to query
+/// firmware-provided layout tables.
+pub static BOOT_INFO_PTR: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);

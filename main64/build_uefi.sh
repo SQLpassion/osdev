@@ -20,13 +20,15 @@ TARGET="x86_64-unknown-uefi"
 EFI_BIN="kaosldr_uefi/target/$TARGET/$PROFILE/bootx64.efi"
 IMG="kaos64-uefi.img"
 
-# 1) Build the loader (produces bootx64.efi).
+# 1) Build the kernel and loader (produces kernel.bin and bootx64.efi).
+echo "==> Building kernel..."
+( cd kernel && cargo build && cargo objcopy -- -O binary target/x86_64-unknown-none/debug/kernel.bin )
+
 echo "==> Building kaosldr_uefi ($TARGET, $PROFILE)..."
 ( cd kaosldr_uefi && cargo build )
 
 # 2) Build the bootable GPT/ESP disk image (kaos64-uefi.img): a GPT disk with one FAT32 EFI
-# System Partition holding /EFI/BOOT/BOOTX64.EFI. The same image boots in QEMU below and can be
-# flashed 1:1 to a USB stick (see docs/uefi.md). Requires gptfdisk (sgdisk) + mtools on the host.
+# System Partition holding /EFI/BOOT/BOOTX64.EFI and /KERNEL.BIN.
 echo "==> Creating bootable GPT/ESP image $IMG ..."
 IMG_SIZE_MB=128
 PART_OFFSET=1M                         # the ESP starts at sector 2048 (= 1 MiB)
@@ -41,6 +43,7 @@ sgdisk --clear \
 mformat -i "$IMG@@$PART_OFFSET" -F ::
 mmd     -i "$IMG@@$PART_OFFSET" ::/EFI ::/EFI/BOOT
 mcopy   -i "$IMG@@$PART_OFFSET" "$EFI_BIN" ::/EFI/BOOT/BOOTX64.EFI
+mcopy   -i "$IMG@@$PART_OFFSET" "kernel/target/x86_64-unknown-none/debug/kernel.bin" ::/KERNEL.BIN
 echo "==> $IMG ready. Flash to a USB stick with (DESTRUCTIVE - pick the right device!):"
 echo "        sudo dd if=$IMG of=/dev/<your-usb> bs=4M conv=fsync"
 
@@ -152,9 +155,11 @@ esac
 echo "==> OVMF code: $OVMF_CODE"
 echo "==> Launching QEMU [$DISPLAY_MODE: $DISPLAY_HINT]..."
 qemu-system-x86_64 \
+    -machine q35 \
     -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
     -drive if=pflash,format=raw,file="$OVMF_VARS" \
     -drive format=raw,file="$IMG" \
+    -vga virtio \
     "${QEMU_DISPLAY[@]}" \
     -net none \
     -m 256M

@@ -99,8 +99,14 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
     let mut kernel_size = boot_info_raw;
     let mut has_boot_info = false;
     if boot_info_raw > 0x1000 && boot_info_raw.is_multiple_of(8) {
+        // SAFETY:
+        // - `boot_info_raw` is non-null, aligned, and within low memory space.
+        // - We check the magic header at this address before dereferencing any other fields.
         let magic = unsafe { *(boot_info_raw as *const u64) };
         if magic == 0x4B414F535F424F4F {
+            boot_info::BOOT_INFO_PTR.store(boot_info_raw, core::sync::atomic::Ordering::Release);
+            // SAFETY:
+            // - The magic check succeeded, indicating the pointer points to a valid BootInfo struct.
             let boot_info = unsafe { &*(boot_info_raw as *const boot_info::BootInfo) };
             kernel_size = boot_info.kernel_size;
             has_boot_info = true;
@@ -110,7 +116,32 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
 
     debugln!("Kernel size: {} bytes", kernel_size);
     if has_boot_info {
-        debugln!("BootInfo memory map len: {}", unsafe { (*(boot_info_raw as *const boot_info::BootInfo)).memory_map_len });
+        let boot_info = unsafe { &*(boot_info_raw as *const boot_info::BootInfo) };
+        debugln!("BootInfo memory map len: {}", boot_info.memory_map_len);
+
+        // If booted via UEFI GOP, draw a colored background/pattern to verify execution
+        if boot_info.video_type == boot_info::VideoModeType::GopFramebuffer {
+            let fb = boot_info.fb_info;
+            let fb_ptr = fb.base_address as *mut u32;
+
+            // Paint a color gradient
+            for y in 0..fb.height {
+                for x in 0..fb.width {
+                    let r = (x * 255 / fb.width) & 0xFF;
+                    let g = (y * 255 / fb.height) & 0xFF;
+                    let b = 128;
+                    let color = (r << 16) | (g << 8) | b;
+                    let offset = (y * fb.pixels_per_scanline + x) as isize;
+                    
+                    // SAFETY:
+                    // - `fb.base_address` is mapped and valid for GOP framebuffer write.
+                    // - `offset` is within framebuffer bounds (calculated via scanline and height).
+                    unsafe {
+                        fb_ptr.offset(offset).write_volatile(color);
+                    }
+                }
+            }
+        }
     }
 
     // Initialize GDT/TSS so ring-3 transitions have a valid architectural base.
