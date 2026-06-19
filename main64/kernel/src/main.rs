@@ -11,6 +11,7 @@ extern crate alloc;
 
 mod allocator;
 mod arch;
+mod boot_info;
 mod drivers;
 mod io;
 mod logging;
@@ -53,16 +54,17 @@ unsafe fn zero_bss() {
     core::ptr::write_bytes(start, 0, len);
 }
 
-/// Kernel entry point - called from bootloader (kaosldr_64)
+/// Kernel entry point - called from bootloader (kaosldr_64 or kaosldr_uefi)
 ///
-/// The function signature matches the C version:
-/// `void KernelMain(int KernelSize)`
+/// The function signature has been generalized to accept a raw argument:
+/// - In legacy modes (and existing tests), it receives `kernel_size`.
+/// - In the unified bootloader mode, it receives a pointer to a `BootInfo` structure.
 ///
 /// # Safety
-/// This function is called from assembly with the kernel size in RDI.
+/// This function is called from assembly with the argument in RDI.
 #[no_mangle]
 #[link_section = ".text.boot"]
-pub extern "C" fn KernelMain(kernel_size: u64) -> ! {
+pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
     // Zero BSS before touching any static variable — physical hardware
     // does not guarantee zeroed RAM (QEMU does, hiding this bug).
     // SAFETY:
@@ -76,7 +78,40 @@ pub extern "C" fn KernelMain(kernel_size: u64) -> ! {
     // Initialize debug serial output first for early debugging
     serial::init();
     debugln!("KAOS Rust Kernel starting...");
+
+    // Check if the argument is a valid pointer to a BootInfo structure by matching the magic.
+    //
+    // WHY WE NEED THIS COMPATIBILITY LAYER:
+    // 1. Integration Tests Compatibility: All 20+ integration tests (under `tests/`) define
+    //    their own minimal entry points as `KernelMain(_kernel_size: u64)`. When these tests are
+    //    booted via the BIOS loader, they expect the parameter to represent the raw size or they
+    //    completely ignore the parameter (indicated by the underscore). However, to prevent any
+    //    test code from interpreting the `BootInfo` pointer address as a size, or crashing if a
+    //    test uses it, we check the magic signature.
+    // 2. Bootloader/Kernel Version Mismatches: If a newer kernel is booted by an older loader
+    //    that only passes the raw `kernel_size` integer (e.g. 300,000 bytes) in RDI, dereferencing
+    //    it blindly as a pointer would cause an immediate Page Fault and a subsequent CPU triple
+    //    fault. Checking the magic ensures safe fallback to legacy size handling.
+    //
+    // SAFETY:
+    // - We check if the address is aligned and non-null to avoid invalid dereferencing.
+    // - Low physical memory is identity mapped at boot.
+    let mut kernel_size = boot_info_raw;
+    let mut has_boot_info = false;
+    if boot_info_raw > 0x1000 && boot_info_raw.is_multiple_of(8) {
+        let magic = unsafe { *(boot_info_raw as *const u64) };
+        if magic == 0x4B414F535F424F4F {
+            let boot_info = unsafe { &*(boot_info_raw as *const boot_info::BootInfo) };
+            kernel_size = boot_info.kernel_size;
+            has_boot_info = true;
+            debugln!("Unified BootInfo structure detected!");
+        }
+    }
+
     debugln!("Kernel size: {} bytes", kernel_size);
+    if has_boot_info {
+        debugln!("BootInfo memory map len: {}", unsafe { (*(boot_info_raw as *const boot_info::BootInfo)).memory_map_len });
+    }
 
     // Initialize GDT/TSS so ring-3 transitions have a valid architectural base.
     gdt::init();

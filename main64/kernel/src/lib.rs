@@ -11,6 +11,7 @@ extern crate alloc;
 
 pub mod allocator;
 pub mod arch;
+pub mod boot_info;
 pub mod drivers;
 pub mod io;
 pub mod logging;

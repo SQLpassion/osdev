@@ -72,3 +72,45 @@ fn test_vga_buffer_address() {
         )
     };
 }
+
+#[test_case]
+/// Contract: boot info parsing.
+/// Given: A manually constructed BootInfo structure in memory.
+/// When: We check its magic number and parse it.
+/// Then: The structure must be recognized as valid, and its values must match the expected fields.
+fn test_boot_info_parsing() {
+    use kaos_kernel::boot_info::{BootInfo, VideoModeType, FramebufferInfo, UnifiedMemoryEntry};
+
+    static mut DUMMY_MEM_MAP: [UnifiedMemoryEntry; 2] = [
+        UnifiedMemoryEntry { start: 0x1000, size: 0x1000, is_usable: true },
+        UnifiedMemoryEntry { start: 0x2000, size: 0x2000, is_usable: false },
+    ];
+
+    let info = BootInfo {
+        magic: 0x4B414F535F424F4F,
+        video_type: VideoModeType::VgaText,
+        fb_info: FramebufferInfo {
+            base_address: 0,
+            size: 0,
+            width: 0,
+            height: 0,
+            pixels_per_scanline: 0,
+        },
+        memory_map_addr: unsafe { &raw const DUMMY_MEM_MAP[0] as u64 },
+        memory_map_len: 2,
+        kernel_size: 123456,
+    };
+
+    let raw_ptr = &info as *const BootInfo as u64;
+
+    assert!(raw_ptr > 0x1000);
+    assert_eq!(raw_ptr % 8, 0);
+
+    let parsed_magic = unsafe { *(raw_ptr as *const u64) };
+    assert_eq!(parsed_magic, 0x4B414F535F424F4F);
+
+    let parsed_info = unsafe { &*(raw_ptr as *const BootInfo) };
+    assert_eq!(parsed_info.kernel_size, 123456);
+    assert_eq!(parsed_info.memory_map_len, 2);
+    assert_eq!(parsed_info.video_type, VideoModeType::VgaText);
+}
