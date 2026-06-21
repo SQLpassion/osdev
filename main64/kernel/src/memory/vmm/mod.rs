@@ -264,30 +264,22 @@ pub fn get_active_cr3() -> u64 {
 /// the firmware PML4 keeps everything the platform needs.
 pub fn init(debug_output: bool) {
     use page_table::{
-        alloc_frame_phys_or_panic, zero_phys_page, table_at, entry_ptr, phys_to_pfn,
-        PT_ENTRIES,
+        alloc_frame_phys_or_panic, build_kernel_pml4_from_firmware, table_at, zero_phys_page,
     };
 
-    // Step 1: allocate all paging-structure frames required for bootstrap layout.
+    // Allocate and zero a fresh frame for the kernel's own PML4.
     let pml4 =
-        alloc_frame_phys_or_panic("VMM: out of physical memory while allocating bootstrap PML4");
+        alloc_frame_phys_or_panic("VMM: out of physical memory while allocating kernel PML4");
     zero_phys_page(pml4);
 
-    // Copy every firmware PML4 entry into our fresh frame, then install the recursive
-    // self-map at slot 511. The firmware tables are still active here, so both PML4s are
-    // reachable via the firmware identity map.
+    // Build it as a superset of the firmware PML4 (still active in CR3): copy all 512
+    // firmware entries, then install our recursive self-map at slot 511. Both PML4s are
+    // reachable here via the firmware identity map (physical address == virtual address).
     let fw_pml4 = read_cr3() & 0x000F_FFFF_FFFF_F000;
     // SAFETY: firmware PML4 and our fresh PML4 are reachable via the active firmware
-    // identity map; PageTableEntry is Copy (a bare u64); single-threaded boot context.
+    // identity map; `pml4` is the physical frame backing the destination table.
     unsafe {
-        let fw = table_at(fw_pml4);
-        let ours = table_at(pml4);
-        for i in 0..PT_ENTRIES {
-            *entry_ptr(ours, i) = *entry_ptr(fw, i);
-        }
-        // Recursive self-map (overrides whatever firmware had at slot 511) so the VMM can
-        // edit page tables via the recursive window.
-        (*entry_ptr(ours, 511)).set_mapping(phys_to_pfn(pml4), true, true, false);
+        build_kernel_pml4_from_firmware(table_at(fw_pml4), table_at(pml4), pml4);
     }
 
     // Publish VMM state and mark it initialized for runtime APIs.

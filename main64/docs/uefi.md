@@ -409,6 +409,54 @@ all SMM/ACPI/MMIO/runtime regions — and adds the recursive window the VMM need
 mechanics, the bisection that proved it, and the remaining caveats are documented in
 [`vmm.md`](vmm.md).
 
+#### Background: what are SMM and SMIs?
+
+If "SMM/SMI" means nothing to you, here is the minimum needed to understand the reset above.
+
+**SMM — System Management Mode** is a *separate, highly privileged CPU mode*, alongside real
+mode, protected mode, and long mode. It is *more* privileged than the kernel — it is often called
+**"ring −2"**:
+
+- Its code runs from a protected memory region called **SMRAM** (on modern systems "TSEG",
+  typically just below the top of RAM) that is locked away from normal accesses — even the kernel
+  cannot read or write it.
+- The code inside (the **SMI handler**) belongs to the **firmware** and is installed once at boot.
+- SMM has its **own environment** (its own setup and entry state), independent of the operating
+  system's page tables and IDT.
+
+**SMI — System Management Interrupt** is the *only* way to enter SMM. It is a hardware interrupt
+that:
+
+- is **non-maskable** — even stronger than an NMI; `cli` cannot block it, and
+- does **not** go through the IDT. On an SMI the CPU instead (1) saves the *entire* CPU state
+  (registers, CR3, …) into SMRAM, (2) switches into SMM and runs the firmware's SMI handler, then
+  (3) executes `RSM` (resume) to restore the saved state and return — transparently, as if nothing
+  happened.
+
+**"Asynchronous"** means the SMI fires by itself at unpredictable times, triggered by
+hardware/chipset — not requested by the OS and invisible to it. Typical triggers on real hardware:
+power/thermal management (clock, fan, temperature, battery), **USB-legacy emulation** (the firmware
+fakes a PS/2 keyboard/mouse for an attached USB device, so a keypress can raise an SMI), ACPI, TPM,
+and error handling. These SMIs occur **periodically in the background on real hardware** — but
+**essentially never in QEMU** (without special configuration). That alone explains why the bug was
+real-hardware-only.
+
+This is why the symptoms fit SMM exactly: a reset with **no visible CPU exception** (an SMI does
+not use the IDT, so our catch-all on vectors 0–31 saw nothing), **not a `#MC`**, and **only on real
+hardware**. Privilege ladder for orientation:
+
+| Level         | Who                | Via the IDT?            | Masked by `cli`? |
+|---------------|--------------------|-------------------------|------------------|
+| Ring 3        | user programs      | –                       | –                |
+| Ring 0        | the kernel         | –                       | –                |
+| NMI           | critical HW errors | yes (vector 2)          | no               |
+| **SMI → SMM** | **the firmware**   | **no** (own path/SMRAM) | **no**           |
+
+> *Honest caveat:* that SMM is the precise trigger is the **best-supported hypothesis** — it
+> explains every symptom, but the exact micro-trigger *inside* SMM could not be observed directly
+> (SMRAM is not externally inspectable). What is *proven* is: minimal map → reset, firmware clone
+> → stable.
+
 ### Real hardware
 
 Because `build_uefi.sh` already produces a real GPT/ESP image, real hardware needs **no

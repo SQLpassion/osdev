@@ -100,3 +100,9 @@ name = "cursor_demo_test"
 
 [[test]]
 name = "treeview_test"
+
+[[test]]
+name = "boot_info_layout_test"
+
+[[test]]
+name = "page_table_test"

@@ -5,6 +5,9 @@ use core::arch::asm;
 pub const PT_ENTRIES: usize = 512;
 pub const PAGE_MASK: u64 = !(PAGE_SIZE_U64 - 1);
 
+/// PML4 slot used for the recursive self-map (PML4[511] -> the PML4 itself).
+pub const RECURSIVE_SLOT: usize = 511;
+
 pub const ENTRY_PRESENT: u64 = 1 << 0;
 pub const ENTRY_WRITABLE: u64 = 1 << 1;
 pub const ENTRY_USER: u64 = 1 << 2;
@@ -171,6 +174,13 @@ impl PageTableEntry {
     pub fn huge(self) -> bool {
         (self.0 & ENTRY_HUGE) != 0
     }
+
+    /// Returns the raw 64-bit entry value (frame bits + flags). Primarily for tests
+    /// that assert an exact, verbatim copy of an entry.
+    #[inline]
+    pub fn raw(self) -> u64 {
+        self.0
+    }
 }
 
 #[repr(C, align(4096))]
@@ -179,6 +189,15 @@ pub struct PageTable {
 }
 
 impl PageTable {
+    /// Returns a fully zeroed (all-entries-not-present) page table. Useful for tests
+    /// and for any caller that wants a blank table to fill.
+    #[inline]
+    pub const fn new() -> Self {
+        Self {
+            entries: [PageTableEntry(0); PT_ENTRIES],
+        }
+    }
+
     /// Clears all page-table entries.
     #[inline]
     pub fn zero(&mut self) {
@@ -351,6 +370,35 @@ pub(crate) fn table_entry(table: *const PageTable, idx: usize) -> PageTableEntry
 #[inline]
 pub unsafe fn entry_ptr(table: *mut PageTable, idx: usize) -> *mut PageTableEntry {
     core::ptr::addr_of_mut!((*table).entries[idx])
+}
+
+/// Builds a kernel PML4 in `dst` as a SUPERSET of the firmware PML4 in `src`:
+/// copies all 512 top-level entries verbatim, then installs the recursive self-map at
+/// `RECURSIVE_SLOT` (511) pointing at `dst_phys` — the physical frame backing `dst`.
+///
+/// This is the core of `vmm::init` on the UEFI path, factored out as a pure function so
+/// it can be unit-tested without switching CR3. See `vmm.md` §4 for the rationale (a
+/// minimal hand-built map reset real AMD hardware; cloning the firmware PML4 does not).
+///
+/// # Safety
+/// - `src` and `dst` must point to valid, mapped 4 KiB page-table pages.
+/// - `dst_phys` must be the physical address of the frame backing `dst`.
+/// - No other reference to either table may exist for the duration of the call.
+pub unsafe fn build_kernel_pml4_from_firmware(
+    src: *const PageTable,
+    dst: *mut PageTable,
+    dst_phys: u64,
+) {
+    // Copy every firmware top-level entry verbatim (full identity, higher-half mirror,
+    // SMM/ACPI/MMIO/runtime regions).
+    for i in 0..PT_ENTRIES {
+        // SAFETY: caller guarantees both tables are valid; `i < PT_ENTRIES`.
+        *entry_ptr(dst, i) = table_entry(src, i);
+    }
+    // Install the recursive self-map (overrides whatever firmware had at slot 511) so the
+    // VMM can edit page tables through the recursive window.
+    // SAFETY: `dst` is valid; `RECURSIVE_SLOT < PT_ENTRIES`.
+    (*entry_ptr(dst, RECURSIVE_SLOT)).set_mapping(phys_to_pfn(dst_phys), true, true, false);
 }
 
 /// Zeros one 4 KiB page in physical memory.
