@@ -106,3 +106,9 @@ name = "boot_info_layout_test"
 
 [[test]]
 name = "page_table_test"
+
+[[test]]
+name = "pmm_uefi_test"
+
+[[test]]
+name = "pmm_metadata_base_test"

@@ -24,6 +24,25 @@ pub struct PhysicalMemoryManager {
 // - The PMM layout is stable after initialization.
 unsafe impl Send for PhysicalMemoryManager {}
 
+/// Chooses the physical base for the PMM layout (header + region array + bitmaps).
+///
+/// Returns the bootloader-reserved region (`boot_pmm_metadata_base`) when a
+/// BootInfo was published with a non-zero base; otherwise falls back to
+/// `kernel_end_phys` (the address right after the kernel image/BSS). This is the
+/// exact rule `PhysicalMemoryManager::new()` applies, factored out as a pure
+/// function so it can be unit-tested without touching `BOOT_INFO_PTR` or the
+/// `__bss_end` linker symbol.
+///
+/// `boot_pmm_metadata_base` is `None` when no BootInfo is present (BIOS loader /
+/// tests) and `Some(field)` when one is — including `Some(0)`, which means "BootInfo
+/// present but no reserved region", and falls back just like the absent case.
+pub fn select_metadata_base(boot_pmm_metadata_base: Option<u64>, kernel_end_phys: u64) -> u64 {
+    match boot_pmm_metadata_base {
+        Some(base) if base != 0 => base,
+        _ => kernel_end_phys,
+    }
+}
+
 impl PhysicalMemoryManager {
     /// Returns a mutable slice over the PMM region array stored after the header.
     fn regions(&mut self) -> &mut [PmmRegion] {
@@ -35,6 +54,24 @@ impl PhysicalMemoryManager {
             let count = (*self.header).region_count as usize;
             let regions_ptr = (*self.header).regions_ptr;
             core::slice::from_raw_parts_mut(regions_ptr, count)
+        }
+    }
+
+    /// Returns a read-only snapshot of the parsed PMM region array.
+    ///
+    /// Intended for diagnostics and tests that need to inspect the regions/bitmap
+    /// bookkeeping (`start`, `frames_total`, `frames_free`, …) without the mutable
+    /// borrow that the internal [`regions`](Self::regions) helper requires.
+    pub fn regions_snapshot(&self) -> &[PmmRegion] {
+        // SAFETY:
+        // - `self.header` is initialized in `new()` before this method is reachable.
+        // - `region_count`/`regions_ptr` describe the in-memory PMM layout.
+        // - The returned shared slice is tied to `&self`, preventing aliasing with
+        //   the mutable `regions()` view.
+        unsafe {
+            let count = (*self.header).region_count as usize;
+            let regions_ptr = (*self.header).regions_ptr;
+            core::slice::from_raw_parts(regions_ptr, count)
         }
     }
 
@@ -55,18 +92,15 @@ impl PhysicalMemoryManager {
         let kernel_end_virt = unsafe { &__bss_end as *const u8 as u64 };
         let kernel_end_phys = virt_to_phys(kernel_end_virt);
         let boot_info_raw_early = BOOT_INFO_PTR.load(Ordering::Acquire);
-        let metadata_base = if boot_info_raw_early != 0 {
+        let boot_pmm_metadata_base = if boot_info_raw_early != 0 {
             // SAFETY: `boot_info_raw_early` is the validated BootInfo pointer stored
             // in `KernelMain`; the magic was checked before publishing it.
             let bi = unsafe { &*(boot_info_raw_early as *const BootInfo) };
-            if bi.pmm_metadata_base != 0 {
-                bi.pmm_metadata_base
-            } else {
-                kernel_end_phys
-            }
+            Some(bi.pmm_metadata_base)
         } else {
-            kernel_end_phys
+            None
         };
+        let metadata_base = select_metadata_base(boot_pmm_metadata_base, kernel_end_phys);
         let start_addr = align_up(metadata_base, PAGE_SIZE);
         let header = start_addr as *mut PmmLayoutHeader;
         

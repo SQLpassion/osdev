@@ -477,6 +477,51 @@ addition if a serial port/adapter is present).
 > to UEFI. Check Windows `msinfo32` → "BIOS Mode": `UEFI` is required; `Legacy` means the machine
 > cannot UEFI-boot. Use UEFI-capable hardware (~2012+) or QEMU+OVMF for UEFI testing.
 
+### Real-hardware smoke-test checklist
+
+The most dangerous UEFI failure mode — the firmware's asynchronous SMM/SMI path faulting the
+instant `vmm::init` loads CR3 (§3.9) — is **not reproducible in QEMU or any unit test**. It only
+appears on real hardware. So real-HW validation is a manual, but **repeatable and recorded**,
+step. Run this checklist after any change to the page-table / PMM / CR3-switch code:
+
+1. **Build the image and QEMU pre-flight in one step** (`build_uefi.sh` produces the GPT/ESP
+   image *and* boots it in QEMU under OVMF — the same artifact you flash, see §2):
+   ```bash
+   ./build_uefi.sh          # builds kaos64-uefi.img and launches QEMU+OVMF
+   ```
+   Expect the markers in step 4 below. A QEMU pass does **not** prove the SMM path is safe —
+   only real hardware does — but a QEMU failure means don't bother flashing yet.
+2. **Flash to USB** (DESTRUCTIVE — confirm the device node first with `lsblk`):
+   ```bash
+   sudo dd if=kaos64-uefi.img of=/dev/<your-usb> bs=4M conv=fsync
+   ```
+3. **Boot the UEFI target**: Secure Boot **off**, CSM/legacy **off**, boot from the stick.
+   (Confirm the machine is UEFI-capable — see the note above.) Attach a serial adapter if the
+   board has one; the per-phase `debugln!` markers come out there.
+4. **Expected, in order** (this is the pass criterion):
+   - serial: `Unified BootInfo structure detected!`, then `Kernel size: …`, `BootInfo memory map len: …`;
+   - screen: a **full-screen color gradient** (red left→right, green top→bottom) — "the kernel is
+     executing from the loaded image";
+   - serial: the init markers `GDT/TSS initialized` → `FPU/SSE subsystem initialized` →
+     `Physical Memory Manager initialized` → `Firmware page-table frames reserved` →
+     `Interrupt subsystem initialized` → **`Virtual Memory Manager initialized`** (this line prints
+     *after* the CR3 switch survived — the critical SMM checkpoint) → `Heap Manager initialized` →
+     `PCI subsystem initialized` → `Time driver initialized`;
+   - screen: a steady **black ↔ white framebuffer heartbeat** — "booted, survived the CR3 switch,
+     and the timer/IRQs are alive". (The disk/scheduler path is UEFI-skipped for now — §3.8.)
+5. **Interpreting a failure:**
+   - **Screen freezes on the gradient and the machine resets/reboots right around the CR3 switch**,
+     and serial never reaches `Virtual Memory Manager initialized` → the SMM/SMI regression is back
+     (§3.9). The kernel PML4 is no longer a faithful superset of the firmware tables. Re-check
+     `build_kernel_pml4_from_firmware` and the firmware-frame reservation.
+   - **Gradient never appears** → the loader/hand-off or higher-half mirror is broken (§3.6–3.7),
+     not the CR3 switch.
+   - **Reaches the markers but no heartbeat** → init completed but the timer/IRQ path stalled;
+     unrelated to the SMM lesson.
+
+Record the date, the commit hash, the exact board (UEFI vendor/version), and which step was
+reached, so each HW run is an auditable data point.
+
 ---
 
 ## 4. Why PE/COFF? UEFI's executable format and its origin
