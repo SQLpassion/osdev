@@ -158,6 +158,17 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
     pmm::init(true);
     debugln!("Physical Memory Manager initialized");
 
+    // Reserve the firmware-owned page-table frames before any significant allocation.
+    // `vmm::init` clones the firmware PML4's top-level entries, so those PDPT/PD/PT
+    // frames stay live under the kernel; reserve them now so the PMM never hands one
+    // out and corrupts the active page tables.
+    // SAFETY: the firmware identity map is still active (CR3 not yet switched) and the
+    // PMM is initialized, satisfying `reserve_firmware_page_tables`'s contract.
+    unsafe {
+        vmm::reserve_firmware_page_tables();
+    }
+    debugln!("Firmware page-table frames reserved");
+
     // Prepare IDT/PIC so exception handlers are in place before the CR3 switch.
     interrupts::init();
     debugln!("Interrupt subsystem initialized");

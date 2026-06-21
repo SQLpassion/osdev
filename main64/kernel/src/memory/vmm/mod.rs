@@ -39,7 +39,7 @@ pub use vmm_constants::*;
 // Re-export main structures/functions.
 #[allow(unused_imports)]
 pub use page_table::{
-    PAGE_MASK, PML4_TABLE_ADDR, read_cr3, write_cr3, invlpg,
+    PAGE_MASK, PML4_TABLE_ADDR, read_cr3, write_cr3, invlpg, reserve_firmware_page_tables,
 };
 #[allow(unused_imports)]
 pub use page_fault::{

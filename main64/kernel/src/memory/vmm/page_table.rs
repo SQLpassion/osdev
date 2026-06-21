@@ -401,6 +401,72 @@ pub unsafe fn build_kernel_pml4_from_firmware(
     (*entry_ptr(dst, RECURSIVE_SLOT)).set_mapping(phys_to_pfn(dst_phys), true, true, false);
 }
 
+/// Walks the firmware page-table hierarchy rooted at the current CR3 and marks
+/// every page-table frame (the PML4, plus all present PDPTs, PDs and PTs) as used
+/// in the PMM.
+///
+/// `vmm::init` builds the kernel PML4 as a clone of the firmware's top-level
+/// entries (see [`build_kernel_pml4_from_firmware`]), so the kernel keeps pointing
+/// at firmware-owned PDPT/PD/PT frames. The PMM has no idea those frames are in
+/// use and would otherwise hand them out via `alloc_frame()`, after which a later
+/// write would corrupt the live page tables — a sporadic, hard-to-debug failure.
+/// Reserving them here — right after `pmm::init` and *before* the first significant
+/// allocation (the kernel PML4 frame in `vmm::init`) — closes that window.
+///
+/// Frames are reached through the firmware identity map (physical == virtual),
+/// which is still active because CR3 has not been switched yet. Huge-page leaves
+/// (1 GiB PDPT entries, 2 MiB PD entries) map data rather than sub-tables, so we
+/// neither recurse into them nor reserve their targets; likewise PT entries are
+/// 4 KiB data leaves, not table frames.
+///
+/// # Safety
+/// - Must be called while the firmware identity map is active (before `write_cr3`),
+///   so that each table's physical address is also a valid virtual address.
+/// - The PMM must already be initialized.
+pub unsafe fn reserve_firmware_page_tables() {
+    let pml4_phys = read_cr3() & ENTRY_FRAME_MASK;
+
+    // Hold the PMM lock for the whole walk: it runs once at boot with interrupts
+    // disabled, and a single critical section keeps the reservation atomic.
+    pmm::with_pmm(|mgr| {
+        // The top-level table frame itself.
+        mgr.mark_frame_used(pml4_phys);
+
+        let pml4 = table_at(pml4_phys);
+        for i in 0..PT_ENTRIES {
+            let pml4e = table_entry(pml4, i);
+            if !pml4e.present() {
+                continue;
+            }
+            let pdpt_phys = pml4e.frame() * PAGE_SIZE_U64;
+            mgr.mark_frame_used(pdpt_phys);
+
+            let pdpt = table_at(pdpt_phys);
+            for j in 0..PT_ENTRIES {
+                let pdpte = table_entry(pdpt, j);
+                // Skip non-present entries and 1 GiB huge-page leaves (no sub-table).
+                if !pdpte.present() || pdpte.huge() {
+                    continue;
+                }
+                let pd_phys = pdpte.frame() * PAGE_SIZE_U64;
+                mgr.mark_frame_used(pd_phys);
+
+                let pd = table_at(pd_phys);
+                for k in 0..PT_ENTRIES {
+                    let pde = table_entry(pd, k);
+                    // Skip non-present entries and 2 MiB huge-page leaves (no sub-table).
+                    if !pde.present() || pde.huge() {
+                        continue;
+                    }
+                    let pt_phys = pde.frame() * PAGE_SIZE_U64;
+                    mgr.mark_frame_used(pt_phys);
+                    // PT entries are 4 KiB data leaves, not table frames — nothing to do.
+                }
+            }
+        }
+    });
+}
+
 /// Zeros one 4 KiB page in physical memory.
 ///
 /// Caller contract: `addr` must be writable and page-aligned physical memory.

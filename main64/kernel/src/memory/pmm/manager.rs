@@ -199,11 +199,31 @@ impl PhysicalMemoryManager {
 
         // Mark the kernel, stack, and PMM metadata as used.
         // `bitmap_base` already points past the last bitmap, so it is the
-        // true end of all PMM metadata. We take the max with STACK_TOP to
-        // also cover the bootloader stack, then align up to a page boundary.
+        // true end of all PMM metadata.
         let metadata_end = bitmap_base;
-        let reserved_end = align_up(metadata_end.max(STACK_TOP), PAGE_SIZE);
-        pmm.mark_range_used(KERNEL_OFFSET, reserved_end);
+
+        if metadata_base == kernel_end_phys {
+            // BIOS / fallback path: the metadata sits contiguously right after the
+            // kernel image, so a single span from the kernel base through the end of
+            // the metadata (and at least the bootstrap stack) wastes nothing. We take
+            // the max with STACK_TOP to also cover the bootloader stack, then align up.
+            let reserved_end = align_up(metadata_end.max(STACK_TOP), PAGE_SIZE);
+            pmm.mark_range_used(KERNEL_OFFSET, reserved_end);
+        } else {
+            // UEFI path: the loader placed the PMM metadata region tens of GiB up
+            // (`AllocateAnyPages`). Reserving one span from the kernel base up to there
+            // would mark almost all of RAM as used. Reserve the two real blocks
+            // separately so the large gap between them stays free and allocatable:
+            //   1. the low kernel image + bootstrap-stack block `[KERNEL_OFFSET, STACK_TOP)`,
+            //   2. the (far away) PMM metadata region `[start_addr, metadata_end)`.
+            let stack_end = align_up(STACK_TOP, PAGE_SIZE);
+            pmm.mark_range_used(KERNEL_OFFSET, stack_end);
+
+            // `start_addr` is the page-aligned header base; `metadata_end` is the end
+            // of the last bitmap. Align the end up so the final partial page is covered.
+            let metadata_region_end = align_up(metadata_end, PAGE_SIZE);
+            pmm.mark_range_used(start_addr, metadata_region_end);
+        }
 
         pmm
     }
@@ -237,6 +257,54 @@ impl PhysicalMemoryManager {
                 r.frames_free -= 1;
             }
         }
+    }
+
+    /// Marks the single page frame containing `phys_addr` as used, idempotently.
+    ///
+    /// Unlike [`mark_range_used`](Self::mark_range_used), this first inspects the
+    /// bitmap bit and only flips it (and decrements `frames_free`) when the frame
+    /// transitions from free to used. That makes it safe to call on a frame that
+    /// might already be reserved — e.g. a firmware page-table frame that happens to
+    /// fall inside the kernel's already-reserved low block — without underflowing
+    /// `frames_free`.
+    ///
+    /// Returns `true` if the frame was newly marked used, `false` if it was already
+    /// used or lies outside every known region (frames in firmware-reserved memory
+    /// are simply not tracked by the PMM, so reserving them is an automatic no-op).
+    pub fn mark_frame_used(&mut self, phys_addr: u64) -> bool {
+        let frame_start = phys_addr & !(PAGE_SIZE - 1);
+        let regions = self.regions();
+
+        for r in regions.iter_mut() {
+            let region_end = r.start + r.frames_total * PAGE_SIZE;
+            if frame_start < r.start || frame_start >= region_end {
+                continue;
+            }
+
+            let bit_idx = (frame_start - r.start) / PAGE_SIZE;
+            let bitmap = r.bitmap_start as *mut u64;
+            let word_idx = (bit_idx / 64) as usize;
+            let bit_mask = 1u64 << (bit_idx % 64);
+
+            // SAFETY:
+            // - `bit_idx` is derived from a frame proven to be inside this region,
+            //   so `word_idx` addresses a valid bitmap word.
+            // - `bitmap` points to writable PMM bitmap memory.
+            let word_val = unsafe { *bitmap.add(word_idx) };
+            if (word_val & bit_mask) != 0 {
+                // Already marked used (e.g. inside the kernel/metadata reservation).
+                return false;
+            }
+
+            // SAFETY:
+            // - `bit_idx` is within this region's bitmap bounds.
+            // - `bitmap` points to writable PMM bitmap memory.
+            unsafe { set_bit(bit_idx, bitmap) };
+            r.frames_free -= 1;
+            return true;
+        }
+
+        false
     }
 
     /// Allocates a single page frame from the first available region.
