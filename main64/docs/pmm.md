@@ -16,7 +16,13 @@ The Physical Memory Manager (PMM) is a core kernel subsystem responsible for tra
 
 - **Granularity**: Operates on 4 KiB pages (matching the page size of x86-64 long mode).
 - **Backing Allocator**: Uses a bitmap-based allocation scheme where **1 bit** represents **1 page frame** (0 = Free, 1 = Allocated/Reserved).
-- **Placement**: Placed immediately after the kernel BSS section (`__bss_end`) in physical memory, aligned to the next 4 KiB page boundary.
+- **Placement**: Depends on the boot path (see §4.0 and §4 step 2):
+  - **UEFI path**: in a *dedicated region the loader reserved* and sized to installed RAM, passed
+    via `BootInfo.pmm_metadata_base` / `pmm_metadata_size`. On large-RAM machines the bitmaps are
+    several MiB, far too big to sit in low memory — so the loader allocates this region (typically
+    tens of GiB up) **before** `ExitBootServices`.
+  - **BIOS path / tests (fallback)**: immediately after the kernel BSS section (`__bss_end`) in
+    physical memory, aligned to the next 4 KiB page boundary.
 - **Thread Safety**: Access to the allocator is synchronized via a global spinlock wrapper (`GlobalPmm`), which disables interrupts during critical sections to prevent preemption and deadlocks.
 - **Zero Dependencies**: Implemented using only core Rust primitives (`core`), in alignment with the repository's dependency policy.
 
@@ -213,6 +219,61 @@ Below is the layout of the physical memory space showing how the kernel, loader 
     (128 MB)
 ```
 
+> **The diagram above is the BIOS / fallback layout** (small RAM, metadata placed right after
+> the kernel BSS). The UEFI path is different — see below.
+
+### UEFI physical memory layout
+
+On the UEFI path the PMM does **not** place its metadata right after the kernel. Two things move:
+the kernel occupies a fixed reserved low block, and the metadata lives in a **dedicated,
+loader-reserved region high in RAM** (`BootInfo.pmm_metadata_base`; see §4 and
+[`uefi.md`](uefi.md) §3.3). The data *structures* (`PmmLayoutHeader`, `PmmRegion`, bitmaps) are
+identical — only their physical location differs.
+
+```text
+              UEFI PHYSICAL MEMORY LAYOUT (e.g. a 128 GiB machine)
+    ═══════════════════════════════════════════════════════════════════
+
+    0x00000000 ┌────────────────────────────────────────────────────────┐
+               │   Low / firmware-owned memory                          │
+               │   (real-mode area, firmware data, …)                   │
+    0x00100000 ├────────────────────────────────────────────────────────┤ ◄─ KERNEL_OFFSET (1 MiB)
+               │   KERNEL BLOCK — 768 pages = 3 MiB, EfiLoaderCode      │
+               │     • kernel image: .text/.rodata/.data/.bss           │
+               │       (ends ~0x15A588, i.e. < 1.4 MiB)                 │
+               │     • free space inside the block                      │
+               │     • bootstrap stack — grows DOWN from 0x400000       │
+    0x00400000 ├────────────────────────────────────────────────────────┤ ◄─ STACK_TOP (4 MiB)
+               │                                                        │
+               │   General RAM: a mix of                                │
+               │     • EfiConventionalMemory  → PMM "usable" regions    │
+               │     • firmware-reserved: ACPI, MMIO holes, runtime     │
+               │       services, SMM/TSEG (typically near top of RAM)   │
+               │                                                        │
+        (high) ├────────────────────────────────────────────────────────┤ ◄─ pmm_metadata_base
+               │   PMM METADATA REGION (EfiLoaderData, loader-reserved) │
+               │     PmmLayoutHeader → PmmRegion[] → bitmaps            │
+               │     (sized to RAM: ~32 KiB per GiB → ~4 MiB @128 GiB)  │
+               └────────────────────────────────────────────────────────┘
+
+    Elsewhere (firmware-chosen address, inside the low 512 GiB):
+      • the UEFI loader image (BOOTX64.EFI), which contains:
+          - the BootInfo struct  (RDI points here at kernel entry)
+          - the UnifiedMemoryEntry[] array (BootInfo.memory_map_addr)
+      The kernel reads both directly via the identity mapping (phys == virt).
+```
+
+Consequences specific to UEFI (all consistent with §4):
+
+- The PMM's **usable** regions are the `EfiConventionalMemory` entries with `start >= KERNEL_OFFSET`
+  (the `0x100000..0x400000` kernel block is `EfiLoaderCode`, so it is *not* usable and is never
+  handed out).
+- Because the metadata sits high, the single `mark_range_used(KERNEL_OFFSET, metadata_end)`
+  reservation currently marks **all RAM below the metadata as used** (see §4 step 6, "Known
+  limitation") — wasteful but safe.
+- `BootInfo` and the `UnifiedMemoryEntry[]` array remain reachable after the kernel switches CR3
+  only because the kernel's page tables keep the firmware identity map (see [`vmm.md`](vmm.md) §4).
+
 ---
 
 ## 3. Data Structures
@@ -256,10 +317,35 @@ pub struct PageFrame {
 
 ## 4. Initialization Workflow
 
+### 4.0 Two memory-map sources: UEFI vs BIOS
+
+The PMM consumes its memory map from one of two sources, chosen at runtime by whether a unified
+`BootInfo` pointer was published in `KernelMain`:
+
+- **UEFI path** (`BOOT_INFO_PTR != 0`): the map is the `UnifiedMemoryEntry[]` array the UEFI
+  loader built from the firmware memory map just before `ExitBootServices`
+  (`{ start, size, is_usable }`; see [`uefi.md`](uefi.md) §3.5). The metadata region is the
+  loader-reserved `BootInfo.pmm_metadata_base`.
+- **BIOS path / integration tests** (no `BootInfo`): the map is the legacy `BiosInformationBlock`
+  (BIB) + BIOS memory map at fixed low addresses, and the metadata is placed right after the
+  kernel BSS.
+
 When the kernel initializes the PMM during `init()`, the following steps are performed:
 
-1. **Locating Boot Data**: The PMM queries the `BiosInformationBlock` (BIB) and BIOS Memory Map from fixed addresses loaded by the bootloader (`BIB_OFFSET` = `0x1000`, `MEMORYMAP_OFFSET` = `0x1200`).
-2. **Placing PMM Metadata**: The end of the kernel virtual address space is retrieved via the linker-defined symbol `__bss_end`, converted to a physical address using `virt_to_phys()`, and aligned up to a 4 KiB boundary. This defines the start of the `PmmLayoutHeader`.
+1. **Locating Boot Data**:
+   - *UEFI*: read `BootInfo.memory_map_addr` / `memory_map_len` for the `UnifiedMemoryEntry[]`
+     array, and `BootInfo.pmm_metadata_base` / `pmm_metadata_size` for where to put the metadata.
+   - *BIOS*: query the `BiosInformationBlock` (BIB) and BIOS Memory Map from fixed addresses
+     loaded by the bootloader (`BIB_OFFSET` = `0x1000`, `MEMORYMAP_OFFSET` = `0x1200`).
+2. **Placing PMM Metadata**:
+   - *UEFI*: the `PmmLayoutHeader` starts at `BootInfo.pmm_metadata_base` (page-aligned). The
+     loader sized this region to the machine's RAM and allocated it via
+     `AllocatePages(AllocateAnyPages, …)` while boot services were alive, precisely because the
+     bitmap is far too large to fit in low memory on big-RAM systems (~32 KiB per GiB → ~4 MiB at
+     128 GiB).
+   - *BIOS / fallback*: the end of the kernel virtual address space (`__bss_end`) is converted to
+     a physical address via `virt_to_phys()` and aligned up to 4 KiB; that defines the start of
+     the `PmmLayoutHeader`.
 3. **Usable Memory Filtering**: The memory map entries are parsed. A memory region is classified as usable if:
    - Its type is usable (`region_type == 1`).
    - Its base physical address starts at or above `KERNEL_OFFSET` (`0x100000`, 1 MiB).
@@ -267,7 +353,19 @@ When the kernel initializes the PMM during `init()`, the following steps are per
    - `region_count` is written to the header.
    - Usable regions are populated in the sequential array of `PmmRegion` structs starting at `regions_ptr`.
 5. **Bitmap Placement**: Bitmaps are mapped sequentially right after the `PmmRegion` array. The PMM writes zeroes across all bitmap pages to mark all frames as free by default.
-6. **Kernel & Metadata Reservation**: To prevent the allocator from overwriting vital operating system data, `mark_range_used()` is executed on the physical range from `KERNEL_OFFSET` (`0x100000`) to `reserved_end` (which is the maximum of the bootloader stack limit `STACK_TOP` (`0x400000`) and the end of the PMM bitmaps, aligned up to 4 KiB). This marks the kernel, bootloader stack, and PMM structures themselves as allocated.
+6. **Kernel & Metadata Reservation**: To prevent the allocator from overwriting vital operating system data, `mark_range_used()` is executed on the physical range from `KERNEL_OFFSET` (`0x100000`) to `reserved_end` — the maximum of the bootloader stack limit `STACK_TOP` (`0x400000`) and the end of the PMM bitmaps, aligned up to 4 KiB. This marks the kernel, bootloader stack, and PMM structures themselves as allocated.
+
+> **⚠ Known limitation (open follow-up) on the UEFI path.** `reserved_end` is computed as a
+> *single contiguous span* `[KERNEL_OFFSET, max(metadata_end, STACK_TOP))`. On the BIOS path the
+> metadata sits just past the kernel, so this span is small and correct. On the UEFI path,
+> however, `metadata_end` lies at `pmm_metadata_base + bitmaps`, which the firmware may place tens
+> of GiB up — so this one call marks **all RAM from 1 MiB up to the metadata region as used**,
+> wasting most of it and forcing the first real allocations (e.g. the kernel PML4 frame in
+> `vmm::init`) to come from *above* the metadata. It is *safe* (nothing is corrupted) but
+> *wasteful*. The correct fix is to reserve **two separate ranges** — the low kernel+stack block
+> and the metadata region — instead of one giant span. Note: the high placement of the first
+> allocations was investigated and proven **not** to be the cause of the historical UEFI CR3-load
+> reset (see [`vmm.md`](vmm.md) §4.3); it is purely a memory-waste issue.
 
 ---
 

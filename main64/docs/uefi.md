@@ -8,6 +8,26 @@ For the strategic *why/when* of the UEFI migration and the overall roadmap, see
 
 ---
 
+## Table of Contents
+- [1. What `cargo build` produces](#1-what-cargo-build-produces)
+- [2. The build & image pipeline](#2-the-build--image-pipeline)
+- [3. The runtime boot flow — from power-on to a running kernel](#3-the-runtime-boot-flow--from-power-on-to-a-running-kernel)
+  - [3.0 The big picture](#30-the-big-picture)
+  - [3.1 What `efi_main` does, in order](#31-what-efi_main-does-in-order)
+  - [3.2 Loading the kernel at physical `0x100000`](#32-loading-the-kernel-at-physical-0x100000)
+  - [3.3 Reserving the PMM-metadata region](#33-reserving-the-pmm-metadata-region)
+  - [3.4 Disabling the firmware watchdog](#34-disabling-the-firmware-watchdog)
+  - [3.5 `ExitBootServices` and the unified memory map](#35-exitbootservices-and-the-unified-memory-map)
+  - [3.6 Creating the higher half: mirror `PML4[0]` → `PML4[256]`](#36-creating-the-higher-half-mirror-pml40--pml4256)
+  - [3.7 The hand-off to the kernel](#37-the-hand-off-to-the-kernel)
+  - [3.8 What the kernel does — `KernelMain` initialization](#38-what-the-kernel-does--kernelmain-initialization)
+  - [3.9 Why `vmm::init` clones the firmware page tables (the hard-won lesson)](#39-why-vmminit-clones-the-firmware-page-tables-the-hard-won-lesson)
+  - [Real hardware](#real-hardware)
+- [4. Why PE/COFF? UEFI's executable format and its origin](#4-why-pecoff-uefis-executable-format-and-its-origin)
+- [5. Summary](#5-summary)
+
+---
+
 ## 1. What `cargo build` produces
 
 Building the loader crate:
@@ -135,43 +155,259 @@ The three `-drive` lines are the core:
 
 ---
 
-## 3. The runtime boot flow
+## 3. The runtime boot flow — from power-on to a running kernel
+
+This section is the heart of the document: it walks, step by step, through everything that
+happens from the moment the firmware loads `BOOTX64.EFI` until the Rust kernel is running in its
+own address space. It assumes **no prior knowledge** of UEFI, paging, or this codebase.
+
+### 3.0 The big picture
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│ QEMU starts the virtual machine                               │
+│ Firmware (OVMF in QEMU, vendor UEFI on real HW)               │
+│   • CPU already in 64-bit long mode, paging ON                │
+│   • firmware's own page tables identity-map RAM (phys==virt)  │
+│   • Boot Services + Runtime Services available                │
 └──────────────────────────────────────────────────────────────┘
-        │   pflash = OVMF  →  the VM is now a UEFI machine
+        │  finds /EFI/BOOT/BOOTX64.EFI on the FAT32 ESP, loads + calls it
         ▼
 ┌──────────────────────────────────────────────────────────────┐
-│ OVMF firmware (EDK2) initialises                              │
-│   • CPU already in 64-bit long mode                           │
-│   • enumerates devices, builds the EFI System Table           │
-│   • brings up Boot Services & Runtime Services                │
+│ efi_main()  — the KAOS UEFI loader (kaosldr_uefi)             │
+│   1. locate SimpleFileSystem + GOP framebuffer                │
+│   2. load KERNEL.BIN to physical 0x100000 (AllocateAddress)   │
+│   3. reserve a PMM-metadata region sized to RAM               │
+│   4. fill the BootInfo struct (fb, memory map, sizes)         │
+│   5. SetWatchdogTimer(0)  — disable the firmware watchdog     │
+│   6. ExitBootServices()   — take ownership of the machine     │
+│   7. mirror PML4[0] → PML4[256]  (create the higher half)     │
+│   8. jump to the kernel:  RSP=0x400000, RDI=&BootInfo,        │
+│                           RIP=0xFFFF800000100000              │
 └──────────────────────────────────────────────────────────────┘
-        │   BDS phase: find a bootable medium
+        │  (firmware page tables still active; kernel runs in the higher half)
         ▼
 ┌──────────────────────────────────────────────────────────────┐
-│ GPT disk (kaos64-uefi.img) → EFI System Partition (FAT32)     │
-│   firmware looks for the fallback path:                       │
-│        /EFI/BOOT/BOOTX64.EFI                                  │
+│ KernelMain(boot_info_ptr)  — the Rust kernel                  │
+│   zero BSS → serial → GDT → FPU → PMM → IDT/PIC →             │
+│   vmm::init (CLONE firmware PML4 + recursive map, switch CR3) │
+│   → heap → PCI → timer → (GOP boot) black/white heartbeat     │
 └──────────────────────────────────────────────────────────────┘
-        │   load the PE32+ image into memory,
-        │   apply PE relocations, call the entry point
-        ▼
-┌──────────────────────────────────────────────────────────────┐
-│ efi_main(image_handle, *system_table)   [extern "efiapi"]     │
-│   • serial::init()            (COM1, raw port I/O)            │
-│   • print(): ConOut->OutputString  AND  COM1                 │
-│   • idle loop  (Boot Services still active, no ExitBootSvcs)  │
-└──────────────────────────────────────────────────────────────┘
-        │
-        ▼
-   "KAOS UEFI loader: hello from BOOTX64.EFI"     → screen + serial
 ```
 
-This matches what the serial log shows in practice:
-`BdsDxe: starting Boot0001 …` (OVMF loads our application) → `KAOS UEFI loader: hello …`.
+Two facts about the **environment the loader inherits** are essential for everything below and
+are easy to miss:
+
+- **The CPU is already in 64-bit long mode with paging enabled.** UEFI does this before our code
+  runs. We never switch the CPU into long mode (unlike the legacy BIOS path, which does it by
+  hand in `kaosldr_16/longmode.asm`).
+- **The firmware's page tables identity-map physical memory** (virtual address == physical
+  address) for low memory / all RAM. So while those tables are active, *a physical address can be
+  used directly as a pointer*. The loader and the early kernel both rely on this.
+
+### 3.1 What `efi_main` does, in order
+
+`efi_main(image_handle, system_table)` (in `kaosldr_uefi/src/main.rs`, declared
+`extern "efiapi"` so it uses the UEFI/MS-x64 ABI — see §4) runs these steps. Each "protocol" is
+just a vtable of function pointers the firmware hands out via `BootServices->HandleProtocol` /
+`LocateProtocol`.
+
+1. **Serial** (`serial::init`) — bring up COM1 with raw port I/O so the loader can log even when
+   there is no screen output yet.
+2. **LoadedImage protocol** on our own `image_handle` → gives us the `device_handle` we were
+   loaded from (the USB stick / virtual disk).
+3. **SimpleFileSystem protocol** on that device → lets us open files on the FAT32 ESP.
+4. **Graphics Output Protocol (GOP)** → the linear framebuffer. We read its **physical base
+   address, byte size, width, height, and `pixels_per_scanline`** (the stride, which can be wider
+   than `width`) and store them in `BootInfo.fb_info`. This must be done *before*
+   `ExitBootServices`, because GOP is a boot service.
+5. **Load the kernel** (`KERNEL.BIN`) — see §3.2.
+6. **Reserve the PMM-metadata region** — see §3.3.
+7. **Disable the watchdog** — see §3.4.
+8. **`ExitBootServices`** and build the unified memory map — see §3.5.
+9. **Create the higher-half mapping** — see §3.6.
+10. **Jump to the kernel** — see §3.7.
+
+### 3.2 Loading the kernel at physical `0x100000`
+
+`KERNEL.BIN` is a **flat binary** (an ELF stripped to raw bytes with `objcopy -O binary`). It is
+linked (see `kernel/link.ld`) to run at the **higher-half virtual address
+`0xFFFF800000100000`**, but its **physical load address is `0x100000`** (the classic 1 MiB mark).
+
+The loader opens `KERNEL.BIN`, measures its size by seeking to the end, then allocates memory and
+reads it in:
+
+```rust
+let mut kernel_addr: u64 = 0x100000;
+// AllocateType = AllocateAddress (2): allocate at EXACTLY this address.
+// MemoryType   = EfiLoaderCode (1).
+// pages = 768  →  768 * 4 KiB = 3 MiB, covering 0x100000 .. 0x400000.
+allocate_pages(2, 1, 768, &mut kernel_addr);
+read(kernel_file, &mut size, 0x100000 as *mut c_void);
+```
+
+Two subtleties that previously caused real-hardware-only crashes (now fixed) — keep them in mind:
+
+- **`AllocateType` must be `AllocateAddress` (2), not `AllocateMaxAddress` (1).** With `1`, the
+  firmware treats `kernel_addr` as a *ceiling* and may place the kernel anywhere below it (it once
+  landed at `0x40000`), so the higher-half mapping then pointed at the wrong physical bytes.
+- **768 pages (3 MiB) are reserved, not just the ~90 pages the image occupies.** The kernel later
+  places things at fixed low addresses *beyond* its image — the bootstrap **stack** grows down
+  from `0x400000`, and on the BIOS path the PMM bitmaps sit just past the BSS. Reserving the whole
+  `0x100000..0x400000` block (marked `EfiLoaderCode` in the memory map) keeps all of that inside
+  one region the firmware will not reuse.
+
+### 3.3 Reserving the PMM-metadata region
+
+The kernel's Physical Memory Manager (PMM, see [`pmm.md`](pmm.md)) needs a **bitmap** with one bit
+per 4 KiB frame of RAM. That bitmap scales with installed memory: ~32 KiB per GiB, so **128 GiB
+of RAM needs ~4 MiB of bitmap**. Placing that right after the kernel image would overrun the 3 MiB
+low block and scribble over firmware-owned low memory — which triple-faulted on the real 128 GiB
+machine (QEMU hid it because OVMF keeps its structures elsewhere).
+
+So the loader **reserves a dedicated metadata region** while boot services are still alive. It
+does an initial `GetMemoryMap`, sums the usable frames, sizes the region, and allocates it with
+`AllocatePages(AllocateAnyPages, EfiLoaderData, …)` — meaning *the firmware picks any free spot*,
+which on a large-RAM box is typically tens of GiB up. The base and size are passed to the kernel
+via `BootInfo.pmm_metadata_base` / `pmm_metadata_size`. The PMM then puts its header + region
+array + bitmaps there instead of in cramped low memory.
+
+### 3.4 Disabling the firmware watchdog
+
+UEFI arms a **watchdog timer** (~5 minutes) before launching a boot application; if it is left
+running it will reset the machine. A proper OS loader disables it:
+
+```rust
+set_watchdog_timer(0, 0, 0, core::ptr::null());   // timeout 0 = disabled
+```
+
+This must happen *before* `ExitBootServices` (it is a boot service).
+
+### 3.5 `ExitBootServices` and the unified memory map
+
+`ExitBootServices` is the hand-over point: after it returns successfully, **the firmware's Boot
+Services are gone** (no more `AllocatePages`, file I/O, GOP calls) and the OS owns the hardware.
+The catch: you must pass the *current* `map_key` from a `GetMemoryMap` that nothing has
+invalidated since — so it is done in a small retry loop (get map → try exit → on failure re-fetch
+and retry).
+
+Just before exiting, the loader walks the UEFI memory map one last time and copies it into a
+simple, firmware-independent array (`UnifiedMemoryEntry { start, size, is_usable }`), marking
+`EfiConventionalMemory` (type 7) regions as usable. It records this array's address/length, the
+kernel size, and the framebuffer info in the shared **`BootInfo`** struct.
+
+#### The `BootInfo` contract
+
+`BootInfo` is the **only channel** between loader and kernel. Its layout is duplicated, field for
+field, in three places that must stay in sync: `kaosldr_uefi/src/main.rs`, `kernel/src/boot_info.rs`,
+and `kaosldr_64/src/boot_info.rs` (the BIOS loader).
+
+```rust
+#[repr(C)]
+struct BootInfo {
+    magic: u64,                 // 0x4B414F535F424F4F  ("KAOS_BOO") — sanity check
+    video_type: VideoModeType,  // 0 = VgaText (BIOS), 1 = GopFramebuffer (UEFI)
+    fb_info: FramebufferInfo,   // base_address, size, width, height, pixels_per_scanline
+    memory_map_addr: u64,       // pointer to the UnifiedMemoryEntry[] array
+    memory_map_len: u32,        // number of entries
+    kernel_size: u64,           // bytes of KERNEL.BIN actually read
+    pmm_metadata_base: u64,     // reserved PMM-metadata region (0 on BIOS path)
+    pmm_metadata_size: u64,
+}
+```
+
+The kernel verifies `magic` before trusting the pointer (see §3.8), which also lets the same
+`KernelMain` work for older loaders / tests that pass a raw integer instead of a pointer.
+
+### 3.6 Creating the higher half: mirror `PML4[0]` → `PML4[256]`
+
+The kernel is *linked* at `0xFFFF800000100000` but *loaded* at physical `0x100000`. For the jump
+to that high virtual address to work, the higher half must be mapped **before** we jump — while
+the firmware's page tables are still active. The loader does this with a tiny, surgical edit to
+the firmware's own top-level table:
+
+```rust
+let cr3 = read_cr3();
+let pml4 = (cr3 & 0x000F_FFFF_FFFF_F000) as *mut u64;   // phys == virt (identity map)
+// temporarily clear CR0.WP so we may write the (write-protected) page table
+*pml4.add(256) = *pml4.add(0);   // copy entry 0 to entry 256
+// restore CR0.WP, then reload CR3 to flush the TLB
+```
+
+Why entry **256**? A virtual address is split into 9-bit indices; bits 47..39 select the PML4
+slot. `0xFFFF800000000000 >> 39 & 0x1FF = 256`. Entry 0 maps virtual `0x0…` (the firmware's
+identity map of low RAM); copying it to entry 256 makes virtual `0xFFFF800000000000…` resolve to
+the **same** physical pages. So `0xFFFF800000100000` now points at physical `0x100000` — exactly
+where the kernel image sits. (This mirror is later inherited by the kernel; see §3.9.)
+
+### 3.7 The hand-off to the kernel
+
+With everything prepared, the loader jumps. It does **not** `call` — it sets up the exact CPU
+state the kernel's `extern "C"` entry point expects and `jmp`s:
+
+```rust
+asm!(
+    "mov rsp, 0x400000",   // bootstrap stack top (grows down, inside the 3 MiB low block)
+    "xor rbp, rbp",        // clear frame pointer
+    "jmp {entry}",         // entry = 0xFFFF800000100000  (higher-half KernelMain)
+    in("rdi") &BOOT_INFO,  // SysV ABI: first argument in RDI = pointer to BootInfo
+);
+```
+
+So at the instant the kernel starts: **RIP** is in the higher half, **RSP** is the low identity
+address `0x400000`, **RDI** holds the `BootInfo` pointer, and the **firmware's page tables are
+still active** (with our higher-half mirror added).
+
+### 3.8 What the kernel does — `KernelMain` initialization
+
+`KernelMain(boot_info_raw)` (`kernel/src/main.rs`, placed first in `.text.boot` by the linker so
+it is the entry) runs this sequence:
+
+1. **`zero_bss()`** — physical RAM is not guaranteed zeroed on real hardware (QEMU happens to zero
+   it), so every zero-initialized static would otherwise hold garbage. This must run first.
+2. **`serial::init`**, then check the `BootInfo` **magic** at `boot_info_raw`; if valid, publish
+   the pointer in a global (`BOOT_INFO_PTR`) and, on a GOP boot, paint a color gradient so you can
+   see the kernel is alive.
+3. **`gdt::init`** — Global Descriptor Table + TSS. Also reloads `CS` via a far return, because
+   UEFI hands off `CS=0x38`, which has no descriptor in our GDT (the BIOS path happened to hand
+   off `CS=0x08`). Skipping this faults on the first `iretq`.
+4. **`fpu::init`** — enable SSE/FPU and capture the default FPU state.
+5. **`pmm::init`** — build the Physical Memory Manager from `BootInfo`'s memory map, placing its
+   metadata in the reserved region (§3.3). See [`pmm.md`](pmm.md).
+6. **`interrupts::init`** — Interrupt Descriptor Table + 8259 PIC remap (handlers installed,
+   interrupts still *disabled*).
+7. **`vmm::init`** — **the critical step.** It builds the kernel's own top-level page table as a
+   **superset of the firmware's** (it *clones* the firmware `PML4` and adds a recursive self-map),
+   then switches `CR3` to it. A naïve "build a minimal map from scratch" approach reset real AMD
+   hardware instantly here; see §3.9 and [`vmm.md`](vmm.md).
+8. **`heap::init`**, **`drivers::pci::init`**, **`drivers::time::init`** — kernel heap, PCI bus
+   scan, timer.
+9. **End state:** on a **GOP/UEFI** boot the kernel currently stops here in a steady
+   **black ↔ white framebuffer heartbeat** (a visible "I booted and I'm alive" signal). The
+   disk-dependent path below it — ATA PIO, the FAT12 file system, loading the user-space shell,
+   the scheduler — is **skipped on UEFI**, because a USB/UEFI boot has no legacy ATA disk yet.
+   The **legacy BIOS/VGA** boot (`video_type == VgaText`) instead continues into that disk +
+   scheduler path unchanged.
+
+### 3.9 Why `vmm::init` clones the firmware page tables (the hard-won lesson)
+
+The intuitive design is: have the kernel build its *own* minimal page tables (identity-map the
+low few MiB, map the higher half, add a recursive entry) and switch to them. That worked in QEMU
+but **instantly reset the real AMD machine the moment `CR3` was loaded** — with no CPU exception
+of any kind, so nothing could be caught or printed.
+
+The reason (best-supported explanation): real firmware leaves **System Management Mode (SMM)**
+active and takes **asynchronous SMIs** (for power/thermal/USB-legacy emulation). The platform's
+SMM/firmware path depends on the memory mappings the firmware set up. A minimal kernel map
+*discards* those mappings, so the next SMI faults inside SMM and the platform hard-resets. QEMU
+has no such SMM activity, which is exactly why it tolerated the minimal map.
+
+The fix is to **never discard the firmware's mappings**. Because the firmware tables are still
+active when `vmm::init` runs, the kernel reads `CR3`, copies all 512 entries of the firmware's
+top-level `PML4` into a fresh frame, and only then overwrites slot 511 with its own recursive
+self-map. The result keeps the firmware's full identity map, the higher-half mirror from §3.6, and
+all SMM/ACPI/MMIO/runtime regions — and adds the recursive window the VMM needs. The full
+mechanics, the bisection that proved it, and the remaining caveats are documented in
+[`vmm.md`](vmm.md).
 
 ### Real hardware
 
@@ -268,8 +504,14 @@ Microsoft-free despite being a PE/COFF file.
   `pflash`.
 - The same `kaos64-uefi.img` is what you `dd` to a USB stick for real (UEFI-capable) hardware —
   QEMU test and hardware run identical bytes. Legacy-BIOS-only machines cannot boot it.
-- At runtime: QEMU+OVMF initialise UEFI → the firmware finds `/EFI/BOOT/BOOTX64.EFI` on the FAT
-  ESP → loads the PE32+ image and calls `efi_main` → the loader prints to ConOut and COM1.
+- At runtime (see §3 for the step-by-step): firmware finds `/EFI/BOOT/BOOTX64.EFI` on the FAT ESP
+  and calls `efi_main` → the loader locates GOP, loads `KERNEL.BIN` to physical `0x100000`,
+  reserves a PMM-metadata region, fills `BootInfo`, disables the watchdog, calls
+  `ExitBootServices`, mirrors `PML4[0]→PML4[256]` to create the higher half, and jumps to the
+  kernel at `0xFFFF800000100000` (RSP=`0x400000`, RDI=`&BootInfo`). The kernel then inits
+  GDT/FPU/PMM/IDT, and in `vmm::init` **clones the firmware PML4** (+ a recursive self-map) before
+  switching CR3 — a minimal hand-built map reset real AMD hardware. On a GOP boot it ends in a
+  black↔white framebuffer heartbeat (the disk/scheduler path is UEFI-skipped for now).
 - The PE/COFF format is a historical legacy from Intel's Itanium-era EFI; the UEFI spec
   re-specifies the subset openly, COFF itself is of Unix origin, and open toolchains produce it
   with zero Microsoft dependency. The same applies to the `efiapi` (MS x64) calling convention.

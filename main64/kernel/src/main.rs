@@ -158,11 +158,12 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
     pmm::init(true);
     debugln!("Physical Memory Manager initialized");
 
-    // Prepare IDT/PIC first so exception handlers are in place before CR3 switch.
+    // Prepare IDT/PIC so exception handlers are in place before the CR3 switch.
     interrupts::init();
     debugln!("Interrupt subsystem initialized");
 
-    // Initialize the Virtual Memory Manager
+    // Initialize the Virtual Memory Manager. It switches CR3 to a kernel PML4 that is a
+    // SUPERSET of the firmware page tables (all firmware mappings + a recursive self-map).
     vmm::init(true);
     debugln!("Virtual Memory Manager initialized");
 
@@ -178,6 +179,23 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
     drivers::time::init();
     debugln!("Time driver initialized");
 
+    // On a UEFI/GOP boot there is no ATA disk, so the disk-dependent path below (ATA PIO,
+    // FAT12, loading the user-space shell from disk) cannot run yet. End kernel execution
+    // here in a steady BLACK<->WHITE framebuffer heartbeat. (The legacy BIOS/VGA path
+    // continues to the disk + scheduler below.)
+    if booted_via_gop(boot_info_raw, has_boot_info) {
+        let mut on = false;
+        loop {
+            fill_screen(boot_info_raw, if on { 0x00FF_FFFF } else { 0x0000_0000 });
+            on = !on;
+            let mut i = 0u64;
+            while i < 40_000_000 {
+                i += 1;
+                // SAFETY: volatile read of a stack local to defeat loop elimination.
+                unsafe { core::ptr::read_volatile(&i) };
+            }
+        }
+    }
 
     // Initialize the ATA PIO driver
     drivers::ata::init();
@@ -224,6 +242,41 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
     // return to — shutting down is the only sensible response.
     scheduler::wait_for_task_exit(shell_pid as usize);
     arch::power::shutdown()
+}
+
+/// Returns whether the kernel was booted via a unified BootInfo with a GOP
+/// framebuffer (the UEFI path), as opposed to the legacy BIOS/VGA-text path.
+fn booted_via_gop(boot_info_raw: u64, has_boot_info: bool) -> bool {
+    if !has_boot_info {
+        return false;
+    }
+    // SAFETY: validated BootInfo pointer published in KernelMain.
+    let bi = unsafe { &*(boot_info_raw as *const boot_info::BootInfo) };
+    bi.video_type == boot_info::VideoModeType::GopFramebuffer && bi.fb_info.base_address != 0
+}
+
+/// Fills the entire GOP framebuffer with a single `color` (0x00RRGGBB). No-op when
+/// not booted via GOP. Used for the end-of-boot heartbeat on the UEFI path.
+fn fill_screen(boot_info_raw: u64, color: u32) {
+    if !booted_via_gop(boot_info_raw, true) {
+        return;
+    }
+    // SAFETY: validated BootInfo pointer; the framebuffer is mapped (firmware identity,
+    // preserved by the kernel PML4 superset).
+    let bi = unsafe { &*(boot_info_raw as *const boot_info::BootInfo) };
+    let fb = bi.fb_info;
+    let fb_ptr = fb.base_address as *mut u32;
+    let mut y = 0u32;
+    while y < fb.height {
+        let row = (y * fb.pixels_per_scanline) as isize;
+        let mut x = 0u32;
+        while x < fb.width {
+            // SAFETY: bounds-checked; framebuffer mapped + writable.
+            unsafe { fb_ptr.offset(row + x as isize).write_volatile(color) };
+            x += 1;
+        }
+        y += 1;
+    }
 }
 
 /// Low-power idle loop entered after the scheduler is started.

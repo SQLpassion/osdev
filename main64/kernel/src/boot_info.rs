@@ -45,6 +45,15 @@ pub struct BootInfo {
 
     /// Total kernel size loaded into memory
     pub kernel_size: u64,
+
+    /// Physical base of a dedicated region the bootloader reserved for the PMM's
+    /// metadata/bitmaps (0 = not provided; the kernel then falls back to placing
+    /// them right after its own BSS). Sized for the machine's total RAM, this
+    /// avoids the bitmaps overrunning fixed low memory on large-RAM systems.
+    pub pmm_metadata_base: u64,
+
+    /// Size in bytes of the reserved PMM metadata region (0 if not provided).
+    pub pmm_metadata_size: u64,
 }
 
 /// Global atomic pointer to the active BootInfo structure.

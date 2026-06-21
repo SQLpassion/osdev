@@ -250,12 +250,18 @@ pub fn get_active_cr3() -> u64 {
     read_cr3()
 }
 
-/// Initializes the virtual memory manager and switches CR3.
+/// Initializes the virtual memory manager and switches CR3 to a kernel-owned PML4.
 ///
-/// The new tables map:
-/// - identity mapping for 0..4MB
-/// - higher-half mapping for 0xFFFF_8000_0000_0000..+4MB
-/// - recursive mapping at PML4[511]
+/// The kernel address space is built as a SUPERSET of the firmware's: every firmware
+/// PML4 entry is copied into a freshly allocated PML4 frame — preserving the full
+/// identity map, the loader's higher-half mirror at slot 256, and all firmware
+/// SMM/ACPI/MMIO/runtime mappings — then slot 511 is replaced with a recursive
+/// self-map so the VMM can edit page tables through the recursive window.
+///
+/// This replaced an earlier hand-built minimal map (identity of only the low 4 MiB plus
+/// a higher-half mirror), which reset real AMD hardware the instant CR3 loaded it:
+/// discarding the firmware mappings breaks the platform's asynchronous SMM path. Cloning
+/// the firmware PML4 keeps everything the platform needs.
 pub fn init(debug_output: bool) {
     use page_table::{
         alloc_frame_phys_or_panic, zero_phys_page, table_at, entry_ptr, phys_to_pfn,
@@ -265,147 +271,29 @@ pub fn init(debug_output: bool) {
     // Step 1: allocate all paging-structure frames required for bootstrap layout.
     let pml4 =
         alloc_frame_phys_or_panic("VMM: out of physical memory while allocating bootstrap PML4");
-    let pdp_higher = alloc_frame_phys_or_panic(
-        "VMM: out of physical memory while allocating bootstrap higher-half PDP",
-    );
-    let pd_higher =
-        alloc_frame_phys_or_panic("VMM: out of physical memory while allocating bootstrap PD");
-    let pt_higher_0 =
-        alloc_frame_phys_or_panic("VMM: out of physical memory while allocating bootstrap PT0");
-    let pt_higher_1 =
-        alloc_frame_phys_or_panic("VMM: out of physical memory while allocating bootstrap PT1");
-    let pdp_identity = alloc_frame_phys_or_panic(
-        "VMM: out of physical memory while allocating bootstrap identity PDP",
-    );
-    let pd_identity =
-        alloc_frame_phys_or_panic("VMM: out of physical memory while allocating identity PD");
-    let pt_identity_0 =
-        alloc_frame_phys_or_panic("VMM: out of physical memory while allocating identity PT0");
-    let pt_identity_1 =
-        alloc_frame_phys_or_panic("VMM: out of physical memory while allocating identity PT1");
+    zero_phys_page(pml4);
 
-    // Step 2: clear all fresh table pages before inserting entries.
-    for addr in [
-        pml4,
-        pdp_higher,
-        pd_higher,
-        pt_higher_0,
-        pt_higher_1,
-        pdp_identity,
-        pd_identity,
-        pt_identity_0,
-        pt_identity_1,
-    ] {
-        zero_phys_page(addr);
-    }
-
-    // Step 3: wire top-level roots:
-    // - slot 0   -> identity map subtree
-    // - slot 256 -> higher-half kernel subtree
-    // - slot 511 -> recursive self-map
-    let pml4_tbl = table_at(pml4);
-
-    // SAFETY: `pml4_tbl` is a valid PML4 page, indices < PT_ENTRIES, boot context (single-threaded).
+    // Copy every firmware PML4 entry into our fresh frame, then install the recursive
+    // self-map at slot 511. The firmware tables are still active here, so both PML4s are
+    // reachable via the firmware identity map.
+    let fw_pml4 = read_cr3() & 0x000F_FFFF_FFFF_F000;
+    // SAFETY: firmware PML4 and our fresh PML4 are reachable via the active firmware
+    // identity map; PageTableEntry is Copy (a bare u64); single-threaded boot context.
     unsafe {
-        (*entry_ptr(pml4_tbl, 0)).set_mapping(phys_to_pfn(pdp_identity), true, true, false);
-        (*entry_ptr(pml4_tbl, 256)).set_mapping(phys_to_pfn(pdp_higher), true, true, false);
-        (*entry_ptr(pml4_tbl, 511)).set_mapping(phys_to_pfn(pml4), true, true, false);
-    }
-
-    // Build identity mapping subtree for first 4 MiB.
-    let pdp_identity_tbl = table_at(pdp_identity);
-
-    // SAFETY: `pdp_identity_tbl` is a valid PDP page, `0 < PT_ENTRIES`, boot context.
-    unsafe {
-        (*entry_ptr(pdp_identity_tbl, 0)).set_mapping(phys_to_pfn(pd_identity), true, true, false);
-    }
-
-    let pd_identity_tbl = table_at(pd_identity);
-
-    // SAFETY: `pd_identity_tbl` is a valid PD page, indices < PT_ENTRIES, boot context.
-    unsafe {
-        (*entry_ptr(pd_identity_tbl, 0)).set_mapping(phys_to_pfn(pt_identity_0), true, true, false);
-        (*entry_ptr(pd_identity_tbl, 1)).set_mapping(phys_to_pfn(pt_identity_1), true, true, false);
-    }
-
-    let pt_identity_tbl_0 = table_at(pt_identity_0);
-    for i in 0..PT_ENTRIES {
-        // SAFETY: `pt_identity_tbl_0` is a valid PT page, `i < PT_ENTRIES`, boot context.
-        unsafe { (*entry_ptr(pt_identity_tbl_0, i)).set_mapping(i as u64, true, true, false) };
-    }
-
-    let pt_identity_tbl_1 = table_at(pt_identity_1);
-    for i in 0..PT_ENTRIES {
-        // SAFETY: `pt_identity_tbl_1` is a valid PT page, `i < PT_ENTRIES`, boot context.
-        unsafe {
-            (*entry_ptr(pt_identity_tbl_1, i)).set_mapping(
-                (PT_ENTRIES + i) as u64,
-                true,
-                true,
-                false,
-            )
-        };
-    }
-
-    // Build higher-half mapping subtree that mirrors same physical 0..4 MiB.
-    let pdp_higher_tbl = table_at(pdp_higher);
-
-    // SAFETY: `pdp_higher_tbl` is a valid PDP page, `0 < PT_ENTRIES`, boot context.
-    unsafe {
-        (*entry_ptr(pdp_higher_tbl, 0)).set_mapping(phys_to_pfn(pd_higher), true, true, false)
-    };
-
-    let pd_higher_tbl = table_at(pd_higher);
-
-    // SAFETY: `pd_higher_tbl` is a valid PD page, indices < PT_ENTRIES, boot context.
-    unsafe {
-        (*entry_ptr(pd_higher_tbl, 0)).set_mapping(phys_to_pfn(pt_higher_0), true, true, false);
-        (*entry_ptr(pd_higher_tbl, 1)).set_mapping(phys_to_pfn(pt_higher_1), true, true, false);
-    }
-
-    let pt_higher_tbl_0 = table_at(pt_higher_0);
-    for i in 0..PT_ENTRIES {
-        // SAFETY: `pt_higher_tbl_0` is a valid PT page, `i < PT_ENTRIES`, boot context.
-        unsafe {
-            let e = entry_ptr(pt_higher_tbl_0, i);
-            (*e).set_mapping(i as u64, true, true, false);
-            (*e).set_global(true);
+        let fw = table_at(fw_pml4);
+        let ours = table_at(pml4);
+        for i in 0..PT_ENTRIES {
+            *entry_ptr(ours, i) = *entry_ptr(fw, i);
         }
+        // Recursive self-map (overrides whatever firmware had at slot 511) so the VMM can
+        // edit page tables via the recursive window.
+        (*entry_ptr(ours, 511)).set_mapping(phys_to_pfn(pml4), true, true, false);
     }
 
-    let pt_higher_tbl_1 = table_at(pt_higher_1);
-    for i in 0..PT_ENTRIES {
-        // SAFETY: `pt_higher_tbl_1` is a valid PT page, `i < PT_ENTRIES`, boot context.
-        unsafe {
-            let e = entry_ptr(pt_higher_tbl_1, i);
-            (*e).set_mapping((PT_ENTRIES + i) as u64, true, true, false);
-            (*e).set_global(true);
-        }
-    }
-
-    // Mark higher-half page-directory and page-table entries as global
-    // (but NOT the recursive PML4 entry, which must change per address space).
-    // SAFETY: all tables are valid PT pages, indices < PT_ENTRIES, boot context.
-    unsafe {
-        (*entry_ptr(pd_higher_tbl, 0)).set_global(true);
-        (*entry_ptr(pd_higher_tbl, 1)).set_global(true);
-        (*entry_ptr(pdp_higher_tbl, 0)).set_global(true);
-        (*entry_ptr(pml4_tbl, 256)).set_global(true);
-    }
-
-    // Step 4: publish VMM state and mark it initialized for runtime APIs.
+    // Publish VMM state and mark it initialized for runtime APIs.
     set_vmm_state_unchecked(pml4, debug_output);
     VMM.initialized.store(true, Ordering::Release);
 
-    // Step 5: activate the new bootstrap root.
+    // Activate the new root and return to the boot sequence.
     write_cr3(pml4);
-
-    // Enable global pages (CR4.PGE) to avoid flushing kernel TLB entries on CR3 switch.
-    // Global pages marked with the G-bit persist in the TLB across address space switches.
-    // SAFETY: Enabling CR4.PGE is a standard kernel optimization and safe after
-    // - This requires `unsafe` because it performs operations that Rust marks as potentially violating memory or concurrency invariants.
-    // global-bit configuration is complete.
-    unsafe {
-        page_table::enable_global_pages();
-    }
 }

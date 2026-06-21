@@ -164,6 +164,9 @@ impl PageTableEntry {
     }
 
     /// Returns whether the huge-page bit is set.
+    ///
+    /// Used during page walks to detect/reject huge-page (1 GiB / 2 MiB) leaves. The
+    /// kernel only ever *creates* 4 KiB mappings, so there is no `set_huge` setter.
     #[inline]
     pub fn huge(self) -> bool {
         (self.0 & ENTRY_HUGE) != 0

@@ -99,6 +99,8 @@ fn test_boot_info_parsing() {
         memory_map_addr: unsafe { &raw const DUMMY_MEM_MAP[0] as u64 },
         memory_map_len: 2,
         kernel_size: 123456,
+        pmm_metadata_base: 0,
+        pmm_metadata_size: 0,
     };
 
     let raw_ptr = &info as *const BootInfo as u64;

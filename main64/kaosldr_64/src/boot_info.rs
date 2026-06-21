@@ -47,4 +47,12 @@ pub struct BootInfo {
 
     /// Total kernel size loaded into memory
     pub kernel_size: u64,
+
+    /// Physical base of a dedicated PMM metadata region (0 = not provided; the
+    /// kernel falls back to placing bitmaps right after its BSS). The BIOS loader
+    /// leaves this 0 and relies on the legacy placement.
+    pub pmm_metadata_base: u64,
+
+    /// Size in bytes of the reserved PMM metadata region (0 if not provided).
+    pub pmm_metadata_size: u64,
 }

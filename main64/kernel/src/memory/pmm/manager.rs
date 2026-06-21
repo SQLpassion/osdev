@@ -41,11 +41,33 @@ impl PhysicalMemoryManager {
     /// Constructs the PMM layout and initializes region metadata.
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
-        // Place PMM layout right after the kernel image (including BSS), aligned to 4K.
+        // Decide where the PMM layout (header + region array + bitmaps) lives.
+        //
+        // Preferred: a dedicated region the bootloader reserved for us and sized to
+        // the machine's RAM (see `BootInfo::pmm_metadata_base`). The bitmaps grow
+        // ~32 KiB per GiB of RAM, so on large-memory systems they are far too big to
+        // sit right after the kernel image in low memory — doing so overran into
+        // firmware memory and triple-faulted on real 128 GiB hardware.
+        //
+        // Fallback (BIOS loader / integration tests, which provide no region): place
+        // the layout right after the kernel image (including BSS), aligned to 4 KiB.
         // SAFETY: `__bss_end` is a linker-defined symbol with static lifetime.
         let kernel_end_virt = unsafe { &__bss_end as *const u8 as u64 };
         let kernel_end_phys = virt_to_phys(kernel_end_virt);
-        let start_addr = align_up(kernel_end_phys, PAGE_SIZE);
+        let boot_info_raw_early = BOOT_INFO_PTR.load(Ordering::Acquire);
+        let metadata_base = if boot_info_raw_early != 0 {
+            // SAFETY: `boot_info_raw_early` is the validated BootInfo pointer stored
+            // in `KernelMain`; the magic was checked before publishing it.
+            let bi = unsafe { &*(boot_info_raw_early as *const BootInfo) };
+            if bi.pmm_metadata_base != 0 {
+                bi.pmm_metadata_base
+            } else {
+                kernel_end_phys
+            }
+        } else {
+            kernel_end_phys
+        };
+        let start_addr = align_up(metadata_base, PAGE_SIZE);
         let header = start_addr as *mut PmmLayoutHeader;
         
         // SAFETY:

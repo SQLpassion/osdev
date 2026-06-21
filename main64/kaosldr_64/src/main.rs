@@ -63,6 +63,8 @@ static mut BOOT_INFO: BootInfo = BootInfo {
     memory_map_addr: 0,
     memory_map_len: 0,
     kernel_size: 0,
+    pmm_metadata_base: 0,
+    pmm_metadata_size: 0,
 };
 
 /// Entry point of KLDR64.BIN

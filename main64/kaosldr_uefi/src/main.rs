@@ -174,7 +174,8 @@ struct EfiBootServices {
     exit_boot_services: extern "efiapi" fn(image_handle: Handle, map_key: usize) -> Status,
     get_next_monotonic_count: *const c_void,
     stall: *const c_void,
-    set_watchdog_timer: *const c_void,
+    set_watchdog_timer:
+        extern "efiapi" fn(timeout: usize, code: u64, data_size: usize, data: *const u16) -> Status,
     connect_controller: *const c_void,
     disconnect_controller: *const c_void,
     open_protocol: *const c_void,
@@ -235,6 +236,8 @@ pub struct BootInfo {
     pub memory_map_addr: u64,
     pub memory_map_len: u32,
     pub kernel_size: u64,
+    pub pmm_metadata_base: u64,
+    pub pmm_metadata_size: u64,
 }
 
 static mut UNIFIED_MEM_MAP: [UnifiedMemoryEntry; 256] = [UnifiedMemoryEntry {
@@ -256,6 +259,8 @@ static mut BOOT_INFO: BootInfo = BootInfo {
     memory_map_addr: 0,
     memory_map_len: 0,
     kernel_size: 0,
+    pmm_metadata_base: 0,
+    pmm_metadata_size: 0,
 };
 
 /// Entry point of the UEFI application.
@@ -410,8 +415,19 @@ pub unsafe extern "efiapi" fn efi_main(image_handle: Handle, system_table: *cons
 
     // Step 4: Allocate memory at 0x100000 and read the kernel
     let mut kernel_addr: u64 = 0x100000;
-    // We allocate 96 pages (384KB) to safely cover the kernel footprint (code + data + BSS) which is 89 pages, without overlapping higher UEFI allocations.
-    let pages = 96;
+    // Claim the entire low region 0x100000..0x400000 (768 pages / 3 MiB) as one block — not
+    // just the ~89-page kernel image. The kernel places several things at fixed low addresses
+    // beyond its image:
+    //   * the PMM metadata/bitmaps, immediately after the kernel BSS, growing ~32 KiB per GiB
+    //     of RAM (e.g. ~260 KiB at 8 GiB, ~2 MiB at 64 GiB), and
+    //   * the bootstrap stack, top at 0x400000, growing downward.
+    // On real UEFI hardware the firmware keeps critical structures (e.g. its page tables) in
+    // low memory unless that memory is claimed. With only 96 pages reserved, the PMM bitmaps
+    // overran the allocation and clobbered firmware page tables, triple-faulting in pmm::init
+    // (QEMU/OVMF hid this by keeping its tables high in RAM). Reserving the whole 3 MiB keeps
+    // the kernel, bitmaps and stack inside one block that stays within the kernel's 4 MiB
+    // identity map; EfiLoaderCode marks it reserved in the UEFI memory map.
+    let pages = 768;
     // AllocateType: AllocateAddress = 2 (allocate at the exact address in `kernel_addr`).
     // NOTE: 1 is AllocateMaxAddress, which treats `kernel_addr` as a *ceiling* and places the
     // allocation anywhere below it — that silently loaded the kernel at 0x40000 instead of
@@ -444,6 +460,14 @@ pub unsafe extern "efiapi" fn efi_main(image_handle: Handle, system_table: *cons
         ((*root_dir).close)(root_dir);
     }
 
+    // Disable the UEFI watchdog timer. The firmware arms a ~5-minute watchdog before
+    // launching a boot application; if it is left running it resets the machine. A
+    // timeout of 0 disables it. This must be done while boot services are still alive.
+    // SAFETY: standard boot-service call; null data pointer is valid for timeout 0.
+    unsafe {
+        ((*boot_services).set_watchdog_timer)(0, 0, 0, core::ptr::null());
+    }
+
     // Step 5: Translate UEFI memory map & Exit Boot Services
     print(con_out, "  -> Exiting Boot Services...\r\n");
     let mut map_buf = [0u8; 32768];
@@ -451,6 +475,60 @@ pub unsafe extern "efiapi" fn efi_main(image_handle: Handle, system_table: *cons
     let mut map_key: usize = 0;
     let mut descriptor_size: usize = 0;
     let mut descriptor_version: u32 = 0;
+
+    // Reserve a PMM metadata region sized for the machine's RAM, BEFORE exiting boot
+    // services (AllocatePages needs boot services). The kernel's PMM places its
+    // bitmaps here instead of in fixed low memory; on large-RAM systems (e.g. 128 GiB
+    // -> ~4 MiB of bitmaps) the old fixed placement overran into firmware memory and
+    // triple-faulted in pmm::init. We size it from the usable RAM reported by an
+    // initial get_memory_map (the ExitBootServices loop below re-fetches the map).
+    {
+        let mut probe_size = map_buf.len();
+        let mut probe_key: usize = 0;
+        let mut probe_desc_size: usize = 0;
+        let mut probe_desc_ver: u32 = 0;
+        // SAFETY: standard get_memory_map call into our stack buffer.
+        let st = unsafe {
+            ((*boot_services).get_memory_map)(
+                &mut probe_size,
+                map_buf.as_mut_ptr(),
+                &mut probe_key,
+                &mut probe_desc_size,
+                &mut probe_desc_ver,
+            )
+        };
+        if st == 0 && probe_desc_size > 0 {
+            let n = probe_size / probe_desc_size;
+            let mut total_frames: u64 = 0;
+            let mut region_count: u64 = 0;
+            for i in 0..n {
+                // SAFETY: `i < n`, each descriptor occupies `probe_desc_size` bytes.
+                let desc = unsafe {
+                    &*(map_buf.as_ptr().add(i * probe_desc_size) as *const EfiMemoryDescriptor)
+                };
+                // EfiConventionalMemory = 7; mirror the kernel PMM's usable filter.
+                if desc.memory_type == 7 && desc.physical_start >= 0x100000 {
+                    total_frames += desc.number_of_pages;
+                    region_count += 1;
+                }
+            }
+            // header + region array + 1 bit per frame, plus generous slack.
+            let meta_bytes = 0x4000 + region_count * 0x40 + (total_frames / 8) + 0x4000;
+            let meta_pages = ((meta_bytes + 0xFFF) / 0x1000) + 8;
+            let mut meta_addr: u64 = 0;
+            // AllocateAnyPages = 0, EfiLoaderData = 2.
+            let alloc_st = unsafe {
+                ((*boot_services).allocate_pages)(0, 2, meta_pages as usize, &mut meta_addr)
+            };
+            if alloc_st == 0 {
+                // SAFETY: write the static BootInfo before the kernel jump.
+                unsafe {
+                    BOOT_INFO.pmm_metadata_base = meta_addr;
+                    BOOT_INFO.pmm_metadata_size = meta_pages * 0x1000;
+                }
+            }
+        }
+    }
 
     // Retry loop for ExitBootServices
     let mut exited = false;
