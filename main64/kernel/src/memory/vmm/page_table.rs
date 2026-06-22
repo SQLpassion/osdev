@@ -539,6 +539,51 @@ pub fn is_leaf_present(virtual_address: u64) -> bool {
     table_entry(pt, pt_index(virtual_address)).present()
 }
 
+/// Returns whether `virtual_address` is currently mapped at ANY page granularity —
+/// a 4 KiB leaf PTE, a 2 MiB PD huge page, or a 1 GiB PDPT huge page.
+///
+/// Unlike [`is_leaf_present`] / [`pt_for_if_present`] (which return `false`/`None` for
+/// huge-page mappings because they only inspect the 4 KiB PT level), this recognizes huge
+/// pages too. That distinction matters for firmware-established mappings: UEFI commonly maps
+/// MMIO / framebuffer ranges with 2 MiB or 1 GiB pages, and those are cloned into the kernel
+/// PML4 by `build_kernel_pml4_from_firmware`. Callers that decide whether to create a fresh
+/// mapping (e.g. the framebuffer identity map) must use this, otherwise they would try to map
+/// over an existing huge page and corrupt the page-table walk.
+///
+/// The walk short-circuits before dereferencing a level that does not exist (a huge page has
+/// no lower table), so the recursive-mapping accesses below are always valid.
+#[inline]
+pub fn is_va_mapped(virtual_address: u64) -> bool {
+    let pml4 = table_at(PML4_TABLE_ADDR);
+    let pml4e = table_entry(pml4, pml4_index(virtual_address));
+    if !pml4e.present() {
+        return false;
+    }
+
+    let pdp = table_at(pdp_table_addr(virtual_address));
+    let pdpe = table_entry(pdp, pdp_index(virtual_address));
+    if !pdpe.present() {
+        return false;
+    }
+    // 1 GiB huge page: mapped, and there is no PD below it.
+    if pdpe.huge() {
+        return true;
+    }
+
+    let pd = table_at(pd_table_addr(virtual_address));
+    let pde = table_entry(pd, pd_index(virtual_address));
+    if !pde.present() {
+        return false;
+    }
+    // 2 MiB huge page: mapped, and there is no PT below it.
+    if pde.huge() {
+        return true;
+    }
+
+    let pt = table_at(pt_table_addr(virtual_address));
+    table_entry(pt, pt_index(virtual_address)).present()
+}
+
 /// Returns whether a page-table page contains no present entries.
 #[inline]
 pub fn table_is_empty(table: *const PageTable) -> bool {

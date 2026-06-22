@@ -119,29 +119,10 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
         let boot_info = unsafe { &*(boot_info_raw as *const boot_info::BootInfo) };
         debugln!("BootInfo memory map len: {}", boot_info.memory_map_len);
 
-        // If booted via UEFI GOP, draw a colored background/pattern to verify execution
-        if boot_info.video_type == boot_info::VideoModeType::GopFramebuffer {
-            let fb = boot_info.fb_info;
-            let fb_ptr = fb.base_address as *mut u32;
-
-            // Paint a color gradient
-            for y in 0..fb.height {
-                for x in 0..fb.width {
-                    let r = (x * 255 / fb.width) & 0xFF;
-                    let g = (y * 255 / fb.height) & 0xFF;
-                    let b = 128;
-                    let color = (r << 16) | (g << 8) | b;
-                    let offset = (y * fb.pixels_per_scanline + x) as isize;
-                    
-                    // SAFETY:
-                    // - `fb.base_address` is mapped and valid for GOP framebuffer write.
-                    // - `offset` is within framebuffer bounds (calculated via scanline and height).
-                    unsafe {
-                        fb_ptr.offset(offset).write_volatile(color);
-                    }
-                }
-            }
-        }
+        // NOTE: Do NOT touch the linear framebuffer here. On a BIOS/VBE boot it lives at a high
+        // physical address that the bootstrap loader's identity map (low 16 MiB) does not cover,
+        // and no page-fault/IDT handler exists yet — a write would fault and triple-fault the CPU.
+        // The framebuffer is mapped and painted later, once the VMM is up (see `map_framebuffer`).
     }
 
     // Initialize GDT/TSS so ring-3 transitions have a valid architectural base.
@@ -182,6 +163,17 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
     heap::init(true);
     debugln!("Heap Manager initialized");
 
+    // On a graphics-mode boot (BIOS VBE / UEFI GOP) the linear framebuffer lives at a high
+    // physical address the bootstrap identity map does not cover. Now that the VMM is active,
+    // identity-map the framebuffer's physical range so it is reachable, then paint a one-time
+    // gradient to confirm the pipeline. (Deferred to here precisely because the early pre-VMM
+    // path has no fault handler and the framebuffer was unmapped.)
+    if booted_via_gop(boot_info_raw, has_boot_info) {
+        map_framebuffer(boot_info_raw);
+        paint_framebuffer_gradient(boot_info_raw);
+        debugln!("Framebuffer mapped and gradient painted");
+    }
+
     // Initialize the PCI subsystem (scans the PCI bus)
     drivers::pci::init();
     debugln!("PCI subsystem initialized");
@@ -190,11 +182,12 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
     drivers::time::init();
     debugln!("Time driver initialized");
 
-    // On a UEFI/GOP boot there is no ATA disk, so the disk-dependent path below (ATA PIO,
-    // FAT12, loading the user-space shell from disk) cannot run yet. End kernel execution
-    // here in a steady BLACK<->WHITE framebuffer heartbeat. (The legacy BIOS/VGA path
-    // continues to the disk + scheduler below.)
-    if booted_via_gop(boot_info_raw, has_boot_info) {
+    // A UEFI/GOP bring-up has no legacy ATA disk, so the disk-dependent path below (ATA PIO,
+    // FAT12, loading the user-space shell from disk) cannot run yet — end execution here in a
+    // steady BLACK<->WHITE framebuffer heartbeat. A legacy BIOS boot always has an ATA disk
+    // (including the BIOS+VBE graphics path), so it falls through to the disk + scheduler + shell
+    // path below. `primary_present()` distinguishes the two without a dedicated boot-source flag.
+    if booted_via_gop(boot_info_raw, has_boot_info) && !drivers::ata::primary_present() {
         let mut on = false;
         loop {
             fill_screen(boot_info_raw, if on { 0x00FF_FFFF } else { 0x0000_0000 });
@@ -287,6 +280,80 @@ fn fill_screen(boot_info_raw: u64, color: u32) {
             x += 1;
         }
         y += 1;
+    }
+}
+
+/// Identity-maps the linear framebuffer's physical range into the kernel address space.
+///
+/// On a BIOS/VBE boot the bootstrap loader only identity-maps the low 16 MiB, but the linear
+/// framebuffer reported in `BootInfo` lives at a high physical address (typically the
+/// 0xC000_0000–0xFFFF_FFFF MMIO window). This walks the framebuffer byte range page by page and
+/// maps each 4 KiB page identity (VA == PA, present + writable) via the VMM, so the existing
+/// `fb.base_address`-relative writes are valid. No-op when not booted via GOP/VBE.
+///
+/// Must run after `vmm::init()` (uses the VMM recursive mapping) and `pmm::init()` (intermediate
+/// page tables are allocated from the PMM). Pages already mapped (e.g. by UEFI firmware) are
+/// skipped, so the call is safe on both the BIOS and UEFI paths.
+fn map_framebuffer(boot_info_raw: u64) {
+    if !booted_via_gop(boot_info_raw, true) {
+        return;
+    }
+    // SAFETY: validated BootInfo pointer published in KernelMain.
+    let bi = unsafe { &*(boot_info_raw as *const boot_info::BootInfo) };
+    let fb = bi.fb_info;
+    if fb.base_address == 0 || fb.size == 0 {
+        return;
+    }
+
+    let start = fb.base_address & !0xFFFu64;
+    let end = fb.base_address + fb.size as u64;
+    let mut addr = start;
+    while addr < end {
+        // Only create a fresh mapping when the page is genuinely unmapped (the BIOS/VBE case,
+        // where the loader maps just the low 16 MiB). On UEFI the firmware already maps the
+        // framebuffer — frequently with 2 MiB / 1 GiB huge pages — and that mapping is cloned
+        // into the kernel PML4. We MUST detect that and skip it: `is_va_mapped` is huge-page
+        // aware, whereas a 4 KiB-only check would miss the huge mapping and make
+        // `map_virtual_to_physical` walk into a huge PDE, corrupting the framebuffer/page tables.
+        if !vmm::is_va_mapped(addr) {
+            vmm::map_virtual_to_physical(addr, addr);
+        }
+        addr += 0x1000;
+    }
+    debugln!(
+        "Framebuffer identity-mapped: phys 0x{:x}..0x{:x} ({} bytes)",
+        start,
+        end,
+        fb.size
+    );
+}
+
+/// Paints a one-time RGB gradient across the whole framebuffer to confirm the graphics pipeline.
+///
+/// No-op when not booted via GOP/VBE. The framebuffer must already be mapped (see
+/// [`map_framebuffer`]).
+fn paint_framebuffer_gradient(boot_info_raw: u64) {
+    if !booted_via_gop(boot_info_raw, true) {
+        return;
+    }
+    // SAFETY: validated BootInfo pointer published in KernelMain.
+    let bi = unsafe { &*(boot_info_raw as *const boot_info::BootInfo) };
+    let fb = bi.fb_info;
+    let fb_ptr = fb.base_address as *mut u32;
+    for y in 0..fb.height {
+        for x in 0..fb.width {
+            let r = (x * 255 / fb.width) & 0xFF;
+            let g = (y * 255 / fb.height) & 0xFF;
+            let b = 128u32;
+            let color = (r << 16) | (g << 8) | b;
+            let offset = (y * fb.pixels_per_scanline + x) as isize;
+            // SAFETY:
+            // - The framebuffer range was identity-mapped by `map_framebuffer`.
+            // - `offset` is within bounds (derived from scanline pitch and height).
+            unsafe {
+                fb_ptr.offset(offset).write_volatile(color);
+            }
+        }
     }
 }
 

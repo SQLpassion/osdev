@@ -40,6 +40,7 @@ pub use vmm_constants::*;
 #[allow(unused_imports)]
 pub use page_table::{
     PAGE_MASK, PML4_TABLE_ADDR, read_cr3, write_cr3, invlpg, reserve_firmware_page_tables,
+    is_va_mapped,
 };
 #[allow(unused_imports)]
 pub use page_fault::{
