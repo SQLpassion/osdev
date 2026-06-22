@@ -232,7 +232,7 @@ fn test_synthetic_uefi_first_alloc_skips_reserved() {
 
         // Inside the main usable region...
         assert!(
-            addr >= KERNEL_OFFSET && addr < KERNEL_OFFSET + MAIN_REGION_SIZE,
+            (KERNEL_OFFSET..KERNEL_OFFSET + MAIN_REGION_SIZE).contains(&addr),
             "allocated frame 0x{:x} must be inside the main usable region",
             addr
         );

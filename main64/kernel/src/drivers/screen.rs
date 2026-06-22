@@ -453,9 +453,11 @@ impl Screen {
 
         // Build the attribute byte from the caller-supplied colors.
         let attr = ((bg as u8) << 4) | (fg as u8);
-        let mut c = col;
 
-        for byte in text.bytes() {
+        // Step 1: Iterate over string bytes and write them to VGA memory.
+        // We zip the bytes with an infinite sequence starting at `col` to keep
+        // track of the column index, stopping if we exceed the screen width.
+        for (c, byte) in (col..).zip(text.bytes()) {
             if c >= self.num_cols {
                 break;
             }
@@ -466,7 +468,6 @@ impl Screen {
             };
 
             self.write_vga(row, c, cell);
-            c += 1;
         }
     }
 

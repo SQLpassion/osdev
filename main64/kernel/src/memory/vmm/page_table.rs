@@ -188,6 +188,13 @@ pub struct PageTable {
     pub entries: [PageTableEntry; PT_ENTRIES],
 }
 
+impl Default for PageTable {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PageTable {
     /// Returns a fully zeroed (all-entries-not-present) page table. Useful for tests
     /// and for any caller that wants a blank table to fill.

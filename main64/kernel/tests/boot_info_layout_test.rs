@@ -44,8 +44,7 @@ fn panic(info: &PanicInfo) -> ! {
 /// would reject a valid BootInfo (or, worse, accept a stale pointer). Release-blocking.
 #[test_case]
 fn test_bootinfo_magic_value() {
-    // ASCII "KAOS_BOO" big-endian-packed, as written by both loaders and checked by the kernel.
-    assert_eq!(0x4B414F535F424F4Fu64, 0x4B41_4F53_5F42_4F4F);
+    assert_eq!(0x4B41_4F53_5F42_4F4F_u64.to_be_bytes(), *b"KAOS_BOO");
 }
 
 /// Contract: VideoModeType discriminants are stable (VgaText=0, GopFramebuffer=1).
