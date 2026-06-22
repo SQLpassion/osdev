@@ -56,13 +56,6 @@ const EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID: Guid = Guid {
     data4: [0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b],
 };
 
-const EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL_GUID: Guid = Guid {
-    data1: 0x387477c2,
-    data2: 0x69c7,
-    data3: 0x11d2,
-    data4: [0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b],
-};
-
 const EFI_LOADED_IMAGE_PROTOCOL_GUID: Guid = Guid {
     data1: 0x5b1b31a1,
     data2: 0x9562,
@@ -514,7 +507,10 @@ pub unsafe extern "efiapi" fn efi_main(image_handle: Handle, system_table: *cons
             }
             // header + region array + 1 bit per frame, plus generous slack.
             let meta_bytes = 0x4000 + region_count * 0x40 + (total_frames / 8) + 0x4000;
-            let meta_pages = ((meta_bytes + 0xFFF) / 0x1000) + 8;
+
+            // Step 5b: Calculate how many pages we need to hold the PMM metadata,
+            // rounding up the byte size to the nearest page boundary.
+            let meta_pages = meta_bytes.div_ceil(0x1000) + 8;
             let mut meta_addr: u64 = 0;
             // AllocateAnyPages = 0, EfiLoaderData = 2.
             let alloc_st = unsafe {

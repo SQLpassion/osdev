@@ -72,11 +72,11 @@ impl Screen {
     pub fn draw_at(&mut self, row: usize, col: usize, text: &str, fg: Color, bg: Color) {
         if row >= SCREEN_ROWS { return; }
         let attr = ((bg as u8) << 4) | (fg as u8);
-        let mut c = col;
-        for byte in text.bytes() {
+        
+        // Step 1: Iterate over bytes and write them to the buffer, zipping with column sequence.
+        for (c, byte) in (col..).zip(text.bytes()) {
             if c >= SCREEN_COLS { break; }
             self.buffer[row * SCREEN_COLS + c] = ((attr as u16) << 8) | (byte as u16);
-            c += 1;
         }
     }
 
