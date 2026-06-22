@@ -23,7 +23,6 @@ mod scheduler;
 mod sync;
 mod syscall;
 mod tui;
-mod user_tasks;
 
 use crate::arch::fpu;
 use crate::arch::gdt;

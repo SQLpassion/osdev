@@ -96,9 +96,6 @@ name = "syscall_dispatch_test"
 name = "process_contract_test"
 
 [[test]]
-name = "cursor_demo_test"
-
-[[test]]
 name = "treeview_test"
 
 [[test]]
