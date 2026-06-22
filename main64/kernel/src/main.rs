@@ -22,7 +22,6 @@ mod process;
 mod scheduler;
 mod sync;
 mod syscall;
-mod tui;
 
 use crate::arch::fpu;
 use crate::arch::gdt;
