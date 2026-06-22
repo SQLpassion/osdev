@@ -8,7 +8,7 @@ authors = ["Klaus Aschenbrenner"]
 
 [profile.dev]
 panic = "abort"
-opt-level = 0
+opt-level = "z"
 debug = true
 lto = false
 

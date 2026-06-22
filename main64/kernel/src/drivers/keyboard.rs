@@ -148,8 +148,47 @@ static RAW_WAITQUEUE: SingleWaitQueue = SingleWaitQueue::new();
 /// Wakes consumer tasks when decoded characters are available.
 static INPUT_WAITQUEUE: WaitQueue = WaitQueue::new();
 
+/// Drain any stale bytes left in the 8042 controller output buffer (port 0x60).
+///
+/// The boot loader's video-mode menu reads a keypress through the BIOS while
+/// still in real mode. The matching key-release (break) scancode — and any
+/// other firmware-left byte — can still be sitting unread in the controller
+/// output buffer when the kernel takes over. The 8042 only raises a new IRQ1
+/// when a byte *transitions* into an empty output buffer; if the buffer is
+/// already full when IRQ1 is unmasked, the controller never raises another
+/// keyboard interrupt (it waits for the CPU to read the pending byte) and the
+/// keyboard appears completely dead. Reading the pending byte(s) here clears
+/// that condition before interrupts are enabled. This must run before
+/// `interrupts::enable()`.
+fn flush_controller_output_buffer() {
+    // The output buffer is one byte deep, but loop with a bound in case the
+    // controller has more queued — and to avoid spinning forever on a stuck
+    // line that always reports data-available (e.g. a floating 0xFF).
+    for _ in 0..16 {
+        // SAFETY:
+        // - This requires `unsafe` because hardware port I/O is outside Rust's memory-safety guarantees.
+        // - Reading the PS/2 status port (0x64) is the documented way to probe the output buffer.
+        // - Port access is valid in ring 0 during single-threaded init.
+        let status = unsafe { PortByte::new(KYBRD_CTRL_STATS_REG).read() };
+        if (status & KYBRD_CTRL_STATS_MASK_OUT_BUF) == 0 {
+            break;
+        }
+
+        // SAFETY:
+        // - This requires `unsafe` because hardware port I/O is outside Rust's memory-safety guarantees.
+        // - Output-buffer-full bit was checked above, so a byte is pending.
+        // - Reading the data port (0x60) consumes that byte and clears OBF.
+        let _ = unsafe { PortByte::new(KYBRD_ENC_INPUT_BUF).read() };
+    }
+}
+
 /// Initialize the keyboard driver state.
 pub fn init() {
+    // Discard any byte the firmware / boot-menu left in the hardware output
+    // buffer before IRQ1 is enabled; otherwise the controller may never raise
+    // another keyboard interrupt (see `flush_controller_output_buffer`).
+    flush_controller_output_buffer();
+
     KEYBOARD.raw.clear();
     KEYBOARD.buffer.clear();
     KEYBOARD.key_buffer.clear();

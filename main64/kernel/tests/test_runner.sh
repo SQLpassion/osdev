@@ -157,19 +157,19 @@ set +e
 QEMU_LOG="$RESULTS_DIR/$TEST_NAME.log"
 
 if [ -n "$TIMEOUT_CMD" ]; then
-    $TIMEOUT_CMD $TIMEOUT_SECONDS qemu-system-x86_64 \
+    echo "1" | $TIMEOUT_CMD $TIMEOUT_SECONDS qemu-system-x86_64 \
         -drive format=raw,file="$TEST_IMG" \
         -serial stdio \
         -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
         -display none \
-        -no-reboot < /dev/null > "$QEMU_LOG" 2>&1
+        -no-reboot > "$QEMU_LOG" 2>&1
 else
-    qemu-system-x86_64 \
+    echo "1" | qemu-system-x86_64 \
         -drive format=raw,file="$TEST_IMG" \
         -serial stdio \
         -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
         -display none \
-        -no-reboot < /dev/null > "$QEMU_LOG" 2>&1
+        -no-reboot > "$QEMU_LOG" 2>&1
 fi
 
 QEMU_EXIT=$?

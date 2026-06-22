@@ -33,6 +33,14 @@ struct BiosInformationBlock {
     memory_map_entries: i16,
     max_memory: i64,
     available_page_frames: i64,
+    video_type: u32,
+    _padding: u32,
+    fb_base_address: u64,
+    fb_size: u64,
+    fb_width: u32,
+    fb_height: u32,
+    fb_pixels_per_scanline: u32,
+    _padding2: u32,
 }
 
 #[repr(C)]
@@ -113,6 +121,20 @@ pub unsafe extern "C" fn kaosldr_main() -> ! {
                 BOOT_INFO.memory_map_addr = &raw const UNIFIED_MEM_MAP[0] as u64;
                 BOOT_INFO.memory_map_len = entry_count.min(128) as u32;
                 BOOT_INFO.kernel_size = kernel_size;
+
+                // Translate the selected BIOS video mode and framebuffer properties into the BootInfo block.
+                BOOT_INFO.video_type = if bib.video_type == 1 {
+                    VideoModeType::GopFramebuffer
+                } else {
+                    VideoModeType::VgaText
+                };
+                BOOT_INFO.fb_info = FramebufferInfo {
+                    base_address: bib.fb_base_address,
+                    size: bib.fb_size as usize,
+                    width: bib.fb_width,
+                    height: bib.fb_height,
+                    pixels_per_scanline: bib.fb_pixels_per_scanline,
+                };
 
                 // Execute the Kernel, passing a pointer to the BootInfo struct.
                 // This function call will never return...

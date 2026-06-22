@@ -106,3 +106,28 @@ fn test_unified_memory_entry_layout() {
     assert_eq!(size_of::<UnifiedMemoryEntry>(), 24);
     assert_eq!(align_of::<UnifiedMemoryEntry>(), 8);
 }
+
+/// Contract: the exact `#[repr(C)]` layout of `BiosInformationBlock`.
+/// Failure Impact: loader (kaosldr_16, kaosldr_64) and kernel mismatch offsets → boot failure or graphics failure. Release-blocking.
+#[test_case]
+fn test_bios_information_block_layout() {
+    use kaos_kernel::memory::bios::BiosInformationBlock;
+
+    assert_eq!(offset_of!(BiosInformationBlock, year), 0);
+    assert_eq!(offset_of!(BiosInformationBlock, month), 4);
+    assert_eq!(offset_of!(BiosInformationBlock, day), 6);
+    assert_eq!(offset_of!(BiosInformationBlock, hour), 8);
+    assert_eq!(offset_of!(BiosInformationBlock, minute), 10);
+    assert_eq!(offset_of!(BiosInformationBlock, second), 12);
+    assert_eq!(offset_of!(BiosInformationBlock, memory_map_entries), 14);
+    assert_eq!(offset_of!(BiosInformationBlock, max_memory), 16);
+    assert_eq!(offset_of!(BiosInformationBlock, available_page_frames), 24);
+    assert_eq!(offset_of!(BiosInformationBlock, video_type), 32);
+    assert_eq!(offset_of!(BiosInformationBlock, fb_base_address), 40);
+    assert_eq!(offset_of!(BiosInformationBlock, fb_size), 48);
+    assert_eq!(offset_of!(BiosInformationBlock, fb_width), 56);
+    assert_eq!(offset_of!(BiosInformationBlock, fb_height), 60);
+    assert_eq!(offset_of!(BiosInformationBlock, fb_pixels_per_scanline), 64);
+    assert_eq!(size_of::<BiosInformationBlock>(), 72);
+    assert_eq!(align_of::<BiosInformationBlock>(), 8);
+}

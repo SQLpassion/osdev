@@ -13,6 +13,15 @@ STRUC BiosInformationBlock
 
     .MemoryMapEntries   RESW 1 ; Number of Memory Map entries
     .AvailableMemory    RESQ 1 ; Available Memory - will be calculated by the Kernel
+    .AvailablePageFrames RESQ 1 ; Available Page Frames - will be calculated by the Kernel
+    .VideoType          RESD 1 ; Video Mode Type (0 = VGA Text, 1 = LFB Graphics)
+    .Padding            RESD 1 ; Padding to align FbBaseAddress to 8-byte boundary
+    .FbBaseAddress      RESQ 1 ; Linear Framebuffer physical address
+    .FbSize             RESQ 1 ; Framebuffer size in bytes
+    .FbWidth            RESD 1 ; Framebuffer width in pixels
+    .FbHeight           RESD 1 ; Framebuffer height in pixels
+    .FbPixelsPerScanline RESD 1 ; Framebuffer pixels per scanline
+    .Padding2           RESD 1 ; Padding to align structure to 8-byte boundary (72 bytes total)
 ENDSTRUC
 
 ; This structure represents a memory map entry that we have retrieved from the BIOS
