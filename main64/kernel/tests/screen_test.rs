@@ -296,3 +296,32 @@ fn test_print_str_with_hyphen_renders_correctly() {
     }
 }
 
+/// Contract: console::init initializes GLOBAL_CONSOLE and with_console delegates successfully.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold, proving dynamic console routing is functional.
+#[test_case]
+fn test_dynamic_console_initialization_and_routing() {
+    // Step 1: Initialize the console module in VGA text mode.
+    kaos_kernel::console::init(kaos_kernel::boot_info::VideoModeType::VgaText);
+
+    // Step 2: Use the abstraction to clear the screen and write a test string.
+    kaos_kernel::console::with_console(|console| {
+        console.clear();
+        console.set_cursor(5, 10);
+        console.print_str("DYNAMIC TUI TEST");
+    });
+
+    // Step 3: Verify the string was written to the VGA buffer.
+    let expected = b"DYNAMIC TUI TEST";
+    for (idx, &byte) in expected.iter().enumerate() {
+        let cell = VGA_BUFFER + ((5 * VGA_COLS + 10 + idx) * 2);
+        // SAFETY:
+        // - Raw pointer read is required to verify actual hardware state.
+        // - Address is mapped and valid for read.
+        let ch = unsafe { core::ptr::read_volatile(cell as *const u8) };
+        assert!(ch == byte, "dynamic console must write expected character");
+    }
+}
+
+

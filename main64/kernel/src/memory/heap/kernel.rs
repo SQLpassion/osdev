@@ -9,13 +9,13 @@
 //! Concurrency:
 //! - All global heap allocations and deallocations acquire the global spinlock [`HEAP.inner`] to ensure thread safety.
 
-use crate::drivers::screen::Screen;
+use crate::console::KernelConsole;
 use crate::logging;
 use crate::memory::pmm;
 use crate::sync::spinlock::SpinLock;
 use alloc::vec::Vec;
-use core::fmt::Write;
 use core::sync::atomic::{AtomicBool, Ordering};
+
 
 use super::generic::HeapEnvironment;
 use super::types::{
@@ -346,7 +346,7 @@ pub fn free(ptr: *mut u8) {
 }
 
 /// Runs heap self-tests and prints results to the screen.
-pub fn run_self_test(screen: &mut Screen) {
+pub fn run_self_test(screen: &mut dyn KernelConsole) {
     let mut failures = 0u32;
     logging::logln_with_options(
         "heap",

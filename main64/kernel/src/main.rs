@@ -12,6 +12,7 @@ extern crate alloc;
 mod allocator;
 mod arch;
 mod boot_info;
+mod console;
 mod drivers;
 mod io;
 mod logging;
@@ -22,6 +23,7 @@ mod process;
 mod scheduler;
 mod sync;
 mod syscall;
+
 
 use crate::arch::fpu;
 use crate::arch::gdt;
@@ -160,6 +162,20 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
     // Initialize the Heap Manager
     heap::init(true);
     debugln!("Heap Manager initialized");
+
+    // Dynamic console initialization based on the boot-time video mode.
+    let video_type = if has_boot_info {
+        // SAFETY:
+        // - `boot_info_raw` was validated above in `KernelMain` to ensure it points to a valid `BootInfo` structure.
+        // - Dereferencing is read-only and within bounds.
+        let bi = unsafe { &*(boot_info_raw as *const boot_info::BootInfo) };
+        bi.video_type
+    } else {
+        boot_info::VideoModeType::VgaText
+    };
+    console::init(video_type);
+    debugln!("Kernel console initialized");
+
 
     // On a graphics-mode boot (BIOS VBE / UEFI GOP) the linear framebuffer lives at a high
     // physical address the bootstrap identity map does not cover. Now that the VMM is active,

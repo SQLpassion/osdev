@@ -717,3 +717,83 @@ impl fmt::Write for Screen {
         Ok(())
     }
 }
+
+impl crate::console::KernelConsole for Screen {
+    fn clear(&mut self) {
+        Screen::clear(self);
+    }
+
+    fn print_char(&mut self, c: u8) {
+        Screen::print_char(self, c);
+    }
+
+    fn print_str(&mut self, s: &str) {
+        Screen::print_str(self, s);
+    }
+
+    fn set_color(&mut self, color: Color) {
+        Screen::set_color(self, color);
+    }
+
+    fn set_cursor(&mut self, row: usize, col: usize) {
+        Screen::set_cursor(self, row, col);
+    }
+
+    fn get_cursor(&self) -> (usize, usize) {
+        Screen::get_cursor(self)
+    }
+
+    fn draw_box(
+        &mut self,
+        row: usize,
+        col: usize,
+        width: usize,
+        height: usize,
+        fg: Color,
+        bg: Color,
+    ) {
+        Screen::draw_box(self, row, col, width, height, fg, bg);
+    }
+
+    fn draw_at(&mut self, row: usize, col: usize, text: &str, fg: Color, bg: Color) {
+        Screen::draw_at(self, row, col, text, fg, bg);
+    }
+
+    fn fill_rect(
+        &mut self,
+        row: usize,
+        col: usize,
+        width: usize,
+        height: usize,
+        ch: u8,
+        fg: Color,
+        bg: Color,
+    ) {
+        Screen::fill_rect(self, row, col, width, height, ch, fg, bg);
+    }
+
+    fn draw_char_at(&mut self, row: usize, col: usize, ch: u8, fg: Color, bg: Color) {
+        Screen::draw_char_at(self, row, col, ch, fg, bg);
+    }
+
+    fn blit_framebuffer(&mut self, cells: &[u16]) {
+        Screen::blit_framebuffer(self, cells);
+    }
+
+    fn disable_hw_cursor(&mut self) {
+        Screen::disable_hw_cursor(self);
+    }
+
+    fn enable_hw_cursor(&mut self) {
+        Screen::enable_hw_cursor(self);
+    }
+
+    fn disable_blink_mode(&mut self) {
+        Screen::disable_blink_mode(self);
+    }
+
+    fn enable_blink_mode(&mut self) {
+        Screen::enable_blink_mode(self);
+    }
+}
+

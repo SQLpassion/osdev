@@ -24,7 +24,7 @@
 use crate::sync::spinlock::SpinLock;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use crate::drivers::screen::Screen;
+use crate::console::KernelConsole;
 use crate::logging;
 
 pub mod page_table;
@@ -153,7 +153,7 @@ pub fn set_console_debug_output(enabled: bool) {
 }
 
 /// Writes captured VMM debug output to the screen.
-pub fn print_console_debug_output(screen: &mut Screen) {
+pub fn print_console_debug_output(screen: &mut dyn KernelConsole) {
     // Filter captured logs to high-signal page-fault traces for REPL output.
     logging::print_captured_target(screen, "vmm", |line| {
         line.starts_with("VMM: page fault raw=") || line.starts_with("VMM: indices pml4=")
