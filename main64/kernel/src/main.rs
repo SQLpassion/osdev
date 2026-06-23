@@ -184,8 +184,24 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
     // path has no fault handler and the framebuffer was unmapped.)
     if booted_via_framebuffer(boot_info_raw, has_boot_info) {
         map_framebuffer(boot_info_raw);
-        paint_framebuffer_gradient(boot_info_raw);
-        debugln!("Framebuffer mapped and gradient painted");
+        debugln!("Framebuffer mapped");
+
+        // SAFETY:
+        // - `boot_info_raw` contains a valid physical address to a `BootInfo` structure.
+        let bi = unsafe { &*(boot_info_raw as *const boot_info::BootInfo) };
+        let fb = bi.fb_info;
+        crate::console::with_console(|console| {
+            // Ensure the screen is fully cleared before the first console output.
+            console.clear();
+            let _ = writeln!(
+                console,
+                "VBE Framebuffer active: {}x{} px (stride: {}, base: 0x{:x})",
+                fb.width,
+                fb.height,
+                fb.pixels_per_scanline,
+                fb.base_address
+            );
+        });
     }
 
     // Initialize the PCI subsystem (scans the PCI bus)
@@ -202,17 +218,32 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
     // (including the BIOS+VBE graphics path), so it falls through to the disk + scheduler + shell
     // path below. `primary_present()` distinguishes the two without a dedicated boot-source flag.
     if booted_via_framebuffer(boot_info_raw, has_boot_info) && !drivers::ata::primary_present() {
-        let mut on = false;
-        loop {
-            fill_screen(boot_info_raw, if on { 0x00FF_FFFF } else { 0x0000_0000 });
-            on = !on;
-            let mut i = 0u64;
-            while i < 40_000_000 {
-                i += 1;
-                // SAFETY: volatile read of a stack local to defeat loop elimination.
-                unsafe { core::ptr::read_volatile(&i) };
-            }
-        }
+        // SAFETY:
+        // - `boot_info_raw` contains a valid physical address to a `BootInfo` structure.
+        let bi = unsafe { &*(boot_info_raw as *const boot_info::BootInfo) };
+        let fb = bi.fb_info;
+
+        // Step 1: Clear screen and display successful boot messages on the Framebuffer Console.
+        crate::console::with_console(|console| {
+            console.clear();
+            let _ = writeln!(console, "========================================");
+            let _ = writeln!(console, "   kaos64 Kernel UEFI Boot Successful   ");
+            let _ = writeln!(console, "========================================");
+            let _ = writeln!(console, "Linear Framebuffer console is active.");
+            let _ = writeln!(
+                console,
+                "Resolution: {}x{} px (stride: {})",
+                fb.width,
+                fb.height,
+                fb.pixels_per_scanline
+            );
+            let _ = writeln!(console, "Framebuffer physical address: 0x{:x}", fb.base_address);
+            let _ = writeln!(console, "No legacy ATA disk detected.");
+            let _ = writeln!(console, "System halted.");
+        });
+
+        // Step 2: Halt the CPU in the low-power idle loop.
+        idle_loop();
     }
 
     // Initialize the ATA PIO driver
@@ -356,39 +387,7 @@ fn map_framebuffer(boot_info_raw: u64) {
     );
 }
 
-/// Paints a one-time RGB gradient across the whole framebuffer to confirm the graphics pipeline.
-///
-/// No-op when not booted via a framebuffer. The framebuffer must already be mapped (see
-/// [`map_framebuffer`]).
-fn paint_framebuffer_gradient(boot_info_raw: u64) {
-    if !booted_via_framebuffer(boot_info_raw, true) {
-        return;
-    }
-    // SAFETY:
-    // - `boot_info_raw` contains a valid physical address to a `BootInfo` structure.
-    // - The structure is mapped, valid for reads, and alignment is guaranteed by `#[repr(C)]`.
-    // - If it was invalid, the dereference would cause a page fault.
-    let bi = unsafe { &*(boot_info_raw as *const boot_info::BootInfo) };
-    let fb = bi.fb_info;
-    let fb_ptr = fb.base_address as *mut u32;
-    for y in 0..fb.height {
-        for x in 0..fb.width {
-            let r = (x * 255 / fb.width) & 0xFF;
-            let g = (y * 255 / fb.height) & 0xFF;
-            let b = 128u32;
-            let color = (r << 16) | (g << 8) | b;
-            let offset = (y * fb.pixels_per_scanline + x) as isize;
-            // SAFETY:
-            // - The framebuffer range was identity-mapped by `map_framebuffer`.
-            // - `offset` is within bounds (derived from scanline pitch and height).
-            // - No concurrent mutable aliasing exists during this write.
-            // - If the address was unmapped or misconfigured, it would trigger a page fault.
-            unsafe {
-                fb_ptr.offset(offset).write_volatile(color);
-            }
-        }
-    }
-}
+
 
 /// Low-power idle loop entered after the scheduler is started.
 fn idle_loop() -> ! {

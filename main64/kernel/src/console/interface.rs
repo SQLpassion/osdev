@@ -102,7 +102,7 @@ pub fn init(video_type: VideoModeType) {
     // Step 1: Select the concrete backend driver corresponding to the boot mode.
     let console = match video_type {
         VideoModeType::VgaText => ConsoleImpl::Vga(VgaConsole),
-        VideoModeType::Framebuffer => ConsoleImpl::Framebuffer(FramebufferConsole),
+        VideoModeType::Framebuffer => ConsoleImpl::Framebuffer(FramebufferConsole::new()),
     };
 
     // Step 2: Lock the global console and publish the active driver implementation.
