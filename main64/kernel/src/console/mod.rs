@@ -7,6 +7,8 @@ mod dispatch;
 mod framebuffer;
 mod interface;
 mod vga;
+mod font_basic;
+mod font_alternative;
 
 pub use dispatch::ConsoleImpl;
 pub use framebuffer::FramebufferConsole;
