@@ -38,7 +38,7 @@ pub struct BiosInformationBlock {
     /// Total number of available page frames
     pub available_page_frames: i64,
 
-    /// Selected video mode type (0 = VgaText, 1 = GopFramebuffer/LinearFramebuffer)
+    /// Selected video mode type (0 = VgaText, 1 = Framebuffer/LinearFramebuffer)
     pub video_type: u32,
 
     /// Padding for 8-byte alignment

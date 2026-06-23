@@ -124,7 +124,7 @@ pub unsafe extern "C" fn kaosldr_main() -> ! {
 
                 // Translate the selected BIOS video mode and framebuffer properties into the BootInfo block.
                 BOOT_INFO.video_type = if bib.video_type == 1 {
-                    VideoModeType::GopFramebuffer
+                    VideoModeType::Framebuffer
                 } else {
                     VideoModeType::VgaText
                 };

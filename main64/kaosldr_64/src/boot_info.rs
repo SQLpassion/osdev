@@ -6,7 +6,7 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VideoModeType {
     VgaText = 0,
-    GopFramebuffer = 1,
+    Framebuffer = 1,
 }
 
 #[repr(C)]
@@ -33,10 +33,10 @@ pub struct BootInfo {
     /// Magic signature to validate the structure (e.g. 0x4B414F535F424F4F)
     pub magic: u64,
 
-    /// Selected video mode type (VgaText or GopFramebuffer)
+    /// Selected video mode type (VgaText or Framebuffer)
     pub video_type: VideoModeType,
 
-    /// Framebuffer details, only valid when video_type is GopFramebuffer
+    /// Framebuffer details, only valid when video_type is Framebuffer
     pub fb_info: FramebufferInfo,
 
     /// Physical address of the memory map array

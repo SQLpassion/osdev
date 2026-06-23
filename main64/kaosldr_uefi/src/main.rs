@@ -2,37 +2,57 @@
 #![no_main]
 #![allow(clippy::empty_loop)]
 
-//! KAOS UEFI Loader (`BOOTX64.EFI`)
+//! KAOS UEFI Bootloader (`BOOTX64.EFI`)
+//!
+//! This application is loaded by the UEFI firmware (typically at path `\EFI\BOOT\BOOTX64.EFI`
+//! on an EFI System Partition). It initializes the serial debugging port, queries the
+//! Graphics Output Protocol (GOP) for visual framebuffer layouts, reads the kernel image
+//! `KERNEL.BIN` from the boot filesystem, allocates low memory, exits UEFI boot services,
+//! constructs a unified physical memory map, maps the higher-half kernel, and jumps to Ring 0.
 
 use core::ffi::c_void;
 use core::panic::PanicInfo;
 
 mod serial;
 
-/// UEFI status code (`EFI_STATUS`, a `UINTN`). `0` is `EFI_SUCCESS`.
+/// UEFI status code (`EFI_STATUS`, a `UINTN`). `0` represents `EFI_SUCCESS`.
 pub type Status = usize;
 
-/// UEFI handle (`EFI_HANDLE`), an opaque pointer.
+/// UEFI handle (`EFI_HANDLE`), an opaque pointer representing firmware objects.
 pub type Handle = *mut c_void;
 
 /// Header common to all UEFI tables (`EFI_TABLE_HEADER`).
+///
+/// Contains verification signatures and structure sizes to ensure compatibility.
 #[repr(C)]
 struct EfiTableHeader {
+    /// Opaque signature identifying the table type.
     signature: u64,
+    /// Revision level of the table.
     revision: u32,
+    /// Size of the header table in bytes.
     header_size: u32,
+    /// Calculated CRC32 checksum.
     crc32: u32,
+    /// Reserved padding space.
     reserved: u32,
 }
 
 /// The UEFI Simple Text Output Protocol (`EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL`).
+///
+/// Provides basic character console output functions to print to screen.
 #[repr(C)]
 struct EfiSimpleTextOutputProtocol {
+    /// Resets the text output device hardware.
     reset: extern "efiapi" fn(this: *mut EfiSimpleTextOutputProtocol, extended: bool) -> Status,
+    /// Prints a NUL-terminated UCS-16 wide string to the output device.
     output_string:
         extern "efiapi" fn(this: *mut EfiSimpleTextOutputProtocol, string: *const u16) -> Status,
 }
 
+/// A standard 128-bit Universally Unique Identifier (`GUID`).
+///
+/// Used to identify protocols, configuration tables, and device paths.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Guid {
@@ -42,6 +62,7 @@ pub struct Guid {
     pub data4: [u8; 8],
 }
 
+/// GUID identifying the Graphics Output Protocol (GOP).
 const EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID: Guid = Guid {
     data1: 0x9042a9de,
     data2: 0x23dc,
@@ -49,6 +70,7 @@ const EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID: Guid = Guid {
     data4: [0x96, 0xfb, 0x7a, 0xde, 0xd0, 0x80, 0x51, 0x6a],
 };
 
+/// GUID identifying the Simple File System Protocol.
 const EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID: Guid = Guid {
     data1: 0x964e5b22,
     data2: 0x6459,
@@ -56,6 +78,7 @@ const EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID: Guid = Guid {
     data4: [0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b],
 };
 
+/// GUID identifying the Loaded Image Protocol.
 const EFI_LOADED_IMAGE_PROTOCOL_GUID: Guid = Guid {
     data1: 0x5b1b31a1,
     data2: 0x9562,
@@ -63,85 +86,128 @@ const EFI_LOADED_IMAGE_PROTOCOL_GUID: Guid = Guid {
     data4: [0x8e, 0x3f, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b],
 };
 
+/// UEFI Loaded Image Protocol (`EFI_LOADED_IMAGE_PROTOCOL`).
+///
+/// Contains information about the currently executing bootloader image.
 #[repr(C)]
 struct EfiLoadedImageProtocol {
     revision: u32,
+    /// Parent image handle that loaded this image.
     parent_handle: Handle,
+    /// System table pointer associated with this image.
     system_table: *const EfiSystemTable,
+    /// The physical device handle on which the image file resides.
     device_handle: Handle,
     file_path: *const c_void,
     reserved: *const c_void,
     load_options_size: u32,
     load_options: *const c_void,
+    /// The base memory address where the image is loaded.
     image_base: *const c_void,
+    /// Size of the loaded image in bytes.
     image_size: u64,
     image_code_type: u32,
     image_data_type: u32,
     unload: *const c_void,
 }
 
+/// UEFI Simple File System Protocol (`EFI_SIMPLE_FILE_SYSTEM_PROTOCOL`).
+///
+/// Used to gain access to directory volumes on disk drives.
 #[repr(C)]
 struct EfiSimpleFileSystemProtocol {
     revision: u64,
+    /// Opens the root directory volume of the filesystem.
     open_volume: extern "efiapi" fn(this: *mut EfiSimpleFileSystemProtocol, root: *mut *mut EfiFileProtocol) -> Status,
 }
 
+/// UEFI File Protocol (`EFI_FILE_PROTOCOL`).
+///
+/// Represents an open file or directory on a FAT partition, supporting read, write, and seek.
 #[repr(C)]
 struct EfiFileProtocol {
     revision: u64,
+    /// Opens a file relative to the current directory handle.
     open: extern "efiapi" fn(this: *mut EfiFileProtocol, new_handle: *mut *mut EfiFileProtocol, file_name: *const u16, open_mode: u64, attributes: u64) -> Status,
+    /// Closes the active file handle.
     close: extern "efiapi" fn(this: *mut EfiFileProtocol) -> Status,
     delete: *const c_void,
+    /// Reads data from the file into the destination buffer.
     read: extern "efiapi" fn(this: *mut EfiFileProtocol, buffer_size: *mut usize, buffer: *mut c_void) -> Status,
     write: *const c_void,
+    /// Gets the current file offset pointer position.
     get_position: extern "efiapi" fn(this: *mut EfiFileProtocol, position: *mut u64) -> Status,
+    /// Sets the current file offset pointer position (e.g. `0xFFFFFFFFFFFFFFFF` for EOF).
     set_position: extern "efiapi" fn(this: *mut EfiFileProtocol, position: u64) -> Status,
 }
 
+/// UEFI Graphics Output Protocol (`EFI_GRAPHICS_OUTPUT_PROTOCOL`).
+///
+/// Provides access to the linear pixel graphics framebuffer established by the firmware.
 #[repr(C)]
 struct EfiGraphicsOutputProtocol {
     query_mode: *const c_void,
     set_mode: *const c_void,
     blt: *const c_void,
+    /// Pointer to the active mode structure.
     mode: *mut EfiGraphicsOutputProtocolMode,
 }
 
+/// Active mode information structure of the Graphics Output Protocol.
 #[repr(C)]
 struct EfiGraphicsOutputProtocolMode {
     max_mode: u32,
     mode: u32,
+    /// Active mode metadata descriptor.
     info: *mut EfiGraphicsOutputModeInformation,
     size_of_info: usize,
+    /// Physical starting address of the linear framebuffer.
     frame_buffer_start: u64,
+    /// Total capacity size of the framebuffer in bytes.
     frame_buffer_size: usize,
 }
 
+/// Active display resolution and pixel format settings of the GOP mode.
 #[repr(C)]
 struct EfiGraphicsOutputModeInformation {
     version: u32,
+    /// Horizontal resolution in pixels.
     horizontal_resolution: u32,
+    /// Vertical resolution in pixels.
     vertical_resolution: u32,
     pixel_format: u32,
     pixel_information: [u32; 4],
+    /// Scanline stride length in pixels (includes potential horizontal padding).
     pixels_per_scanline: u32,
 }
 
+/// UEFI Memory Descriptor representing a physical memory region.
 #[repr(C)]
 struct EfiMemoryDescriptor {
+    /// Type of memory (e.g., EfiConventionalMemory = 7, EfiLoaderCode = 1).
     memory_type: u32,
+    /// Physical starting address.
     physical_start: u64,
+    /// Virtual starting address.
     virtual_start: u64,
+    /// Number of 4 KiB pages spanned by this range.
     number_of_pages: u64,
+    /// Memory cache and access permission attributes.
     attribute: u64,
 }
 
+/// UEFI Boot Services Table (`EFI_BOOT_SERVICES`).
+///
+/// Contains firmware functions available only during the boot loader phase.
 #[repr(C)]
 struct EfiBootServices {
     hdr: EfiTableHeader,
     raise_tpl: *const c_void,
     restore_tpl: *const c_void,
+    /// Allocates physical memory pages.
     allocate_pages: extern "efiapi" fn(alloc_type: u32, memory_type: u32, pages: usize, address: *mut u64) -> Status,
     free_pages: *const c_void,
+    /// Retrieves the current physical memory map layout.
     get_memory_map: extern "efiapi" fn(memory_map_size: *mut usize, memory_map: *mut u8, map_key: *mut usize, descriptor_size: *mut usize, descriptor_version: *mut u32) -> Status,
     allocate_pool: *const c_void,
     free_pool: *const c_void,
@@ -154,6 +220,7 @@ struct EfiBootServices {
     install_protocol_interface: *const c_void,
     reinstall_protocol_interface: *const c_void,
     uninstall_protocol_interface: *const c_void,
+    /// Retrieves an interface implementing a specific protocol GUID on a handle.
     handle_protocol: extern "efiapi" fn(handle: Handle, protocol: *const Guid, interface: *mut *mut c_void) -> Status,
     reserved: *const c_void,
     register_protocol_notify: *const c_void,
@@ -164,9 +231,11 @@ struct EfiBootServices {
     start_image: *const c_void,
     exit: *const c_void,
     unload_image: *const c_void,
+    /// Exits boot services, transitioning ownership of hardware from firmware to the kernel.
     exit_boot_services: extern "efiapi" fn(image_handle: Handle, map_key: usize) -> Status,
     get_next_monotonic_count: *const c_void,
     stall: *const c_void,
+    /// Arms or disarms the firmware watchdog timer.
     set_watchdog_timer:
         extern "efiapi" fn(timeout: usize, code: u64, data_size: usize, data: *const u16) -> Status,
     connect_controller: *const c_void,
@@ -176,9 +245,13 @@ struct EfiBootServices {
     open_protocol_information: *const c_void,
     protocols_per_handle: *const c_void,
     locate_handle_buffer: extern "efiapi" fn(search_type: u32, protocol: *const Guid, search_key: *const c_void, no_handles: *mut usize, buffer: *mut *mut Handle) -> Status,
+    /// Locates the first handle in the system that supports a protocol GUID.
     locate_protocol: extern "efiapi" fn(protocol: *const Guid, registration: *const c_void, interface: *mut *mut c_void) -> Status,
 }
 
+/// UEFI System Table (`EFI_SYSTEM_TABLE`).
+///
+/// The master system parameters containing standard console streams and tables.
 #[repr(C)]
 pub struct EfiSystemTable {
     hdr: EfiTableHeader,
@@ -187,21 +260,26 @@ pub struct EfiSystemTable {
     console_in_handle: Handle,
     con_in: *mut c_void,
     console_out_handle: Handle,
+    /// Protocol instance for console output text mode.
     con_out: *mut EfiSimpleTextOutputProtocol,
     standard_error_handle: Handle,
     std_err: *mut c_void,
     runtime_services: *mut c_void,
+    /// Pointer to the boot services function table.
     boot_services: *mut EfiBootServices,
 }
 
-// Unified BootInfo contract matching docs/uefi_dual_boot_roadmap.md
+/// Unified BootInfo video mode type selector.
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VideoModeType {
+    /// VGA Text mode (BIOS default).
     VgaText = 0,
-    GopFramebuffer = 1,
+    /// Linear Pixel graphics framebuffer (UEFI/VBE default).
+    Framebuffer = 1,
 }
 
+/// Framebuffer details passed down to the kernel.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct FramebufferInfo {
@@ -212,6 +290,7 @@ pub struct FramebufferInfo {
     pub pixels_per_scanline: u32,
 }
 
+/// Simplified memory map entries for the kernel physical memory manager.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct UnifiedMemoryEntry {
@@ -220,6 +299,7 @@ pub struct UnifiedMemoryEntry {
     pub is_usable: bool,
 }
 
+/// Master BootInfo structure containing all system diagnostic tables.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct BootInfo {
@@ -233,15 +313,17 @@ pub struct BootInfo {
     pub pmm_metadata_size: u64,
 }
 
+/// Statically allocated memory map buffer passed to the kernel.
 static mut UNIFIED_MEM_MAP: [UnifiedMemoryEntry; 256] = [UnifiedMemoryEntry {
     start: 0,
     size: 0,
     is_usable: false,
 }; 256];
 
+/// Statically allocated BootInfo table initialized at boot time.
 static mut BOOT_INFO: BootInfo = BootInfo {
     magic: 0x4B414F535F424F4F,
-    video_type: VideoModeType::GopFramebuffer,
+    video_type: VideoModeType::Framebuffer,
     fb_info: FramebufferInfo {
         base_address: 0,
         size: 0,
@@ -660,7 +742,7 @@ fn print(con_out: *mut EfiSimpleTextOutputProtocol, s: &str) {
     }
 }
 
-/// Hands a single NUL-terminated UCS-2 buffer to the firmware.
+/// Hands a single NUL-terminated UCS-2 buffer to the firmware to print.
 fn flush(con_out: *mut EfiSimpleTextOutputProtocol, buffer: &[u16]) {
     // SAFETY: `con_out` is a valid protocol pointer, and `buffer` is NUL-terminated.
     unsafe {
@@ -668,7 +750,7 @@ fn flush(con_out: *mut EfiSimpleTextOutputProtocol, buffer: &[u16]) {
     }
 }
 
-/// Prints a hex representation of a usize value to the screen.
+/// Prints a hex representation of a `usize` value to the screen.
 fn print_hex(con_out: *mut EfiSimpleTextOutputProtocol, val: usize) {
     let mut buf = [0u16; 19];
     buf[0] = '0' as u16;

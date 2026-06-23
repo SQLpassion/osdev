@@ -177,12 +177,12 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
     debugln!("Kernel console initialized");
 
 
-    // On a graphics-mode boot (BIOS VBE / UEFI GOP) the linear framebuffer lives at a high
+    // On a graphics-mode boot (BIOS VBE / UEFI/Linear Framebuffer) the linear framebuffer lives at a high
     // physical address the bootstrap identity map does not cover. Now that the VMM is active,
     // identity-map the framebuffer's physical range so it is reachable, then paint a one-time
     // gradient to confirm the pipeline. (Deferred to here precisely because the early pre-VMM
     // path has no fault handler and the framebuffer was unmapped.)
-    if booted_via_gop(boot_info_raw, has_boot_info) {
+    if booted_via_framebuffer(boot_info_raw, has_boot_info) {
         map_framebuffer(boot_info_raw);
         paint_framebuffer_gradient(boot_info_raw);
         debugln!("Framebuffer mapped and gradient painted");
@@ -196,12 +196,12 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
     drivers::time::init();
     debugln!("Time driver initialized");
 
-    // A UEFI/GOP bring-up has no legacy ATA disk, so the disk-dependent path below (ATA PIO,
+    // A UEFI/Framebuffer bring-up has no legacy ATA disk, so the disk-dependent path below (ATA PIO,
     // FAT12, loading the user-space shell from disk) cannot run yet — end execution here in a
     // steady BLACK<->WHITE framebuffer heartbeat. A legacy BIOS boot always has an ATA disk
     // (including the BIOS+VBE graphics path), so it falls through to the disk + scheduler + shell
     // path below. `primary_present()` distinguishes the two without a dedicated boot-source flag.
-    if booted_via_gop(boot_info_raw, has_boot_info) && !drivers::ata::primary_present() {
+    if booted_via_framebuffer(boot_info_raw, has_boot_info) && !drivers::ata::primary_present() {
         let mut on = false;
         loop {
             fill_screen(boot_info_raw, if on { 0x00FF_FFFF } else { 0x0000_0000 });
@@ -262,25 +262,32 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
     arch::power::shutdown()
 }
 
-/// Returns whether the kernel was booted via a unified BootInfo with a GOP
-/// framebuffer (the UEFI path), as opposed to the legacy BIOS/VGA-text path.
-fn booted_via_gop(boot_info_raw: u64, has_boot_info: bool) -> bool {
+/// Returns whether the kernel was booted via a unified BootInfo with a
+/// framebuffer (the graphics path), as opposed to the legacy BIOS/VGA-text path.
+fn booted_via_framebuffer(boot_info_raw: u64, has_boot_info: bool) -> bool {
     if !has_boot_info {
         return false;
     }
-    // SAFETY: validated BootInfo pointer published in KernelMain.
+    // SAFETY:
+    // - `boot_info_raw` contains a valid physical address to a `BootInfo` structure.
+    // - This structure is published in `KernelMain` and has been validated by the bootloader.
+    // - The memory range is mapped and valid for read access.
+    // - Structure alignment is guaranteed by `#[repr(C)]`.
+    // - If `boot_info_raw` was null or pointing to invalid memory, this dereference would trigger a page fault.
     let bi = unsafe { &*(boot_info_raw as *const boot_info::BootInfo) };
-    bi.video_type == boot_info::VideoModeType::GopFramebuffer && bi.fb_info.base_address != 0
+    bi.video_type == boot_info::VideoModeType::Framebuffer && bi.fb_info.base_address != 0
 }
 
-/// Fills the entire GOP framebuffer with a single `color` (0x00RRGGBB). No-op when
-/// not booted via GOP. Used for the end-of-boot heartbeat on the UEFI path.
+/// Fills the entire framebuffer with a single `color` (0x00RRGGBB). No-op when
+/// not booted via a framebuffer. Used for the end-of-boot heartbeat on the UEFI path.
 fn fill_screen(boot_info_raw: u64, color: u32) {
-    if !booted_via_gop(boot_info_raw, true) {
+    if !booted_via_framebuffer(boot_info_raw, true) {
         return;
     }
-    // SAFETY: validated BootInfo pointer; the framebuffer is mapped (firmware identity,
-    // preserved by the kernel PML4 superset).
+    // SAFETY:
+    // - `boot_info_raw` contains a valid physical address to a `BootInfo` structure.
+    // - The structure is mapped, valid for reads, and alignment is guaranteed by `#[repr(C)]`.
+    // - If it was invalid, the dereference would cause a page fault.
     let bi = unsafe { &*(boot_info_raw as *const boot_info::BootInfo) };
     let fb = bi.fb_info;
     let fb_ptr = fb.base_address as *mut u32;
@@ -289,7 +296,11 @@ fn fill_screen(boot_info_raw: u64, color: u32) {
         let row = (y * fb.pixels_per_scanline) as isize;
         let mut x = 0u32;
         while x < fb.width {
-            // SAFETY: bounds-checked; framebuffer mapped + writable.
+            // SAFETY:
+            // - The framebuffer is mapped and writable.
+            // - `row + x` is within the valid physical bounds of the framebuffer as provided by `fb.size`.
+            // - Aliasing and concurrency are prevented because we are in a single-threaded early boot phase or panic state.
+            // - If the address was unmapped or misconfigured, it would trigger a page fault.
             unsafe { fb_ptr.offset(row + x as isize).write_volatile(color) };
             x += 1;
         }
@@ -303,16 +314,19 @@ fn fill_screen(boot_info_raw: u64, color: u32) {
 /// framebuffer reported in `BootInfo` lives at a high physical address (typically the
 /// 0xC000_0000–0xFFFF_FFFF MMIO window). This walks the framebuffer byte range page by page and
 /// maps each 4 KiB page identity (VA == PA, present + writable) via the VMM, so the existing
-/// `fb.base_address`-relative writes are valid. No-op when not booted via GOP/VBE.
+/// `fb.base_address`-relative writes are valid. No-op when not booted via a framebuffer.
 ///
 /// Must run after `vmm::init()` (uses the VMM recursive mapping) and `pmm::init()` (intermediate
 /// page tables are allocated from the PMM). Pages already mapped (e.g. by UEFI firmware) are
 /// skipped, so the call is safe on both the BIOS and UEFI paths.
 fn map_framebuffer(boot_info_raw: u64) {
-    if !booted_via_gop(boot_info_raw, true) {
+    if !booted_via_framebuffer(boot_info_raw, true) {
         return;
     }
-    // SAFETY: validated BootInfo pointer published in KernelMain.
+    // SAFETY:
+    // - `boot_info_raw` contains a valid physical address to a `BootInfo` structure.
+    // - The structure is mapped, valid for reads, and alignment is guaranteed by `#[repr(C)]`.
+    // - If it was invalid, the dereference would cause a page fault.
     let bi = unsafe { &*(boot_info_raw as *const boot_info::BootInfo) };
     let fb = bi.fb_info;
     if fb.base_address == 0 || fb.size == 0 {
@@ -344,13 +358,16 @@ fn map_framebuffer(boot_info_raw: u64) {
 
 /// Paints a one-time RGB gradient across the whole framebuffer to confirm the graphics pipeline.
 ///
-/// No-op when not booted via GOP/VBE. The framebuffer must already be mapped (see
+/// No-op when not booted via a framebuffer. The framebuffer must already be mapped (see
 /// [`map_framebuffer`]).
 fn paint_framebuffer_gradient(boot_info_raw: u64) {
-    if !booted_via_gop(boot_info_raw, true) {
+    if !booted_via_framebuffer(boot_info_raw, true) {
         return;
     }
-    // SAFETY: validated BootInfo pointer published in KernelMain.
+    // SAFETY:
+    // - `boot_info_raw` contains a valid physical address to a `BootInfo` structure.
+    // - The structure is mapped, valid for reads, and alignment is guaranteed by `#[repr(C)]`.
+    // - If it was invalid, the dereference would cause a page fault.
     let bi = unsafe { &*(boot_info_raw as *const boot_info::BootInfo) };
     let fb = bi.fb_info;
     let fb_ptr = fb.base_address as *mut u32;
@@ -364,6 +381,8 @@ fn paint_framebuffer_gradient(boot_info_raw: u64) {
             // SAFETY:
             // - The framebuffer range was identity-mapped by `map_framebuffer`.
             // - `offset` is within bounds (derived from scanline pitch and height).
+            // - No concurrent mutable aliasing exists during this write.
+            // - If the address was unmapped or misconfigured, it would trigger a page fault.
             unsafe {
                 fb_ptr.offset(offset).write_volatile(color);
             }

@@ -403,8 +403,8 @@ fn test_heap_self_test_is_non_destructive_for_live_allocations() {
         core::ptr::write_volatile(ptr, 0x5A);
     }
 
-    let mut screen = kaos_kernel::drivers::screen::Screen::new();
-    heap::run_self_test(&mut screen);
+    let mut console = kaos_kernel::console::VgaConsole;
+    heap::run_self_test(&mut console);
 
     // SAFETY:
     // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.

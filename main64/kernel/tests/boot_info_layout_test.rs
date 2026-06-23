@@ -47,12 +47,12 @@ fn test_bootinfo_magic_value() {
     assert_eq!(0x4B41_4F53_5F42_4F4F_u64.to_be_bytes(), *b"KAOS_BOO");
 }
 
-/// Contract: VideoModeType discriminants are stable (VgaText=0, GopFramebuffer=1).
-/// Failure Impact: the kernel would mis-detect the boot path (BIOS vs UEFI/GOP). Release-blocking.
+/// Contract: VideoModeType discriminants are stable (VgaText=0, Framebuffer=1).
+/// Failure Impact: the kernel would mis-detect the boot path (BIOS vs UEFI/Framebuffer). Release-blocking.
 #[test_case]
 fn test_video_mode_discriminants() {
     assert_eq!(VideoModeType::VgaText as u32, 0);
-    assert_eq!(VideoModeType::GopFramebuffer as u32, 1);
+    assert_eq!(VideoModeType::Framebuffer as u32, 1);
     assert_eq!(size_of::<VideoModeType>(), 4, "repr(u32)");
 }
 

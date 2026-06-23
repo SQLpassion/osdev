@@ -2,7 +2,7 @@
 //!
 //! Provides the primary abstraction trait `KernelConsole` along with the global
 //! routing state and helper functions to dispatch text output dynamically to
-//! either a VGA text buffer or a graphics GOP framebuffer.
+//! either a VGA text buffer or a graphics framebuffer.
 
 #![allow(clippy::too_many_arguments)]
 
@@ -97,12 +97,12 @@ pub(crate) static GLOBAL_CONSOLE: SpinLock<Option<ConsoleImpl>> =
 /// Initializes the dynamic console driver interface.
 ///
 /// Should be called during early boot once the kernel is in possession of a
-/// valid video mode structure (e.g. from BIOS VBE or UEFI GOP).
+/// valid video mode structure (e.g. from BIOS VBE or UEFI/Linear Framebuffer).
 pub fn init(video_type: VideoModeType) {
     // Step 1: Select the concrete backend driver corresponding to the boot mode.
     let console = match video_type {
         VideoModeType::VgaText => ConsoleImpl::Vga(VgaConsole),
-        VideoModeType::GopFramebuffer => ConsoleImpl::Framebuffer(FramebufferConsole),
+        VideoModeType::Framebuffer => ConsoleImpl::Framebuffer(FramebufferConsole),
     };
 
     // Step 2: Lock the global console and publish the active driver implementation.
