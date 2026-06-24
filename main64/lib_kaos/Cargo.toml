@@ -11,9 +11,3 @@ crate-type = ["rlib"]
 # the path-imported kernel heap module, avoiding unexpected_cfg warnings.
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("kernel"))'] }
-
-[profile.dev]
-panic = "abort"
-
-[profile.release]
-panic = "abort"

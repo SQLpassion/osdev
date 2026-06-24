@@ -13,3 +13,23 @@ members = [
     "user_programs/shell",
     "user_programs/tui_app",
 ]
+
+[profile.dev]
+panic = "abort"
+opt-level = 0
+debug = true
+lto = false
+
+# The legacy boot sector loads KLDR64.BIN to physical 0x3000 and the page tables live at
+# 0x9000 (see kaosldr_16/longmode.asm), so the flat loader binary must stay below 0x6000 bytes.
+# In a workspace the member crate's own [profile.*] is ignored, so the dev default (opt-level=0)
+# would bloat kldr64 ~21x (to ~89 KB) and overwrite the page tables → boot hang. Pin the loader
+# to opt-level="z" so the debug build stays small enough, matching its pre-workspace profile.
+[profile.dev.package.kaosldr_64]
+opt-level = "z"
+
+[profile.release]
+panic = "abort"
+lto = true
+opt-level = "z"
+debug = true

@@ -10,12 +10,6 @@ kernel = []
 lib_kaos = { path = "../../lib_kaos" }
 lib_tui  = { path = "../../lib_tui" }
 
-[profile.dev]
-panic = "abort"
-
-[profile.release]
-panic = "abort"
-
 [[bin]]
 name = "tui"
 path = "src/main.rs"

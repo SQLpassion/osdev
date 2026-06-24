@@ -22,10 +22,10 @@ echo "  -> Running cargo build (release, rebuilding core/alloc with -Z build-std
 cargo build --release -Z build-std=core,alloc
 
 echo "  -> Extracting flat binary with rust-objcopy..."
-rust-objcopy -O binary target/x86_64-unknown-none/release/kaos_kernel target/x86_64-unknown-none/release/kernel.bin
+rust-objcopy -O binary ../target/x86_64-unknown-none/release/kaos_kernel ../target/x86_64-unknown-none/release/kernel.bin
 
-echo "  -> Rust kernel built: kernel/target/x86_64-unknown-none/release/kernel.bin"
-ls -la target/x86_64-unknown-none/release/kernel.bin
+echo "  -> Rust kernel built: target/x86_64-unknown-none/release/kernel.bin"
+ls -la ../target/x86_64-unknown-none/release/kernel.bin
 
 cd "$SCRIPT_DIR"
 echo ""
@@ -39,10 +39,10 @@ echo "  -> Running cargo build (release, rebuilding core with -Z build-std)..."
 cargo build --release -Z build-std=core
 
 echo "  -> Extracting flat binary with rust-objcopy..."
-rust-objcopy -O binary target/x86_64-unknown-none/release/kldr64 target/x86_64-unknown-none/release/kldr64.bin
+rust-objcopy -O binary ../target/x86_64-unknown-none/release/kldr64 ../target/x86_64-unknown-none/release/kldr64.bin
 
-echo "  -> Rust kernel loader built: kaosldr_64/target/x86_64-unknown-none/release/kldr64.bin"
-ls -la target/x86_64-unknown-none/release/kldr64.bin
+echo "  -> Rust kernel loader built: target/x86_64-unknown-none/release/kldr64.bin"
+ls -la ../target/x86_64-unknown-none/release/kldr64.bin
 
 cd "$SCRIPT_DIR"
 echo ""
@@ -77,8 +77,8 @@ rm -f kaos64.img
 echo "  -> Creating FAT12 disk image..."
 fat_imgen -c -s boot/bootsector.bin -f kaos64.img
 fat_imgen -m -f kaos64.img -i kaosldr_16/kldr16.bin
-fat_imgen -m -f kaos64.img -i kaosldr_64/target/x86_64-unknown-none/release/kldr64.bin
-fat_imgen -m -f kaos64.img -i kernel/target/x86_64-unknown-none/release/kernel.bin
+fat_imgen -m -f kaos64.img -i target/x86_64-unknown-none/release/kldr64.bin
+fat_imgen -m -f kaos64.img -i target/x86_64-unknown-none/release/kernel.bin
 fat_imgen -m -f kaos64.img -i user_programs/hello/hello.bin -n HELLO.BIN
 fat_imgen -m -f kaos64.img -i user_programs/readline/readline.bin -n READLINE.BIN
 fat_imgen -m -f kaos64.img -i user_programs/filedemo/filedemo.bin -n FILEDEMO.BIN
@@ -111,7 +111,7 @@ echo "========================================"
 echo ""
 echo "Output files:"
 echo "  - main64/kaos64.img (bootable disk image)"
-echo "  - main64/kernel/target/x86_64-unknown-none/release/kernel.bin"
+echo "  - main64/target/x86_64-unknown-none/release/kernel.bin"
 echo ""
 echo "To run in QEMU:"
 echo "  qemu-system-x86_64 -drive format=raw,file=kaos64.img"

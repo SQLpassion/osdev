@@ -17,12 +17,12 @@ cd "$SCRIPT_DIR"
 
 PROFILE="debug"
 TARGET="x86_64-unknown-uefi"
-EFI_BIN="kaosldr_uefi/target/$TARGET/$PROFILE/bootx64.efi"
+EFI_BIN="target/$TARGET/$PROFILE/bootx64.efi"
 IMG="kaos64-uefi.img"
 
 # 1) Build the kernel and loader (produces kernel.bin and bootx64.efi).
 echo "==> Building kernel..."
-( cd kernel && cargo build && cargo objcopy -- -O binary target/x86_64-unknown-none/debug/kernel.bin )
+( cd kernel && cargo build && cargo objcopy -- -O binary ../target/x86_64-unknown-none/debug/kernel.bin )
 
 echo "==> Building kaosldr_uefi ($TARGET, $PROFILE)..."
 ( cd kaosldr_uefi && cargo build )
@@ -43,7 +43,7 @@ sgdisk --clear \
 mformat -i "$IMG@@$PART_OFFSET" -F ::
 mmd     -i "$IMG@@$PART_OFFSET" ::/EFI ::/EFI/BOOT
 mcopy   -i "$IMG@@$PART_OFFSET" "$EFI_BIN" ::/EFI/BOOT/BOOTX64.EFI
-mcopy   -i "$IMG@@$PART_OFFSET" "kernel/target/x86_64-unknown-none/debug/kernel.bin" ::/KERNEL.BIN
+mcopy   -i "$IMG@@$PART_OFFSET" "target/x86_64-unknown-none/debug/kernel.bin" ::/KERNEL.BIN
 echo "==> $IMG ready. Flash to a USB stick with (DESTRUCTIVE - pick the right device!):"
 echo "        sudo dd if=$IMG of=/dev/<your-usb> bs=4M conv=fsync"
 
