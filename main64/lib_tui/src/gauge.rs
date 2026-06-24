@@ -5,7 +5,7 @@
 
 use crate::screen::{Color, with_screen};
 use crate::progressbar::ProgressBar;
-use crate::SCREEN_ROWS;
+use crate::screen_rows;
 
 /// Labeled horizontal progress meter widget.
 ///
@@ -88,7 +88,7 @@ impl Gauge {
     /// Renders the label and the progress bar to the screen buffer.
     pub fn draw(&self) {
         // Step 1: Verify row index is within physical screen limits.
-        if self.row >= SCREEN_ROWS {
+        if self.row >= screen_rows() {
             return;
         }
 

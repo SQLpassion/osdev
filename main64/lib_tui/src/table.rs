@@ -7,7 +7,7 @@
 extern crate alloc;
 use alloc::vec::Vec;
 use crate::screen::{Color, Screen, with_screen};
-use crate::{SCREEN_COLS, SCREEN_ROWS};
+use crate::{screen_cols, screen_rows};
 
 /// Color settings for table column header labels.
 const HEADER_FG: Color = Color::Yellow;
@@ -115,7 +115,7 @@ impl Table {
 
     /// Renders the table layout, headers, content cells, and borders to the screen.
     pub fn draw(&self) {
-        if self.row >= SCREEN_ROWS || self.col >= SCREEN_COLS { return; }
+        if self.row >= screen_rows() || self.col >= screen_cols() { return; }
         with_screen(|screen| {
             let col_count = self.col_labels.len();
 
@@ -150,7 +150,7 @@ impl Table {
 
             // Step 5: Draw bottom border line with bottom T-junctions.
             let bottom = self.row + self.height - 1;
-            if bottom < SCREEN_ROWS {
+            if bottom < screen_rows() {
                 draw_h_border(screen, bottom, self.col, self.width, &self.col_widths, col_count, BL, BR, BT);
             }
 
@@ -163,7 +163,7 @@ impl Table {
 /// Helper: draws a single horizontal border line dividing table sections.
 #[allow(clippy::too_many_arguments)]
 fn draw_h_border(screen: &mut Screen, row: usize, col: usize, width: usize, col_widths: &[usize], col_count: usize, left: u8, right: u8, junc: u8) {
-    if row >= SCREEN_ROWS { return; }
+    if row >= screen_rows() { return; }
     let last_col = col + width - 1;
     screen.draw_char_at(row, col, left, BORDER_FG, BORDER_BG);
     let mut c = col + 1;
@@ -186,7 +186,7 @@ fn draw_h_border(screen: &mut Screen, row: usize, col: usize, width: usize, col_
 /// Helper: draws a single row of column values flanked by vertical grid lines.
 #[allow(clippy::too_many_arguments)]
 fn draw_row(screen: &mut Screen, row: usize, col: usize, width: usize, col_widths: &[usize], col_count: usize, cells: &[&'static str], fg: Color, bg: Color) {
-    if row >= SCREEN_ROWS { return; }
+    if row >= screen_rows() { return; }
     let last_col = col + width - 1;
     screen.draw_char_at(row, col, V, BORDER_FG, BORDER_BG);
     let mut c = col + 1;
@@ -207,12 +207,12 @@ fn draw_row(screen: &mut Screen, row: usize, col: usize, width: usize, col_width
         }
     }
     while c < last_col { screen.draw_char_at(row, c, b' ', fg, bg); c += 1; }
-    if last_col < SCREEN_COLS { screen.draw_char_at(row, last_col, V, BORDER_FG, BORDER_BG); }
+    if last_col < screen_cols() { screen.draw_char_at(row, last_col, V, BORDER_FG, BORDER_BG); }
 }
 
 /// Helper: draws the scroll fraction indicator into the bottom border.
 fn draw_scroll_indicator(screen: &mut Screen, border_row: usize, right_border_col: usize, current: usize, total: usize) {
-    if border_row >= SCREEN_ROWS { return; }
+    if border_row >= screen_rows() { return; }
     let mut buf = [b' '; 7];
     let mut pos = 6usize;
 
@@ -239,7 +239,7 @@ fn draw_scroll_indicator(screen: &mut Screen, border_row: usize, right_border_co
     let indicator_col = right_border_col.saturating_sub(buf.len() + 1);
     for (i, &byte) in buf.iter().enumerate() {
         let target_col = indicator_col + i;
-        if target_col < SCREEN_COLS {
+        if target_col < screen_cols() {
             screen.draw_char_at(border_row, target_col, byte, BORDER_FG, BORDER_BG);
         }
     }

@@ -36,7 +36,7 @@ pub use gauge::Gauge;
 pub use label::Label;
 pub use list::List;
 pub use progressbar::ProgressBar;
-pub use screen::{Color, Screen, with_screen, SCREEN_COLS, SCREEN_ROWS};
+pub use screen::{Color, Screen, with_screen, screen_cols, screen_rows};
 pub use table::Table;
 pub use tabs::Tabs;
 pub use textbox::TextBox;

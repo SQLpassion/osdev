@@ -73,6 +73,9 @@ pub trait KernelConsole: core::fmt::Write + Send {
     /// Blits a full raw text grid (typically 2000 cells) directly to the screen.
     fn blit_framebuffer(&mut self, cells: &[u16]);
 
+    /// Gets the console dimensions as a tuple `(rows, cols)`.
+    fn get_dimensions(&self) -> (usize, usize);
+
     /// Hides the hardware blink/text cursor.
     fn disable_hw_cursor(&mut self);
 

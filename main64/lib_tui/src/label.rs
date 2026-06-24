@@ -4,7 +4,7 @@
 //! headers, or descriptions with custom foreground and background colors.
 
 use crate::screen::{Color, with_screen};
-use crate::{SCREEN_COLS, SCREEN_ROWS};
+use crate::{screen_cols, screen_rows};
 
 /// A single-line static text widget.
 pub struct Label {
@@ -39,10 +39,10 @@ impl Label {
     /// Renders the label to the screen buffer.
     pub fn draw(&self) {
         // Step 1: Verify row index is within physical screen limits.
-        if self.row >= SCREEN_ROWS { return; }
+        if self.row >= screen_rows() { return; }
 
         // Step 2: Compute the maximum allowed width to prevent drawing past screen bounds.
-        let draw_width = self.width.min(SCREEN_COLS.saturating_sub(self.col));
+        let draw_width = self.width.min(screen_cols().saturating_sub(self.col));
 
         // Step 3: Fill the background and draw the text.
         with_screen(|screen| {

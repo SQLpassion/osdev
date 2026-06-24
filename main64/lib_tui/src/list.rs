@@ -7,7 +7,7 @@
 extern crate alloc;
 use alloc::vec::Vec;
 use crate::screen::{Color, with_screen};
-use crate::{SCREEN_COLS, SCREEN_ROWS};
+use crate::{screen_cols, screen_rows};
 
 /// Default foreground color of inactive items.
 const ITEM_FG:   Color = Color::White;
@@ -88,7 +88,7 @@ impl List {
     /// Renders the list box, items, selection highlight, and scroll index to the screen.
     pub fn draw(&self) {
         // Step 1: Validate starting coordinates.
-        if self.row >= SCREEN_ROWS || self.col >= SCREEN_COLS { return; }
+        if self.row >= screen_rows() || self.col >= screen_cols() { return; }
 
         with_screen(|screen| {
             // Step 2: Draw the outer CP437 box frame.

@@ -133,6 +133,13 @@ impl KernelConsole for ConsoleImpl {
         }
     }
 
+    fn get_dimensions(&self) -> (usize, usize) {
+        match self {
+            ConsoleImpl::Vga(inner) => inner.get_dimensions(),
+            ConsoleImpl::Framebuffer(inner) => inner.get_dimensions(),
+        }
+    }
+
     fn disable_hw_cursor(&mut self) {
         // Disable hardware cursor.
         match self {

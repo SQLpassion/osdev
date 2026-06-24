@@ -119,6 +119,10 @@ fn test_syscall_ids_are_stable() {
         SyscallId::GetBiosMemoryMapEntry as u64 == 26,
         "GetBiosMemoryMapEntry syscall id changed"
     );
+    assert!(
+        SyscallId::GetConsoleDimensions as u64 == 29,
+        "GetConsoleDimensions syscall id changed"
+    );
 }
 
 /// Contract: syscall number-to-name mapping for dispatcher logs stays stable.
@@ -231,6 +235,10 @@ fn test_syscall_name_mapping_for_logging_is_stable() {
     assert!(
         syscall::syscall_name_for_number(SyscallId::GetBiosMemoryMapEntry as u64) == "GetBiosMemoryMapEntry",
         "GetBiosMemoryMapEntry mapping must stay stable for syscall trace output"
+    );
+    assert!(
+        syscall::syscall_name_for_number(SyscallId::GetConsoleDimensions as u64) == "GetConsoleDimensions",
+        "GetConsoleDimensions mapping must stay stable for syscall trace output"
     );
     assert!(
         syscall::syscall_name_for_number(0xDEAD) == "Unknown",
@@ -747,6 +755,16 @@ fn test_clear_screen_resets_cursor_to_origin() {
     let col = (packed & 0xFFFF_FFFF) as usize;
     assert!(row == 0, "clear_screen must reset row to 0");
     assert!(col == 0, "clear_screen must reset col to 0");
+}
+
+/// Contract: get_console_dimensions returns the expected screen dimensions (25 rows, 80 cols for VGA).
+#[test_case]
+fn test_get_console_dimensions() {
+    let packed = syscall::dispatch(SyscallId::GetConsoleDimensions as u64, 0, 0, 0, 0);
+    let rows = (packed >> 32) as usize;
+    let cols = (packed & 0xFFFF_FFFF) as usize;
+    assert!(rows == 25, "rows must be 25 for default VGA mode in tests");
+    assert!(cols == 80, "cols must be 80 for default VGA mode in tests");
 }
 
 /// Contract: exec with invalid user buffer returns invalid argument error.

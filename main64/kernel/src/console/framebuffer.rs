@@ -477,6 +477,10 @@ impl KernelConsole for FramebufferConsole {
         self.draw_cursor(true);
     }
 
+    fn get_dimensions(&self) -> (usize, usize) {
+        (self.rows, self.cols)
+    }
+
     fn disable_hw_cursor(&mut self) {
         self.erase_cursor();
         self.cursor_enabled = false;

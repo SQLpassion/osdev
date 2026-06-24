@@ -93,6 +93,11 @@ impl KernelConsole for VgaConsole {
         with_screen(|screen| screen.blit_framebuffer(cells));
     }
 
+    fn get_dimensions(&self) -> (usize, usize) {
+        // VGA text mode is strictly 80x25.
+        (25, 80)
+    }
+
     fn disable_hw_cursor(&mut self) {
         // Delegate hardware cursor hide operation.
         with_screen(|screen| screen.disable_hw_cursor());

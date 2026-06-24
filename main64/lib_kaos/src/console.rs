@@ -196,21 +196,35 @@ pub fn poll_key() -> Result<Key, SysError> {
     decode_result(raw).map(|v| Key::from_raw(v as u8))
 }
 
-/// Blit a full 80×25 frame buffer to VGA in a single syscall.
+/// Blit a raw frame buffer to the console in a single syscall.
 ///
-/// Each element of `cells` encodes one VGA cell as `(attr << 8) | ascii`.
+/// Each element of `cells` encodes one cell as `(attr << 8) | ascii`.
 #[inline(always)]
-pub fn flush_screen(cells: &[u16; 2000]) -> Result<(), SysError> {
+pub fn flush_screen(cells: &[u16]) -> Result<(), SysError> {
     let raw = unsafe {
-        // SAFETY: `cells` is a valid fixed-size array; pointer and length are
+        // SAFETY: `cells` is a valid slice; pointer and length are
         //         passed to the kernel for a bounds-checked read.
         syscall2(
             SyscallId::WriteFramebuffer as u64,
             cells.as_ptr() as u64,
-            2000u64,
+            cells.len() as u64,
         )
     };
     decode_result(raw).map(|_| ())
+}
+
+/// Retrieve the active console's dimensions as a tuple `(rows, cols)`.
+#[inline(always)]
+pub fn get_dimensions() -> Result<(usize, usize), SysError> {
+    let raw = unsafe {
+        // SAFETY: `GetConsoleDimensions` takes no pointer arguments.
+        syscall0(SyscallId::GetConsoleDimensions as u64)
+    };
+    decode_result(raw).map(|val| {
+        let rows = (val >> 32) as usize;
+        let cols = (val & 0xFFFFFFFF) as usize;
+        (rows, cols)
+    })
 }
 
 /// Configure VGA text-mode hardware settings.

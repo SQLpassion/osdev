@@ -6,7 +6,7 @@
 extern crate alloc;
 use alloc::vec::Vec;
 use crate::screen::{Color, with_screen};
-use crate::{SCREEN_COLS, SCREEN_ROWS};
+use crate::{screen_cols, screen_rows};
 
 /// Framed multi-line text container widget.
 pub struct TextBox {
@@ -57,7 +57,7 @@ impl TextBox {
     /// Renders the TextBox frame and its content lines to the screen buffer.
     pub fn draw(&self) {
         // Step 1: Validate starting coordinates.
-        if self.row >= SCREEN_ROWS || self.col >= SCREEN_COLS { return; }
+        if self.row >= screen_rows() || self.col >= screen_cols() { return; }
 
         with_screen(|screen| {
             // Step 2: Draw the outer CP437 single-line box border frame.

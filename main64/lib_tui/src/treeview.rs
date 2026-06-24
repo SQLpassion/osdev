@@ -8,7 +8,7 @@ extern crate alloc;
 use alloc::borrow::Cow;
 use alloc::vec::Vec;
 use crate::screen::{Color, with_screen};
-use crate::{SCREEN_COLS, SCREEN_ROWS};
+use crate::{screen_cols, screen_rows};
 
 /// Default foreground color of items.
 const ITEM_FG:   Color = Color::White;
@@ -256,7 +256,7 @@ impl TreeView {
 
     /// Renders the tree frame, node labels with indentation, and indicators to the screen.
     pub fn draw(&self) {
-        if self.row >= SCREEN_ROWS || self.col >= SCREEN_COLS { return; }
+        if self.row >= screen_rows() || self.col >= screen_cols() { return; }
         let visible_nodes = &self.visible_cache;
         with_screen(|screen| {
             // Draw the outer CP437 box frame.

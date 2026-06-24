@@ -4,7 +4,7 @@
 //! block characters (`█`), and a numeric trailing percentage readout (e.g., ` 74%`).
 
 use crate::screen::{Color, with_screen};
-use crate::SCREEN_ROWS;
+use crate::screen_rows;
 
 /// Block character code for the filled section of the progress bar.
 const FILL_CHAR:  u8 = 0xDB; // █
@@ -54,7 +54,7 @@ impl ProgressBar {
     /// Renders the progress bar to the screen buffer.
     pub fn draw(&self) {
         // Step 1: Validate row index and width constraints.
-        if self.row >= SCREEN_ROWS || self.width < MIN_WIDTH { return; }
+        if self.row >= screen_rows() || self.width < MIN_WIDTH { return; }
 
         // Step 2: Compute bar graphics dimensions.
         // We subtract 7 columns for border brackets `[...]` and percentage readout ` XXX%`.
