@@ -36,3 +36,5 @@ SECTIONS
         *(.comment)
     }
 }
+
+ASSERT(. <= 0x9000, "Error: kaosldr_64 size exceeds limit of 24KB (overlaps with page tables at 0x9000)")
