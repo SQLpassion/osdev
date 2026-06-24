@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = [
+    "kaosldr_64",
+    "kaosldr_uefi",
+    "kernel",
+    "lib_kaos",
+    "lib_tui",
+    "user_programs/filedemo",
+    "user_programs/hello",
+    "user_programs/kbasic",
+    "user_programs/readline",
+    "user_programs/shell",
+    "user_programs/tui_app",
+]
