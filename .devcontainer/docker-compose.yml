@@ -9,12 +9,12 @@ services:
     container_name: kaos-devcontainer
     volumes:
       - ..:/workspace:cached
-      # Schnellere Build-Performance durch Vermeidung des macOS Host I/O Syncs auf die Target-Ordner:
-      - kernel-target:/workspace/main64/kernel/target
-      - kaosldr-target:/workspace/main64/kaosldr_64/target
-      - libkaos-target:/workspace/main64/lib_kaos/target
-      - libtui-target:/workspace/main64/lib_tui/target
-      - user-programs-target:/workspace/main64/user_programs
+      # Faster builds by avoiding the macOS host I/O sync on the target directory. Since the
+      # Cargo workspace migration ALL build output lives in the shared main64/target/, so a
+      # single volume is enough here.
+      # IMPORTANT: only ever mount the target/ directory, never a source folder like
+      # user_programs/ — otherwise the volume shadows the source code and freezes it.
+      - workspace-target:/workspace/main64/target
       - cargo-cache:/root/.cargo
     network_mode: bridge
     extra_hosts:
@@ -22,9 +22,5 @@ services:
     command: /bin/sh -c "while sleep 1000; do :; done"
 
 volumes:
-  kernel-target:
-  kaosldr-target:
-  libkaos-target:
-  libtui-target:
-  user-programs-target:
+  workspace-target:
   cargo-cache:
