@@ -11,6 +11,8 @@ pub const RECURSIVE_SLOT: usize = 511;
 pub const ENTRY_PRESENT: u64 = 1 << 0;
 pub const ENTRY_WRITABLE: u64 = 1 << 1;
 pub const ENTRY_USER: u64 = 1 << 2;
+pub const ENTRY_PWT: u64 = 1 << 3;
+pub const ENTRY_PCD: u64 = 1 << 4;
 pub const ENTRY_HUGE: u64 = 1 << 7;
 pub const ENTRY_GLOBAL: u64 = 1 << 8;
 pub const ENTRY_FRAME_MASK: u64 = 0x0000_FFFF_FFFF_F000;
@@ -83,6 +85,26 @@ impl PageTableEntry {
             self.0 |= ENTRY_USER;
         } else {
             self.0 &= !ENTRY_USER;
+        }
+    }
+
+    /// Sets or clears the Page-Level Write-Through (PWT) bit.
+    #[inline]
+    pub fn set_pwt(&mut self, val: bool) {
+        if val {
+            self.0 |= ENTRY_PWT;
+        } else {
+            self.0 &= !ENTRY_PWT;
+        }
+    }
+
+    /// Sets or clears the Page-Level Cache Disable (PCD) bit.
+    #[inline]
+    pub fn set_pcd(&mut self, val: bool) {
+        if val {
+            self.0 |= ENTRY_PCD;
+        } else {
+            self.0 &= !ENTRY_PCD;
         }
     }
 

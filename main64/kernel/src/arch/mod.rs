@@ -6,4 +6,5 @@ pub mod gdt;
 pub mod interrupts;
 pub mod port;
 pub mod power;
+pub mod msr;
 pub mod qemu;

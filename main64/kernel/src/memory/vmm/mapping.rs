@@ -256,6 +256,26 @@ pub fn try_map_virtual_to_physical(
     Ok(())
 }
 
+/// Maps `virtual_address` to `physical_address` with present + writable flags,
+/// and configures the cache to Write-Combining (WC) via PAT1 (PWT=1).
+pub fn map_virtual_to_physical_wc(virtual_address: u64, physical_address: u64) {
+    // Thin wrapper that acts like map_virtual_to_physical but sets PWT.
+    match try_map_virtual_to_physical(virtual_address, physical_address) {
+        Ok(()) => {}
+        Err(e) => panic!("VMM: WC mapping failed: {:?}", e),
+    }
+    
+    // Now set the PWT bit in the leaf entry to select PAT1 (Write-Combining).
+    let pt = table_at(super::page_table::pt_table_addr(virtual_address));
+    let pt_idx = super::page_table::pt_index(virtual_address);
+    // SAFETY: We just successfully mapped it, so it is present.
+    unsafe {
+        let e = super::page_table::entry_ptr(pt, pt_idx);
+        (*e).set_pwt(true); // PWT=1, PCD=0 maps to PAT1 (WC)
+    }
+    super::page_table::invlpg(virtual_address);
+}
+
 /// Maps `virtual_address` to `physical_address` with present + writable flags.
 ///
 /// Panics if the VA is already mapped to another frame.
@@ -747,4 +767,63 @@ pub fn map_user_page(virtual_address: u64, pfn: u64, writable: bool) -> Result<(
     invlpg(virtual_address);
 
     Ok(())
+}
+
+/// Configures existing page table entries covering the given virtual address range to use
+/// Write-Combining (WC) via PAT1 (PWT=1, PCD=0).
+///
+/// This correctly handles both 4 KiB and 2 MiB / 1 GiB huge pages by setting the PWT bit
+/// at the appropriate leaf level, modifying existing mappings (such as UEFI GOP mappings).
+pub fn configure_wc_mapping(start_va: u64, size: u64) {
+    use super::page_table::*;
+
+    let mut addr = page_align_down(start_va);
+    let end = page_align_down(start_va + size + PAGE_SIZE_U64 - 1);
+
+    while addr < end {
+        let pml4 = table_at(PML4_TABLE_ADDR);
+        let pml4_idx = pml4_index(addr);
+        let pml4e = table_entry(pml4, pml4_idx);
+        if !pml4e.present() {
+            addr += PAGE_SIZE_U64;
+            continue;
+        }
+
+        let pdp = table_at(pdp_table_addr(addr));
+        let pdp_idx = pdp_index(addr);
+        let pdpe = table_entry(pdp, pdp_idx);
+        if !pdpe.present() {
+            addr += PAGE_SIZE_U64;
+            continue;
+        }
+        if pdpe.huge() {
+            // SAFETY: Modifying cache bits of mapped memory in Ring 0 is safe.
+            unsafe { (*entry_ptr(pdp, pdp_idx)).set_pwt(true); }
+            invlpg(addr);
+            addr = (addr + 0x4000_0000) & !0x3FFF_FFFF; // Advance by 1GiB
+            continue;
+        }
+
+        let pd = table_at(pd_table_addr(addr));
+        let pd_idx = pd_index(addr);
+        let pde = table_entry(pd, pd_idx);
+        if !pde.present() {
+            addr += PAGE_SIZE_U64;
+            continue;
+        }
+        if pde.huge() {
+            unsafe { (*entry_ptr(pd, pd_idx)).set_pwt(true); }
+            invlpg(addr);
+            addr = (addr + 0x20_0000) & !0x1F_FFFF; // Advance by 2MiB
+            continue;
+        }
+
+        let pt = table_at(pt_table_addr(addr));
+        let pt_idx = pt_index(addr);
+        if table_entry(pt, pt_idx).present() {
+            unsafe { (*entry_ptr(pt, pt_idx)).set_pwt(true); }
+            invlpg(addr);
+        }
+        addr += PAGE_SIZE_U64;
+    }
 }

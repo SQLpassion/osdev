@@ -364,21 +364,33 @@ fn map_framebuffer(boot_info_raw: u64) {
         return;
     }
 
+    // Configure PAT MSR (0x277) to set PAT1 (bits 8..15) to Write-Combining (0x01).
+    // The default value is usually 0x0007_0406_0007_0406 (PAT1 = 0x04 = WT).
+    // SAFETY: Writing to the PAT MSR is safe on x86_64, as we are in Ring 0.
+    unsafe {
+        let mut pat = crate::arch::msr::rdmsr(0x277);
+        pat &= !(0xFF << 8); // Clear PAT1
+        pat |= (0x01 << 8);  // Set PAT1 to Write-Combining (WC)
+        crate::arch::msr::wrmsr(0x277, pat);
+    }
+
     let start = fb.base_address & !0xFFFu64;
     let end = fb.base_address + fb.size as u64;
     let mut addr = start;
     while addr < end {
         // Only create a fresh mapping when the page is genuinely unmapped (the BIOS/VBE case,
         // where the loader maps just the low 16 MiB). On UEFI the firmware already maps the
-        // framebuffer — frequently with 2 MiB / 1 GiB huge pages — and that mapping is cloned
-        // into the kernel PML4. We MUST detect that and skip it: `is_va_mapped` is huge-page
-        // aware, whereas a 4 KiB-only check would miss the huge mapping and make
-        // `map_virtual_to_physical` walk into a huge PDE, corrupting the framebuffer/page tables.
+        // framebuffer.
         if !vmm::is_va_mapped(addr) {
-            vmm::map_virtual_to_physical(addr, addr);
+            vmm::map_virtual_to_physical_wc(addr, addr);
         }
         addr += 0x1000;
     }
+
+    // Pass 2: For any mappings that already existed (e.g. UEFI firmware mappings),
+    // update their page table flags to activate Write-Combining via PAT1 (PWT=1).
+    // This safely modifies both 4 KiB and huge pages.
+    vmm::configure_wc_mapping(fb.base_address, fb.size as u64);
     debugln!(
         "Framebuffer identity-mapped: phys 0x{:x}..0x{:x} ({} bytes)",
         start,

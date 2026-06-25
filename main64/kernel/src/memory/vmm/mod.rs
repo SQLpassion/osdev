@@ -49,7 +49,7 @@ pub use page_fault::{
 #[allow(unused_imports)]
 pub use mapping::{
     MapError, populate_page_table_path, try_map_virtual_to_physical, map_virtual_to_physical,
-    unmap_virtual_address, clone_kernel_pml4_for_user, destroy_user_address_space,
+    map_virtual_to_physical_wc, configure_wc_mapping, unmap_virtual_address, clone_kernel_pml4_for_user, destroy_user_address_space,
     destroy_user_address_space_with_options, destroy_user_address_space_with_page_counts,
     unmap_user_heap_region, map_user_page, with_address_space, switch_page_directory,
 };
