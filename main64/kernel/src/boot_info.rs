@@ -18,6 +18,23 @@ pub enum VideoModeType {
     Framebuffer = 1,
 }
 
+/// Color channel layout of the pixels in the linear graphics framebuffer.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PixelFormat {
+    /// Red in byte 0, Green in byte 1, Blue in byte 2, Reserved in byte 3 (little-endian: 0x00BBGGRR).
+    Rgb = 0,
+
+    /// Blue in byte 0, Green in byte 1, Red in byte 2, Reserved in byte 3 (little-endian: 0x00RRGGBB).
+    Bgr = 1,
+
+    /// Custom bitmask format.
+    Bitmask = 2,
+
+    /// Framebuffer lacks direct memory access; Blt operations only.
+    BltOnly = 3,
+}
+
 /// Detailed configuration parameters of the active linear graphics framebuffer.
 ///
 /// Guaranteed to match standard C ABI layout. Only populated and valid when
@@ -39,6 +56,9 @@ pub struct FramebufferInfo {
 
     /// Total number of pixels per horizontal scanline (includes stride/padding alignment).
     pub pixels_per_scanline: u32,
+
+    /// Color channel pixel format representation.
+    pub pixel_format: PixelFormat,
 }
 
 /// A single standardized memory map entry representing a physical address range.

@@ -4,6 +4,7 @@
 //! framebuffer using a static 8x16 bitmap font.
 
 use crate::drivers::screen::Color;
+use crate::boot_info::PixelFormat;
 use super::KernelConsole;
 
 // Static 8x16 bitmap font
@@ -11,8 +12,8 @@ use super::KernelConsole;
 use super::font_basic::FONT_BASIC as FONT_8X16;
 
 // Helper to convert Color enum to 32-bit RGB color
-fn color_to_rgb(color: Color) -> u32 {
-    match color {
+fn color_to_rgb(color: Color, format: PixelFormat) -> u32 {
+    let bgr = match color {
         Color::Black => 0x00000000,
         Color::Blue => 0x000000AA,
         Color::Green => 0x0000AA00,
@@ -29,6 +30,15 @@ fn color_to_rgb(color: Color) -> u32 {
         Color::Pink => 0x00FF55FF,
         Color::Yellow => 0x00FFFF55,
         Color::White => 0x00FFFFFF,
+    };
+    match format {
+        PixelFormat::Rgb => {
+            let r = (bgr >> 16) & 0xFF;
+            let g = (bgr >> 8) & 0xFF;
+            let b = bgr & 0xFF;
+            r | (g << 8) | (b << 16)
+        }
+        _ => bgr,
     }
 }
 
@@ -143,8 +153,9 @@ impl FramebufferConsole {
     fn draw_char_pixel(&self, x_start: u32, y_start: u32, ch: u8, fg: Color, bg: Color) {
         let glyph_idx = if ch < 128 { ch as usize } else { 0x3F };
         let glyph = FONT_8X16[glyph_idx];
-        let fg_rgb = color_to_rgb(fg);
-        let bg_rgb = color_to_rgb(bg);
+        let format = self.get_fb_info().map(|fb| fb.pixel_format).unwrap_or(PixelFormat::Bgr);
+        let fg_rgb = color_to_rgb(fg, format);
+        let bg_rgb = color_to_rgb(bg, format);
 
         for (row, &byte) in glyph.iter().enumerate() {
             for col in 0..8 {
@@ -180,10 +191,11 @@ impl FramebufferConsole {
         let x_start = (self.cursor_col * 8) as u32;
         let y_start = (self.cursor_row * 16) as u32;
 
+        let format = self.get_fb_info().map(|fb| fb.pixel_format).unwrap_or(PixelFormat::Bgr);
         let color = if visible {
-            color_to_rgb(self.fg)
+            color_to_rgb(self.fg, format)
         } else {
-            color_to_rgb(self.bg)
+            color_to_rgb(self.bg, format)
         };
 
         for dy in 14..16 {
@@ -206,8 +218,9 @@ impl FramebufferConsole {
 
         let glyph_idx = if ch < 128 { ch as usize } else { 0x3F };
         let glyph = FONT_8X16[glyph_idx];
-        let fg_rgb = color_to_rgb(fg);
-        let bg_rgb = color_to_rgb(bg);
+        let format = self.get_fb_info().map(|fb| fb.pixel_format).unwrap_or(PixelFormat::Bgr);
+        let fg_rgb = color_to_rgb(fg, format);
+        let bg_rgb = color_to_rgb(bg, format);
 
         let x_start = (self.cursor_col * 8) as u32;
         let y_start = (self.cursor_row * 16) as u32;
@@ -245,7 +258,8 @@ impl FramebufferConsole {
                 core::ptr::copy(src, dst, count);
             }
 
-            let bg_rgb = color_to_rgb(self.bg);
+            let format = fb.pixel_format;
+            let bg_rgb = color_to_rgb(self.bg, format);
             let start_y = fb.height.saturating_sub(16);
             for y in start_y..fb.height {
                 let row_offset = (y * fb.pixels_per_scanline) as isize;
@@ -504,7 +518,8 @@ impl FramebufferConsole {
     fn fill_physical_screen(&self, bg: Color) {
         if let Some(fb) = self.get_fb_info() {
             let fb_ptr = fb.base_address as *mut u32;
-            let bg_rgb = color_to_rgb(bg);
+            let format = fb.pixel_format;
+            let bg_rgb = color_to_rgb(bg, format);
             let mut y = 0u32;
             while y < fb.height {
                 let row = (y * fb.pixels_per_scanline) as isize;

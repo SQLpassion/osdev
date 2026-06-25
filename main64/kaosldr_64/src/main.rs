@@ -67,6 +67,7 @@ static mut BOOT_INFO: BootInfo = BootInfo {
         width: 0,
         height: 0,
         pixels_per_scanline: 0,
+        pixel_format: boot_info::PixelFormat::Bgr,
     },
     memory_map_addr: 0,
     memory_map_len: 0,
@@ -134,6 +135,7 @@ pub unsafe extern "C" fn kaosldr_main() -> ! {
                     width: bib.fb_width,
                     height: bib.fb_height,
                     pixels_per_scanline: bib.fb_pixels_per_scanline,
+                    pixel_format: boot_info::PixelFormat::Bgr,
                 };
 
                 // Execute the Kernel, passing a pointer to the BootInfo struct.

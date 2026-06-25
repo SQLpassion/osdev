@@ -279,6 +279,16 @@ pub enum VideoModeType {
     Framebuffer = 1,
 }
 
+/// Color channel layout of the pixels in the linear graphics framebuffer.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PixelFormat {
+    Rgb = 0,
+    Bgr = 1,
+    Bitmask = 2,
+    BltOnly = 3,
+}
+
 /// Framebuffer details passed down to the kernel.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -288,6 +298,7 @@ pub struct FramebufferInfo {
     pub width: u32,
     pub height: u32,
     pub pixels_per_scanline: u32,
+    pub pixel_format: PixelFormat,
 }
 
 /// Simplified memory map entries for the kernel physical memory manager.
@@ -330,6 +341,7 @@ static mut BOOT_INFO: BootInfo = BootInfo {
         width: 0,
         height: 0,
         pixels_per_scanline: 0,
+        pixel_format: PixelFormat::Bgr,
     },
     memory_map_addr: 0,
     memory_map_len: 0,
@@ -415,6 +427,15 @@ pub unsafe extern "efiapi" fn efi_main(image_handle: Handle, system_table: *cons
     let fb_width = unsafe { (*(*(*gop).mode).info).horizontal_resolution };
     let fb_height = unsafe { (*(*(*gop).mode).info).vertical_resolution };
     let fb_scanline = unsafe { (*(*(*gop).mode).info).pixels_per_scanline };
+    let fb_pixel_format = unsafe { (*(*(*gop).mode).info).pixel_format };
+
+    let pixel_format = match fb_pixel_format {
+        0 => PixelFormat::Rgb,
+        1 => PixelFormat::Bgr,
+        2 => PixelFormat::Bitmask,
+        3 => PixelFormat::BltOnly,
+        _ => PixelFormat::Bgr,
+    };
 
     // Fill BOOT_INFO fb_info
     // SAFETY: Modify the static BootInfo structure before ExitBootServices.
@@ -425,6 +446,7 @@ pub unsafe extern "efiapi" fn efi_main(image_handle: Handle, system_table: *cons
             width: fb_width,
             height: fb_height,
             pixels_per_scanline: fb_scanline,
+            pixel_format,
         };
     }
 
