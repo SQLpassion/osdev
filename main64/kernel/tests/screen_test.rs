@@ -18,6 +18,13 @@ const VGA_ROWS: usize = 25;
 #[link_section = ".text.boot"]
 pub extern "C" fn KernelMain(_kernel_size: u64) -> ! {
     kaos_kernel::drivers::serial::init();
+
+    // Step 1: Initialize memory management and heap to support dynamic allocations.
+    kaos_kernel::memory::pmm::init(false);
+    kaos_kernel::arch::interrupts::init();
+    kaos_kernel::memory::vmm::init(false);
+    kaos_kernel::memory::heap::init(false);
+
     test_main();
     loop {
         core::hint::spin_loop();
@@ -322,6 +329,22 @@ fn test_dynamic_console_initialization_and_routing() {
         let ch = unsafe { core::ptr::read_volatile(cell as *const u8) };
         assert!(ch == byte, "dynamic console must write expected character");
     }
+}
+
+/// Contract: FramebufferConsole fallback creation and basic cursor advancement.
+/// Given: The subsystem is initialized in fallback mode (when BOOT_INFO_PTR is 0).
+/// When: We write a character.
+/// Then: The cursor coordinates advance correctly.
+#[test_case]
+fn test_framebuffer_console_fallback_creation_and_cursor() {
+    use kaos_kernel::console::KernelConsole;
+
+    let mut fb_console = kaos_kernel::console::FramebufferConsole::new();
+    assert_eq!(fb_console.get_cursor(), (0, 0));
+
+    // Write a character and check cursor advancement.
+    fb_console.print_char(b'A');
+    assert_eq!(fb_console.get_cursor(), (0, 1));
 }
 
 
