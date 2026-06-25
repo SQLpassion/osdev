@@ -28,7 +28,7 @@ use core::ptr::{addr_of, addr_of_mut};
 use core::sync::atomic::Ordering;
 
 use kaos_kernel::boot_info::{
-    BootInfo, FramebufferInfo, UnifiedMemoryEntry, VideoModeType, BOOT_INFO_PTR,
+    BootInfo, FramebufferInfo, UnifiedMemoryEntry, VideoModeType, BOOT_INFO_PTR, PixelFormat,
 };
 use kaos_kernel::memory::pmm::{self, KERNEL_OFFSET, PAGE_SIZE, STACK_TOP};
 
@@ -65,6 +65,7 @@ static mut SYN_BOOT_INFO: BootInfo = BootInfo {
         width: 0,
         height: 0,
         pixels_per_scanline: 0,
+        pixel_format: PixelFormat::Bgr,
     },
     memory_map_addr: 0,
     memory_map_len: 0,

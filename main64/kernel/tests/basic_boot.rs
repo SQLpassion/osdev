@@ -79,7 +79,7 @@ fn test_vga_buffer_address() {
 /// When: We check its magic number and parse it.
 /// Then: The structure must be recognized as valid, and its values must match the expected fields.
 fn test_boot_info_parsing() {
-    use kaos_kernel::boot_info::{BootInfo, VideoModeType, FramebufferInfo, UnifiedMemoryEntry};
+    use kaos_kernel::boot_info::{BootInfo, VideoModeType, FramebufferInfo, UnifiedMemoryEntry, PixelFormat};
 
     static mut DUMMY_MEM_MAP: [UnifiedMemoryEntry; 2] = [
         UnifiedMemoryEntry { start: 0x1000, size: 0x1000, is_usable: true },
@@ -95,6 +95,7 @@ fn test_boot_info_parsing() {
             width: 0,
             height: 0,
             pixels_per_scanline: 0,
+            pixel_format: PixelFormat::Bgr,
         },
         memory_map_addr: unsafe { &raw const DUMMY_MEM_MAP[0] as u64 },
         memory_map_len: 2,

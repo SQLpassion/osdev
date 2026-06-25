@@ -479,3 +479,13 @@ fn test_fat12_write_read_delete_lifecycle() {
         open_result
     );
 }
+
+/// Contract: `print_root_directory` runs successfully and does not panic.
+#[test_case]
+fn test_print_root_directory_does_not_panic() {
+    // Step 1: Initialize the ATA controller prior to performing disk I/O.
+    kaos_kernel::drivers::ata::init();
+
+    // Step 2: Call the print directory helper, ensuring it runs without triggering any panic.
+    kaos_kernel::io::fat12::print_root_directory();
+}
