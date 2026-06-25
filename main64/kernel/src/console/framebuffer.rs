@@ -93,6 +93,8 @@ pub struct FramebufferConsole {
     _blink_enabled: bool,
     /// Cached configuration parameters of the active linear graphics framebuffer.
     fb_info: Option<crate::boot_info::FramebufferInfo>,
+    /// Defers redrawing the screen until a bulk operation is finished.
+    deferred_redraw: bool,
 }
 
 impl Default for FramebufferConsole {
@@ -141,6 +143,7 @@ impl FramebufferConsole {
             cursor_enabled: true,
             _blink_enabled: false,
             fb_info,
+            deferred_redraw: false,
         }
     }
 
@@ -185,15 +188,38 @@ impl FramebufferConsole {
         let fg_rgb = color_to_rgb(fg, format);
         let bg_rgb = color_to_rgb(bg, format);
 
-        // Step 2: Draw the 8x16 pixel matrix by reading row bits from the static font structure.
-        for (row, &byte) in glyph.iter().enumerate() {
-            for col in 0..8 {
-                let pixel_color = if (byte & (1 << (7 - col))) != 0 {
-                    fg_rgb
-                } else {
-                    bg_rgb
-                };
-                self.write_pixel(x_start + col as u32, y_start + row as u32, pixel_color);
+        // Step 2: Draw the 8x16 pixel matrix efficiently using scanline copies.
+        if let Some(fb) = self.get_fb_info() {
+            if x_start + 8 <= fb.width && y_start + 16 <= fb.height {
+                let fb_ptr = fb.base_address as *mut u32;
+                for (row, &byte) in glyph.iter().enumerate() {
+                    let mut scanline = [0u32; 8];
+                    for col in 0..8 {
+                        scanline[col] = if (byte & (1 << (7 - col))) != 0 { fg_rgb } else { bg_rgb };
+                    }
+                    let offset = ((y_start + row as u32) * fb.pixels_per_scanline + x_start) as isize;
+                    
+                    // SAFETY:
+                    // - `scanline` is a valid 8-element array on the stack.
+                    // - `fb_ptr` points to the identity-mapped framebuffer memory.
+                    // - The bounds check ensures `x_start + 8` and `y_start + 16` are within the physical framebuffer.
+                    // - The source (RAM) and destination (VRAM) do not overlap.
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(scanline.as_ptr(), fb_ptr.offset(offset), 8);
+                    }
+                }
+            } else {
+                // Fallback for partial clipping at the exact screen edges.
+                for (row, &byte) in glyph.iter().enumerate() {
+                    for col in 0..8 {
+                        let pixel_color = if (byte & (1 << (7 - col))) != 0 {
+                            fg_rgb
+                        } else {
+                            bg_rgb
+                        };
+                        self.write_pixel(x_start + col as u32, y_start + row as u32, pixel_color);
+                    }
+                }
             }
         }
     }
@@ -210,8 +236,10 @@ impl FramebufferConsole {
         let attr = ((bg as u8) << 4) | (fg as u8);
         self.cells[idx] = ((attr as u16) << 8) | (ch as u16);
 
-        // Step 3: Draw character glyph pixels to the VRAM area.
-        self.draw_char_pixel((col * 8) as u32, (row * 16) as u32, ch, fg, bg);
+        // Step 3: Draw character glyph pixels to the VRAM area only if we are not deferring redraws.
+        if !self.deferred_redraw {
+            self.draw_char_pixel((col * 8) as u32, (row * 16) as u32, ch, fg, bg);
+        }
     }
 
     /// Renders or erases the visual representation of the console cursor at the current cursor coordinates.
@@ -280,28 +308,74 @@ impl FramebufferConsole {
     }
 
     /// Redraws all character cells from the in-memory shadow buffer `cells` to the physical screen.
-    /// This avoids reading from the slow physical framebuffer (VRAM) during scroll operations.
+    /// This avoids reading from the slow physical framebuffer (VRAM) during scroll operations,
+    /// and uses an intermediate line buffer in RAM to perform fast sequential block writes to VRAM.
     fn redraw_from_cells(&self) {
-        // Step 1: Draw every cell stored in our shadow array onto the graphics framebuffer.
-        for row in 0..self.rows {
-            for col in 0..self.cols {
-                let idx = row * self.cols + col;
-                let cell = self.cells[idx];
-                let ch = cell as u8;
-                let attr = (cell >> 8) as u8;
-                let fg = u8_to_color(attr & 0x0F);
-                let bg = u8_to_color((attr >> 4) & 0x0F);
-
-                self.draw_char_pixel((col * 8) as u32, (row * 16) as u32, ch, fg, bg);
+        if let Some(fb) = self.get_fb_info() {
+            let fb_ptr = fb.base_address as *mut u32;
+            let format = fb.pixel_format;
+            let row_height = 16;
+            let render_width = (self.cols * 8) as usize;
+            
+            // Step 1: Allocate a buffer for one entire text row (16 scanlines) in system RAM.
+            let mut row_buffer = alloc::vec![0u32; render_width * row_height];
+            
+            // Step 2: Process each text row locally in RAM.
+            for row in 0..self.rows {
+                for col in 0..self.cols {
+                    let idx = row * self.cols + col;
+                    let cell = self.cells[idx];
+                    let ch = cell as u8;
+                    let attr = (cell >> 8) as u8;
+                    let fg = u8_to_color(attr & 0x0F);
+                    let bg = u8_to_color((attr >> 4) & 0x0F);
+                    
+                    let fg_rgb = color_to_rgb(fg, format);
+                    let bg_rgb = color_to_rgb(bg, format);
+                    
+                    let glyph_idx = if ch < 128 { ch as usize } else { 0x3F };
+                    let glyph = FONT_8X16[glyph_idx];
+                    
+                    for (gy, &byte) in glyph.iter().enumerate() {
+                        let y_offset = gy * render_width;
+                        let x_offset = col * 8;
+                        for gx in 0..8 {
+                            let pixel_color = if (byte & (1 << (7 - gx))) != 0 { fg_rgb } else { bg_rgb };
+                            row_buffer[y_offset + x_offset + gx] = pixel_color;
+                        }
+                    }
+                }
+                
+                // Step 3: Blast the fully rendered text row into VRAM efficiently.
+                for gy in 0..row_height {
+                    let fb_y = (row * 16 + gy) as u32;
+                    if fb_y >= fb.height { break; }
+                    let fb_offset = (fb_y * fb.pixels_per_scanline) as isize;
+                    let buf_offset = gy * render_width;
+                    
+                    // SAFETY:
+                    // - `row_buffer` is a valid heap allocation.
+                    // - `fb_ptr` points to the mapped physical framebuffer.
+                    // - `fb_offset` and `render_width` are within the bounds of the framebuffer geometry.
+                    // - `copy_nonoverlapping` from RAM to VRAM is safe and massively faster than pixel loops.
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(
+                            row_buffer.as_ptr().add(buf_offset),
+                            fb_ptr.offset(fb_offset),
+                            render_width
+                        );
+                    }
+                }
             }
         }
     }
 
-    /// Handles scrolling down by redrawing the shifted character cells on screen.
-    fn scroll_down(&mut self) {
-        // Redraw the entire screen from the shifted cells in memory.
-        // This avoids copying/reading from VRAM which is extremely slow on real hardware.
-        self.redraw_from_cells();
+    /// Flushes any pending full-screen redraws to VRAM.
+    fn flush_redraw(&mut self) {
+        if self.deferred_redraw {
+            self.redraw_from_cells();
+            self.deferred_redraw = false;
+        }
     }
 
     /// Shifts character cells upward when the cursor advances past the last visible row.
@@ -321,9 +395,9 @@ impl FramebufferConsole {
                 self.cells[(self.rows - 1) * self.cols + col] = blank;
             }
 
-            // Step 4: Fix logical cursor row and trigger screen redraw.
+            // Step 4: Fix logical cursor row and mark for deferred redraw.
             self.cursor_row = self.rows - 1;
-            self.scroll_down();
+            self.deferred_redraw = true;
         }
     }
 
@@ -388,7 +462,8 @@ impl core::fmt::Write for FramebufferConsole {
             self.put_char(byte);
         }
         
-        // Step 2: Restore the visual cursor on screen.
+        // Step 2: Flush pending batch operations and restore the visual cursor on screen.
+        self.flush_redraw();
         self.draw_cursor(true);
         Ok(())
     }
@@ -407,6 +482,7 @@ impl KernelConsole for FramebufferConsole {
         // Step 2: Reset internal logical cursor tracking.
         self.cursor_row = 0;
         self.cursor_col = 0;
+        self.deferred_redraw = false;
         
         // Step 3: Draw background color over physical VRAM pixels and show cursor.
         self.fill_physical_screen(self.bg);
@@ -416,6 +492,7 @@ impl KernelConsole for FramebufferConsole {
     /// Renders a single character and forces redraw of the cursor.
     fn print_char(&mut self, _c: u8) {
         self.put_char(_c);
+        self.flush_redraw();
         self.draw_cursor(true);
     }
 
@@ -424,6 +501,7 @@ impl KernelConsole for FramebufferConsole {
         for byte in _s.bytes() {
             self.put_char(byte);
         }
+        self.flush_redraw();
         self.draw_cursor(true);
     }
 
@@ -570,6 +648,7 @@ impl KernelConsole for FramebufferConsole {
         }
         
         // Step 3: Render cursor again.
+        self.flush_redraw();
         self.draw_cursor(true);
     }
 
@@ -609,20 +688,21 @@ impl FramebufferConsole {
             let fb_ptr = fb.base_address as *mut u32;
             let format = fb.pixel_format;
             let bg_rgb = color_to_rgb(bg, format);
+            
+            // Step 2: Allocate a scanline buffer populated with the background color.
+            let mut scanline = alloc::vec![bg_rgb; fb.width as usize];
             let mut y = 0u32;
             
-            // Step 2: Loop over all rows and write the color code to each horizontal coordinate.
+            // Step 3: Copy the scanline block into each row of the VRAM.
             while y < fb.height {
-                let row = (y * fb.pixels_per_scanline) as isize;
-                let mut x = 0u32;
-                while x < fb.width {
-                    // SAFETY:
-                    // - The framebuffer memory is mapped, valid and writable.
-                    // - Coordinates are guaranteed within physical boundaries.
-                    unsafe {
-                        fb_ptr.offset(row + x as isize).write_volatile(bg_rgb);
-                    }
-                    x += 1;
+                let offset = (y * fb.pixels_per_scanline) as isize;
+                // SAFETY:
+                // - `scanline` is a valid heap allocation matching the screen width.
+                // - `fb_ptr` points to the physical framebuffer memory.
+                // - The `offset` strictly stays within `fb.height * pixels_per_scanline`.
+                // - Fast bulk copy is safe as regions do not overlap.
+                unsafe {
+                    core::ptr::copy_nonoverlapping(scanline.as_ptr(), fb_ptr.offset(offset), fb.width as usize);
                 }
                 y += 1;
             }
