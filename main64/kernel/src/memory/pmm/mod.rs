@@ -16,9 +16,8 @@
 //! - `0` in a bitmap represents a free page frame, while `1` represents an allocated/reserved frame.
 //! - Consecutive allocations search from the first available region to minimize fragmentation.
 
-use crate::drivers::screen::with_screen;
+use crate::console::with_console;
 use crate::sync::spinlock::SpinLock;
-use core::fmt::Write;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 pub mod types;
@@ -132,9 +131,11 @@ pub(crate) fn log_release(pfn: u64, region_index: u32) {
 /// are not blocked for the whole stress run.
 pub fn run_self_test(stress_iters: u32) {
     fn print_test_line(args: core::fmt::Arguments<'_>) {
-        with_screen(|screen| {
-            let _ = screen.write_fmt(args);
-            let _ = writeln!(screen);
+        // Route formatted output to the active console implementation.
+        // This supports both VGA and Framebuffer modes dynamically.
+        with_console(|console| {
+            let _ = console.write_fmt(args);
+            let _ = writeln!(console);
         });
     }
 
