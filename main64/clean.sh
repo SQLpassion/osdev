@@ -44,4 +44,6 @@ rm -f kaosldr_16/*.o
 rm -f kaosldr_64/kldr64.bin
 rm -f kaosldr_64/*.o
 rm -f kaos64.img
+rm -f kaos64-uefi.img
 rm -f kaos64.qcow2
+rm -f *.map
