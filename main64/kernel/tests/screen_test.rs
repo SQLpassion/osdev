@@ -347,4 +347,55 @@ fn test_framebuffer_console_fallback_creation_and_cursor() {
     assert_eq!(fb_console.get_cursor(), (0, 1));
 }
 
+/// Contract: framebuffer console maps TUI CP437 bytes to non-fallback glyphs.
+/// Given: The framebuffer font selector receives bytes emitted by Ring-3 TUI widgets.
+/// When: The glyphs are selected for box, table, dialog, and progress-bar characters.
+/// Then: The renderer must not replace those bytes with the visible '?' fallback glyph.
+#[test_case]
+fn test_framebuffer_console_maps_tui_cp437_bytes_to_glyphs() {
+    let fallback = kaos_kernel::console::FramebufferConsole::glyph_for_byte(b'?');
+    let cp437_bytes = [
+        0xB0, 0xB3, 0xB4, 0xB5, 0xBA, 0xBB, 0xBC, 0xBF,
+        0xC0, 0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC8,
+        0xC9, 0xCD, 0xD9, 0xDA, 0xDB,
+    ];
 
+    for &byte in cp437_bytes.iter() {
+        let glyph = kaos_kernel::console::FramebufferConsole::glyph_for_byte(byte);
+
+        assert!(
+            glyph != fallback,
+            "supported CP437 byte must not render as fallback '?'"
+        );
+    }
+}
+
+/// Contract: framebuffer console keeps ASCII glyph selection unchanged.
+/// Given: The framebuffer font selector receives a plain ASCII byte.
+/// When: The glyph is selected for that byte.
+/// Then: It must differ from the CP437 line glyph used for the TUI border path.
+#[test_case]
+fn test_framebuffer_console_keeps_ascii_glyphs_distinct_from_cp437_lines() {
+    let ascii_a = kaos_kernel::console::FramebufferConsole::glyph_for_byte(b'A');
+    let horizontal_line = kaos_kernel::console::FramebufferConsole::glyph_for_byte(0xC4);
+
+    assert!(
+        ascii_a != horizontal_line,
+        "ASCII glyph selection must remain distinct from CP437 line drawing"
+    );
+}
+
+/// Contract: framebuffer console keeps unsupported extended bytes visibly marked.
+/// Given: The framebuffer font selector receives an extended byte without a dedicated glyph.
+/// When: The glyph is selected directly from the 256-entry font table.
+/// Then: It must resolve to the same visible '?' fallback glyph as before.
+#[test_case]
+fn test_framebuffer_console_maps_unsupported_extended_byte_to_fallback_glyph() {
+    let fallback = kaos_kernel::console::FramebufferConsole::glyph_for_byte(b'?');
+    let unsupported = kaos_kernel::console::FramebufferConsole::glyph_for_byte(0x80);
+
+    assert!(
+        unsupported == fallback,
+        "unsupported extended byte must render as fallback '?'"
+    );
+}

@@ -9,11 +9,6 @@ use super::KernelConsole;
 
 const GLYPH_W: u32 = 8;
 const GLYPH_H: u32 = 16;
-const FALLBACK_GLYPH: u8 = 0x3F;
-
-// Static 8x16 bitmap font
-// Use the basic 8x16 font for rendering
-use super::font_basic::FONT_BASIC as FONT_8X16;
 
 
 /// Represents the graphical console state, housing a character grid in system memory (cells),
@@ -108,6 +103,11 @@ impl FramebufferConsole {
         self.fb_info
     }
 
+    /// Selects the bitmap glyph for an ASCII or explicitly supported CP437 byte.
+    pub fn glyph_for_byte(ch: u8) -> &'static [u8; 16] {
+        super::font_basic::glyph_for_byte(ch)
+    }
+
     /// Marks a specific scanline as dirty.
     fn mark_dirty(&mut self, y: u32) {
         if y < self.dirty_y_min {
@@ -141,8 +141,7 @@ impl FramebufferConsole {
 
     /// Renders a single character glyph at pixel offset (x_start, y_start) onto the backbuffer.
     fn draw_char_pixel(&mut self, x_start: u32, y_start: u32, ch: u8, fg: Color, bg: Color) {
-        let glyph_idx = if ch < 128 { ch as usize } else { FALLBACK_GLYPH as usize };
-        let glyph = FONT_8X16[glyph_idx];
+        let glyph = Self::glyph_for_byte(ch);
         let format = self.get_fb_info().map(|fb| fb.pixel_format).unwrap_or(PixelFormat::Bgr);
         let fg_rgb = fg.to_rgb(format);
         let bg_rgb = bg.to_rgb(format);
@@ -156,7 +155,10 @@ impl FramebufferConsole {
                     }
                     let offset = ((y_start + row as u32) * fb.pixels_per_scanline + x_start) as usize;
                     
-                    // SAFETY: scanline has 8 elements, offset is within bounds.
+                    // SAFETY:
+                    // - The bounds branch above guarantees the whole 8-pixel scanline is in range.
+                    // - `backbuffer` is sized from `pixels_per_scanline * height`.
+                    // - `scanline` has exactly `GLYPH_W` initialized pixels.
                     unsafe {
                         core::ptr::copy_nonoverlapping(scanline.as_ptr(), self.backbuffer.as_mut_ptr().add(offset), GLYPH_W as usize);
                     }
@@ -170,7 +172,7 @@ impl FramebufferConsole {
                         } else {
                             bg_rgb
                         };
-                        self.write_pixel(x_start + col as u32, y_start + row as u32, pixel_color);
+                        self.write_pixel(x_start + col, y_start + row as u32, pixel_color);
                     }
                 }
             }
@@ -188,7 +190,7 @@ impl FramebufferConsole {
         let val = ((attr as u16) << 8) | (ch as u16);
         self.cells[idx] = val;
 
-        self.draw_char_pixel((col as u32 * GLYPH_W) as u32, (row as u32 * GLYPH_H) as u32, ch, fg, bg);
+        self.draw_char_pixel(col as u32 * GLYPH_W, row as u32 * GLYPH_H, ch, fg, bg);
     }
 
     /// Renders or erases the visual representation of the console cursor at the current cursor coordinates.
@@ -200,8 +202,8 @@ impl FramebufferConsole {
             return;
         }
 
-        let x_start = (self.cursor_col as u32 * GLYPH_W) as u32;
-        let y_start = (self.cursor_row as u32 * GLYPH_H) as u32;
+        let x_start = self.cursor_col as u32 * GLYPH_W;
+        let y_start = self.cursor_row as u32 * GLYPH_H;
 
         let format = self.get_fb_info().map(|fb| fb.pixel_format).unwrap_or(PixelFormat::Bgr);
         let color = if visible {
@@ -212,7 +214,7 @@ impl FramebufferConsole {
 
         for dy in (GLYPH_H - 2)..GLYPH_H {
             for dx in 0..GLYPH_W {
-                self.write_pixel(x_start + dx as u32, y_start + dy as u32, color);
+                self.write_pixel(x_start + dx, y_start + dy, color);
             }
         }
     }
@@ -229,14 +231,13 @@ impl FramebufferConsole {
         let fg = Color::from_nibble(attr & 0x0F);
         let bg = Color::from_nibble((attr >> 4) & 0x0F);
 
-        let glyph_idx = if ch < 128 { ch as usize } else { FALLBACK_GLYPH as usize };
-        let glyph = FONT_8X16[glyph_idx];
+        let glyph = Self::glyph_for_byte(ch);
         let format = self.get_fb_info().map(|fb| fb.pixel_format).unwrap_or(PixelFormat::Bgr);
         let fg_rgb = fg.to_rgb(format);
         let bg_rgb = bg.to_rgb(format);
 
-        let x_start = (self.cursor_col as u32 * GLYPH_W) as u32;
-        let y_start = (self.cursor_row as u32 * GLYPH_H) as u32;
+        let x_start = self.cursor_col as u32 * GLYPH_W;
+        let y_start = self.cursor_row as u32 * GLYPH_H;
 
         for (dy, &byte) in glyph.iter().enumerate().skip(14) {
             for dx in 0..GLYPH_W {
@@ -245,7 +246,7 @@ impl FramebufferConsole {
                 } else {
                     bg_rgb
                 };
-                self.write_pixel(x_start + dx as u32, y_start + dy as u32, pixel_color);
+                self.write_pixel(x_start + dx, y_start + dy as u32, pixel_color);
             }
         }
     }
@@ -545,7 +546,7 @@ impl KernelConsole for FramebufferConsole {
             let col = i % self.cols;
             
             self.cells[i] = val;
-            self.draw_char_pixel((col as u32 * GLYPH_W) as u32, (row as u32 * GLYPH_H) as u32, ch, fg, bg);
+            self.draw_char_pixel(col as u32 * GLYPH_W, row as u32 * GLYPH_H, ch, fg, bg);
         }
         
         self.draw_cursor(true);
