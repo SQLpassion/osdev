@@ -1,5 +1,6 @@
 //! Architecture-specific code for x86_64
 
+pub mod cache;
 pub mod constants;
 pub mod fpu;
 pub mod gdt;

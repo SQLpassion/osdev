@@ -391,6 +391,12 @@ fn map_framebuffer(boot_info_raw: u64) {
     // update their page table flags to activate Write-Combining via PAT1 (PWT=1).
     // This safely modifies both 4 KiB and huge pages.
     vmm::configure_wc_mapping(fb.base_address, fb.size as u64);
+
+    // SAFETY: Flush CPU caches to ensure PAT memory type changes are visible and no
+    // stale lines with incorrect caching types (like WT or WB) remain in the cache.
+    // The Intel SDM requires this after PAT modification.
+    unsafe { crate::arch::cache::wbinvd() };
+
     debugln!(
         "Framebuffer identity-mapped: phys 0x{:x}..0x{:x} ({} bytes)",
         start,
