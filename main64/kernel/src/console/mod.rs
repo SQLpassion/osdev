@@ -4,11 +4,10 @@
 //! VGA text-mode and graphics framebuffer consoles.
 
 mod dispatch;
+mod font_basic;
 mod framebuffer;
 mod interface;
 mod vga;
-mod font_basic;
-mod font_alternative;
 
 pub use dispatch::ConsoleImpl;
 pub use framebuffer::FramebufferConsole;
