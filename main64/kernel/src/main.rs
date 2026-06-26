@@ -370,7 +370,7 @@ fn map_framebuffer(boot_info_raw: u64) {
     unsafe {
         let mut pat = crate::arch::msr::rdmsr(0x277);
         pat &= !(0xFF << 8); // Clear PAT1
-        pat |= (0x01 << 8);  // Set PAT1 to Write-Combining (WC)
+        pat |= 0x01 << 8;  // Set PAT1 to Write-Combining (WC)
         crate::arch::msr::wrmsr(0x277, pat);
     }
 

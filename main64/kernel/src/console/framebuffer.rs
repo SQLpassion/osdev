@@ -93,6 +93,8 @@ pub struct FramebufferConsole {
     _blink_enabled: bool,
     /// Cached configuration parameters of the active linear graphics framebuffer.
     fb_info: Option<crate::boot_info::FramebufferInfo>,
+    /// Previous state of the character shadow buffer, used for differential updates.
+    prev_cells: alloc::vec::Vec<u16>,
     /// Defers redrawing the screen until a bulk operation is finished.
     deferred_redraw: bool,
 }
@@ -131,9 +133,11 @@ impl FramebufferConsole {
 
         // Step 3: Allocate the system memory shadow buffer for tracking written screen character cells.
         let cells = alloc::vec![0x0720; cols * rows];
+        let prev_cells = alloc::vec![0xFFFF; cols * rows]; // Initialized differently so everything redraws initially
 
         Self {
             cells,
+            prev_cells,
             cols,
             rows,
             cursor_row: 0,
@@ -194,8 +198,8 @@ impl FramebufferConsole {
                 let fb_ptr = fb.base_address as *mut u32;
                 for (row, &byte) in glyph.iter().enumerate() {
                     let mut scanline = [0u32; 8];
-                    for col in 0..8 {
-                        scanline[col] = if (byte & (1 << (7 - col))) != 0 { fg_rgb } else { bg_rgb };
+                    for (col, item) in scanline.iter_mut().enumerate() {
+                        *item = if (byte & (1 << (7 - col))) != 0 { fg_rgb } else { bg_rgb };
                     }
                     let offset = ((y_start + row as u32) * fb.pixels_per_scanline + x_start) as isize;
                     
@@ -234,10 +238,12 @@ impl FramebufferConsole {
         // Step 2: Update the in-memory shadow cell entry to keep state consistent.
         let idx = row * self.cols + col;
         let attr = ((bg as u8) << 4) | (fg as u8);
-        self.cells[idx] = ((attr as u16) << 8) | (ch as u16);
+        let val = ((attr as u16) << 8) | (ch as u16);
+        self.cells[idx] = val;
 
         // Step 3: Draw character glyph pixels to the VRAM area only if we are not deferring redraws.
         if !self.deferred_redraw {
+            self.prev_cells[idx] = val; // Synchronize tracker since we write to VRAM now
             self.draw_char_pixel((col * 8) as u32, (row * 16) as u32, ch, fg, bg);
         }
     }
@@ -308,23 +314,40 @@ impl FramebufferConsole {
     }
 
     /// Redraws all character cells from the in-memory shadow buffer `cells` to the physical screen.
-    /// This avoids reading from the slow physical framebuffer (VRAM) during scroll operations,
-    /// and uses an intermediate line buffer in RAM to perform fast sequential block writes to VRAM.
-    fn redraw_from_cells(&self) {
+    /// This uses differential tracking (`prev_cells`) to completely skip VRAM writes for rows
+    /// that have not visually changed, mitigating uncacheable PCIe bandwidth bottlenecks.
+    fn redraw_from_cells(&mut self) {
         if let Some(fb) = self.get_fb_info() {
             let fb_ptr = fb.base_address as *mut u32;
             let format = fb.pixel_format;
             let row_height = 16;
-            let render_width = (self.cols * 8) as usize;
+            let render_width = self.cols * 8;
             
             // Step 1: Allocate a buffer for one entire text row (16 scanlines) in system RAM.
             let mut row_buffer = alloc::vec![0u32; render_width * row_height];
             
             // Step 2: Process each text row locally in RAM.
             for row in 0..self.rows {
+                let mut row_changed = false;
+                
+                // Differential check: Did anything in this text row change?
+                for col in 0..self.cols {
+                    let idx = row * self.cols + col;
+                    if self.cells[idx] != self.prev_cells[idx] {
+                        row_changed = true;
+                        break;
+                    }
+                }
+                
+                if !row_changed {
+                    continue; // Skip rendering and VRAM copy entirely! Massive speedup.
+                }
+
                 for col in 0..self.cols {
                     let idx = row * self.cols + col;
                     let cell = self.cells[idx];
+                    self.prev_cells[idx] = cell; // Mark as synchronized
+                    
                     let ch = cell as u8;
                     let attr = (cell >> 8) as u8;
                     let fg = u8_to_color(attr & 0x0F);
@@ -477,6 +500,7 @@ impl KernelConsole for FramebufferConsole {
         let blank = ((attr as u16) << 8) | (b' ' as u16);
         for i in 0..self.cells.len() {
             self.cells[i] = blank;
+            self.prev_cells[i] = blank; // Make prev_cells match the erased physical screen
         }
         
         // Step 2: Reset internal logical cursor tracking.
@@ -644,6 +668,7 @@ impl KernelConsole for FramebufferConsole {
             let col = i % self.cols;
             
             self.cells[i] = val;
+            self.prev_cells[i] = val; // Synchronize tracker directly
             self.draw_char_pixel((col * 8) as u32, (row * 16) as u32, ch, fg, bg);
         }
         
@@ -690,7 +715,7 @@ impl FramebufferConsole {
             let bg_rgb = color_to_rgb(bg, format);
             
             // Step 2: Allocate a scanline buffer populated with the background color.
-            let mut scanline = alloc::vec![bg_rgb; fb.width as usize];
+            let scanline = alloc::vec![bg_rgb; fb.width as usize];
             let mut y = 0u32;
             
             // Step 3: Copy the scanline block into each row of the VRAM.
