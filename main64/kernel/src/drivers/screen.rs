@@ -43,6 +43,62 @@ pub enum Color {
     White = 15,
 }
 
+impl Color {
+    /// Converts a 4-bit attribute nibble (VGA compatible) to its corresponding `Color` variant.
+    pub fn from_nibble(val: u8) -> Self {
+        match val & 0x0F {
+            0 => Color::Black,
+            1 => Color::Blue,
+            2 => Color::Green,
+            3 => Color::Cyan,
+            4 => Color::Red,
+            5 => Color::Magenta,
+            6 => Color::Brown,
+            7 => Color::LightGray,
+            8 => Color::DarkGray,
+            9 => Color::LightBlue,
+            10 => Color::LightGreen,
+            11 => Color::LightCyan,
+            12 => Color::LightRed,
+            13 => Color::Pink,
+            14 => Color::Yellow,
+            _ => Color::White,
+        }
+    }
+
+    /// Converts the color to a 32-bit RGB color word based on the target `PixelFormat`.
+    pub fn to_rgb(self, format: crate::boot_info::PixelFormat) -> u32 {
+        let bgr = match self {
+            Color::Black => 0x00000000,
+            Color::Blue => 0x000000AA,
+            Color::Green => 0x0000AA00,
+            Color::Cyan => 0x0000AAAA,
+            Color::Red => 0x00AA0000,
+            Color::Magenta => 0x00AA00AA,
+            Color::Brown => 0x00AA5500,
+            Color::LightGray => 0x00AAAAAA,
+            Color::DarkGray => 0x00555555,
+            Color::LightBlue => 0x005555FF,
+            Color::LightGreen => 0x0055FF55,
+            Color::LightCyan => 0x0055FFFF,
+            Color::LightRed => 0x00FF5555,
+            Color::Pink => 0x00FF55FF,
+            Color::Yellow => 0x00FFFF55,
+            Color::White => 0x00FFFFFF,
+        };
+
+        match format {
+            crate::boot_info::PixelFormat::Rgb => {
+                let r = (bgr >> 16) & 0xFF;
+                let g = (bgr >> 8) & 0xFF;
+                let b = bgr & 0xFF;
+                r | (g << 8) | (b << 16)
+            }
+            _ => bgr,
+        }
+    }
+}
+
 /// Represents a VGA character cell (character + attribute byte)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]

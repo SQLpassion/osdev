@@ -7,65 +7,14 @@ use crate::drivers::screen::Color;
 use crate::boot_info::PixelFormat;
 use super::KernelConsole;
 
+const GLYPH_W: u32 = 8;
+const GLYPH_H: u32 = 16;
+const FALLBACK_GLYPH: u8 = 0x3F;
+
 // Static 8x16 bitmap font
 // Use the basic 8x16 font for rendering
 use super::font_basic::FONT_BASIC as FONT_8X16;
 
-/// Converts a `Color` enum variant to a 32-bit RGB color word based on the target `PixelFormat`.
-///
-/// This function acts as the color palette mapping step before writing bytes to VRAM.
-fn color_to_rgb(color: Color, format: PixelFormat) -> u32 {
-    let bgr = match color {
-        Color::Black => 0x00000000,
-        Color::Blue => 0x000000AA,
-        Color::Green => 0x0000AA00,
-        Color::Cyan => 0x0000AAAA,
-        Color::Red => 0x00AA0000,
-        Color::Magenta => 0x00AA00AA,
-        Color::Brown => 0x00AA5500,
-        Color::LightGray => 0x00AAAAAA,
-        Color::DarkGray => 0x00555555,
-        Color::LightBlue => 0x005555FF,
-        Color::LightGreen => 0x0055FF55,
-        Color::LightCyan => 0x0055FFFF,
-        Color::LightRed => 0x00FF5555,
-        Color::Pink => 0x00FF55FF,
-        Color::Yellow => 0x00FFFF55,
-        Color::White => 0x00FFFFFF,
-    };
-
-    match format {
-        PixelFormat::Rgb => {
-            let r = (bgr >> 16) & 0xFF;
-            let g = (bgr >> 8) & 0xFF;
-            let b = bgr & 0xFF;
-            r | (g << 8) | (b << 16)
-        }
-        _ => bgr,
-    }
-}
-
-/// Converts a 4-bit attribute nibble (VGA compatible) to its corresponding `Color` variant.
-fn u8_to_color(val: u8) -> Color {
-    match val & 0x0F {
-        0 => Color::Black,
-        1 => Color::Blue,
-        2 => Color::Green,
-        3 => Color::Cyan,
-        4 => Color::Red,
-        5 => Color::Magenta,
-        6 => Color::Brown,
-        7 => Color::LightGray,
-        8 => Color::DarkGray,
-        9 => Color::LightBlue,
-        10 => Color::LightGreen,
-        11 => Color::LightCyan,
-        12 => Color::LightRed,
-        13 => Color::Pink,
-        14 => Color::Yellow,
-        _ => Color::White,
-    }
-}
 
 /// Represents the graphical console state, housing a character grid in system memory (cells),
 /// cursor state, formatting metadata, and cached physical framebuffer details.
@@ -86,8 +35,6 @@ pub struct FramebufferConsole {
     bg: Color,
     /// Indicates whether the logical cursor should be rendered on screen.
     cursor_enabled: bool,
-    /// Internal hardware blink state tracker (unused in raw framebuffers).
-    _blink_enabled: bool,
     /// Cached configuration parameters of the active linear graphics framebuffer.
     fb_info: Option<crate::boot_info::FramebufferInfo>,
     
@@ -121,7 +68,7 @@ impl FramebufferConsole {
             if bi.video_type == crate::boot_info::VideoModeType::Framebuffer && bi.fb_info.base_address != 0 {
                 let fb = bi.fb_info;
                 let bb_size = (fb.pixels_per_scanline * fb.height) as usize;
-                ((fb.width / 8) as usize, (fb.height / 16) as usize, Some(fb), bb_size)
+                ((fb.width / GLYPH_W) as usize, (fb.height / GLYPH_H) as usize, Some(fb), bb_size)
             } else {
                 (80, 25, None, 0)
             }
@@ -143,7 +90,6 @@ impl FramebufferConsole {
             fg: Color::White,
             bg: Color::Black,
             cursor_enabled: true,
-            _blink_enabled: false,
             fb_info,
             backbuffer,
             dirty_y_min: u32::MAX,
@@ -195,16 +141,16 @@ impl FramebufferConsole {
 
     /// Renders a single character glyph at pixel offset (x_start, y_start) onto the backbuffer.
     fn draw_char_pixel(&mut self, x_start: u32, y_start: u32, ch: u8, fg: Color, bg: Color) {
-        let glyph_idx = if ch < 128 { ch as usize } else { 0x3F };
+        let glyph_idx = if ch < 128 { ch as usize } else { FALLBACK_GLYPH as usize };
         let glyph = FONT_8X16[glyph_idx];
         let format = self.get_fb_info().map(|fb| fb.pixel_format).unwrap_or(PixelFormat::Bgr);
-        let fg_rgb = color_to_rgb(fg, format);
-        let bg_rgb = color_to_rgb(bg, format);
+        let fg_rgb = fg.to_rgb(format);
+        let bg_rgb = bg.to_rgb(format);
 
         if let Some(fb) = self.get_fb_info() {
-            if x_start + 8 <= fb.width && y_start + 16 <= fb.height {
+            if x_start + GLYPH_W <= fb.width && y_start + GLYPH_H <= fb.height {
                 for (row, &byte) in glyph.iter().enumerate() {
-                    let mut scanline = [0u32; 8];
+                    let mut scanline = [0u32; GLYPH_W as usize];
                     for (col, item) in scanline.iter_mut().enumerate() {
                         *item = if (byte & (1 << (7 - col))) != 0 { fg_rgb } else { bg_rgb };
                     }
@@ -212,13 +158,13 @@ impl FramebufferConsole {
                     
                     // SAFETY: scanline has 8 elements, offset is within bounds.
                     unsafe {
-                        core::ptr::copy_nonoverlapping(scanline.as_ptr(), self.backbuffer.as_mut_ptr().add(offset), 8);
+                        core::ptr::copy_nonoverlapping(scanline.as_ptr(), self.backbuffer.as_mut_ptr().add(offset), GLYPH_W as usize);
                     }
                 }
                 self.mark_dirty_range(y_start, y_start + 15);
             } else {
                 for (row, &byte) in glyph.iter().enumerate() {
-                    for col in 0..8 {
+                    for col in 0..GLYPH_W {
                         let pixel_color = if (byte & (1 << (7 - col))) != 0 {
                             fg_rgb
                         } else {
@@ -242,7 +188,7 @@ impl FramebufferConsole {
         let val = ((attr as u16) << 8) | (ch as u16);
         self.cells[idx] = val;
 
-        self.draw_char_pixel((col * 8) as u32, (row * 16) as u32, ch, fg, bg);
+        self.draw_char_pixel((col as u32 * GLYPH_W) as u32, (row as u32 * GLYPH_H) as u32, ch, fg, bg);
     }
 
     /// Renders or erases the visual representation of the console cursor at the current cursor coordinates.
@@ -254,18 +200,18 @@ impl FramebufferConsole {
             return;
         }
 
-        let x_start = (self.cursor_col * 8) as u32;
-        let y_start = (self.cursor_row * 16) as u32;
+        let x_start = (self.cursor_col as u32 * GLYPH_W) as u32;
+        let y_start = (self.cursor_row as u32 * GLYPH_H) as u32;
 
         let format = self.get_fb_info().map(|fb| fb.pixel_format).unwrap_or(PixelFormat::Bgr);
         let color = if visible {
-            color_to_rgb(self.fg, format)
+            self.fg.to_rgb(format)
         } else {
-            color_to_rgb(self.bg, format)
+            self.bg.to_rgb(format)
         };
 
-        for dy in 14..16 {
-            for dx in 0..8 {
+        for dy in (GLYPH_H - 2)..GLYPH_H {
+            for dx in 0..GLYPH_W {
                 self.write_pixel(x_start + dx as u32, y_start + dy as u32, color);
             }
         }
@@ -280,20 +226,20 @@ impl FramebufferConsole {
         let cell = self.cells[idx];
         let ch = cell as u8;
         let attr = (cell >> 8) as u8;
-        let fg = u8_to_color(attr & 0x0F);
-        let bg = u8_to_color((attr >> 4) & 0x0F);
+        let fg = Color::from_nibble(attr & 0x0F);
+        let bg = Color::from_nibble((attr >> 4) & 0x0F);
 
-        let glyph_idx = if ch < 128 { ch as usize } else { 0x3F };
+        let glyph_idx = if ch < 128 { ch as usize } else { FALLBACK_GLYPH as usize };
         let glyph = FONT_8X16[glyph_idx];
         let format = self.get_fb_info().map(|fb| fb.pixel_format).unwrap_or(PixelFormat::Bgr);
-        let fg_rgb = color_to_rgb(fg, format);
-        let bg_rgb = color_to_rgb(bg, format);
+        let fg_rgb = fg.to_rgb(format);
+        let bg_rgb = bg.to_rgb(format);
 
-        let x_start = (self.cursor_col * 8) as u32;
-        let y_start = (self.cursor_row * 16) as u32;
+        let x_start = (self.cursor_col as u32 * GLYPH_W) as u32;
+        let y_start = (self.cursor_row as u32 * GLYPH_H) as u32;
 
         for (dy, &byte) in glyph.iter().enumerate().skip(14) {
-            for dx in 0..8 {
+            for dx in 0..GLYPH_W {
                 let pixel_color = if (byte & (1 << (7 - dx))) != 0 {
                     fg_rgb
                 } else {
@@ -362,16 +308,16 @@ impl FramebufferConsole {
             // Shift pixels in the RAM backbuffer up by one text row (16 scanlines)
             if let Some(fb) = self.fb_info {
                 let stride = fb.pixels_per_scanline as usize;
-                let copy_pixels = (self.rows - 1) * 16 * stride;
-                let shift_pixels = 16 * stride;
+                let copy_pixels = (self.rows - 1) * GLYPH_H as usize * stride;
+                let shift_pixels = GLYPH_H as usize * stride;
                 
                 // memmove in RAM is extremely fast
                 self.backbuffer.copy_within(shift_pixels..shift_pixels + copy_pixels, 0);
                 
                 // Clear the newly freed bottom row in the backbuffer
-                let bg_rgb = color_to_rgb(self.bg, fb.pixel_format);
+                let bg_rgb = self.bg.to_rgb(fb.pixel_format);
                 let start_idx = copy_pixels;
-                let end_idx = start_idx + 16 * stride;
+                let end_idx = start_idx + GLYPH_H as usize * stride;
                 self.backbuffer[start_idx..end_idx].fill(bg_rgb);
                 
                 // Mark the entire screen region dirty to upload the scrolled result
@@ -463,29 +409,29 @@ impl KernelConsole for FramebufferConsole {
         self.flush_redraw();
     }
 
-    fn print_char(&mut self, _c: u8) {
-        self.put_char(_c);
+    fn print_char(&mut self, c: u8) {
+        self.put_char(c);
         self.draw_cursor(true);
         self.flush_redraw();
     }
 
-    fn print_str(&mut self, _s: &str) {
-        for byte in _s.bytes() {
+    fn print_str(&mut self, s: &str) {
+        for byte in s.bytes() {
             self.put_char(byte);
         }
         self.draw_cursor(true);
         self.flush_redraw();
     }
 
-    fn set_color(&mut self, _color: Color) {
-        self.fg = _color;
+    fn set_color(&mut self, color: Color) {
+        self.fg = color;
     }
 
-    fn set_cursor(&mut self, _row: usize, _col: usize) {
+    fn set_cursor(&mut self, row: usize, col: usize) {
         self.erase_cursor();
         
-        self.cursor_row = _row.min(self.rows.saturating_sub(1));
-        self.cursor_col = _col.min(self.cols.saturating_sub(1));
+        self.cursor_row = row.min(self.rows.saturating_sub(1));
+        self.cursor_col = col.min(self.cols.saturating_sub(1));
         
         self.draw_cursor(true);
         self.flush_redraw();
@@ -592,14 +538,14 @@ impl KernelConsole for FramebufferConsole {
         for (i, &val) in cells.iter().enumerate().take(count) {
             let ch = val as u8;
             let attr = (val >> 8) as u8;
-            let fg = u8_to_color(attr & 0x0F);
-            let bg = u8_to_color((attr >> 4) & 0x0F);
+            let fg = Color::from_nibble(attr & 0x0F);
+            let bg = Color::from_nibble((attr >> 4) & 0x0F);
             
             let row = i / self.cols;
             let col = i % self.cols;
             
             self.cells[i] = val;
-            self.draw_char_pixel((col * 8) as u32, (row * 16) as u32, ch, fg, bg);
+            self.draw_char_pixel((col as u32 * GLYPH_W) as u32, (row as u32 * GLYPH_H) as u32, ch, fg, bg);
         }
         
         self.draw_cursor(true);
@@ -623,11 +569,11 @@ impl KernelConsole for FramebufferConsole {
     }
 
     fn disable_blink_mode(&mut self) {
-        self._blink_enabled = false;
+        // No-op for framebuffer.
     }
 
     fn enable_blink_mode(&mut self) {
-        self._blink_enabled = true;
+        // No-op for framebuffer.
     }
 }
 
@@ -635,7 +581,7 @@ impl FramebufferConsole {
     /// Clears the backbuffer with the background color and marks the entire screen dirty.
     fn fill_physical_screen(&mut self, bg: Color) {
         if let Some(fb) = self.fb_info {
-            let bg_rgb = color_to_rgb(bg, fb.pixel_format);
+            let bg_rgb = bg.to_rgb(fb.pixel_format);
             self.backbuffer.fill(bg_rgb);
             self.mark_dirty_range(0, fb.height.saturating_sub(1));
         }

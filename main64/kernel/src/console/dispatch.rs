@@ -8,10 +8,10 @@ use super::{KernelConsole, VgaConsole, FramebufferConsole};
 
 /// Active Console Implementation Wrapper.
 ///
-/// An enum-based dispatch pattern (or "Enum Dispatch") that acts as a compile-time
-/// polymorphic container. It avoids heap allocations (`Box<dyn KernelConsole>`)
-/// and virtual dispatch lookup tables (Vtables), making it fully safe and
-/// highly performant for kernel space.
+/// An enum-based dispatch pattern (or "Enum Dispatch") that acts as a container
+/// for the active backend. While `with_console` still returns a `&mut dyn KernelConsole`
+/// for API simplicity, this enum avoids heap allocating `Box<dyn KernelConsole>`
+/// internally.
 pub enum ConsoleImpl {
     Vga(VgaConsole),
     Framebuffer(FramebufferConsole),
