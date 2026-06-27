@@ -1,5 +1,6 @@
 //! Hardware drivers for KAOS kernel
 
+pub mod ahci;
 pub mod ata;
 pub mod keyboard;
 pub mod pci;

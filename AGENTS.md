@@ -15,7 +15,7 @@ that read/modify code in this repo.
 - Be explicit; avoid hidden behavior
 - No silent ABI/behavior changes
 - Maintain a small, well-audited `unsafe` surface
-- Every change MUST be covered by tests
+- Every change MUST be covered by tests that must be run and passed by `cargo test`
 - Every functional change MUST introduce at least one new test
 - After every code change, `cargo fmt --check` MUST be run and MUST pass.
 - After each change, running `cargo clippy` MUST NOT raise any errors or warnings.
