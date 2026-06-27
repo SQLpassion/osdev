@@ -5,7 +5,7 @@ extern crate alloc;
 
 use alloc::boxed::Box;
 
-use lib_kaos::{process, println};
+use lib_kaos::{println, process};
 
 #[no_mangle]
 #[link_section = ".ltext._start"]

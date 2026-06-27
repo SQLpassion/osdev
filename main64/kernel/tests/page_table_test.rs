@@ -14,8 +14,8 @@
 use core::panic::PanicInfo;
 
 use kaos_kernel::memory::vmm::page_table::{
-    build_kernel_pml4_from_firmware, phys_to_pfn, pml4_index, pd_index, pdp_index, pt_index,
-    PageTable, PD_TABLE_BASE, PDP_TABLE_BASE, PML4_TABLE_ADDR, PT_ENTRIES, PT_TABLE_BASE,
+    build_kernel_pml4_from_firmware, pd_index, pdp_index, phys_to_pfn, pml4_index, pt_index,
+    PageTable, PDP_TABLE_BASE, PD_TABLE_BASE, PML4_TABLE_ADDR, PT_ENTRIES, PT_TABLE_BASE,
     RECURSIVE_SLOT,
 };
 
@@ -113,7 +113,11 @@ fn test_clone_leaves_source_untouched() {
     let mut dst = PageTable::new();
     // SAFETY: valid live tables.
     unsafe {
-        build_kernel_pml4_from_firmware(&src as *const PageTable, &mut dst as *mut PageTable, 0x1000);
+        build_kernel_pml4_from_firmware(
+            &src as *const PageTable,
+            &mut dst as *mut PageTable,
+            0x1000,
+        );
     }
 
     assert_eq!(src.entries[0].raw(), s0);
@@ -133,7 +137,11 @@ fn test_higher_half_indices() {
     assert_eq!(pml4_index(0xFFFF_8000_0000_0000), 256, "higher-half base");
     assert_eq!(pml4_index(0xFFFF_8000_0010_0000), 256, "kernel entry VA");
     // 0x100000 >> 12 == 0x100; & 0x1ff == 0x100.
-    assert_eq!(pt_index(0xFFFF_8000_0010_0000), 0x100, "kernel entry PT index");
+    assert_eq!(
+        pt_index(0xFFFF_8000_0010_0000),
+        0x100,
+        "kernel entry PT index"
+    );
 }
 
 /// Contract: the recursive slot constant is 511, and the recursive self-VA decomposes into
@@ -155,7 +163,10 @@ fn test_recursive_indices() {
 fn test_phys_to_pfn() {
     assert_eq!(phys_to_pfn(0x100000), 0x100);
     assert_eq!(phys_to_pfn(0), 0);
-    assert_eq!(phys_to_pfn(0x0000_0007_FACE_0000), 0x0000_0007_FACE_0000 >> 12);
+    assert_eq!(
+        phys_to_pfn(0x0000_0007_FACE_0000),
+        0x0000_0007_FACE_0000 >> 12
+    );
 }
 
 /// Contract: the recursive-window base constants are the canonical sign-extended addresses.

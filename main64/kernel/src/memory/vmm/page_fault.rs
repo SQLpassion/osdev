@@ -1,8 +1,9 @@
 use crate::arch::constants::PAGE_SIZE_U64;
 
 use super::page_table::{
-    alloc_frame_phys, entry_ptr, invlpg, is_leaf_present, page_align_down, phys_to_pfn, pml4_index,
-    pdp_index, pd_index, pt_index, read_cr3, table_at, table_entry, pt_table_addr, zero_virt_page,
+    alloc_frame_phys, entry_ptr, invlpg, is_leaf_present, page_align_down, pd_index, pdp_index,
+    phys_to_pfn, pml4_index, pt_index, pt_table_addr, read_cr3, table_at, table_entry,
+    zero_virt_page,
 };
 use super::{
     classify_user_region, debug_alloc, debug_enabled, populate_page_table_path, vmm_logln,

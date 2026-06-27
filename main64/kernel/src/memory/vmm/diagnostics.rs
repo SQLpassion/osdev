@@ -1,12 +1,10 @@
 #![allow(dead_code)]
 
 use super::page_table::{
-    page_align_down, pml4_index, pdp_index, pd_index, pt_index, table_at, table_entry,
-    pt_for_if_present, pdp_table_addr, pd_table_addr, pt_table_addr, PML4_TABLE_ADDR,
+    page_align_down, pd_index, pd_table_addr, pdp_index, pdp_table_addr, pml4_index,
+    pt_for_if_present, pt_index, pt_table_addr, table_at, table_entry, PML4_TABLE_ADDR,
 };
-use super::{
-    vmm_logln, write_virt_u8, read_virt_u8, unmap_virtual_address,
-};
+use super::{read_virt_u8, unmap_virtual_address, vmm_logln, write_virt_u8};
 
 /// Returns page-table PFNs `(pdp, pd, pt)` for `virtual_address` in active CR3.
 ///

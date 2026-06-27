@@ -27,10 +27,10 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use crate::console::KernelConsole;
 use crate::logging;
 
-pub mod page_table;
-pub mod page_fault;
-pub mod mapping;
 pub mod diagnostics;
+pub mod mapping;
+pub mod page_fault;
+pub mod page_table;
 pub mod vmm_constants;
 
 // Re-export constants.
@@ -38,25 +38,24 @@ pub use vmm_constants::*;
 
 // Re-export main structures/functions.
 #[allow(unused_imports)]
-pub use page_table::{
-    PAGE_MASK, PML4_TABLE_ADDR, read_cr3, write_cr3, invlpg, reserve_firmware_page_tables,
-    is_va_mapped,
-};
-#[allow(unused_imports)]
-pub use page_fault::{
-    PageFaultError, try_handle_page_fault, handle_page_fault,
+pub use diagnostics::{
+    debug_mapped_pfn_for_va, debug_mapping_flags_for_va, debug_no_execute_flag_for_va,
+    debug_table_pfns_for_va, test_vmm,
 };
 #[allow(unused_imports)]
 pub use mapping::{
-    MapError, populate_page_table_path, try_map_virtual_to_physical, map_virtual_to_physical,
-    map_virtual_to_physical_wc, configure_wc_mapping, unmap_virtual_address, clone_kernel_pml4_for_user, destroy_user_address_space,
+    clone_kernel_pml4_for_user, configure_wc_mapping, destroy_user_address_space,
     destroy_user_address_space_with_options, destroy_user_address_space_with_page_counts,
-    unmap_user_heap_region, map_user_page, with_address_space, switch_page_directory,
+    map_user_page, map_virtual_to_physical, map_virtual_to_physical_wc, populate_page_table_path,
+    switch_page_directory, try_map_virtual_to_physical, unmap_user_heap_region,
+    unmap_virtual_address, with_address_space, MapError,
 };
 #[allow(unused_imports)]
-pub use diagnostics::{
-    debug_table_pfns_for_va, debug_mapped_pfn_for_va, debug_mapping_flags_for_va,
-    debug_no_execute_flag_for_va, test_vmm,
+pub use page_fault::{handle_page_fault, try_handle_page_fault, PageFaultError};
+#[allow(unused_imports)]
+pub use page_table::{
+    invlpg, is_va_mapped, read_cr3, reserve_firmware_page_tables, write_cr3, PAGE_MASK,
+    PML4_TABLE_ADDR,
 };
 
 /// Temporary kernel virtual address used as a one-page scratch mapping when

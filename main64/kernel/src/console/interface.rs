@@ -6,10 +6,10 @@
 
 #![allow(clippy::too_many_arguments)]
 
+use super::{ConsoleImpl, FramebufferConsole, VgaConsole};
 use crate::boot_info::VideoModeType;
 use crate::drivers::screen::Color;
 use crate::sync::spinlock::SpinLock;
-use super::{VgaConsole, FramebufferConsole, ConsoleImpl};
 
 /// Unified trait for kernel console outputs.
 ///
@@ -123,7 +123,9 @@ pub fn with_console<R>(f: impl FnOnce(&mut dyn KernelConsole) -> R) -> R {
     let mut guard = GLOBAL_CONSOLE.lock();
 
     // Step 2: Unwrap the option. Guaranteed to succeed as it is default-initialized.
-    let console = guard.as_mut().expect("GLOBAL_CONSOLE has not been initialized!");
+    let console = guard
+        .as_mut()
+        .expect("GLOBAL_CONSOLE has not been initialized!");
 
     // Step 3: Run the user closure against the active console implementation.
     f(console)

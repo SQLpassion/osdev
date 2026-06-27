@@ -3,15 +3,14 @@ use crate::arch::interrupts;
 use crate::memory::pmm;
 
 use super::page_table::{
-    alloc_frame_phys, alloc_frame_phys_or_panic, entry_ptr, invlpg, page_align_down, phys_to_pfn,
-    pml4_index, pdp_index, pd_index, pt_index, read_cr3, write_cr3, table_at, table_entry,
-    table_is_empty, table_zero, pt_for_if_present, pdp_table_addr, pd_table_addr, pt_table_addr,
+    alloc_frame_phys, alloc_frame_phys_or_panic, entry_ptr, invlpg, page_align_down, pd_index,
+    pd_table_addr, pdp_index, pdp_table_addr, phys_to_pfn, pml4_index, pt_for_if_present, pt_index,
+    pt_table_addr, read_cr3, table_at, table_entry, table_is_empty, table_zero, write_cr3,
     PML4_TABLE_ADDR,
 };
 use super::{
-    classify_user_region, debug_alloc, vmm_logln, UserRegion, USER_CODE_BASE,
-    USER_CODE_SIZE, USER_STACK_TOP, USER_STACK_SIZE, USER_HEAP_BASE,
-    USER_HEAP_END, TEMP_CLONE_PML4_VA,
+    classify_user_region, debug_alloc, vmm_logln, UserRegion, TEMP_CLONE_PML4_VA, USER_CODE_BASE,
+    USER_CODE_SIZE, USER_HEAP_BASE, USER_HEAP_END, USER_STACK_SIZE, USER_STACK_TOP,
 };
 
 /// Error returned by checked mapping operations.
@@ -264,7 +263,7 @@ pub fn map_virtual_to_physical_wc(virtual_address: u64, physical_address: u64) {
         Ok(()) => {}
         Err(e) => panic!("VMM: WC mapping failed: {:?}", e),
     }
-    
+
     // Now set the PWT bit in the leaf entry to select PAT1 (Write-Combining).
     let pt = table_at(super::page_table::pt_table_addr(virtual_address));
     let pt_idx = super::page_table::pt_index(virtual_address);
@@ -516,7 +515,6 @@ pub fn clone_kernel_pml4_for_user() -> u64 {
 
     new_pml4_phys
 }
-
 
 /// Destroys a user address space rooted at `pml4_phys`.
 ///
@@ -798,7 +796,9 @@ pub fn configure_wc_mapping(start_va: u64, size: u64) {
         }
         if pdpe.huge() {
             // SAFETY: Modifying cache bits of mapped memory in Ring 0 is safe.
-            unsafe { (*entry_ptr(pdp, pdp_idx)).set_pwt(true); }
+            unsafe {
+                (*entry_ptr(pdp, pdp_idx)).set_pwt(true);
+            }
             invlpg(addr);
             addr = (addr + 0x4000_0000) & !0x3FFF_FFFF; // Advance by 1GiB
             continue;
@@ -812,7 +812,9 @@ pub fn configure_wc_mapping(start_va: u64, size: u64) {
             continue;
         }
         if pde.huge() {
-            unsafe { (*entry_ptr(pd, pd_idx)).set_pwt(true); }
+            unsafe {
+                (*entry_ptr(pd, pd_idx)).set_pwt(true);
+            }
             invlpg(addr);
             addr = (addr + 0x20_0000) & !0x1F_FFFF; // Advance by 2MiB
             continue;
@@ -821,7 +823,9 @@ pub fn configure_wc_mapping(start_va: u64, size: u64) {
         let pt = table_at(pt_table_addr(addr));
         let pt_idx = pt_index(addr);
         if table_entry(pt, pt_idx).present() {
-            unsafe { (*entry_ptr(pt, pt_idx)).set_pwt(true); }
+            unsafe {
+                (*entry_ptr(pt, pt_idx)).set_pwt(true);
+            }
             invlpg(addr);
         }
         addr += PAGE_SIZE_U64;

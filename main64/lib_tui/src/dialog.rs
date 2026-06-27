@@ -5,9 +5,9 @@
 //! action hint (e.g., "[ Press ENTER/Esc to close ]").
 
 extern crate alloc;
+use crate::screen::{with_screen, Color};
 use alloc::borrow::Cow;
 use alloc::vec::Vec;
-use crate::screen::{Color, with_screen};
 
 /// Default foreground color of the dialog text.
 const TEXT_FG: Color = Color::White;
@@ -34,38 +34,90 @@ pub struct Dialog {
 
 impl Dialog {
     /// Creates a new Dialog widget.
-    pub fn new<T, L>(row: usize, col: usize, width: usize, height: usize, title: T, lines: Vec<L>) -> Self
+    pub fn new<T, L>(
+        row: usize,
+        col: usize,
+        width: usize,
+        height: usize,
+        title: T,
+        lines: Vec<L>,
+    ) -> Self
     where
         T: Into<Cow<'static, str>>,
         L: Into<Cow<'static, str>>,
     {
         let title = title.into();
         let lines = lines.into_iter().map(|l| l.into()).collect();
-        Self { row, col, width, height, title, lines }
+        Self {
+            row,
+            col,
+            width,
+            height,
+            title,
+            lines,
+        }
     }
 
     /// Renders the dialog box onto the active screen.
     pub fn draw(&self) {
         with_screen(|screen| {
             // Step 1: Draw the solid background.
-            screen.fill_rect(self.row, self.col, self.width, self.height, b' ', TEXT_FG, DIALOG_BG);
+            screen.fill_rect(
+                self.row,
+                self.col,
+                self.width,
+                self.height,
+                b' ',
+                TEXT_FG,
+                DIALOG_BG,
+            );
 
             // Step 2: Draw the box border using double-line characters.
             // Horizontal lines
             for c in 0..self.width {
                 screen.draw_char_at(self.row, self.col + c, 0xCD, BORDER_FG, DIALOG_BG); // Double horizontal line ═
-                screen.draw_char_at(self.row + self.height - 1, self.col + c, 0xCD, BORDER_FG, DIALOG_BG);
+                screen.draw_char_at(
+                    self.row + self.height - 1,
+                    self.col + c,
+                    0xCD,
+                    BORDER_FG,
+                    DIALOG_BG,
+                );
             }
             // Vertical lines
             for r in 0..self.height {
                 screen.draw_char_at(self.row + r, self.col, 0xBA, BORDER_FG, DIALOG_BG); // Double vertical line ║
-                screen.draw_char_at(self.row + r, self.col + self.width - 1, 0xBA, BORDER_FG, DIALOG_BG);
+                screen.draw_char_at(
+                    self.row + r,
+                    self.col + self.width - 1,
+                    0xBA,
+                    BORDER_FG,
+                    DIALOG_BG,
+                );
             }
             // Corners
             screen.draw_char_at(self.row, self.col, 0xC9, BORDER_FG, DIALOG_BG); // Top-left ╔
-            screen.draw_char_at(self.row, self.col + self.width - 1, 0xBB, BORDER_FG, DIALOG_BG); // Top-right ╗
-            screen.draw_char_at(self.row + self.height - 1, self.col, 0xC8, BORDER_FG, DIALOG_BG); // Bottom-left ╚
-            screen.draw_char_at(self.row + self.height - 1, self.col + self.width - 1, 0xBC, BORDER_FG, DIALOG_BG); // Bottom-right ╝
+            screen.draw_char_at(
+                self.row,
+                self.col + self.width - 1,
+                0xBB,
+                BORDER_FG,
+                DIALOG_BG,
+            ); // Top-right ╗
+            screen.draw_char_at(
+                self.row + self.height - 1,
+                self.col,
+                0xC8,
+                BORDER_FG,
+                DIALOG_BG,
+            ); // Bottom-left ╚
+            screen.draw_char_at(
+                self.row + self.height - 1,
+                self.col + self.width - 1,
+                0xBC,
+                BORDER_FG,
+                DIALOG_BG,
+            ); // Bottom-right ╝
 
             // Step 3: Draw title centered on the top border.
             let title_len = self.title.len();
@@ -76,7 +128,13 @@ impl Dialog {
                 screen.draw_char_at(self.row, title_col - 1, b' ', BORDER_FG, DIALOG_BG);
                 screen.draw_at(self.row, title_col, &self.title, TEXT_FG, DIALOG_BG);
                 screen.draw_char_at(self.row, title_col + title_len, b' ', BORDER_FG, DIALOG_BG);
-                screen.draw_char_at(self.row, title_col + title_len + 1, 0xC6, BORDER_FG, DIALOG_BG); // ╞
+                screen.draw_char_at(
+                    self.row,
+                    title_col + title_len + 1,
+                    0xC6,
+                    BORDER_FG,
+                    DIALOG_BG,
+                ); // ╞
             }
 
             // Step 4: Draw content lines.

@@ -7,14 +7,14 @@ use core::ptr;
 extern crate alloc;
 use alloc::alloc as heap_alloc;
 
-use crate::arch::constants::PAGE_SIZE;
-use crate::arch::interrupts::{InterruptStackFrame, SavedRegisters};
-use crate::scheduler::roundrobin::exit_current_task;
 use super::types::KernelTaskFn;
 use super::{
     DEFAULT_RFLAGS, KERNEL_CODE_SELECTOR, KERNEL_DATA_SELECTOR, STACK_ALIGNMENT, TASK_STACK_SIZE,
     USER_CODE_SELECTOR, USER_DATA_SELECTOR,
 };
+use crate::arch::constants::PAGE_SIZE;
+use crate::arch::interrupts::{InterruptStackFrame, SavedRegisters};
+use crate::scheduler::roundrobin::exit_current_task;
 
 /// Allocates a stack from the kernel heap and touches every page.
 ///
@@ -28,7 +28,7 @@ pub(crate) fn allocate_task_stack() -> *mut u8 {
     // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
     // - Layout is non-zero and alignment is a power of two.
     let layout = unsafe { Layout::from_size_align_unchecked(TASK_STACK_SIZE, STACK_ALIGNMENT) };
-    
+
     // Step 2: Request raw block allocation from the global heap.
     // SAFETY:
     // - This requires `unsafe` because unchecked `Layout` construction bypasses runtime validation of size/alignment constraints.
@@ -66,7 +66,7 @@ pub(crate) unsafe fn free_task_stack(ptr: *mut u8) {
     // - Constants match the layout used by `allocate_task_stack`.
     // - Size is non-zero and alignment is a valid power of two.
     let layout = Layout::from_size_align_unchecked(TASK_STACK_SIZE, STACK_ALIGNMENT);
-    
+
     // Step 2: Deallocate memory block using the constructed layout.
     heap_alloc::dealloc(ptr, layout);
 }
@@ -113,7 +113,7 @@ pub(crate) fn build_initial_kernel_task_frame(
 
         // Step 4: Write default register states.
         ptr::write(frame_ptr, SavedRegisters::default());
-        
+
         // Step 5: Write the initial interrupt return frame pointing to kernel entry.
         ptr::write(
             iret_ptr,

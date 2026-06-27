@@ -16,15 +16,12 @@ use crate::sync::spinlock::SpinLock;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-
 use super::generic::HeapEnvironment;
 use super::types::{
-    HeapState,
-    compute_aligned_heapblock_size, find_suitable_free_block,
-    allocate_block, compute_heap_growth_for_request, grow_heap,
-    find_block_by_payload_ptr, coalesce_free_block, insert_free_block,
-    header_at, HEADER_SIZE, INITIAL_HEAP_SIZE, HEAP_START_OFFSET,
-    SYSTEM_HEAP_RESERVE_MIN_BYTES, HEAP_GROWTH, align_up_checked,
+    align_up_checked, allocate_block, coalesce_free_block, compute_aligned_heapblock_size,
+    compute_heap_growth_for_request, find_block_by_payload_ptr, find_suitable_free_block,
+    grow_heap, header_at, insert_free_block, HeapState, HEADER_SIZE, HEAP_GROWTH,
+    HEAP_START_OFFSET, INITIAL_HEAP_SIZE, SYSTEM_HEAP_RESERVE_MIN_BYTES,
 };
 
 pub struct KernelHeapEnv;

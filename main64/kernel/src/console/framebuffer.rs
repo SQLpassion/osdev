@@ -3,13 +3,12 @@
 //! Implements a console backend that renders text into the graphics
 //! framebuffer using a static 8x16 bitmap font.
 
-use crate::drivers::screen::Color;
-use crate::boot_info::PixelFormat;
 use super::KernelConsole;
+use crate::boot_info::PixelFormat;
+use crate::drivers::screen::Color;
 
 const GLYPH_W: u32 = 8;
 const GLYPH_H: u32 = 16;
-
 
 /// Represents the graphical console state, housing a character grid in system memory (cells),
 /// cursor state, formatting metadata, and cached physical framebuffer details.
@@ -32,14 +31,14 @@ pub struct FramebufferConsole {
     cursor_enabled: bool,
     /// Cached configuration parameters of the active linear graphics framebuffer.
     fb_info: Option<crate::boot_info::FramebufferInfo>,
-    
+
     /// RAM Backbuffer for pixel data to avoid slow VRAM reads and partial writes.
     backbuffer: alloc::vec::Vec<u32>,
     /// Minimum y-coordinate (scanline) that has been modified since last VRAM flush.
     dirty_y_min: u32,
     /// Maximum y-coordinate (scanline) that has been modified since last VRAM flush.
     dirty_y_max: u32,
-    
+
     /// Defers redrawing the screen until a bulk operation is finished.
     deferred_redraw: bool,
 }
@@ -54,23 +53,30 @@ impl FramebufferConsole {
     /// Creates and initializes a new FramebufferConsole instance.
     pub fn new() -> Self {
         let raw = crate::boot_info::BOOT_INFO_PTR.load(core::sync::atomic::Ordering::Relaxed);
-        
+
         let (cols, rows, fb_info, bb_size) = if raw == 0 {
             (80, 25, None, 0)
         } else {
             // SAFETY: Checked pointer.
             let bi = unsafe { &*(raw as *const crate::boot_info::BootInfo) };
-            if bi.video_type == crate::boot_info::VideoModeType::Framebuffer && bi.fb_info.base_address != 0 {
+            if bi.video_type == crate::boot_info::VideoModeType::Framebuffer
+                && bi.fb_info.base_address != 0
+            {
                 let fb = bi.fb_info;
                 let bb_size = (fb.pixels_per_scanline * fb.height) as usize;
-                ((fb.width / GLYPH_W) as usize, (fb.height / GLYPH_H) as usize, Some(fb), bb_size)
+                (
+                    (fb.width / GLYPH_W) as usize,
+                    (fb.height / GLYPH_H) as usize,
+                    Some(fb),
+                    bb_size,
+                )
             } else {
                 (80, 25, None, 0)
             }
         };
 
         let cells = alloc::vec![0x0720; cols * rows];
-        
+
         let mut backbuffer = alloc::vec::Vec::new();
         if bb_size > 0 {
             backbuffer.resize(bb_size, 0);
@@ -142,7 +148,10 @@ impl FramebufferConsole {
     /// Renders a single character glyph at pixel offset (x_start, y_start) onto the backbuffer.
     fn draw_char_pixel(&mut self, x_start: u32, y_start: u32, ch: u8, fg: Color, bg: Color) {
         let glyph = Self::glyph_for_byte(ch);
-        let format = self.get_fb_info().map(|fb| fb.pixel_format).unwrap_or(PixelFormat::Bgr);
+        let format = self
+            .get_fb_info()
+            .map(|fb| fb.pixel_format)
+            .unwrap_or(PixelFormat::Bgr);
         let fg_rgb = fg.to_rgb(format);
         let bg_rgb = bg.to_rgb(format);
 
@@ -151,16 +160,25 @@ impl FramebufferConsole {
                 for (row, &byte) in glyph.iter().enumerate() {
                     let mut scanline = [0u32; GLYPH_W as usize];
                     for (col, item) in scanline.iter_mut().enumerate() {
-                        *item = if (byte & (1 << (7 - col))) != 0 { fg_rgb } else { bg_rgb };
+                        *item = if (byte & (1 << (7 - col))) != 0 {
+                            fg_rgb
+                        } else {
+                            bg_rgb
+                        };
                     }
-                    let offset = ((y_start + row as u32) * fb.pixels_per_scanline + x_start) as usize;
-                    
+                    let offset =
+                        ((y_start + row as u32) * fb.pixels_per_scanline + x_start) as usize;
+
                     // SAFETY:
                     // - The bounds branch above guarantees the whole 8-pixel scanline is in range.
                     // - `backbuffer` is sized from `pixels_per_scanline * height`.
                     // - `scanline` has exactly `GLYPH_W` initialized pixels.
                     unsafe {
-                        core::ptr::copy_nonoverlapping(scanline.as_ptr(), self.backbuffer.as_mut_ptr().add(offset), GLYPH_W as usize);
+                        core::ptr::copy_nonoverlapping(
+                            scanline.as_ptr(),
+                            self.backbuffer.as_mut_ptr().add(offset),
+                            GLYPH_W as usize,
+                        );
                     }
                 }
                 self.mark_dirty_range(y_start, y_start + 15);
@@ -184,7 +202,7 @@ impl FramebufferConsole {
         if row >= self.rows || col >= self.cols {
             return;
         }
-        
+
         let idx = row * self.cols + col;
         let attr = ((bg as u8) << 4) | (fg as u8);
         let val = ((attr as u16) << 8) | (ch as u16);
@@ -205,7 +223,10 @@ impl FramebufferConsole {
         let x_start = self.cursor_col as u32 * GLYPH_W;
         let y_start = self.cursor_row as u32 * GLYPH_H;
 
-        let format = self.get_fb_info().map(|fb| fb.pixel_format).unwrap_or(PixelFormat::Bgr);
+        let format = self
+            .get_fb_info()
+            .map(|fb| fb.pixel_format)
+            .unwrap_or(PixelFormat::Bgr);
         let color = if visible {
             self.fg.to_rgb(format)
         } else {
@@ -232,7 +253,10 @@ impl FramebufferConsole {
         let bg = Color::from_nibble((attr >> 4) & 0x0F);
 
         let glyph = Self::glyph_for_byte(ch);
-        let format = self.get_fb_info().map(|fb| fb.pixel_format).unwrap_or(PixelFormat::Bgr);
+        let format = self
+            .get_fb_info()
+            .map(|fb| fb.pixel_format)
+            .unwrap_or(PixelFormat::Bgr);
         let fg_rgb = fg.to_rgb(format);
         let bg_rgb = bg.to_rgb(format);
 
@@ -258,13 +282,13 @@ impl FramebufferConsole {
                 let fb_ptr = fb.base_address as *mut u32;
                 let min_y = self.dirty_y_min;
                 let max_y = self.dirty_y_max.min(fb.height.saturating_sub(1));
-                
+
                 if min_y <= max_y {
                     let start_offset = (min_y * fb.pixels_per_scanline) as usize;
                     let lines_to_copy = max_y - min_y + 1;
                     let pixels_to_copy = (lines_to_copy * fb.pixels_per_scanline) as usize;
-                    
-                    // SAFETY: 
+
+                    // SAFETY:
                     // - `backbuffer` is large enough for all scanlines.
                     // - `fb_ptr` is the physical identity-mapped framebuffer memory.
                     // - The copy is bounded by height.
@@ -272,7 +296,7 @@ impl FramebufferConsole {
                         core::ptr::copy_nonoverlapping(
                             self.backbuffer.as_ptr().add(start_offset),
                             fb_ptr.add(start_offset),
-                            pixels_to_copy
+                            pixels_to_copy,
                         );
                     }
                 }
@@ -298,7 +322,7 @@ impl FramebufferConsole {
             for i in 0..count {
                 self.cells[i] = self.cells[i + self.cols];
             }
-            
+
             // Populate the newly freed bottom row with spaces.
             let attr = self.attribute();
             let blank = ((attr as u16) << 8) | (b' ' as u16);
@@ -311,16 +335,17 @@ impl FramebufferConsole {
                 let stride = fb.pixels_per_scanline as usize;
                 let copy_pixels = (self.rows - 1) * GLYPH_H as usize * stride;
                 let shift_pixels = GLYPH_H as usize * stride;
-                
+
                 // memmove in RAM is extremely fast
-                self.backbuffer.copy_within(shift_pixels..shift_pixels + copy_pixels, 0);
-                
+                self.backbuffer
+                    .copy_within(shift_pixels..shift_pixels + copy_pixels, 0);
+
                 // Clear the newly freed bottom row in the backbuffer
                 let bg_rgb = self.bg.to_rgb(fb.pixel_format);
                 let start_idx = copy_pixels;
                 let end_idx = start_idx + GLYPH_H as usize * stride;
                 self.backbuffer[start_idx..end_idx].fill(bg_rgb);
-                
+
                 // Mark the entire screen region dirty to upload the scrolled result
                 self.mark_dirty_range(0, fb.height.saturating_sub(1));
             }
@@ -385,7 +410,7 @@ impl core::fmt::Write for FramebufferConsole {
         for byte in s.bytes() {
             self.put_char(byte);
         }
-        
+
         // At the end of a bulk write, draw the cursor and flush all dirty regions to VRAM
         self.draw_cursor(true);
         self.flush_redraw();
@@ -400,11 +425,11 @@ impl KernelConsole for FramebufferConsole {
         for i in 0..self.cells.len() {
             self.cells[i] = blank;
         }
-        
+
         self.cursor_row = 0;
         self.cursor_col = 0;
         self.deferred_redraw = false;
-        
+
         self.fill_physical_screen(self.bg);
         self.draw_cursor(true);
         self.flush_redraw();
@@ -430,10 +455,10 @@ impl KernelConsole for FramebufferConsole {
 
     fn set_cursor(&mut self, row: usize, col: usize) {
         self.erase_cursor();
-        
+
         self.cursor_row = row.min(self.rows.saturating_sub(1));
         self.cursor_col = col.min(self.cols.saturating_sub(1));
-        
+
         self.draw_cursor(true);
         self.flush_redraw();
     }
@@ -481,7 +506,7 @@ impl KernelConsole for FramebufferConsole {
             self.draw_char_at(last_row, c, H, fg, bg);
         }
         self.draw_char_at(last_row, last_col, BR, fg, bg);
-        
+
         self.flush_redraw();
     }
 
@@ -523,9 +548,9 @@ impl KernelConsole for FramebufferConsole {
         if is_cursor {
             self.erase_cursor();
         }
-        
+
         self.draw_char_at_cell(row, col, ch, fg, bg);
-        
+
         if is_cursor {
             self.draw_cursor(true);
         }
@@ -534,21 +559,21 @@ impl KernelConsole for FramebufferConsole {
 
     fn blit_framebuffer(&mut self, cells: &[u16]) {
         self.erase_cursor();
-        
+
         let count = cells.len().min(self.rows * self.cols);
         for (i, &val) in cells.iter().enumerate().take(count) {
             let ch = val as u8;
             let attr = (val >> 8) as u8;
             let fg = Color::from_nibble(attr & 0x0F);
             let bg = Color::from_nibble((attr >> 4) & 0x0F);
-            
+
             let row = i / self.cols;
             let col = i % self.cols;
-            
+
             self.cells[i] = val;
             self.draw_char_pixel(col as u32 * GLYPH_W, row as u32 * GLYPH_H, ch, fg, bg);
         }
-        
+
         self.draw_cursor(true);
         self.flush_redraw();
     }

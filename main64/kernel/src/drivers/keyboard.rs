@@ -75,7 +75,8 @@ const SCANCODES_LOWER: [u8; SCANCODE_TABLE_LEN] = [
 /// Upper-case QWERTZ scan code map (printable ASCII only; 0 == ignored)
 const SCANCODES_UPPER: [u8; SCANCODE_TABLE_LEN] = [
     // 0x00..=0x10: error, Esc, !"§$%&/()=?, ?(Shift+ß), ´→backtick(Shift+´), Backspace, Tab, Q
-    0, 0x1B, b'!', b'"', b'\x00', b'$', b'%', b'&', b'/', b'(', b')', b'=', b'?', b'`', 0x08, 0, b'Q',
+    0, 0x1B, b'!', b'"', b'\x00', b'$', b'%', b'&', b'/', b'(', b')', b'=', b'?', b'`', 0x08, 0,
+    b'Q',
     // 0x11..=0x20: W, E, R, T, Z, U, I, O, P, Ü(mapped to ]), *, Enter, LCtrl, A, S, D
     b'W', b'E', b'R', b'T', b'Z', b'U', b'I', b'O', b'P', b']', b'*', b'\n', 0, b'A', b'S', b'D',
     // 0x21..=0x30: F, G, H, J, K, L, Ö(mapped to }), Ä(mapped to @), >, LShift, ', Y, X, C, V, B
@@ -87,7 +88,6 @@ const SCANCODES_UPPER: [u8; SCANCODE_TABLE_LEN] = [
     // 0x50..=0x58: Keypad 2..3, Keypad-0, Keypad-Del, Alt-SysRq, 0x55, >(ISO key Shift), F11, F12
     0, 0, 0, 0, 0, 0, b'>', 0, 0,
 ];
-
 
 #[derive(Debug, Clone, Copy)]
 struct KeyboardState {
@@ -205,7 +205,6 @@ pub fn clear_buffers() {
     KEYBOARD.key_buffer.clear();
 }
 
-
 /// Handle IRQ1 (keyboard) top half: enqueue raw scancode and wake the
 /// keyboard worker task so it can decode the scancode into ASCII.
 pub fn handle_irq() {
@@ -257,7 +256,9 @@ pub fn read_char_blocking() -> u8 {
 
         if waitqueue_adapter::sleep_if_multi(&INPUT_WAITQUEUE, task_id, || {
             KEYBOARD.buffer.is_empty()
-        }).should_yield() {
+        })
+        .should_yield()
+        {
             scheduler::yield_now();
         }
     }
@@ -304,7 +305,9 @@ pub fn read_key_blocking() -> Key {
         // whenever any decoded input (char or key) becomes available.
         if waitqueue_adapter::sleep_if_multi(&INPUT_WAITQUEUE, task_id, || {
             KEYBOARD.key_buffer.is_empty()
-        }).should_yield() {
+        })
+        .should_yield()
+        {
             scheduler::yield_now();
         }
     }
@@ -329,31 +332,31 @@ pub fn read_key_blocking() -> Key {
 
 pub fn encode_key(key: Key) -> u8 {
     match key {
-        Key::Unknown        => 0x00,
-        Key::Char(b)        => b,
-        Key::Escape         => 0x80,
-        Key::Backspace      => 0x81,
-        Key::Enter          => 0x82,
-        Key::ArrowUp        => 0x83,
-        Key::ArrowDown      => 0x84,
-        Key::ArrowLeft      => 0x85,
-        Key::ArrowRight     => 0x86,
-        Key::F(n)           => 0x8F_u8.saturating_add(n),
+        Key::Unknown => 0x00,
+        Key::Char(b) => b,
+        Key::Escape => 0x80,
+        Key::Backspace => 0x81,
+        Key::Enter => 0x82,
+        Key::ArrowUp => 0x83,
+        Key::ArrowDown => 0x84,
+        Key::ArrowLeft => 0x85,
+        Key::ArrowRight => 0x86,
+        Key::F(n) => 0x8F_u8.saturating_add(n),
     }
 }
 
 fn decode_key(byte: u8) -> Key {
     match byte {
-        0x00        => Key::Unknown,
-        0x80        => Key::Escape,
-        0x81        => Key::Backspace,
-        0x82        => Key::Enter,
-        0x83        => Key::ArrowUp,
-        0x84        => Key::ArrowDown,
-        0x85        => Key::ArrowLeft,
-        0x86        => Key::ArrowRight,
+        0x00 => Key::Unknown,
+        0x80 => Key::Escape,
+        0x81 => Key::Backspace,
+        0x82 => Key::Enter,
+        0x83 => Key::ArrowUp,
+        0x84 => Key::ArrowDown,
+        0x85 => Key::ArrowLeft,
+        0x86 => Key::ArrowRight,
         0x90..=0x9B => Key::F(byte - 0x8F),
-        b           => Key::Char(b),
+        b => Key::Char(b),
     }
 }
 
@@ -407,9 +410,7 @@ pub fn process_pending_scancodes() -> bool {
 
     // Wake consumers when either the ASCII buffer or the Key buffer has data,
     // so both `read_char_blocking` and `read_key_blocking` callers are woken.
-    if processed_any
-        && (!KEYBOARD.buffer.is_empty() || !KEYBOARD.key_buffer.is_empty())
-    {
+    if processed_any && (!KEYBOARD.buffer.is_empty() || !KEYBOARD.key_buffer.is_empty()) {
         waitqueue_adapter::wake_all_multi(&INPUT_WAITQUEUE);
     }
 
@@ -456,7 +457,7 @@ fn handle_make(state: &mut KeyboardState, code: u8) {
             0x50 => Key::ArrowDown,
             0x4B => Key::ArrowLeft,
             0x4D => Key::ArrowRight,
-            _    => Key::Unknown,
+            _ => Key::Unknown,
         };
         // Push the encoded key into the extended key-event buffer.
         let _ = KEYBOARD.key_buffer.push(encode_key(key));
@@ -478,16 +479,46 @@ fn handle_make(state: &mut KeyboardState, code: u8) {
             return;
         }
         // F1–F10
-        0x3B => { let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(1)));  return; }
-        0x3C => { let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(2)));  return; }
-        0x3D => { let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(3)));  return; }
-        0x3E => { let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(4)));  return; }
-        0x3F => { let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(5)));  return; }
-        0x40 => { let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(6)));  return; }
-        0x41 => { let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(7)));  return; }
-        0x42 => { let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(8)));  return; }
-        0x43 => { let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(9)));  return; }
-        0x44 => { let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(10))); return; }
+        0x3B => {
+            let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(1)));
+            return;
+        }
+        0x3C => {
+            let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(2)));
+            return;
+        }
+        0x3D => {
+            let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(3)));
+            return;
+        }
+        0x3E => {
+            let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(4)));
+            return;
+        }
+        0x3F => {
+            let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(5)));
+            return;
+        }
+        0x40 => {
+            let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(6)));
+            return;
+        }
+        0x41 => {
+            let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(7)));
+            return;
+        }
+        0x42 => {
+            let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(8)));
+            return;
+        }
+        0x43 => {
+            let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(9)));
+            return;
+        }
+        0x44 => {
+            let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(10)));
+            return;
+        }
         _ => {}
     }
 

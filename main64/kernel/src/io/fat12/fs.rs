@@ -1,23 +1,21 @@
 //! High-level file system interface for FAT12.
 
-use alloc::vec::Vec;
-use core::ops::ControlFlow;
 use crate::drivers;
 use crate::io::fat12::cluster::{deallocate_cluster_chain, fat12_next_cluster};
+use crate::io::fat12::directory::{
+    delete_file_entry, find_file_in_root_directory, for_each_active_root_entry, normalize_8_3_name,
+};
 use crate::io::fat12::disk::{
     cluster_to_lba, read_fat_from_disk, read_root_directory_from_disk, write_fat_to_disk,
     write_root_directory_to_disk,
 };
-use crate::io::fat12::directory::{
-    delete_file_entry, find_file_in_root_directory, for_each_active_root_entry,
-    normalize_8_3_name,
-};
 use crate::io::fat12::types::{
+    EntryState, Fat12Error, FileEntryMeta, RawRootDirectoryEntry, RootDirectoryRecord,
     ATTR_DIRECTORY, BYTES_PER_SECTOR, DIRECTORY_ENTRY_SIZE, FAT12_BAD_CLUSTER, FAT12_EOF_MIN,
     FAT12_MAX_CLUSTER_ID, FAT12_MIN_DATA_CLUSTER, MAX_FILE_SIZE, ROOT_DIRECTORY_ENTRIES,
-    EntryState, Fat12Error, FileEntryMeta, RawRootDirectoryEntry, RootDirectoryRecord,
 };
-
+use alloc::vec::Vec;
+use core::ops::ControlFlow;
 
 /// Initialize the FAT12 file system.
 ///
@@ -219,7 +217,7 @@ pub fn delete_file(file_name: &str) -> Result<(), Fat12Error> {
                 let mut b = [0u8; DIRECTORY_ENTRY_SIZE];
                 b.copy_from_slice(entry_bytes);
                 b
-            }
+            },
         };
 
         match entry.state() {

@@ -16,7 +16,7 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::logging;
-use crate::syscall::{syscall_result_to_raw, SyscallId, SyscallResult, SyscallError};
+use crate::syscall::{syscall_result_to_raw, SyscallError, SyscallId, SyscallResult};
 
 pub mod bios;
 pub mod console;
@@ -97,8 +97,12 @@ pub fn dispatch_checked(
     // Step 1: resolve the handler and compute the syscall return value.
     let result = match syscall_nr {
         SyscallId::YIELD => process::syscall_yield_impl(),
-        SyscallId::WRITE_SERIAL => console::syscall_write_serial_impl(arg0 as *const u8, arg1 as usize),
-        SyscallId::WRITE_CONSOLE => console::syscall_write_console_impl(arg0 as *const u8, arg1 as usize),
+        SyscallId::WRITE_SERIAL => {
+            console::syscall_write_serial_impl(arg0 as *const u8, arg1 as usize)
+        }
+        SyscallId::WRITE_CONSOLE => {
+            console::syscall_write_console_impl(arg0 as *const u8, arg1 as usize)
+        }
         SyscallId::GET_CHAR => process::syscall_getchar_impl(),
         SyscallId::GET_CURSOR => console::syscall_get_cursor_impl(),
         SyscallId::SET_CURSOR => console::syscall_set_cursor_impl(arg0 as usize, arg1 as usize),
@@ -116,14 +120,26 @@ pub fn dispatch_checked(
         SyscallId::EXEC => process::syscall_exec_impl(arg0 as *const u8),
         SyscallId::WAIT => process::syscall_wait_impl(arg0),
         SyscallId::SHUTDOWN => process::syscall_shutdown_impl(),
-        SyscallId::WRITE_FRAMEBUFFER => console::syscall_write_framebuffer_impl(arg0 as *const u16, arg1 as usize),
+        SyscallId::WRITE_FRAMEBUFFER => {
+            console::syscall_write_framebuffer_impl(arg0 as *const u16, arg1 as usize)
+        }
         SyscallId::READ_KEY => process::syscall_read_key_impl(),
         SyscallId::SET_VGA_MODE => console::syscall_set_vga_mode_impl(arg0),
         SyscallId::GET_PCI_DEVICE_COUNT => pci::syscall_get_pci_device_count_impl(),
-        SyscallId::GET_PCI_DEVICE => pci::syscall_get_pci_device_impl(arg0, arg1 as *mut crate::syscall::types::UserPciDevice),
-        SyscallId::GET_BIOS_MEMORY_MAP_ENTRY_COUNT => bios::syscall_get_bios_memory_map_entry_count_impl(),
-        SyscallId::GET_BIOS_MEMORY_MAP_ENTRY => bios::syscall_get_bios_memory_map_entry_impl(arg0, arg1 as *mut crate::syscall::types::UserBiosMemoryRegion),
-        SyscallId::GET_TIME => bios::syscall_get_time_impl(arg0 as *mut crate::syscall::types::UserDateTime),
+        SyscallId::GET_PCI_DEVICE => pci::syscall_get_pci_device_impl(
+            arg0,
+            arg1 as *mut crate::syscall::types::UserPciDevice,
+        ),
+        SyscallId::GET_BIOS_MEMORY_MAP_ENTRY_COUNT => {
+            bios::syscall_get_bios_memory_map_entry_count_impl()
+        }
+        SyscallId::GET_BIOS_MEMORY_MAP_ENTRY => bios::syscall_get_bios_memory_map_entry_impl(
+            arg0,
+            arg1 as *mut crate::syscall::types::UserBiosMemoryRegion,
+        ),
+        SyscallId::GET_TIME => {
+            bios::syscall_get_time_impl(arg0 as *mut crate::syscall::types::UserDateTime)
+        }
         SyscallId::POLL_KEY => process::syscall_poll_key_impl(),
         SyscallId::GET_CONSOLE_DIMENSIONS => console::syscall_get_console_dimensions_impl(),
         _ => Err(SyscallError::Unsupported),

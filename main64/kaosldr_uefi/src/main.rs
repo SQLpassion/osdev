@@ -118,7 +118,10 @@ struct EfiLoadedImageProtocol {
 struct EfiSimpleFileSystemProtocol {
     revision: u64,
     /// Opens the root directory volume of the filesystem.
-    open_volume: extern "efiapi" fn(this: *mut EfiSimpleFileSystemProtocol, root: *mut *mut EfiFileProtocol) -> Status,
+    open_volume: extern "efiapi" fn(
+        this: *mut EfiSimpleFileSystemProtocol,
+        root: *mut *mut EfiFileProtocol,
+    ) -> Status,
 }
 
 /// UEFI File Protocol (`EFI_FILE_PROTOCOL`).
@@ -128,12 +131,22 @@ struct EfiSimpleFileSystemProtocol {
 struct EfiFileProtocol {
     revision: u64,
     /// Opens a file relative to the current directory handle.
-    open: extern "efiapi" fn(this: *mut EfiFileProtocol, new_handle: *mut *mut EfiFileProtocol, file_name: *const u16, open_mode: u64, attributes: u64) -> Status,
+    open: extern "efiapi" fn(
+        this: *mut EfiFileProtocol,
+        new_handle: *mut *mut EfiFileProtocol,
+        file_name: *const u16,
+        open_mode: u64,
+        attributes: u64,
+    ) -> Status,
     /// Closes the active file handle.
     close: extern "efiapi" fn(this: *mut EfiFileProtocol) -> Status,
     delete: *const c_void,
     /// Reads data from the file into the destination buffer.
-    read: extern "efiapi" fn(this: *mut EfiFileProtocol, buffer_size: *mut usize, buffer: *mut c_void) -> Status,
+    read: extern "efiapi" fn(
+        this: *mut EfiFileProtocol,
+        buffer_size: *mut usize,
+        buffer: *mut c_void,
+    ) -> Status,
     write: *const c_void,
     /// Gets the current file offset pointer position.
     get_position: extern "efiapi" fn(this: *mut EfiFileProtocol, position: *mut u64) -> Status,
@@ -205,10 +218,21 @@ struct EfiBootServices {
     raise_tpl: *const c_void,
     restore_tpl: *const c_void,
     /// Allocates physical memory pages.
-    allocate_pages: extern "efiapi" fn(alloc_type: u32, memory_type: u32, pages: usize, address: *mut u64) -> Status,
+    allocate_pages: extern "efiapi" fn(
+        alloc_type: u32,
+        memory_type: u32,
+        pages: usize,
+        address: *mut u64,
+    ) -> Status,
     free_pages: *const c_void,
     /// Retrieves the current physical memory map layout.
-    get_memory_map: extern "efiapi" fn(memory_map_size: *mut usize, memory_map: *mut u8, map_key: *mut usize, descriptor_size: *mut usize, descriptor_version: *mut u32) -> Status,
+    get_memory_map: extern "efiapi" fn(
+        memory_map_size: *mut usize,
+        memory_map: *mut u8,
+        map_key: *mut usize,
+        descriptor_size: *mut usize,
+        descriptor_version: *mut u32,
+    ) -> Status,
     allocate_pool: *const c_void,
     free_pool: *const c_void,
     create_event: *const c_void,
@@ -221,7 +245,11 @@ struct EfiBootServices {
     reinstall_protocol_interface: *const c_void,
     uninstall_protocol_interface: *const c_void,
     /// Retrieves an interface implementing a specific protocol GUID on a handle.
-    handle_protocol: extern "efiapi" fn(handle: Handle, protocol: *const Guid, interface: *mut *mut c_void) -> Status,
+    handle_protocol: extern "efiapi" fn(
+        handle: Handle,
+        protocol: *const Guid,
+        interface: *mut *mut c_void,
+    ) -> Status,
     reserved: *const c_void,
     register_protocol_notify: *const c_void,
     locate_handle: *const c_void,
@@ -244,9 +272,19 @@ struct EfiBootServices {
     close_protocol: *const c_void,
     open_protocol_information: *const c_void,
     protocols_per_handle: *const c_void,
-    locate_handle_buffer: extern "efiapi" fn(search_type: u32, protocol: *const Guid, search_key: *const c_void, no_handles: *mut usize, buffer: *mut *mut Handle) -> Status,
+    locate_handle_buffer: extern "efiapi" fn(
+        search_type: u32,
+        protocol: *const Guid,
+        search_key: *const c_void,
+        no_handles: *mut usize,
+        buffer: *mut *mut Handle,
+    ) -> Status,
     /// Locates the first handle in the system that supports a protocol GUID.
-    locate_protocol: extern "efiapi" fn(protocol: *const Guid, registration: *const c_void, interface: *mut *mut c_void) -> Status,
+    locate_protocol: extern "efiapi" fn(
+        protocol: *const Guid,
+        registration: *const c_void,
+        interface: *mut *mut c_void,
+    ) -> Status,
 }
 
 /// UEFI System Table (`EFI_SYSTEM_TABLE`).
@@ -356,7 +394,10 @@ static mut BOOT_INFO: BootInfo = BootInfo {
 /// The `system_table` must be a valid pointer provided by the UEFI firmware.
 /// The `image_handle` must be a valid image handle provided by the UEFI firmware.
 #[no_mangle]
-pub unsafe extern "efiapi" fn efi_main(image_handle: Handle, system_table: *const EfiSystemTable) -> Status {
+pub unsafe extern "efiapi" fn efi_main(
+    image_handle: Handle,
+    system_table: *const EfiSystemTable,
+) -> Status {
     serial::init();
 
     // SAFETY:
@@ -372,7 +413,11 @@ pub unsafe extern "efiapi" fn efi_main(image_handle: Handle, system_table: *cons
     let mut loaded_image: *mut EfiLoadedImageProtocol = core::ptr::null_mut();
     // SAFETY: Retrieve Loaded Image protocol on our own image handle to get the device handle.
     let status = unsafe {
-        ((*boot_services).handle_protocol)(image_handle, &EFI_LOADED_IMAGE_PROTOCOL_GUID, &mut loaded_image as *mut *mut EfiLoadedImageProtocol as *mut *mut c_void)
+        ((*boot_services).handle_protocol)(
+            image_handle,
+            &EFI_LOADED_IMAGE_PROTOCOL_GUID,
+            &mut loaded_image as *mut *mut EfiLoadedImageProtocol as *mut *mut c_void,
+        )
     };
     if status != 0 {
         print(con_out, "ERROR: Failed to handle LoadedImage!\r\n");
@@ -382,35 +427,53 @@ pub unsafe extern "efiapi" fn efi_main(image_handle: Handle, system_table: *cons
     // SAFETY: `loaded_image` contains the boot device handle.
     let device_handle = unsafe { (*loaded_image).device_handle };
 
-    print(con_out, "  -> Querying SimpleFileSystem protocol on device...\r\n");
+    print(
+        con_out,
+        "  -> Querying SimpleFileSystem protocol on device...\r\n",
+    );
     let mut fs: *mut EfiSimpleFileSystemProtocol = core::ptr::null_mut();
     // SAFETY: Open SimpleFileSystem on our boot device.
     let status = unsafe {
-        ((*boot_services).handle_protocol)(device_handle, &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID, &mut fs as *mut *mut EfiSimpleFileSystemProtocol as *mut *mut c_void)
+        ((*boot_services).handle_protocol)(
+            device_handle,
+            &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID,
+            &mut fs as *mut *mut EfiSimpleFileSystemProtocol as *mut *mut c_void,
+        )
     };
     if status != 0 {
-        print(con_out, "ERROR: Failed to handle SimpleFileSystem on device!\r\n");
+        print(
+            con_out,
+            "ERROR: Failed to handle SimpleFileSystem on device!\r\n",
+        );
         loop {}
     }
 
     // Step 2: Query Graphics Output Protocol (GOP)
     print(con_out, "  -> Querying GOP...\r\n");
-    
+
     let mut gop: *mut EfiGraphicsOutputProtocol = core::ptr::null_mut();
-    
+
     // Attempt 1: Try handle_protocol on console_out_handle
     let console_out_handle = unsafe { (*system_table).console_out_handle };
     let mut status = unsafe {
-        ((*boot_services).handle_protocol)(console_out_handle, &EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, &mut gop as *mut *mut EfiGraphicsOutputProtocol as *mut *mut c_void)
+        ((*boot_services).handle_protocol)(
+            console_out_handle,
+            &EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID,
+            &mut gop as *mut *mut EfiGraphicsOutputProtocol as *mut *mut c_void,
+        )
     };
-    
+
     // Attempt 2: Fall back to locate_protocol system-wide
     if status != 0 {
         status = unsafe {
-            ((*boot_services).locate_protocol)(&EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, core::ptr::null(), &mut gop as *mut *mut EfiGraphicsOutputProtocol as *mut *mut c_void)
+            ((*boot_services).locate_protocol)(
+                &EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID,
+                core::ptr::null(),
+                &mut gop as *mut *mut EfiGraphicsOutputProtocol as *mut *mut c_void,
+            )
         };
     }
-    
+
     if status != 0 {
         print(con_out, "ERROR: Failed to locate GOP! Status: ");
         print_hex(con_out, status);
@@ -456,9 +519,7 @@ pub unsafe extern "efiapi" fn efi_main(image_handle: Handle, system_table: *cons
     print(con_out, "  -> Opening filesystem root...\r\n");
     let mut root_dir: *mut EfiFileProtocol = core::ptr::null_mut();
     // SAFETY: Open the file system root volume.
-    let status = unsafe {
-        ((*fs).open_volume)(fs, &mut root_dir)
-    };
+    let status = unsafe { ((*fs).open_volume)(fs, &mut root_dir) };
     if status != 0 {
         print(con_out, "ERROR: Failed to open root volume!\r\n");
         loop {}
@@ -467,14 +528,13 @@ pub unsafe extern "efiapi" fn efi_main(image_handle: Handle, system_table: *cons
     print(con_out, "  -> Opening KERNEL.BIN...\r\n");
     let mut kernel_file: *mut EfiFileProtocol = core::ptr::null_mut();
     let kernel_name = [
-        'K' as u16, 'E' as u16, 'R' as u16, 'N' as u16, 'E' as u16,
-        'L' as u16, '.' as u16, 'B' as u16, 'I' as u16, 'N' as u16, 0
+        'K' as u16, 'E' as u16, 'R' as u16, 'N' as u16, 'E' as u16, 'L' as u16, '.' as u16,
+        'B' as u16, 'I' as u16, 'N' as u16, 0,
     ];
     // Mode READ = 1, Attribute = 0
     // SAFETY: Open KERNEL.BIN from the root directory.
-    let status = unsafe {
-        ((*root_dir).open)(root_dir, &mut kernel_file, kernel_name.as_ptr(), 1, 0)
-    };
+    let status =
+        unsafe { ((*root_dir).open)(root_dir, &mut kernel_file, kernel_name.as_ptr(), 1, 0) };
     if status != 0 {
         print(con_out, "ERROR: Failed to open KERNEL.BIN!\r\n");
         loop {}
@@ -482,19 +542,18 @@ pub unsafe extern "efiapi" fn efi_main(image_handle: Handle, system_table: *cons
 
     // Seek to end to find size
     // SAFETY: `kernel_file` is open and valid.
-    let status = unsafe {
-        ((*kernel_file).set_position)(kernel_file, 0xFFFFFFFFFFFFFFFF)
-    };
+    let status = unsafe { ((*kernel_file).set_position)(kernel_file, 0xFFFFFFFFFFFFFFFF) };
     if status != 0 {
-        print(con_out, "ERROR: Failed to set position to end of KERNEL.BIN!\r\n");
+        print(
+            con_out,
+            "ERROR: Failed to set position to end of KERNEL.BIN!\r\n",
+        );
         loop {}
     }
 
     let mut file_size: u64 = 0;
     // SAFETY: Retrieve current position (which is the file size).
-    let status = unsafe {
-        ((*kernel_file).get_position)(kernel_file, &mut file_size)
-    };
+    let status = unsafe { ((*kernel_file).get_position)(kernel_file, &mut file_size) };
     if status != 0 {
         print(con_out, "ERROR: Failed to get KERNEL.BIN file size!\r\n");
         loop {}
@@ -502,11 +561,12 @@ pub unsafe extern "efiapi" fn efi_main(image_handle: Handle, system_table: *cons
 
     // Seek back to start
     // SAFETY: Reset file pointer to beginning for reading.
-    let status = unsafe {
-        ((*kernel_file).set_position)(kernel_file, 0)
-    };
+    let status = unsafe { ((*kernel_file).set_position)(kernel_file, 0) };
     if status != 0 {
-        print(con_out, "ERROR: Failed to reset position to start of KERNEL.BIN!\r\n");
+        print(
+            con_out,
+            "ERROR: Failed to reset position to start of KERNEL.BIN!\r\n",
+        );
         loop {}
     }
 
@@ -529,22 +589,25 @@ pub unsafe extern "efiapi" fn efi_main(image_handle: Handle, system_table: *cons
     // NOTE: 1 is AllocateMaxAddress, which treats `kernel_addr` as a *ceiling* and places the
     // allocation anywhere below it — that silently loaded the kernel at 0x40000 instead of
     // 0x100000. MemoryType: EfiLoaderCode = 1.
-    print(con_out, "  -> Allocating memory for Kernel at 0x100000...\r\n");
+    print(
+        con_out,
+        "  -> Allocating memory for Kernel at 0x100000...\r\n",
+    );
     // SAFETY: Allocate pages at address 0x100000 for the kernel memory layout (code + data + BSS).
-    let status = unsafe {
-        ((*boot_services).allocate_pages)(2, 1, pages, &mut kernel_addr)
-    };
+    let status = unsafe { ((*boot_services).allocate_pages)(2, 1, pages, &mut kernel_addr) };
     if status != 0 {
-        print(con_out, "ERROR: Failed to allocate memory at 0x100000 for kernel!\r\n");
+        print(
+            con_out,
+            "ERROR: Failed to allocate memory at 0x100000 for kernel!\r\n",
+        );
         loop {}
     }
 
     print(con_out, "  -> Reading KERNEL.BIN into memory...\r\n");
     let mut read_size = file_size as usize;
     // SAFETY: Read the kernel binary payload into the newly allocated buffer.
-    let status = unsafe {
-        ((*kernel_file).read)(kernel_file, &mut read_size, kernel_addr as *mut c_void)
-    };
+    let status =
+        unsafe { ((*kernel_file).read)(kernel_file, &mut read_size, kernel_addr as *mut c_void) };
     if status != 0 || read_size != file_size as usize {
         print(con_out, "ERROR: Failed to read KERNEL.BIN!\r\n");
         loop {}
@@ -645,9 +708,8 @@ pub unsafe extern "efiapi" fn efi_main(image_handle: Handle, system_table: *cons
         };
         if status == 0 {
             // SAFETY: Call exit_boot_services to hand over hardware ownership.
-            let exit_status = unsafe {
-                ((*boot_services).exit_boot_services)(image_handle, map_key)
-            };
+            let exit_status =
+                unsafe { ((*boot_services).exit_boot_services)(image_handle, map_key) };
             if exit_status == 0 {
                 exited = true;
                 break;
@@ -673,10 +735,10 @@ pub unsafe extern "efiapi" fn efi_main(image_handle: Handle, system_table: *cons
         for i in 0..num_descriptors {
             let desc_ptr = map_buf.as_ptr().add(i * descriptor_size) as *const EfiMemoryDescriptor;
             let desc = &*desc_ptr;
-            
+
             // EfiConventionalMemory = 7
             let is_usable = desc.memory_type == 7;
-            
+
             if usable_entry_count < 256 {
                 UNIFIED_MEM_MAP[usable_entry_count as usize] = UnifiedMemoryEntry {
                     start: desc.physical_start,
@@ -703,15 +765,15 @@ pub unsafe extern "efiapi" fn efi_main(image_handle: Handle, system_table: *cons
         let mut cr3: u64;
         core::arch::asm!("mov {}, cr0", out(reg) cr0, options(nomem, nostack, preserves_flags));
         core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags));
-        
+
         // Clear WP bit (bit 16) in CR0
         let cr0_new = cr0 & !(1 << 16);
         core::arch::asm!("mov cr0, {}", in(reg) cr0_new, options(nomem, nostack, preserves_flags));
-        
+
         let pml4_addr = cr3 & 0x000F_FFFF_FFFF_F000;
         let pml4 = pml4_addr as *mut u64;
         *pml4.add(256) = *pml4.add(0);
-        
+
         // Restore CR0 (re-enabling WP)
         core::arch::asm!("mov cr0, {}", in(reg) cr0, options(nomem, nostack, preserves_flags));
 

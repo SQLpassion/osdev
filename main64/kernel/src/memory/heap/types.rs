@@ -10,8 +10,8 @@
 //! - The algorithms here operate directly on raw memory addresses and pointers under the
 //!   assumption that the caller has acquired appropriate exclusive locks (e.g., via `GlobalHeap`).
 
-use core::mem::{align_of, size_of};
 use super::generic::HeapEnvironment;
+use core::mem::{align_of, size_of};
 
 /// Size of one block header in bytes.
 pub(crate) const HEADER_SIZE: usize = size_of::<HeapBlockHeader>();
@@ -28,7 +28,8 @@ pub(crate) const fn align_up_const(value: usize, align: usize) -> usize {
 }
 
 /// Minimum free block size that can hold header + intrusive node.
-pub(crate) const MIN_FREE_BLOCK_SIZE: usize = align_up_const(HEADER_SIZE + FREE_NODE_SIZE, ALIGNMENT);
+pub(crate) const MIN_FREE_BLOCK_SIZE: usize =
+    align_up_const(HEADER_SIZE + FREE_NODE_SIZE, ALIGNMENT);
 
 /// Minimum tail size that is still worth splitting into a new free block.
 pub(crate) const MIN_SPLIT_SIZE: usize = MIN_FREE_BLOCK_SIZE;
@@ -368,7 +369,10 @@ pub(crate) fn find_suitable_free_block(
 /// 3. Read the header and verify magic, size, and local boundary-tag consistency.
 ///
 /// The caller still checks `header.in_use()` to catch double-free.
-pub(crate) fn find_block_by_payload_ptr(state: &HeapState, ptr: *mut u8) -> Option<*mut HeapBlockHeader> {
+pub(crate) fn find_block_by_payload_ptr(
+    state: &HeapState,
+    ptr: *mut u8,
+) -> Option<*mut HeapBlockHeader> {
     let ptr_addr = ptr as usize;
 
     // Step 1: every valid payload is exactly HEADER_SIZE bytes past its block header.
@@ -436,7 +440,11 @@ pub(crate) fn update_next_prev_size(state: &mut HeapState, block_addr: usize, bl
 }
 
 /// Splits and marks a selected free block as allocated.
-pub(crate) fn allocate_block(state: &mut HeapState, block: *mut HeapBlockHeader, size: usize) -> *mut u8 {
+pub(crate) fn allocate_block(
+    state: &mut HeapState,
+    block: *mut HeapBlockHeader,
+    size: usize,
+) -> *mut u8 {
     // SAFETY:
     // - This requires `unsafe` because it dereferences raw pointers.
     // - `block` points to a valid free block removed from bins under heap lock.
@@ -475,7 +483,10 @@ pub(crate) fn allocate_block(state: &mut HeapState, block: *mut HeapBlockHeader,
 }
 
 /// Coalesces `block` with physically adjacent free neighbors and returns the merged block.
-pub(crate) fn coalesce_free_block(state: &mut HeapState, block: *mut HeapBlockHeader) -> *mut HeapBlockHeader {
+pub(crate) fn coalesce_free_block(
+    state: &mut HeapState,
+    block: *mut HeapBlockHeader,
+) -> *mut HeapBlockHeader {
     let mut coalesced = block;
 
     // Step 1: Merge with previous free neighbor using `prev_size` boundary-tag.

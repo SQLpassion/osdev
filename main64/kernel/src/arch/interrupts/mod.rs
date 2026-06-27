@@ -18,32 +18,32 @@
 use core::arch::asm;
 use core::cell::UnsafeCell;
 
-pub mod types;
-pub mod pic;
-pub mod idt;
 pub mod handlers;
+pub mod idt;
+pub mod pic;
 mod stubs;
+pub mod types;
 
 #[allow(unused_imports)]
 pub use types::{
-    SavedRegisters, InterruptStackFrame, IRQ0_PIT_TIMER_VECTOR, IRQ1_KEYBOARD_VECTOR,
-    IRQ14_PRIMARY_ATA_VECTOR, SYSCALL_INT80_VECTOR, EXCEPTION_DIVIDE_ERROR,
-    EXCEPTION_INVALID_OPCODE, EXCEPTION_DEVICE_NOT_AVAILABLE, EXCEPTION_DOUBLE_FAULT,
-    EXCEPTION_GENERAL_PROTECTION, EXCEPTION_PAGE_FAULT, IrqHandler,
+    InterruptStackFrame, IrqHandler, SavedRegisters, EXCEPTION_DEVICE_NOT_AVAILABLE,
+    EXCEPTION_DIVIDE_ERROR, EXCEPTION_DOUBLE_FAULT, EXCEPTION_GENERAL_PROTECTION,
+    EXCEPTION_INVALID_OPCODE, EXCEPTION_PAGE_FAULT, IRQ0_PIT_TIMER_VECTOR,
+    IRQ14_PRIMARY_ATA_VECTOR, IRQ1_KEYBOARD_VECTOR, SYSCALL_INT80_VECTOR,
 };
 
 #[allow(unused_imports)]
 pub use pic::{
-    remap_pic, io_wait, mask_pic, end_of_interrupt, pit_divisor_for_hz, init_periodic_timer,
+    end_of_interrupt, init_periodic_timer, io_wait, mask_pic, pit_divisor_for_hz, remap_pic,
 };
 
 #[allow(unused_imports)]
-pub use idt::{init_idt, idt_ist_index};
+pub use idt::{idt_ist_index, init_idt};
 
 #[allow(unused_imports)]
 pub use handlers::{
-    page_fault_handler_rust, nm_rust_handler, exception_has_error_code, exception_handler_rust,
-    irq_rust_dispatch, syscall_rust_dispatch,
+    exception_handler_rust, exception_has_error_code, irq_rust_dispatch, nm_rust_handler,
+    page_fault_handler_rust, syscall_rust_dispatch,
 };
 
 use types::{IDT_ENTRIES, IRQ_BASE, IRQ_LINES};

@@ -1,5 +1,5 @@
-use core::arch::global_asm;
 use crate::boot_info::BootInfo;
+use core::arch::global_asm;
 
 global_asm!(
     r#"

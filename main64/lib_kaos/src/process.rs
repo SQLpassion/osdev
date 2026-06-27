@@ -3,7 +3,7 @@
 use crate::{
     decode_result,
     raw::{syscall0, syscall1},
-    SyscallId, SysError, MAX_PATH_LEN,
+    SysError, SyscallId, MAX_PATH_LEN,
 };
 
 /// Executes a flat binary from the FAT12 disk.
@@ -71,4 +71,3 @@ pub fn yield_now() {
         let _ = syscall0(SyscallId::Yield as u64);
     }
 }
-

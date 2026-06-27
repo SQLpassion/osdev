@@ -8,8 +8,8 @@
 
 use core::panic::PanicInfo;
 use kaos_kernel::arch::interrupts;
-use kaos_kernel::memory::{pmm, vmm, heap};
 use kaos_kernel::drivers::time::{self, DateTime};
+use kaos_kernel::memory::{heap, pmm, vmm};
 
 /// Entry point for the time integration test kernel.
 #[no_mangle]
@@ -110,4 +110,3 @@ fn test_syscall_get_time() {
     assert!(res.is_ok(), "sys_get_time syscall should succeed");
     assert!(udt.year >= 2000, "Year should be reasonable");
 }
-

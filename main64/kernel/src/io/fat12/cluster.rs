@@ -3,7 +3,7 @@
 use crate::drivers;
 use crate::io::fat12::disk::cluster_to_lba;
 use crate::io::fat12::types::{
-    BYTES_PER_SECTOR, FAT12_EOF_MIN, FAT12_MIN_DATA_CLUSTER, Fat12Error,
+    Fat12Error, BYTES_PER_SECTOR, FAT12_EOF_MIN, FAT12_MIN_DATA_CLUSTER,
 };
 
 /// Decode next cluster ID from FAT12 table for the given current cluster.
@@ -33,7 +33,11 @@ pub fn fat12_next_cluster(fat: &[u8], cluster: u16) -> Result<u16, Fat12Error> {
 /// Packs a 12-bit entry value into 3 bytes at calculated offset.
 /// SAFETY:
 /// - Accesses are bounds-checked against the FAT slice length.
-pub fn fat12_write_cluster_entry(fat: &mut [u8], cluster: u16, next_cluster_val: u16) -> Result<(), Fat12Error> {
+pub fn fat12_write_cluster_entry(
+    fat: &mut [u8],
+    cluster: u16,
+    next_cluster_val: u16,
+) -> Result<(), Fat12Error> {
     let offset = cluster as usize + (cluster as usize / 2);
     if offset + 1 >= fat.len() {
         return Err(Fat12Error::CorruptFatChain);

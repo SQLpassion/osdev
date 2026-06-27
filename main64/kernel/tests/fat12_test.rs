@@ -104,7 +104,10 @@ fn write_fat12_entry(fat: &mut [u8], cluster: u16, value: u16) {
     }
 }
 
-fn read_file_with_patched_next_cluster(file_name: &str, patched_next_cluster: u16) -> Result<(), Fat12Error> {
+fn read_file_with_patched_next_cluster(
+    file_name: &str,
+    patched_next_cluster: u16,
+) -> Result<(), Fat12Error> {
     // Step 1: Resolve the first cluster of the target file from root directory entries.
     let short_name = normalize_8_3_name(file_name).expect("short name must normalize");
     let mut root = [0u8; ROOT_DIRECTORY_SECTORS as usize * BYTES_PER_SECTOR];
@@ -156,7 +159,10 @@ fn test_parser_skips_non_file_entries() {
     });
 
     assert!(file_count == 1, "only one file entry must be accepted");
-    assert!(total_size == 1234, "total size must include only accepted entries");
+    assert!(
+        total_size == 1234,
+        "total size must include only accepted entries"
+    );
     assert!(parsed_len == 1, "callback must run exactly once");
 
     let first = parsed[0].expect("first parsed entry must exist");
@@ -180,7 +186,10 @@ fn test_parser_stops_on_end_marker() {
         parsed_len += 1;
     });
 
-    assert!(file_count == 1, "entries after end marker must not be parsed");
+    assert!(
+        file_count == 1,
+        "entries after end marker must not be parsed"
+    );
     assert!(parsed_len == 1, "callback must stop at end marker");
     assert!(total_size == 10, "size sum must stop at end marker");
 }
@@ -385,8 +394,7 @@ fn test_read_file_hello_bin_returns_exact_bytes() {
 fn test_read_file_readline_bin_returns_exact_bytes() {
     kaos_kernel::drivers::ata::init();
 
-    let actual = read_file("readline.bin")
-        .expect("readline.bin must be readable from FAT12 image");
+    let actual = read_file("readline.bin").expect("readline.bin must be readable from FAT12 image");
     assert!(
         actual.len() == EXPECTED_READLINE_BIN_BYTES.len(),
         "read_file length mismatch: expected {} bytes, got {}",
@@ -442,21 +450,23 @@ fn test_fat12_write_read_delete_lifecycle() {
     let test_data = b"Hello Klaus Aschenbrenner from Rust kernel space!";
 
     // Step 1: Open the file in Write mode (truncate or create)
-    let fd = kaos_kernel::io::fat12::open_file(test_filename, kaos_kernel::io::fat12::FileMode::Write)
-        .expect("failed to open testwr.txt in Write mode");
+    let fd =
+        kaos_kernel::io::fat12::open_file(test_filename, kaos_kernel::io::fat12::FileMode::Write)
+            .expect("failed to open testwr.txt in Write mode");
     assert!(fd > 0, "file descriptor must be positive");
 
     // Step 2: Write test data
-    let written = kaos_kernel::io::fat12::write_file_fd(fd, test_data)
-        .expect("failed to write test data");
+    let written =
+        kaos_kernel::io::fat12::write_file_fd(fd, test_data).expect("failed to write test data");
     assert_eq!(written, test_data.len(), "written byte count mismatch");
 
     // Step 3: Close the file descriptor
     kaos_kernel::io::fat12::close_file(fd).expect("failed to close file descriptor");
 
     // Step 4: Open the file in Read mode
-    let fd_read = kaos_kernel::io::fat12::open_file(test_filename, kaos_kernel::io::fat12::FileMode::Read)
-        .expect("failed to open testwr.txt in Read mode");
+    let fd_read =
+        kaos_kernel::io::fat12::open_file(test_filename, kaos_kernel::io::fat12::FileMode::Read)
+            .expect("failed to open testwr.txt in Read mode");
 
     // Step 5: Read the data back
     let mut read_buffer = [0u8; 100];
@@ -472,9 +482,13 @@ fn test_fat12_write_read_delete_lifecycle() {
     kaos_kernel::io::fat12::delete_file(test_filename).expect("failed to delete testwr.txt");
 
     // Step 8: Verify the file is no longer present
-    let open_result = kaos_kernel::io::fat12::open_file(test_filename, kaos_kernel::io::fat12::FileMode::Read);
+    let open_result =
+        kaos_kernel::io::fat12::open_file(test_filename, kaos_kernel::io::fat12::FileMode::Read);
     assert!(
-        matches!(open_result, Err(kaos_kernel::io::fat12::Fat12Error::NotFound)),
+        matches!(
+            open_result,
+            Err(kaos_kernel::io::fat12::Fat12Error::NotFound)
+        ),
         "file must be absent after deletion, got {:?}",
         open_result
     );

@@ -21,7 +21,10 @@ pub fn get_bios_memory_map_entry_count() -> Result<usize, SysError> {
 
 /// Copies the BIOS memory map entry metadata at the given index into the output buffer.
 #[inline(always)]
-pub fn get_bios_memory_map_entry(index: usize, out: &mut UserBiosMemoryRegion) -> Result<(), SysError> {
+pub fn get_bios_memory_map_entry(
+    index: usize,
+    out: &mut UserBiosMemoryRegion,
+) -> Result<(), SysError> {
     let raw = unsafe {
         // SAFETY: `out` is a valid mutable reference whose address and size are safe to be written by the kernel.
         syscall2(

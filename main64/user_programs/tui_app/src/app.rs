@@ -19,13 +19,12 @@ extern crate alloc;
 use alloc::vec;
 use lib_kaos::console::{self, Key};
 use lib_tui::{
-    with_screen, Color, Gauge, Label, ProgressBar, Table, Tabs, TextBox, TreeNode, TreeView,
-    screen_cols, screen_rows,
+    screen_cols, screen_rows, with_screen, Color, Gauge, Label, ProgressBar, Table, Tabs, TextBox,
+    TreeNode, TreeView,
 };
 
 #[path = "../../../kernel/src/drivers/pci/database.rs"]
 mod pci_database;
-
 
 /// Top-level TUI application — owns every widget across all four tabs.
 pub struct TuiApp {
@@ -220,15 +219,7 @@ impl TuiApp {
         with_screen(|screen| {
             let cols = screen.cols();
             let rows = screen.rows();
-            screen.fill_rect(
-                1,
-                0,
-                cols,
-                rows - 2,
-                b' ',
-                Color::White,
-                Color::Black,
-            );
+            screen.fill_rect(1, 0, cols, rows - 2, b' ', Color::White, Color::Black);
         });
     }
 
@@ -256,15 +247,7 @@ impl TuiApp {
             let cols = screen.cols();
             let rows = screen.rows();
             // Fill background of row rows - 1 with LightGray.
-            screen.fill_rect(
-                rows - 1,
-                0,
-                cols,
-                1,
-                b' ',
-                Color::Black,
-                Color::LightGray,
-            );
+            screen.fill_rect(rows - 1, 0, cols, 1, b' ', Color::Black, Color::LightGray);
             // Print left help binding text.
             screen.draw_at(
                 rows - 1,
@@ -287,7 +270,7 @@ impl TuiApp {
             if lib_kaos::time::get_time(&mut udt).is_ok() {
                 // Format: "2026-06-08 19:30:13" (19 chars)
                 let mut time_buf = [0u8; 19];
-                
+
                 // Format Year
                 let y = udt.year;
                 time_buf[0] = b'0' + ((y / 1000) % 10) as u8;
@@ -295,23 +278,23 @@ impl TuiApp {
                 time_buf[2] = b'0' + ((y / 10) % 10) as u8;
                 time_buf[3] = b'0' + (y % 10) as u8;
                 time_buf[4] = b'-';
-                
+
                 time_buf[5] = b'0' + (udt.month / 10);
                 time_buf[6] = b'0' + (udt.month % 10);
                 time_buf[7] = b'-';
-                
+
                 time_buf[8] = b'0' + (udt.day / 10);
                 time_buf[9] = b'0' + (udt.day % 10);
                 time_buf[10] = b' ';
-                
+
                 time_buf[11] = b'0' + (udt.hour / 10);
                 time_buf[12] = b'0' + (udt.hour % 10);
                 time_buf[13] = b':';
-                
+
                 time_buf[14] = b'0' + (udt.minute / 10);
                 time_buf[15] = b'0' + (udt.minute % 10);
                 time_buf[16] = b':';
-                
+
                 time_buf[17] = b'0' + (udt.second / 10);
                 time_buf[18] = b'0' + (udt.second % 10);
 
@@ -379,8 +362,8 @@ impl TuiApp {
                     && dev.device == device
                     && dev.function == function
                 {
-                    use alloc::string::String;
                     use alloc::format;
+                    use alloc::string::String;
                     use alloc::vec;
 
                     let vendor_name = pci_database::vendor_to_str(dev.vendor_id);
@@ -388,14 +371,26 @@ impl TuiApp {
                     let class_name = pci_database::class_to_str(dev.class_code, dev.subclass);
 
                     let mut lines = vec![
-                        format!("BDF Address:  {:02x}:{:02x}.{}", dev.bus, dev.device, dev.function),
+                        format!(
+                            "BDF Address:  {:02x}:{:02x}.{}",
+                            dev.bus, dev.device, dev.function
+                        ),
                         format!("Vendor Name:  {}", vendor_name),
                         format!("Device Name:  {}", device_name),
-                        format!("IDs:          Vendor {:04x}, Device {:04x}", dev.vendor_id, dev.device_id),
-                        format!("Class Code:   {} ({:02x}:{:02x})", class_name, dev.class_code, dev.subclass),
+                        format!(
+                            "IDs:          Vendor {:04x}, Device {:04x}",
+                            dev.vendor_id, dev.device_id
+                        ),
+                        format!(
+                            "Class Code:   {} ({:02x}:{:02x})",
+                            class_name, dev.class_code, dev.subclass
+                        ),
                         format!("Revision ID:  {:#04x}", dev.revision_id),
                         format!("Prog IF:      {:#04x}", dev.prog_if),
-                        format!("Interrupts:   Line {}, Pin {}", dev.interrupt_line, dev.interrupt_pin),
+                        format!(
+                            "Interrupts:   Line {}, Pin {}",
+                            dev.interrupt_line, dev.interrupt_pin
+                        ),
                         String::from("Base Address Registers:"),
                     ];
 
@@ -409,7 +404,11 @@ impl TuiApp {
                                 3 => "Mem64",
                                 _ => "Unknown",
                             };
-                            let pref_str = if bar.flags == 1 { "prefetchable" } else { "non-pref" };
+                            let pref_str = if bar.flags == 1 {
+                                "prefetchable"
+                            } else {
+                                "non-pref"
+                            };
                             lines.push(format!(
                                 "  BAR {}: {} {:#x} (size {}, {})",
                                 i, type_str, bar.address, bar.size, pref_str
@@ -467,7 +466,8 @@ impl TuiApp {
                     let page_size = 4096u64;
                     let pages = region.size / page_size;
                     #[allow(clippy::manual_is_multiple_of)]
-                    let is_aligned = (region.start % page_size == 0) && (region.size % page_size == 0);
+                    let is_aligned =
+                        (region.start % page_size == 0) && (region.size % page_size == 0);
 
                     let lines = vec![
                         format!("Index:             {}", selected_idx),
@@ -477,11 +477,18 @@ impl TuiApp {
                         format!("Size in KB:        {} KB", region.size / 1024),
                         format!("Size in MB:        {} MB", region.size / 1024 / 1024),
                         format!("Physical Pages:    {} (4 KiB frames)", pages),
-                        format!("Page-Aligned:      {}", if is_aligned { "Yes" } else { "No" }),
-                        format!("Region Type:       {} (Raw: {})", type_str, region.region_type),
+                        format!(
+                            "Page-Aligned:      {}",
+                            if is_aligned { "Yes" } else { "No" }
+                        ),
+                        format!(
+                            "Region Type:       {} (Raw: {})",
+                            type_str, region.region_type
+                        ),
                     ];
 
-                    let dialog = lib_tui::Dialog::new(4, 10, 60, 16, "Memory Region Details", lines);
+                    let dialog =
+                        lib_tui::Dialog::new(4, 10, 60, 16, "Memory Region Details", lines);
                     dialog.draw();
                     with_screen(|screen| screen.flush());
 
@@ -568,9 +575,8 @@ pub fn run_demo() {
         &["Region", "Address", "Size / Type"],
         &[22, 20, cols.saturating_sub(44)],
     );
-    let leak_str = |s: alloc::string::String| -> &'static str {
-        alloc::boxed::Box::leak(s.into_boxed_str())
-    };
+    let leak_str =
+        |s: alloc::string::String| -> &'static str { alloc::boxed::Box::leak(s.into_boxed_str()) };
 
     use alloc::format;
 
@@ -616,9 +622,6 @@ pub fn run_demo() {
             "Kernel VA | Virtual",
         ]);
     }
-
-
-
 
     // ------------------------------------------------------------------
     // Tab 3 — System (Gauge × 6 + ProgressBar × 3)
@@ -699,9 +702,33 @@ pub fn run_demo() {
         Color::LightCyan,
         Color::LightCyan,
     );
-    let bar1 = ProgressBar::new(12, 4, cols - 8, 56, Color::White, Color::Black, Color::LightGreen);
-    let bar2 = ProgressBar::new(13, 4, cols - 8, 87, Color::White, Color::Black, Color::Yellow);
-    let bar3 = ProgressBar::new(14, 4, cols - 8, 12, Color::White, Color::Black, Color::LightRed);
+    let bar1 = ProgressBar::new(
+        12,
+        4,
+        cols - 8,
+        56,
+        Color::White,
+        Color::Black,
+        Color::LightGreen,
+    );
+    let bar2 = ProgressBar::new(
+        13,
+        4,
+        cols - 8,
+        87,
+        Color::White,
+        Color::Black,
+        Color::Yellow,
+    );
+    let bar3 = ProgressBar::new(
+        14,
+        4,
+        cols - 8,
+        12,
+        Color::White,
+        Color::Black,
+        Color::LightRed,
+    );
 
     // ------------------------------------------------------------------
     // Tab 4 — PCI Tree (dynamic hardware data)
@@ -746,11 +773,7 @@ pub fn run_demo() {
                 // Format a compact descriptive string to fit on the 80-column screen: "00:01.1 | Intel | PIIX IDE"
                 let dev_desc = format!(
                     "{:02x}:{:02x}.{} | {} | {}",
-                    dev.bus,
-                    dev.device,
-                    dev.function,
-                    vendor_name,
-                    device_name
+                    dev.bus, dev.device, dev.function, vendor_name, device_name
                 );
 
                 let leaf = TreeNode::leaf(dev_desc);

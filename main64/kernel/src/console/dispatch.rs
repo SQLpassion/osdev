@@ -3,8 +3,8 @@
 //! Provides the `ConsoleImpl` enum wrapper that delegates all `KernelConsole`
 //! operations to the currently active backend.
 
+use super::{FramebufferConsole, KernelConsole, VgaConsole};
 use crate::drivers::screen::Color;
-use super::{KernelConsole, VgaConsole, FramebufferConsole};
 
 /// Active Console Implementation Wrapper.
 ///

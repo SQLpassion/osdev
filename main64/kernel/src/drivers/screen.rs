@@ -258,8 +258,14 @@ impl Screen {
             background: Color::Black,
             num_cols: DEFAULT_COLS,
             num_rows: DEFAULT_ROWS,
-            back_buffer: [VgaChar { character: b' ', attribute: 0x07 }; DEFAULT_ROWS * DEFAULT_COLS],
-            front_buffer: [VgaChar { character: 0, attribute: 0 }; DEFAULT_ROWS * DEFAULT_COLS],
+            back_buffer: [VgaChar {
+                character: b' ',
+                attribute: 0x07,
+            }; DEFAULT_ROWS * DEFAULT_COLS],
+            front_buffer: [VgaChar {
+                character: 0,
+                attribute: 0,
+            }; DEFAULT_ROWS * DEFAULT_COLS],
             suspend_flush: false,
         }
     }
@@ -299,7 +305,9 @@ impl Screen {
             let back_cell = self.back_buffer[i];
             let front_cell = self.front_buffer[i];
 
-            if back_cell.character != front_cell.character || back_cell.attribute != front_cell.attribute {
+            if back_cell.character != front_cell.character
+                || back_cell.attribute != front_cell.attribute
+            {
                 let row = i / self.num_cols;
                 let col = i % self.num_cols;
                 let vga_ptr = self.vga_ptr(row, col);
@@ -311,7 +319,7 @@ impl Screen {
                 unsafe {
                     ptr::write_volatile(vga_ptr, back_cell);
                 }
-                
+
                 self.front_buffer[i] = back_cell;
             }
         }
@@ -773,6 +781,3 @@ impl fmt::Write for Screen {
         Ok(())
     }
 }
-
-
-

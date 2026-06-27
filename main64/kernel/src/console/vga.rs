@@ -2,8 +2,8 @@
 //!
 //! Delegates all draw and configuration operations to the VGA hardware driver.
 
-use crate::drivers::screen::{Color, with_screen};
 use super::KernelConsole;
+use crate::drivers::screen::{with_screen, Color};
 
 /// VGA Text-Mode Console backend.
 ///

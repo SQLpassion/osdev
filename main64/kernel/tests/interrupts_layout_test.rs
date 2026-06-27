@@ -81,10 +81,7 @@ fn test_trap_frame_size_and_offsets() {
 fn test_irq_vector_constants_are_contiguous() {
     let irq0 = core::hint::black_box(interrupts::IRQ0_PIT_TIMER_VECTOR);
     let irq1 = core::hint::black_box(interrupts::IRQ1_KEYBOARD_VECTOR);
-    assert!(
-        irq1 == irq0 + 1,
-        "IRQ1 vector must follow IRQ0 vector"
-    );
+    assert!(irq1 == irq0 + 1, "IRQ1 vector must follow IRQ0 vector");
 }
 
 /// Contract: exception vector constants match x86 spec.

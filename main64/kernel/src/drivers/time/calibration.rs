@@ -34,13 +34,17 @@ pub fn calibrate_tsc() -> u64 {
     let gate_orig = unsafe { gate.read() };
     // SAFETY:
     // - Writing to port 0x61 to disable PIT2 gate.
-    unsafe { gate.write(gate_orig & !0x01); }
+    unsafe {
+        gate.write(gate_orig & !0x01);
+    }
 
     // Program PIT Channel 2: Mode 0 (Interrupt on terminal count), LOBYTE/HIBYTE, binary.
     // Command: 0b10110000 = 0xB0.
     // SAFETY:
     // - Programming the PIT control word is safe inside ring 0.
-    unsafe { cmd.write(0xB0); }
+    unsafe {
+        cmd.write(0xB0);
+    }
 
     // Divisor for 10 ms delay: 1193182 Hz / 100 = 11931 = 0x2E9B.
     // SAFETY:
@@ -53,7 +57,9 @@ pub fn calibrate_tsc() -> u64 {
     // Enable PIT Channel 2 gate (bit 0) without speaker (bit 1).
     // SAFETY:
     // - Writing to port 0x61 is safe to start the timer.
-    unsafe { gate.write((gate.read() & !0x02) | 0x01); }
+    unsafe {
+        gate.write((gate.read() & !0x02) | 0x01);
+    }
 
     let start_tsc = rdtsc();
 
@@ -62,7 +68,9 @@ pub fn calibrate_tsc() -> u64 {
         // Latch Channel 2 count: write 0b10000000 (0x80) to command port 0x43.
         // SAFETY:
         // - Latching PIT2 count is safe inside ring 0.
-        unsafe { cmd.write(0x80); }
+        unsafe {
+            cmd.write(0x80);
+        }
         // SAFETY:
         // - Reading latch values from PIT2 data port 0x42 is safe.
         let lo = unsafe { chan2.read() };
@@ -78,10 +86,12 @@ pub fn calibrate_tsc() -> u64 {
     // Restore original gate settings.
     // SAFETY:
     // - Restoring original gate state on port 0x61 is safe.
-    unsafe { gate.write(gate_orig); }
+    unsafe {
+        gate.write(gate_orig);
+    }
 
     let diff = end_tsc.saturating_sub(start_tsc);
-    
+
     // 10 milliseconds = 10,000 microseconds.
     let cycles_per_us = diff / 10000;
     if cycles_per_us == 0 {

@@ -4,9 +4,9 @@
 //! area and draws each line of text aligned to the top-left of the box interior.
 
 extern crate alloc;
-use alloc::vec::Vec;
-use crate::screen::{Color, with_screen};
+use crate::screen::{with_screen, Color};
 use crate::{screen_cols, screen_rows};
+use alloc::vec::Vec;
 
 /// Framed multi-line text container widget.
 pub struct TextBox {
@@ -51,28 +51,56 @@ impl TextBox {
         bg: Color,
         border_fg: Color,
     ) -> Self {
-        Self { row, col, width, height, lines: Vec::from(lines), fg, bg, border_fg }
+        Self {
+            row,
+            col,
+            width,
+            height,
+            lines: Vec::from(lines),
+            fg,
+            bg,
+            border_fg,
+        }
     }
 
     /// Renders the TextBox frame and its content lines to the screen buffer.
     pub fn draw(&self) {
         // Step 1: Validate starting coordinates.
-        if self.row >= screen_rows() || self.col >= screen_cols() { return; }
+        if self.row >= screen_rows() || self.col >= screen_cols() {
+            return;
+        }
 
         with_screen(|screen| {
             // Step 2: Draw the outer CP437 single-line box border frame.
-            screen.draw_box(self.row, self.col, self.width, self.height, self.border_fg, self.bg);
+            screen.draw_box(
+                self.row,
+                self.col,
+                self.width,
+                self.height,
+                self.border_fg,
+                self.bg,
+            );
 
             // Step 3: Compute inner dimensions (excluding border columns/rows).
-            let inner_width  = self.width.saturating_sub(2);
+            let inner_width = self.width.saturating_sub(2);
             let inner_height = self.height.saturating_sub(2);
 
             // Step 4: Clear the interior area with empty spaces.
-            screen.fill_rect(self.row + 1, self.col + 1, inner_width, inner_height, b' ', self.fg, self.bg);
+            screen.fill_rect(
+                self.row + 1,
+                self.col + 1,
+                inner_width,
+                inner_height,
+                b' ',
+                self.fg,
+                self.bg,
+            );
 
             // Step 5: Render text lines sequentially inside the cleared box.
             for (i, &line) in self.lines.iter().enumerate() {
-                if i >= inner_height { break; }
+                if i >= inner_height {
+                    break;
+                }
                 screen.draw_at(self.row + 1 + i, self.col + 1, line, self.fg, self.bg);
             }
         });

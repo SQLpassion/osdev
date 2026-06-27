@@ -1,10 +1,11 @@
 //! Physical memory manager implementation.
 
+use super::types::{
+    align_up, clear_bit, set_bit, virt_to_phys, PageFrame, PmmLayoutHeader, PmmRegion,
+    KERNEL_OFFSET, PAGE_SIZE, STACK_TOP,
+};
 use crate::boot_info::{BootInfo, UnifiedMemoryEntry, BOOT_INFO_PTR};
 use crate::memory::bios::{self, BiosInformationBlock, BiosMemoryRegion};
-use super::types::{
-    align_up, clear_bit, set_bit, virt_to_phys, PageFrame, PmmLayoutHeader, PmmRegion, KERNEL_OFFSET, PAGE_SIZE, STACK_TOP
-};
 use core::sync::atomic::Ordering;
 
 extern "C" {
@@ -103,7 +104,7 @@ impl PhysicalMemoryManager {
         let metadata_base = select_metadata_base(boot_pmm_metadata_base, kernel_end_phys);
         let start_addr = align_up(metadata_base, PAGE_SIZE);
         let header = start_addr as *mut PmmLayoutHeader;
-        
+
         // SAFETY:
         // - `header` points into reserved physical memory owned by PMM metadata.
         // - We initialize the layout header exactly once during PMM construction.
@@ -182,7 +183,7 @@ impl PhysicalMemoryManager {
                     count += 1;
                 }
             }
-            
+
             // SAFETY: `header` is valid and writable during PMM initialization.
             unsafe {
                 (*header).region_count = count;
@@ -403,12 +404,12 @@ impl PhysicalMemoryManager {
             let bitmap = r.bitmap_start as *mut u64;
             let word_idx = (bit_idx / 64) as usize;
             let bit_mask = 1u64 << (bit_idx % 64);
-            
+
             // SAFETY:
             // - `bit_idx` is derived from a PFN proven to be inside this region.
             // - Therefore `word_idx` addresses a valid bitmap word.
             let word_ptr = unsafe { bitmap.add(word_idx) };
-            
+
             // SAFETY: `word_ptr` points to a valid bitmap word for this region.
             let word_val = unsafe { *word_ptr };
 

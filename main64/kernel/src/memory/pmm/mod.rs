@@ -20,14 +20,15 @@ use crate::console::with_console;
 use crate::sync::spinlock::SpinLock;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-pub mod types;
 pub mod manager;
+pub mod types;
 
+pub use manager::PhysicalMemoryManager;
 #[allow(unused_imports)]
 pub use types::{
-    align_up, virt_to_phys, PageFrame, PmmLayoutHeader, PmmRegion, KERNEL_OFFSET, PAGE_SIZE, STACK_TOP,
+    align_up, virt_to_phys, PageFrame, PmmLayoutHeader, PmmRegion, KERNEL_OFFSET, PAGE_SIZE,
+    STACK_TOP,
 };
-pub use manager::PhysicalMemoryManager;
 
 /// Wrapper that holds the global PMM behind a `SpinLock` for thread-safe access.
 /// An `AtomicBool` tracks whether `init()` has been called.

@@ -3,8 +3,8 @@
 use crate::sync::spinlock::SpinLock;
 use core::fmt::{self, Write as _};
 
-use crate::drivers::screen::Color;
 use crate::console::KernelConsole;
+use crate::drivers::screen::Color;
 use crate::drivers::serial;
 
 const CAPTURE_BUF_SIZE: usize = 16 * 1024;

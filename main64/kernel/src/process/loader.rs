@@ -133,7 +133,11 @@ pub fn map_program_image_into_user_address_space(image: &[u8]) -> ExecResult<Loa
 ///
 /// All progress is tracked in `state` so caller-side rollback can precisely
 /// release only the resources that are still loader-owned on error.
-fn try_map_program_image(user_cr3: u64, image: &[u8], state: &mut MapState) -> ExecResult<LoadedProgram> {
+fn try_map_program_image(
+    user_cr3: u64,
+    image: &[u8],
+    state: &mut MapState,
+) -> ExecResult<LoadedProgram> {
     let code_page_count = page_count_for_len(image.len());
 
     // Step 1: Allocate all code frames + stack frame in a single PMM lock scope.
@@ -163,16 +167,18 @@ fn try_map_program_image(user_cr3: u64, image: &[u8], state: &mut MapState) -> E
         }
 
         // Step 2b: Map writable bootstrap stack page for initial ring-3 entry.
-        vmm::map_user_page(USER_STACK_BOOTSTRAP_PAGE_VA, allocated_stack_pfn, true).map_err(|e| {
-            crate::logging::logln(
-                "loader",
-                format_args!(
+        vmm::map_user_page(USER_STACK_BOOTSTRAP_PAGE_VA, allocated_stack_pfn, true).map_err(
+            |e| {
+                crate::logging::logln(
+                    "loader",
+                    format_args!(
                     "LOADER: map_user_page(stack, va={:#x}, pfn={:#x}, writable=true) failed: {:?}",
                     USER_STACK_BOOTSTRAP_PAGE_VA, allocated_stack_pfn, e
                 ),
-            );
-            ExecError::MappingFailed
-        })?;
+                );
+                ExecError::MappingFailed
+            },
+        )?;
 
         // Mark stack as mapped so rollback delegates release to VMM teardown.
         state.stack_mapped = true;
@@ -202,7 +208,11 @@ fn try_map_program_image(user_cr3: u64, image: &[u8], state: &mut MapState) -> E
         //   for at least `image.len()` bytes in current CR3.
         // - Source and destination do not overlap (kernel image vs. user VA range).
         unsafe {
-            core::ptr::copy_nonoverlapping(image.as_ptr(), USER_PROGRAM_ENTRY_RIP as *mut u8, image.len());
+            core::ptr::copy_nonoverlapping(
+                image.as_ptr(),
+                USER_PROGRAM_ENTRY_RIP as *mut u8,
+                image.len(),
+            );
         }
 
         // Zero only tail bytes not overwritten by the image payload.
@@ -345,10 +355,7 @@ fn release_allocated_code_pfns(mgr: &mut pmm::PhysicalMemoryManager, code_pfns: 
 ///
 /// Uses the same explicit owned-code teardown policy as normal process exit and
 /// then releases only frames that were allocated but never mapped.
-fn cleanup_failed_program_mapping(
-    user_cr3: u64,
-    state: &MapState,
-) {
+fn cleanup_failed_program_mapping(user_cr3: u64, state: &MapState) {
     // Teardown only the mapped ranges with owned-code policy:
     // - `mapped_code_pages` tracks successful code-leaf mappings,
     // - stack teardown only runs when bootstrap page mapping succeeded,

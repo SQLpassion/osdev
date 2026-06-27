@@ -298,7 +298,7 @@ fn test_selecting_user_task_updates_tss_rsp0_from_task_context() {
     let frame_a = sched::task_frame_ptr(task_a).expect("task A frame should exist");
     let expected_rsp0 = 0xFFFF_8000_0013_7000u64;
 
-    // Step 3: Configure user context using the real kernel CR3. 
+    // Step 3: Configure user context using the real kernel CR3.
     // Using a real, valid CR3 ensures that the CPU does not switch to an unmapped page table and triple-fault if a context switch occurs.
     assert!(
         sched::set_task_user_context(task_a, kernel_cr3, 0x0000_7FFF_FFFF_F000, expected_rsp0),
@@ -784,7 +784,10 @@ fn test_slot_vec_shrinks_after_task_removal() {
     // After the Vec was trimmed to zero, spawn must still work correctly.
     // The first new task must land at slot index 0 (Vec is empty, so push at 0).
     let t4 = sched::spawn_kernel_task(dummy_task_e).expect("spawn after full shrink must succeed");
-    assert!(t4 == 0, "first spawn after full shrink must reuse slot index 0");
+    assert!(
+        t4 == 0,
+        "first spawn after full shrink must reuse slot index 0"
+    );
     assert!(
         sched::slot_table_len() == 1,
         "slot table must be length 1 after a single new spawn"
@@ -1885,7 +1888,10 @@ fn test_user_task_mmap_syscall() {
     assert_eq!(ret_ptr_val, vmm::USER_HEAP_BASE);
 
     // Step 6: Verify the user heap top was advanced by exactly 1 page.
-    assert_eq!(sched::current_user_heap_top(), Some(vmm::USER_HEAP_BASE + 4096));
+    assert_eq!(
+        sched::current_user_heap_top(),
+        Some(vmm::USER_HEAP_BASE + 4096)
+    );
 
     // Step 7: Temporarily activate the user task address space to verify memory accessibility.
     vmm::with_address_space(user_cr3, || {
@@ -1901,13 +1907,8 @@ fn test_user_task_mmap_syscall() {
     });
 
     // Step 8: Call mmap with addr=0, size=0; must return the invalid argument error sentinel.
-    let err_val = kaos_kernel::syscall::dispatch(
-        kaos_kernel::syscall::SyscallId::Mmap as u64,
-        0,
-        0,
-        0,
-        0,
-    );
+    let err_val =
+        kaos_kernel::syscall::dispatch(kaos_kernel::syscall::SyscallId::Mmap as u64, 0, 0, 0, 0);
     assert_eq!(err_val, kaos_kernel::syscall::SYSCALL_ERR_INVALID_ARG);
 
     // Step 9: Call mmap with a size exceeding USER_HEAP_SIZE; must return the invalid argument error sentinel.

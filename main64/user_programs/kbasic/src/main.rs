@@ -3,15 +3,15 @@
 
 extern crate alloc;
 
-mod token;
 mod interpreter;
+mod token;
 
 #[cfg(not(test))]
-use lib_kaos::{print, println, console};
+use interpreter::Interpreter;
+#[cfg(not(test))]
+use lib_kaos::{console, print, println};
 #[cfg(not(test))]
 use token::tokenize_line;
-#[cfg(not(test))]
-use interpreter::Interpreter;
 
 /// The main entry point of the user-space basic interpreter.
 #[cfg(not(test))]

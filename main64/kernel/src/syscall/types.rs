@@ -413,6 +413,3 @@ pub struct UserDateTime {
     /// Explicit padding for 8-byte alignment structure size matching.
     pub _padding: [u8; 7],
 }
-
-
-

@@ -15,8 +15,8 @@
 use core::arch::asm;
 
 use super::{
-    abi, SysError, SyscallId, SYSCALL_ERR_INVALID_ARG, SYSCALL_ERR_IO,
-    SYSCALL_ERR_OUT_OF_MEMORY, SYSCALL_ERR_UNSUPPORTED,
+    abi, SysError, SyscallId, SYSCALL_ERR_INVALID_ARG, SYSCALL_ERR_IO, SYSCALL_ERR_OUT_OF_MEMORY,
+    SYSCALL_ERR_UNSUPPORTED,
 };
 
 /// Normalizes a raw input byte for one-shot console echo.
@@ -486,7 +486,10 @@ pub fn sys_get_pci_device_count() -> Result<usize, SysError> {
 ///   must ensure `out` points to a valid `UserPciDevice` buffer.
 #[inline(always)]
 #[cfg_attr(not(test), allow(dead_code))]
-pub unsafe fn sys_get_pci_device(index: usize, out: *mut super::types::UserPciDevice) -> Result<(), SysError> {
+pub unsafe fn sys_get_pci_device(
+    index: usize,
+    out: *mut super::types::UserPciDevice,
+) -> Result<(), SysError> {
     let raw_value = unsafe {
         // SAFETY:
         // - This requires `unsafe` because syscall entry executes raw ABI-level interrupt machinery.
@@ -528,12 +531,19 @@ pub fn sys_get_bios_memory_map_entry_count() -> Result<usize, SysError> {
 ///   must ensure `out` points to a valid `UserBiosMemoryRegion` buffer.
 #[inline(always)]
 #[cfg_attr(not(test), allow(dead_code))]
-pub unsafe fn sys_get_bios_memory_map_entry(index: usize, out: *mut super::types::UserBiosMemoryRegion) -> Result<(), SysError> {
+pub unsafe fn sys_get_bios_memory_map_entry(
+    index: usize,
+    out: *mut super::types::UserBiosMemoryRegion,
+) -> Result<(), SysError> {
     let raw_value = unsafe {
         // SAFETY:
         // - This requires `unsafe` because syscall entry executes raw ABI-level interrupt machinery.
         // - The wrapper runs only in environments where the `int 0x80` entry is configured.
-        abi::syscall2(SyscallId::GetBiosMemoryMapEntry as u64, index as u64, out as u64)
+        abi::syscall2(
+            SyscallId::GetBiosMemoryMapEntry as u64,
+            index as u64,
+            out as u64,
+        )
     };
 
     match raw_value {
@@ -587,7 +597,3 @@ pub fn sys_poll_key() -> Result<u8, SysError> {
         byte => Ok(byte as u8),
     }
 }
-
-
-
-

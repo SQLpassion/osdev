@@ -13,8 +13,8 @@
 //! - Payload pointer is always `header + HEADER_SIZE`.
 //! - Heap growth is page-sized (`HEAP_GROWTH`) and relies on demand paging.
 
-pub mod types;
 pub mod generic;
+pub mod types;
 
 #[cfg(feature = "kernel")]
 pub mod kernel;
@@ -29,7 +29,6 @@ pub use generic::{Heap, HeapEnvironment};
 #[allow(unused_imports)]
 #[cfg(feature = "kernel")]
 pub use kernel::{
-    init, is_initialized, malloc, free, run_self_test,
-    debug_output_enabled, set_debug_output, max_heap_size,
-    KernelHeapEnv,
+    debug_output_enabled, free, init, is_initialized, malloc, max_heap_size, run_self_test,
+    set_debug_output, KernelHeapEnv,
 };

@@ -28,7 +28,7 @@ use core::ptr::{addr_of, addr_of_mut};
 use core::sync::atomic::Ordering;
 
 use kaos_kernel::boot_info::{
-    BootInfo, FramebufferInfo, UnifiedMemoryEntry, VideoModeType, BOOT_INFO_PTR, PixelFormat,
+    BootInfo, FramebufferInfo, PixelFormat, UnifiedMemoryEntry, VideoModeType, BOOT_INFO_PTR,
 };
 use kaos_kernel::memory::pmm::{self, KERNEL_OFFSET, PAGE_SIZE, STACK_TOP};
 
@@ -94,14 +94,26 @@ pub extern "C" fn KernelMain(_kernel_size: u64) -> ! {
     // before they are published to the PMM.
     unsafe {
         let mmap = &mut *addr_of_mut!(MMAP);
-        mmap[0] = UnifiedMemoryEntry { start: 0, size: KERNEL_OFFSET, is_usable: true };
-        mmap[1] = UnifiedMemoryEntry { start: KERNEL_OFFSET, size: MAIN_REGION_SIZE, is_usable: true };
+        mmap[0] = UnifiedMemoryEntry {
+            start: 0,
+            size: KERNEL_OFFSET,
+            is_usable: true,
+        };
+        mmap[1] = UnifiedMemoryEntry {
+            start: KERNEL_OFFSET,
+            size: MAIN_REGION_SIZE,
+            is_usable: true,
+        };
         mmap[2] = UnifiedMemoryEntry {
             start: KERNEL_OFFSET + MAIN_REGION_SIZE,
             size: 0x0010_0000,
             is_usable: false,
         };
-        mmap[3] = UnifiedMemoryEntry { start: meta_addr, size: META_REGION_SIZE, is_usable: true };
+        mmap[3] = UnifiedMemoryEntry {
+            start: meta_addr,
+            size: META_REGION_SIZE,
+            is_usable: true,
+        };
 
         let bi = &mut *addr_of_mut!(SYN_BOOT_INFO);
         bi.magic = BOOT_MAGIC;
@@ -163,13 +175,19 @@ fn test_synthetic_uefi_regions_parsed() {
             "only the two usable regions at/above KERNEL_OFFSET must survive the filter"
         );
 
-        assert_eq!(regions[0].start, KERNEL_OFFSET, "region 0 starts at KERNEL_OFFSET");
+        assert_eq!(
+            regions[0].start, KERNEL_OFFSET,
+            "region 0 starts at KERNEL_OFFSET"
+        );
         assert_eq!(
             regions[0].frames_total, MAIN_REGION_FRAMES,
             "region 0 frame count"
         );
 
-        assert_eq!(regions[1].start, meta_addr, "region 1 is the metadata-backing region");
+        assert_eq!(
+            regions[1].start, meta_addr,
+            "region 1 is the metadata-backing region"
+        );
         assert_eq!(
             regions[1].frames_total, META_REGION_FRAMES,
             "region 1 frame count"

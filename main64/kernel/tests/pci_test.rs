@@ -11,8 +11,8 @@
 extern crate alloc;
 
 use core::panic::PanicInfo;
-use kaos_kernel::drivers::pci;
 use kaos_kernel::arch::interrupts;
+use kaos_kernel::drivers::pci;
 use kaos_kernel::memory::{heap, pmm, vmm};
 
 /// Entry point for the PCI integration test kernel.
@@ -55,7 +55,7 @@ fn test_pci_init_and_scan() {
 
     // Step 2: Retrieve the list of detected devices.
     let devices = pci::get_devices();
-    
+
     // Step 3: Print scanned devices for serial/log inspectability.
     pci::print_devices();
 
@@ -63,8 +63,14 @@ fn test_pci_init_and_scan() {
     for dev in devices.iter() {
         assert!(dev.device < 32, "Device/slot ID must be less than 32");
         assert!(dev.function < 8, "Function ID must be less than 8");
-        assert_ne!(dev.vendor_id, 0xFFFF, "Found device with invalid Vendor ID (0xFFFF)");
-        assert_ne!(dev.vendor_id, 0x0000, "Found device with invalid Vendor ID (0x0000)");
+        assert_ne!(
+            dev.vendor_id, 0xFFFF,
+            "Found device with invalid Vendor ID (0xFFFF)"
+        );
+        assert_ne!(
+            dev.vendor_id, 0x0000,
+            "Found device with invalid Vendor ID (0x0000)"
+        );
     }
 }
 
@@ -106,7 +112,10 @@ fn test_pci_find_by_class() {
     if let Some(first_device) = devices.first() {
         // Class/subclass lookup must succeed for any discovered device.
         let found = pci::find_by_class(first_device.class_code, first_device.subclass);
-        assert!(found.is_some(), "Should find a device with matching class/subclass");
+        assert!(
+            found.is_some(),
+            "Should find a device with matching class/subclass"
+        );
         let found_dev = found.unwrap();
         assert_eq!(found_dev.class_code, first_device.class_code);
         assert_eq!(found_dev.subclass, first_device.subclass);
@@ -130,7 +139,10 @@ fn test_pci_string_mapping() {
     assert_eq!(pci::vendor_to_str(0x9999), "Unknown Vendor");
 
     // 2. Verify standard devices
-    assert_eq!(pci::device_to_str(0x8086, 0x100E), "82540EM Gigabit Ethernet Controller");
+    assert_eq!(
+        pci::device_to_str(0x8086, 0x100E),
+        "82540EM Gigabit Ethernet Controller"
+    );
     assert_eq!(pci::device_to_str(0x1234, 0x1111), "Bochs/QEMU VGA Card");
     assert_eq!(pci::device_to_str(0xFFFF, 0x0000), "Generic PCI Device");
 
@@ -160,7 +172,10 @@ fn test_pci_filter_by_category() {
         header_type: 0,
         interrupt_line: 0,
         interrupt_pin: 0,
-        bars: [pci::PciBar { bar_type: pci::BarType::None, raw_value: 0 }; 6],
+        bars: [pci::PciBar {
+            bar_type: pci::BarType::None,
+            raw_value: 0,
+        }; 6],
     };
 
     let dev_network = pci::PciDevice {
@@ -176,7 +191,10 @@ fn test_pci_filter_by_category() {
         header_type: 0,
         interrupt_line: 0,
         interrupt_pin: 0,
-        bars: [pci::PciBar { bar_type: pci::BarType::None, raw_value: 0 }; 6],
+        bars: [pci::PciBar {
+            bar_type: pci::BarType::None,
+            raw_value: 0,
+        }; 6],
     };
 
     let dev_display = pci::PciDevice {
@@ -192,7 +210,10 @@ fn test_pci_filter_by_category() {
         header_type: 0,
         interrupt_line: 0,
         interrupt_pin: 0,
-        bars: [pci::PciBar { bar_type: pci::BarType::None, raw_value: 0 }; 6],
+        bars: [pci::PciBar {
+            bar_type: pci::BarType::None,
+            raw_value: 0,
+        }; 6],
     };
 
     let dev_bridge = pci::PciDevice {
@@ -208,7 +229,10 @@ fn test_pci_filter_by_category() {
         header_type: 0,
         interrupt_line: 0,
         interrupt_pin: 0,
-        bars: [pci::PciBar { bar_type: pci::BarType::None, raw_value: 0 }; 6],
+        bars: [pci::PciBar {
+            bar_type: pci::BarType::None,
+            raw_value: 0,
+        }; 6],
     };
 
     let devices = [dev_storage, dev_network, dev_display, dev_bridge];
@@ -258,7 +282,8 @@ fn test_pci_get_device() {
     }
 
     let dev_invalid = pci::get_device(count);
-    assert!(dev_invalid.is_none(), "Should not retrieve device at out-of-bounds index");
+    assert!(
+        dev_invalid.is_none(),
+        "Should not retrieve device at out-of-bounds index"
+    );
 }
-
-

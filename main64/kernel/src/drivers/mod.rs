@@ -6,4 +6,3 @@ pub mod pci;
 pub mod screen;
 pub mod serial;
 pub mod time;
-

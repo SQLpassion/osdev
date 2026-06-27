@@ -1,7 +1,9 @@
 //! PCI-related system call implementations.
 
 use crate::drivers::pci;
-use crate::syscall::types::{is_valid_user_buffer, SyscallError, SyscallResult, UserPciBar, UserPciDevice};
+use crate::syscall::types::{
+    is_valid_user_buffer, SyscallError, SyscallResult, UserPciBar, UserPciDevice,
+};
 
 /// Implements `GetPciDeviceCount()`.
 ///
@@ -43,8 +45,16 @@ pub fn syscall_get_pci_device_impl(index: u64, out_ptr: *mut UserPciDevice) -> S
         let (bar_type, address, size, prefetchable) = match raw_bar.bar_type {
             pci::BarType::None => (0, 0, 0, false),
             pci::BarType::Io { port, size } => (1, port as u64, size as u64, false),
-            pci::BarType::Memory32 { address, size, prefetchable } => (2, address as u64, size as u64, prefetchable),
-            pci::BarType::Memory64 { address, size, prefetchable } => (3, address, size, prefetchable),
+            pci::BarType::Memory32 {
+                address,
+                size,
+                prefetchable,
+            } => (2, address as u64, size as u64, prefetchable),
+            pci::BarType::Memory64 {
+                address,
+                size,
+                prefetchable,
+            } => (3, address, size, prefetchable),
         };
         bars[i] = UserPciBar {
             bar_type,

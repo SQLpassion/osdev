@@ -3,7 +3,7 @@
 use crate::{
     decode_result,
     raw::{syscall0, syscall1, syscall2},
-    SyscallId, SysError,
+    SysError, SyscallId,
 };
 
 /// Writes `msg` to the VGA text console.
@@ -11,7 +11,11 @@ use crate::{
 pub fn writeline(msg: &[u8]) -> Result<(), SysError> {
     let raw = unsafe {
         // SAFETY: `msg` is a valid slice whose pointer and length are passed to the kernel.
-        syscall2(SyscallId::WriteConsole as u64, msg.as_ptr() as u64, msg.len() as u64)
+        syscall2(
+            SyscallId::WriteConsole as u64,
+            msg.as_ptr() as u64,
+            msg.len() as u64,
+        )
     };
     decode_result(raw).map(|_| ())
 }
@@ -21,7 +25,11 @@ pub fn writeline(msg: &[u8]) -> Result<(), SysError> {
 pub fn write_serial(msg: &[u8]) -> Result<(), SysError> {
     let raw = unsafe {
         // SAFETY: `msg` is a valid slice whose pointer and length are passed to the kernel.
-        syscall2(SyscallId::WriteSerial as u64, msg.as_ptr() as u64, msg.len() as u64)
+        syscall2(
+            SyscallId::WriteSerial as u64,
+            msg.as_ptr() as u64,
+            msg.len() as u64,
+        )
     };
     decode_result(raw).map(|_| ())
 }
@@ -157,16 +165,16 @@ pub enum Key {
 impl Key {
     fn from_raw(byte: u8) -> Self {
         match byte {
-            0x00        => Key::Unknown,
-            0x80        => Key::Escape,
-            0x81        => Key::Backspace,
-            0x82        => Key::Enter,
-            0x83        => Key::ArrowUp,
-            0x84        => Key::ArrowDown,
-            0x85        => Key::ArrowLeft,
-            0x86        => Key::ArrowRight,
+            0x00 => Key::Unknown,
+            0x80 => Key::Escape,
+            0x81 => Key::Backspace,
+            0x82 => Key::Enter,
+            0x83 => Key::ArrowUp,
+            0x84 => Key::ArrowDown,
+            0x85 => Key::ArrowLeft,
+            0x86 => Key::ArrowRight,
             b if b >= 0x90 => Key::F(b.wrapping_sub(0x8F)),
-            b           => Key::Char(b),
+            b => Key::Char(b),
         }
     }
 }

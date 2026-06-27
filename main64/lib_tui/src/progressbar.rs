@@ -3,11 +3,11 @@
 //! Visualizes completion metrics on a horizontal line with bracket borders,
 //! block characters (`█`), and a numeric trailing percentage readout (e.g., ` 74%`).
 
-use crate::screen::{Color, with_screen};
+use crate::screen::{with_screen, Color};
 use crate::screen_rows;
 
 /// Block character code for the filled section of the progress bar.
-const FILL_CHAR:  u8 = 0xDB; // █
+const FILL_CHAR: u8 = 0xDB; // █
 /// Shade character code for the empty section of the progress bar.
 const EMPTY_CHAR: u8 = 0xB0; // ░
 /// Minimum width required to draw the bar and the trailing percentage.
@@ -42,19 +42,39 @@ impl ProgressBar {
     /// * `fg` - Foreground color.
     /// * `bg` - Background color.
     /// * `fill_color` - Color of the filled block characters.
-    pub const fn new(row: usize, col: usize, width: usize, value: usize, fg: Color, bg: Color, fill_color: Color) -> Self {
+    pub const fn new(
+        row: usize,
+        col: usize,
+        width: usize,
+        value: usize,
+        fg: Color,
+        bg: Color,
+        fill_color: Color,
+    ) -> Self {
         let v = if value > 100 { 100 } else { value };
-        Self { row, col, width, value: v, fg, bg, fill_color }
+        Self {
+            row,
+            col,
+            width,
+            value: v,
+            fg,
+            bg,
+            fill_color,
+        }
     }
 
     /// Updates the progress bar value, clamping it to a maximum of 100%.
     #[allow(dead_code)]
-    pub fn set_value(&mut self, value: usize) { self.value = value.min(100); }
+    pub fn set_value(&mut self, value: usize) {
+        self.value = value.min(100);
+    }
 
     /// Renders the progress bar to the screen buffer.
     pub fn draw(&self) {
         // Step 1: Validate row index and width constraints.
-        if self.row >= screen_rows() || self.width < MIN_WIDTH { return; }
+        if self.row >= screen_rows() || self.width < MIN_WIDTH {
+            return;
+        }
 
         // Step 2: Compute bar graphics dimensions.
         // We subtract 7 columns for border brackets `[...]` and percentage readout ` XXX%`.
@@ -66,7 +86,8 @@ impl ProgressBar {
             let mut c = self.col;
 
             // Draw opening bracket.
-            screen.draw_char_at(self.row, c, b'[', self.fg, self.bg); c += 1;
+            screen.draw_char_at(self.row, c, b'[', self.fg, self.bg);
+            c += 1;
 
             // Draw filled block sections.
             for _ in 0..filled {
@@ -81,22 +102,27 @@ impl ProgressBar {
             }
 
             // Draw closing bracket and separation space.
-            screen.draw_char_at(self.row, c, b']', self.fg, self.bg); c += 1;
-            screen.draw_char_at(self.row, c, b' ', self.fg, self.bg); c += 1;
+            screen.draw_char_at(self.row, c, b']', self.fg, self.bg);
+            c += 1;
+            screen.draw_char_at(self.row, c, b' ', self.fg, self.bg);
+            c += 1;
 
             // Deconstruct percentage into individual digits.
             let hundreds = (self.value / 100) as u8;
-            let tens     = ((self.value / 10) % 10) as u8;
-            let units    = (self.value % 10) as u8;
+            let tens = ((self.value / 10) % 10) as u8;
+            let units = (self.value % 10) as u8;
 
             // Draw digits with leading-space suppression for cleaner alignment.
             let h_char = if hundreds > 0 { b'0' + hundreds } else { b' ' };
-            screen.draw_char_at(self.row, c, h_char, self.fg, self.bg); c += 1;
+            screen.draw_char_at(self.row, c, h_char, self.fg, self.bg);
+            c += 1;
 
             let t_char = if self.value >= 10 { b'0' + tens } else { b' ' };
-            screen.draw_char_at(self.row, c, t_char, self.fg, self.bg); c += 1;
+            screen.draw_char_at(self.row, c, t_char, self.fg, self.bg);
+            c += 1;
 
-            screen.draw_char_at(self.row, c, b'0' + units, self.fg, self.bg); c += 1;
+            screen.draw_char_at(self.row, c, b'0' + units, self.fg, self.bg);
+            c += 1;
 
             // Draw percentage symbol.
             screen.draw_char_at(self.row, c, b'%', self.fg, self.bg);

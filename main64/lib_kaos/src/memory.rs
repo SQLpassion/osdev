@@ -1,6 +1,6 @@
 //! Memory mapping syscall wrapper.
 
-use crate::{decode_result, raw::syscall2, SyscallId, SysError};
+use crate::{decode_result, raw::syscall2, SysError, SyscallId};
 
 /// Maps `length` bytes of user-space memory at virtual address `addr`.
 ///

@@ -1,9 +1,9 @@
 //! Console and serial I/O system call implementations.
 
-use core::slice;
 use crate::console::with_console;
 use crate::drivers::serial::Serial;
-use crate::syscall::types::{is_valid_user_buffer, SyscallResult, SyscallError, SYSCALL_OK};
+use crate::syscall::types::{is_valid_user_buffer, SyscallError, SyscallResult, SYSCALL_OK};
+use core::slice;
 
 /// Maximum number of bytes that can be written in a single WriteSerial syscall.
 /// This limit prevents denial-of-service by bounding syscall execution time
@@ -12,7 +12,6 @@ pub const MAX_SERIAL_WRITE_LEN: usize = 4096;
 /// Maximum number of bytes that can be written in a single WriteConsole syscall.
 /// Same DoS/fairness rationale as `MAX_SERIAL_WRITE_LEN`.
 pub const MAX_CONSOLE_WRITE_LEN: usize = 4096;
-
 
 /// Implements `WriteSerial(ptr, len)`.
 ///

@@ -12,7 +12,7 @@ mod fat12;
 mod vga;
 
 use asm::execute_kernel;
-use boot_info::{BootInfo, FramebufferInfo, VideoModeType, UnifiedMemoryEntry};
+use boot_info::{BootInfo, FramebufferInfo, UnifiedMemoryEntry, VideoModeType};
 use fat12::load_kernel_into_memory;
 use vga::VgaWriter;
 

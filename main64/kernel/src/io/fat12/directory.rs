@@ -1,10 +1,10 @@
 //! Directory-related operations and entry manipulation for FAT12.
 
-use core::ops::ControlFlow;
 use crate::io::fat12::types::{
-    ATTR_OFFSET, DIRECTORY_ENTRY_SIZE, FIRST_CLUSTER_OFFSET, FILE_SIZE_OFFSET,
-    ROOT_DIRECTORY_ENTRIES, EntryState, Fat12Error, FileEntryMeta, RawRootDirectoryEntry,
+    EntryState, Fat12Error, FileEntryMeta, RawRootDirectoryEntry, ATTR_OFFSET,
+    DIRECTORY_ENTRY_SIZE, FILE_SIZE_OFFSET, FIRST_CLUSTER_OFFSET, ROOT_DIRECTORY_ENTRIES,
 };
+use core::ops::ControlFlow;
 
 /// Normalize user-provided file name into FAT short-name storage layout.
 ///
@@ -158,7 +158,10 @@ where
 
 /// Returns index of the first free directory slot in the root directory.
 pub fn find_free_directory_slot(root_dir: &[u8]) -> Result<usize, Fat12Error> {
-    let entry_count = core::cmp::min(ROOT_DIRECTORY_ENTRIES, root_dir.len() / DIRECTORY_ENTRY_SIZE);
+    let entry_count = core::cmp::min(
+        ROOT_DIRECTORY_ENTRIES,
+        root_dir.len() / DIRECTORY_ENTRY_SIZE,
+    );
     for entry_idx in 0..entry_count {
         let start = entry_idx * DIRECTORY_ENTRY_SIZE;
         let first_char = root_dir[start];
@@ -174,9 +177,15 @@ pub fn get_current_fat_date_time() -> (u16, u16) {
     // SAFETY:
     // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
     // - `BIB_OFFSET` points to bootloader-populated BIOS info in low memory.
-    let bib = unsafe { &*(crate::memory::bios::BIB_OFFSET as *const crate::memory::bios::BiosInformationBlock) };
+    let bib = unsafe {
+        &*(crate::memory::bios::BIB_OFFSET as *const crate::memory::bios::BiosInformationBlock)
+    };
 
-    let year = if bib.year >= 1980 { (bib.year - 1980) as u16 } else { 0 };
+    let year = if bib.year >= 1980 {
+        (bib.year - 1980) as u16
+    } else {
+        0
+    };
     let month = (bib.month as u16).clamp(1, 12);
     let day = (bib.day as u16).clamp(1, 31);
     let fat_date = (year << 9) | (month << 5) | day;
@@ -190,7 +199,12 @@ pub fn get_current_fat_date_time() -> (u16, u16) {
 }
 
 /// Creates a new directory entry at `entry_idx`.
-pub fn create_directory_entry(root_dir: &mut [u8], entry_idx: usize, normalized_name: &[u8; 11], first_cluster: u16) {
+pub fn create_directory_entry(
+    root_dir: &mut [u8],
+    entry_idx: usize,
+    normalized_name: &[u8; 11],
+    first_cluster: u16,
+) {
     let start = entry_idx * DIRECTORY_ENTRY_SIZE;
     let entry_bytes = &mut root_dir[start..start + DIRECTORY_ENTRY_SIZE];
 
@@ -214,7 +228,12 @@ pub fn create_directory_entry(root_dir: &mut [u8], entry_idx: usize, normalized_
 }
 
 /// Updates size and first cluster field in the directory entry.
-pub fn update_file_entry(root_dir: &mut [u8], entry_idx: usize, file_size: u32, first_cluster: u16) {
+pub fn update_file_entry(
+    root_dir: &mut [u8],
+    entry_idx: usize,
+    file_size: u32,
+    first_cluster: u16,
+) {
     let start = entry_idx * DIRECTORY_ENTRY_SIZE;
     let entry_bytes = &mut root_dir[start..start + DIRECTORY_ENTRY_SIZE];
 

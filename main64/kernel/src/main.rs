@@ -24,7 +24,6 @@ mod scheduler;
 mod sync;
 mod syscall;
 
-
 use crate::arch::fpu;
 use crate::arch::gdt;
 use crate::arch::interrupts;
@@ -176,7 +175,6 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
     console::init(video_type);
     debugln!("Kernel console initialized");
 
-
     // On a graphics-mode boot (BIOS VBE / UEFI/Linear Framebuffer) the linear framebuffer lives at a high
     // physical address the bootstrap identity map does not cover. Now that the VMM is active,
     // identity-map the framebuffer's physical range so it is reachable, then paint a one-time
@@ -196,10 +194,7 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
             let _ = writeln!(
                 console,
                 "VBE Framebuffer active: {}x{} px (stride: {}, base: 0x{:x})",
-                fb.width,
-                fb.height,
-                fb.pixels_per_scanline,
-                fb.base_address
+                fb.width, fb.height, fb.pixels_per_scanline, fb.base_address
             );
         });
     }
@@ -233,11 +228,13 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
             let _ = writeln!(
                 console,
                 "Resolution: {}x{} px (stride: {})",
-                fb.width,
-                fb.height,
-                fb.pixels_per_scanline
+                fb.width, fb.height, fb.pixels_per_scanline
             );
-            let _ = writeln!(console, "Framebuffer physical address: 0x{:x}", fb.base_address);
+            let _ = writeln!(
+                console,
+                "Framebuffer physical address: 0x{:x}",
+                fb.base_address
+            );
             let _ = writeln!(console, "No legacy ATA disk detected.");
             let _ = writeln!(console, "System halted.");
         });
@@ -370,7 +367,7 @@ fn map_framebuffer(boot_info_raw: u64) {
     unsafe {
         let mut pat = crate::arch::msr::rdmsr(0x277);
         pat &= !(0xFF << 8); // Clear PAT1
-        pat |= 0x01 << 8;  // Set PAT1 to Write-Combining (WC)
+        pat |= 0x01 << 8; // Set PAT1 to Write-Combining (WC)
         crate::arch::msr::wrmsr(0x277, pat);
     }
 
@@ -404,8 +401,6 @@ fn map_framebuffer(boot_info_raw: u64) {
         fb.size
     );
 }
-
-
 
 /// Low-power idle loop entered after the scheduler is started.
 fn idle_loop() -> ! {

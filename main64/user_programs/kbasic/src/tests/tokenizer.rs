@@ -44,7 +44,10 @@ fn test_tokenize_strings() {
     let tokens = tokenize_line("\"\" \"hello\" \"hello world!\"");
     assert_eq!(tokens[0], Token::StringLiteral(String::from("")));
     assert_eq!(tokens[1], Token::StringLiteral(String::from("hello")));
-    assert_eq!(tokens[2], Token::StringLiteral(String::from("hello world!")));
+    assert_eq!(
+        tokens[2],
+        Token::StringLiteral(String::from("hello world!"))
+    );
     assert_eq!(tokens[3], Token::Eof);
 }
 
@@ -52,7 +55,10 @@ fn test_tokenize_strings() {
 fn test_tokenize_unterminated_string() {
     // If quote is not closed, it consumes until end of line
     let tokens = tokenize_line("\"unterminated string");
-    assert_eq!(tokens[0], Token::StringLiteral(String::from("unterminated string")));
+    assert_eq!(
+        tokens[0],
+        Token::StringLiteral(String::from("unterminated string"))
+    );
     assert_eq!(tokens[1], Token::Eof);
 }
 

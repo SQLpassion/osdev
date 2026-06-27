@@ -6,8 +6,8 @@
 #![test_runner(kaos_kernel::testing::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
-use core::panic::PanicInfo;
 use core::fmt::Write;
+use core::panic::PanicInfo;
 use kaos_kernel::drivers::screen::{with_screen, Color, PanicScreenWriter, Screen};
 
 const VGA_BUFFER: usize = 0xFFFF8000000B8000;
@@ -268,7 +268,10 @@ fn test_panic_screen_writer_writes_without_global_lock() {
         // - `cell` addresses the first-row VGA MMIO character cells.
         // - Volatile read is required for MMIO.
         let ch = unsafe { core::ptr::read_volatile(cell as *const u8) };
-        assert!(ch == *byte, "panic writer must write expected byte sequence");
+        assert!(
+            ch == *byte,
+            "panic writer must write expected byte sequence"
+        );
     }
 }
 
@@ -355,9 +358,8 @@ fn test_framebuffer_console_fallback_creation_and_cursor() {
 fn test_framebuffer_console_maps_tui_cp437_bytes_to_glyphs() {
     let fallback = kaos_kernel::console::FramebufferConsole::glyph_for_byte(b'?');
     let cp437_bytes = [
-        0xB0, 0xB3, 0xB4, 0xB5, 0xBA, 0xBB, 0xBC, 0xBF,
-        0xC0, 0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC8,
-        0xC9, 0xCD, 0xD9, 0xDA, 0xDB,
+        0xB0, 0xB3, 0xB4, 0xB5, 0xBA, 0xBB, 0xBC, 0xBF, 0xC0, 0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6,
+        0xC8, 0xC9, 0xCD, 0xD9, 0xDA, 0xDB,
     ];
 
     for &byte in cp437_bytes.iter() {
