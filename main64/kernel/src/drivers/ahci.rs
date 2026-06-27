@@ -15,7 +15,6 @@ const AHCI_PORT_CMD_CR: u32 = 1 << 15;
 /// SATA Signatures
 const SATA_SIG_ATA: u32 = 0x00000101;
 
-
 /// Command List Header
 #[repr(C)]
 pub struct HbaCmdHeader {
@@ -30,6 +29,43 @@ pub struct HbaCmdHeader {
     pub ctbau: u32, // Command table descriptor base address upper 32 bits
     /// DW4 - 7
     pub rsv1: [u32; 4],
+}
+
+#[repr(C)]
+pub struct HbaCmdTbl {
+    pub cfis: [u8; 64], // Command FIS
+    pub acmd: [u8; 16], // ATAPI command
+    pub rsv: [u8; 48],
+    pub prdt_entry: [HbaPrdtEntry; 1],
+}
+
+#[repr(C)]
+pub struct HbaPrdtEntry {
+    pub dba: u32,  // Data base address
+    pub dbau: u32, // Data base address upper 32 bits
+    pub rsv0: u32,
+    pub dbc: u32, // Byte count (bit 0..21), Interrupt on completion (bit 31)
+}
+
+#[repr(C)]
+pub struct FisRegH2D {
+    pub fis_type: u8, // 0x27
+    pub pmport_c: u8, // bit 7 is Command, bit 0..3 is PM port
+    pub command: u8,
+    pub featurel: u8,
+    pub lba0: u8,
+    pub lba1: u8,
+    pub lba2: u8,
+    pub device: u8,
+    pub lba3: u8,
+    pub lba4: u8,
+    pub lba5: u8,
+    pub featureh: u8,
+    pub countl: u8,
+    pub counth: u8,
+    pub icc: u8,
+    pub control: u8,
+    pub rsv1: [u8; 4],
 }
 
 /// Generic Host Control registers (HBA Memory Registers)
@@ -113,6 +149,9 @@ pub struct HbaPort {
 
 /// Global pointer to the active AHCI port (for later use in read/write)
 static mut ACTIVE_PORT: Option<*mut HbaPort> = None;
+
+/// Physical address of the DMA buffer used for sector reads
+static mut DMA_BUFFER_PHYS: u64 = 0;
 
 /// Initializes the AHCI controller if present.
 pub fn init() {
@@ -262,9 +301,12 @@ unsafe fn port_rebase(port: *mut HbaPort) {
     // Offset 1280: Command Table for slot 0
     let ct_phys = frame_phys + 1280;
 
+    // Offset 1536: DMA Buffer (1 sector = 512 bytes)
+    DMA_BUFFER_PHYS = frame_phys + 1536;
+
     // We must link the Command Table base address into the first slot of the Command List
     let cmd_header = &mut *(frame_phys as *mut HbaCmdHeader);
-    cmd_header.prdtl = 8; // Example: we will provide room for 8 PRDT entries per command
+    cmd_header.prdtl = 1; // We use 1 PRDT entry
     cmd_header.ctba = ct_phys as u32;
     cmd_header.ctbau = (ct_phys >> 32) as u32;
 
@@ -281,4 +323,116 @@ unsafe fn port_rebase(port: *mut HbaPort) {
     p.cmd |= AHCI_PORT_CMD_ST;
 
     debugln!("AHCI: Port structures allocated and command engine started.");
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AhciError {
+    NotInitialized,
+    PortError,
+    Timeout,
+}
+
+pub fn read_sectors(buffer: &mut [u8], lba: u32, sector_count: u8) -> Result<(), AhciError> {
+    let port = unsafe { ACTIVE_PORT.ok_or(AhciError::NotInitialized)? };
+    let dma_buf = unsafe { DMA_BUFFER_PHYS };
+    if dma_buf == 0 {
+        return Err(AhciError::NotInitialized);
+    }
+
+    let total_bytes = sector_count as usize * 512;
+    assert!(
+        buffer.len() >= total_bytes,
+        "Buffer too small for AHCI read"
+    );
+
+    for sec in 0..sector_count {
+        let current_lba = lba + sec as u32;
+
+        unsafe {
+            let p = &mut *port;
+            p.is = 0xFFFF_FFFF; // Clear pending interrupt bits
+
+            let slot = 0; // Use slot 0
+            let mut timeout = 1_000_000;
+            loop {
+                let ci = core::ptr::read_volatile(&p.ci);
+                let sact = core::ptr::read_volatile(&p.sact);
+                if (ci & (1 << slot)) == 0 && (sact & (1 << slot)) == 0 {
+                    break;
+                }
+                timeout -= 1;
+                if timeout == 0 {
+                    return Err(AhciError::Timeout);
+                }
+                core::hint::spin_loop();
+            }
+
+            let clb_phys = (p.clb as u64) | ((p.clbu as u64) << 32);
+            let cmd_header = &mut *((clb_phys
+                + (slot as u64 * core::mem::size_of::<HbaCmdHeader>() as u64))
+                as *mut HbaCmdHeader);
+
+            cmd_header.cfl = (core::mem::size_of::<FisRegH2D>() / 4) as u8; // 5 DWORDS
+            cmd_header.flags = 0; // Read
+            cmd_header.prdtl = 1;
+
+            let ctba_phys = (cmd_header.ctba as u64) | ((cmd_header.ctbau as u64) << 32);
+            let cmd_tbl = &mut *(ctba_phys as *mut HbaCmdTbl);
+            core::ptr::write_bytes(
+                cmd_tbl as *mut HbaCmdTbl as *mut u8,
+                0,
+                core::mem::size_of::<HbaCmdTbl>(),
+            );
+
+            // Setup PRDT
+            cmd_tbl.prdt_entry[0].dba = dma_buf as u32;
+            cmd_tbl.prdt_entry[0].dbau = (dma_buf >> 32) as u32;
+            cmd_tbl.prdt_entry[0].dbc = 512 - 1; // Byte count, 0-indexed (511)
+
+            // Setup Command FIS
+            let fis = &mut *(cmd_tbl.cfis.as_mut_ptr() as *mut FisRegH2D);
+            fis.fis_type = 0x27; // Register H2D
+            fis.pmport_c = 1 << 7; // Command
+            fis.command = 0x25; // READ DMA EXT
+
+            fis.lba0 = current_lba as u8;
+            fis.lba1 = (current_lba >> 8) as u8;
+            fis.lba2 = (current_lba >> 16) as u8;
+            fis.device = 1 << 6; // LBA mode
+
+            fis.lba3 = (current_lba >> 24) as u8;
+            fis.lba4 = 0;
+            fis.lba5 = 0;
+
+            fis.countl = 1; // Read 1 sector
+            fis.counth = 0;
+
+            // Issue command
+            p.ci = 1 << slot;
+
+            // Wait for completion
+            let mut timeout2 = 1_000_000;
+            loop {
+                let ci = core::ptr::read_volatile(&p.ci);
+                if (ci & (1 << slot)) == 0 {
+                    break; // Completed
+                }
+                let is = core::ptr::read_volatile(&p.is);
+                if (is & (1 << 30)) != 0 {
+                    // Task File Error
+                    return Err(AhciError::PortError);
+                }
+                timeout2 -= 1;
+                if timeout2 == 0 {
+                    return Err(AhciError::Timeout);
+                }
+                core::hint::spin_loop();
+            }
+
+            // Copy from DMA buffer to caller's buffer
+            let dest = buffer.as_mut_ptr().add(sec as usize * 512);
+            core::ptr::copy_nonoverlapping(dma_buf as *const u8, dest, 512);
+        }
+    }
+    Ok(())
 }
