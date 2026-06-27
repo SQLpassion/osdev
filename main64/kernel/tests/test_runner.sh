@@ -62,9 +62,8 @@ llvm-objcopy -O binary "$TEST_BINARY" "$TEST_BIN" 2>/dev/null || \
 
 # Check if bootloader files exist
 if [ ! -f "$MAIN64_DIR/boot/bootsector.bin" ] || \
-   [ ! -f "$MAIN64_DIR/kaosldr_16/kldr16.bin" ] || \
-   [ ! -f "$MAIN64_DIR/kaosldr_64/target/x86_64-unknown-none/debug/kldr64.bin" ]; then
-    echo "  -> Bootloader files not found. Building bootloaders..."
+   [ ! -f "$MAIN64_DIR/kaosldr_16/kldr16.bin" ]; then
+   echo "  -> Bootloader files not found. Building bootloaders..."
     echo "     Please run build_kernel_debug.sh first to create bootloader files."
     exit 1
 fi
@@ -104,7 +103,7 @@ if command -v fat_imgen &>/dev/null; then
         rm -f kaos64_test.img
         fat_imgen -c -s boot/bootsector.bin -f kaos64_test.img
         fat_imgen -m -f kaos64_test.img -i kaosldr_16/kldr16.bin
-        fat_imgen -m -f kaos64_test.img -i kaosldr_64/target/x86_64-unknown-none/debug/kldr64.bin
+        fat_imgen -m -f kaos64_test.img -i target/x86_64-unknown-none/debug/kldr64.bin
         fat_imgen -m -f kaos64_test.img -i SFile.txt
         fat_imgen -m -f kaos64_test.img -i BigFile.txt
         fat_imgen -m -f kaos64_test.img -i user_programs/hello/hello.bin -n HELLO.BIN
@@ -120,7 +119,7 @@ else
         rm -f kaos64_test.img
         fat_imgen -c -s boot/bootsector.bin -f kaos64_test.img
         fat_imgen -m -f kaos64_test.img -i kaosldr_16/kldr16.bin
-        fat_imgen -m -f kaos64_test.img -i kaosldr_64/target/x86_64-unknown-none/debug/kldr64.bin
+        fat_imgen -m -f kaos64_test.img -i target/x86_64-unknown-none/debug/kldr64.bin
         fat_imgen -m -f kaos64_test.img -i SFile.txt
         fat_imgen -m -f kaos64_test.img -i BigFile.txt
         fat_imgen -m -f kaos64_test.img -i user_programs/hello/hello.bin -n HELLO.BIN
@@ -157,19 +156,19 @@ set +e
 QEMU_LOG="$RESULTS_DIR/$TEST_NAME.log"
 
 if [ -n "$TIMEOUT_CMD" ]; then
-    $TIMEOUT_CMD $TIMEOUT_SECONDS qemu-system-x86_64 \
+    echo "1" | $TIMEOUT_CMD $TIMEOUT_SECONDS qemu-system-x86_64 \
         -drive format=raw,file="$TEST_IMG" \
         -serial stdio \
         -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
         -display none \
-        -no-reboot < /dev/null > "$QEMU_LOG" 2>&1
+        -no-reboot > "$QEMU_LOG" 2>&1
 else
-    qemu-system-x86_64 \
+    echo "1" | qemu-system-x86_64 \
         -drive format=raw,file="$TEST_IMG" \
         -serial stdio \
         -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
         -display none \
-        -no-reboot < /dev/null > "$QEMU_LOG" 2>&1
+        -no-reboot > "$QEMU_LOG" 2>&1
 fi
 
 QEMU_EXIT=$?

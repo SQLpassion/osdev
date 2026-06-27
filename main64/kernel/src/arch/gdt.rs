@@ -182,11 +182,22 @@ gdt_flush_and_reload:
     mov gs, ax
     mov ss, ax
 
-    # NOTE:
-    # - We intentionally do not reload CS here via far return/jump yet.
-    #   The current long-mode code selector from boot remains valid.
-    # - Load task register (TR) with the TSS selector so CPU can use TSS.RSP0
-    #   for ring3->ring0 transitions.
+    # Reload CS via a far return so it references the kernel code descriptor in
+    # the freshly loaded GDT. This must not be skipped: the inherited boot CS is
+    # not necessarily valid in our GDT. The BIOS long-mode loader happens to hand
+    # off CS=0x08 (also our kernel code selector), but UEFI/OVMF hands off
+    # CS=0x38, which has no descriptor in our 7-entry GDT. Executing continues on
+    # the cached descriptor, but the next CS reload (e.g. an `iretq` out of a
+    # fault handler) faults with #GP(0x38). The far return below rebases CS onto
+    # `code_selector` (RDX) so the kernel is independent of the boot firmware.
+    lea rax, [rip + 2f]
+    push rdx
+    push rax
+    retfq
+2:
+
+    # Load task register (TR) with the TSS selector so CPU can use TSS.RSP0
+    # for ring3->ring0 transitions.
     mov ax, cx
     ltr ax
     ret

@@ -38,29 +38,31 @@ use crate::sync::waitqueue_adapter;
 pub mod types;
 pub use types::*;
 
+mod api;
 mod context;
 mod manager;
 mod spawn;
 mod wait;
-mod api;
 
+#[allow(unused_imports)]
+pub use api::{
+    current_task_id, current_user_heap_top, is_user_task, reset_initialization_for_test,
+    set_current_user_heap_top, set_task_user_context, slot_table_len, task_context, task_frame_ptr,
+    task_iret_frame, task_state,
+};
 #[allow(unused_imports)]
 pub use spawn::{spawn_kernel_task, spawn_user_task, spawn_user_task_owning_code};
 #[allow(unused_imports)]
-pub use wait::{block_task, unblock_task, terminate_task, wait_for_task_exit, wait_for_task_exit_with};
-#[allow(unused_imports)]
-pub use api::{
-    task_frame_ptr, task_iret_frame, current_task_id, slot_table_len, set_task_user_context,
-    is_user_task, task_context, task_state, current_user_heap_top, set_current_user_heap_top,
-    reset_initialization_for_test,
+pub use wait::{
+    block_task, terminate_task, unblock_task, wait_for_task_exit, wait_for_task_exit_with,
 };
 
+#[cfg(debug_assertions)]
+use manager::reset_scheduler_state;
 use manager::{
     bootstrap_or_current, find_entry_by_frame, frame_within_any_task_stack, free_pending_stacks,
     reap_zombies, select_next_task, take_pending_stacks_for_free,
 };
-#[cfg(debug_assertions)]
-use manager::reset_scheduler_state;
 
 /// Returns whether the scheduler is currently active.
 #[cfg_attr(not(test), allow(dead_code))]
@@ -276,7 +278,6 @@ pub fn set_kernel_address_space_cr3(kernel_cr3: u64) {
     debug_assert!(kernel_cr3 != 0, "kernel_cr3 must be non-zero");
     set_kernel_and_active_cr3(kernel_cr3);
 }
-
 
 /// IRQ adapter that routes PIT ticks into the scheduler core.
 fn timer_irq_handler(_vector: u8, frame: &mut SavedRegisters) -> *mut SavedRegisters {

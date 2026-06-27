@@ -10,14 +10,12 @@
 //! - User-space programs reuse this generic allocator by providing a Ring 3 mapping environment.
 //! - Integration tests instantiate this directly with mock stacks or environments.
 
-use core::mem::size_of;
 use super::types::{
-    HeapState,
-    compute_aligned_heapblock_size, find_suitable_free_block,
-    allocate_block, compute_heap_growth_for_request, grow_heap,
-    find_block_by_payload_ptr, coalesce_free_block, insert_free_block,
-    header_at, ALIGNMENT,
+    allocate_block, coalesce_free_block, compute_aligned_heapblock_size,
+    compute_heap_growth_for_request, find_block_by_payload_ptr, find_suitable_free_block,
+    grow_heap, header_at, insert_free_block, HeapState, ALIGNMENT,
 };
+use core::mem::size_of;
 
 /// Interface for the allocator's interaction with the environment (Kernel vs. User-space).
 pub trait HeapEnvironment {

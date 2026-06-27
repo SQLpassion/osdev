@@ -3,8 +3,8 @@
 use core::arch::asm;
 use core::mem::size_of;
 
-use crate::arch::interrupts::types::{IRQ_BASE, InterruptStackFrame, SavedRegisters};
 use crate::arch::interrupts::dispatch_irq;
+use crate::arch::interrupts::types::{InterruptStackFrame, SavedRegisters, IRQ_BASE};
 
 const VGA_TEXT_BUFFER: usize = 0xFFFF_8000_000B_8000;
 const VGA_COLS: usize = 80;

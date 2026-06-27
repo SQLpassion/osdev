@@ -79,6 +79,13 @@ RET
 ; EDI: Destination Address
 ;================================================
 ReadSector:
+    ; Wait for drive to be ready (BSY=0, DRQ=0) before writing command block registers
+    MOV     DX, 0x1F7
+.WaitReady:
+    IN      AL, DX
+    TEST    AL, 0x88
+    JNZ     .WaitReady
+
     ; Sector count
     MOV     DX, 0x1F2
     MOV     AL, BL
@@ -105,6 +112,12 @@ ReadSector:
     MOV     AL, 0x20    ; Read Command
     OUT     DX, AL
 
+    ; 400ns delay to allow status bits to stabilize
+    IN      AL, DX
+    IN      AL, DX
+    IN      AL, DX
+    IN      AL, DX
+
     .ReadNextSector:
         CALL    Check_ATA_BSY
         CALL    Check_ATA_DRQ
@@ -128,7 +141,7 @@ LoadFileIntoMemory:
     .LoadRootDirectory:
         ; Load the Root Directory into memory.
         ; It starts at the LBA 19, and consists of 14 sectors.
-        MOV     BL,  0xE                                ; 14 sectors to be read
+        MOV     BX,  0xE                                ; 14 sectors to be read
         MOV     ECX, 0x13                               ; The LBA is 19
         MOV     EDI, ROOTDIRECTORY_AND_FAT_OFFSET       ; Destination address
         CALL    ReadSector                              ; Loads the complete Root Directory into memory
@@ -158,24 +171,18 @@ LoadFileIntoMemory:
 
         ; Load the FATs into memory.
         ; It starts at the LBA 1 (directly after the boot sector), and consists of 18 sectors (2 x 9).
-        MOV     BL, 0x12                                ; 18 sectors to be read
+        MOV     BX, 0x12                                ; 18 sectors to be read
         MOV     ECX, 0x1                                ; The LBA is 1
         MOV     EDI, ROOTDIRECTORY_AND_FAT_OFFSET       ; Offset in memory at which we want to load the FATs
         CALL    ReadSector                              ; Call the load routine
         MOV     EDI, [Loader_Offset]                    ; Address where the first cluster should be stored
 
     .LoadImage:
-        ; Print out the current offset where the cluster is loaded into memory
-        MOV     AX, DI
-        CALL    PrintDecimal
-        MOV     SI, CRLF
-        CALL    PrintLine
-
         ; Load the first sector of the file into memory
         MOV     AX, WORD [Cluster]                      ; First FAT cluster to read
         ADD     AX, 0x1F                                ; Add 31 sectors to the retrieved FAT cluster to get the LBA address of the first FAT cluster
         MOV     ECX, EAX                                ; LBA
-        MOV     BL, 1                                   ; 1 sector to be read
+        MOV     BX, 1                                   ; 1 sector to be read
         CALL    ReadSector                              ; Read the cluster into memory
         
         ; Compute the next cluster that we have to load from disk

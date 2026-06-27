@@ -199,4 +199,3 @@ impl PortLong {
         unsafe { outl(self.port, value) }
     }
 }
-

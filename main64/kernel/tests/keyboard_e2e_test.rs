@@ -403,8 +403,11 @@ fn test_keyboard_clear_buffers_drains_all_inputs() {
     );
 
     // Verify both buffers are populated
-    assert!(keyboard::read_key().is_some(), "key buffer should not be empty");
-    
+    assert!(
+        keyboard::read_key().is_some(),
+        "key buffer should not be empty"
+    );
+
     // Repopulate (reading consumed the event)
     keyboard::enqueue_raw_scancode(0x10);
     keyboard::process_pending_scancodes();
@@ -413,7 +416,12 @@ fn test_keyboard_clear_buffers_drains_all_inputs() {
     keyboard::clear_buffers();
 
     // Verify both are now empty
-    assert!(keyboard::read_char().is_none(), "legacy buffer must be empty after clear_buffers");
-    assert!(keyboard::read_key().is_none(), "key buffer must be empty after clear_buffers");
+    assert!(
+        keyboard::read_char().is_none(),
+        "legacy buffer must be empty after clear_buffers"
+    );
+    assert!(
+        keyboard::read_key().is_none(),
+        "key buffer must be empty after clear_buffers"
+    );
 }
-

@@ -1,9 +1,9 @@
 //! Console and serial I/O system call implementations.
 
-use core::slice;
-use crate::drivers::screen::with_screen;
+use crate::console::with_console;
 use crate::drivers::serial::Serial;
-use crate::syscall::types::{is_valid_user_buffer, SyscallResult, SyscallError, SYSCALL_OK};
+use crate::syscall::types::{is_valid_user_buffer, SyscallError, SyscallResult, SYSCALL_OK};
+use core::slice;
 
 /// Maximum number of bytes that can be written in a single WriteSerial syscall.
 /// This limit prevents denial-of-service by bounding syscall execution time
@@ -12,8 +12,6 @@ pub const MAX_SERIAL_WRITE_LEN: usize = 4096;
 /// Maximum number of bytes that can be written in a single WriteConsole syscall.
 /// Same DoS/fairness rationale as `MAX_SERIAL_WRITE_LEN`.
 pub const MAX_CONSOLE_WRITE_LEN: usize = 4096;
-/// Expected number of cells in a full 80×25 VGA frame.
-const VGA_FRAME_CELLS: usize = 80 * 25;
 
 /// Implements `WriteSerial(ptr, len)`.
 ///
@@ -87,9 +85,9 @@ pub fn syscall_write_console_impl(ptr: *const u8, len: usize) -> SyscallResult<u
         slice::from_raw_parts(ptr, actual_len)
     };
 
-    with_screen(|screen| {
+    with_console(|console| {
         for byte in bytes {
-            screen.print_char(*byte);
+            console.print_char(*byte);
         }
     });
 
@@ -102,8 +100,8 @@ pub fn syscall_write_console_impl(ptr: *const u8, len: usize) -> SyscallResult<u
 /// - upper 32 bits: `row`
 /// - lower 32 bits: `col`
 pub fn syscall_get_cursor_impl() -> SyscallResult<u64> {
-    Ok(with_screen(|screen| {
-        let (row, col) = screen.get_cursor();
+    Ok(with_console(|console| {
+        let (row, col) = console.get_cursor();
         ((row as u64) << 32) | (col as u64)
     }))
 }
@@ -113,8 +111,8 @@ pub fn syscall_get_cursor_impl() -> SyscallResult<u64> {
 /// Sets the VGA cursor position. Values outside the current screen bounds are
 /// clamped by the screen driver.
 pub fn syscall_set_cursor_impl(row: usize, col: usize) -> SyscallResult<u64> {
-    with_screen(|screen| {
-        screen.set_cursor(row, col);
+    with_console(|console| {
+        console.set_cursor(row, col);
     });
     Ok(SYSCALL_OK)
 }
@@ -123,21 +121,27 @@ pub fn syscall_set_cursor_impl(row: usize, col: usize) -> SyscallResult<u64> {
 ///
 /// Clears the entire VGA text buffer and resets the cursor position to `(0, 0)`.
 pub fn syscall_clear_screen_impl() -> SyscallResult<u64> {
-    with_screen(|screen| {
-        screen.clear();
+    with_console(|console| {
+        console.clear();
     });
     Ok(SYSCALL_OK)
 }
 
 /// Implements `WriteFramebuffer(ptr, len)`.
 ///
-/// Blits a user-supplied `[u16; 2000]` frame buffer to the VGA back-buffer
+/// Blits a user-supplied frame buffer to the console's back-buffer
 /// and flushes it to screen in one step. Each `u16` encodes `(attr << 8) | ascii`.
 ///
-/// Returns `SYSCALL_ERR_INVALID_ARG` if `len != 2000`, if `ptr` is misaligned,
-/// or if the buffer does not lie entirely within user canonical space.
+/// Returns `SYSCALL_ERR_INVALID_ARG` if `len` does not match the active console's
+/// total cell count, if `ptr` is misaligned, or if the buffer does not lie
+/// entirely within user canonical space.
 pub fn syscall_write_framebuffer_impl(ptr: *const u16, len: usize) -> SyscallResult<u64> {
-    if len != VGA_FRAME_CELLS {
+    let expected_len = with_console(|console| {
+        let (rows, cols) = console.get_dimensions();
+        rows * cols
+    });
+
+    if len != expected_len {
         return Err(SyscallError::InvalidArg);
     }
 
@@ -159,11 +163,23 @@ pub fn syscall_write_framebuffer_impl(ptr: *const u16, len: usize) -> SyscallRes
         core::slice::from_raw_parts(ptr, len)
     };
 
-    with_screen(|screen| {
-        screen.blit_framebuffer(cells);
+    with_console(|console| {
+        console.blit_framebuffer(cells);
     });
 
     Ok(SYSCALL_OK)
+}
+
+/// Implements `GetConsoleDimensions()`.
+///
+/// Returns the active console's dimensions as a packed 64-bit value:
+/// - upper 32 bits: `rows`
+/// - lower 32 bits: `cols`
+pub fn syscall_get_console_dimensions_impl() -> SyscallResult<u64> {
+    Ok(with_console(|console| {
+        let (rows, cols) = console.get_dimensions();
+        ((rows as u64) << 32) | (cols as u64)
+    }))
 }
 
 /// Implements `SetVgaMode(flags)`.
@@ -172,16 +188,16 @@ pub fn syscall_write_framebuffer_impl(ptr: *const u16, len: usize) -> SyscallRes
 /// - bit 0: hardware cursor  (1 = enabled,  0 = disabled)
 /// - bit 1: blink mode       (1 = enabled,  0 = disabled)
 pub fn syscall_set_vga_mode_impl(flags: u64) -> SyscallResult<u64> {
-    with_screen(|screen| {
+    with_console(|console| {
         if flags & 0b01 != 0 {
-            screen.enable_hw_cursor();
+            console.enable_hw_cursor();
         } else {
-            screen.disable_hw_cursor();
+            console.disable_hw_cursor();
         }
         if flags & 0b10 != 0 {
-            screen.enable_blink_mode();
+            console.enable_blink_mode();
         } else {
-            screen.disable_blink_mode();
+            console.disable_blink_mode();
         }
     });
     Ok(SYSCALL_OK)

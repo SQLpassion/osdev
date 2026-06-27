@@ -182,10 +182,9 @@ pub fn panic_message_contains(info: &core::panic::PanicInfo, expected: &str) -> 
         search: expected,
         found: false,
     };
-    
+
     // Format the panic message into our searcher to scan for the expected substring
     let _ = write!(&mut searcher, "{}", info.message());
-    
+
     searcher.found
 }
-

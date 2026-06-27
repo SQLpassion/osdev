@@ -3,7 +3,7 @@
 use crate::{
     decode_result,
     raw::{syscall0, syscall1, syscall2},
-    SyscallId, SysError,
+    SysError, SyscallId,
 };
 
 /// Writes `msg` to the VGA text console.
@@ -11,7 +11,11 @@ use crate::{
 pub fn writeline(msg: &[u8]) -> Result<(), SysError> {
     let raw = unsafe {
         // SAFETY: `msg` is a valid slice whose pointer and length are passed to the kernel.
-        syscall2(SyscallId::WriteConsole as u64, msg.as_ptr() as u64, msg.len() as u64)
+        syscall2(
+            SyscallId::WriteConsole as u64,
+            msg.as_ptr() as u64,
+            msg.len() as u64,
+        )
     };
     decode_result(raw).map(|_| ())
 }
@@ -21,7 +25,11 @@ pub fn writeline(msg: &[u8]) -> Result<(), SysError> {
 pub fn write_serial(msg: &[u8]) -> Result<(), SysError> {
     let raw = unsafe {
         // SAFETY: `msg` is a valid slice whose pointer and length are passed to the kernel.
-        syscall2(SyscallId::WriteSerial as u64, msg.as_ptr() as u64, msg.len() as u64)
+        syscall2(
+            SyscallId::WriteSerial as u64,
+            msg.as_ptr() as u64,
+            msg.len() as u64,
+        )
     };
     decode_result(raw).map(|_| ())
 }
@@ -157,16 +165,16 @@ pub enum Key {
 impl Key {
     fn from_raw(byte: u8) -> Self {
         match byte {
-            0x00        => Key::Unknown,
-            0x80        => Key::Escape,
-            0x81        => Key::Backspace,
-            0x82        => Key::Enter,
-            0x83        => Key::ArrowUp,
-            0x84        => Key::ArrowDown,
-            0x85        => Key::ArrowLeft,
-            0x86        => Key::ArrowRight,
+            0x00 => Key::Unknown,
+            0x80 => Key::Escape,
+            0x81 => Key::Backspace,
+            0x82 => Key::Enter,
+            0x83 => Key::ArrowUp,
+            0x84 => Key::ArrowDown,
+            0x85 => Key::ArrowLeft,
+            0x86 => Key::ArrowRight,
             b if b >= 0x90 => Key::F(b.wrapping_sub(0x8F)),
-            b           => Key::Char(b),
+            b => Key::Char(b),
         }
     }
 }
@@ -196,21 +204,35 @@ pub fn poll_key() -> Result<Key, SysError> {
     decode_result(raw).map(|v| Key::from_raw(v as u8))
 }
 
-/// Blit a full 80×25 frame buffer to VGA in a single syscall.
+/// Blit a raw frame buffer to the console in a single syscall.
 ///
-/// Each element of `cells` encodes one VGA cell as `(attr << 8) | ascii`.
+/// Each element of `cells` encodes one cell as `(attr << 8) | ascii`.
 #[inline(always)]
-pub fn flush_screen(cells: &[u16; 2000]) -> Result<(), SysError> {
+pub fn flush_screen(cells: &[u16]) -> Result<(), SysError> {
     let raw = unsafe {
-        // SAFETY: `cells` is a valid fixed-size array; pointer and length are
+        // SAFETY: `cells` is a valid slice; pointer and length are
         //         passed to the kernel for a bounds-checked read.
         syscall2(
             SyscallId::WriteFramebuffer as u64,
             cells.as_ptr() as u64,
-            2000u64,
+            cells.len() as u64,
         )
     };
     decode_result(raw).map(|_| ())
+}
+
+/// Retrieve the active console's dimensions as a tuple `(rows, cols)`.
+#[inline(always)]
+pub fn get_dimensions() -> Result<(usize, usize), SysError> {
+    let raw = unsafe {
+        // SAFETY: `GetConsoleDimensions` takes no pointer arguments.
+        syscall0(SyscallId::GetConsoleDimensions as u64)
+    };
+    decode_result(raw).map(|val| {
+        let rows = (val >> 32) as usize;
+        let cols = (val & 0xFFFFFFFF) as usize;
+        (rows, cols)
+    })
 }
 
 /// Configure VGA text-mode hardware settings.

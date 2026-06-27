@@ -3,7 +3,8 @@
 use crate::sync::spinlock::SpinLock;
 use core::fmt::{self, Write as _};
 
-use crate::drivers::screen::{Color, Screen};
+use crate::console::KernelConsole;
+use crate::drivers::screen::Color;
 use crate::drivers::serial;
 
 const CAPTURE_BUF_SIZE: usize = 16 * 1024;
@@ -119,7 +120,7 @@ pub fn set_capture_enabled(enabled: bool) {
 
 /// Dump captured logs for one target to the console.
 pub fn print_captured_target(
-    screen: &mut Screen,
+    screen: &mut dyn KernelConsole,
     target: &str,
     mut highlight: impl FnMut(&str) -> bool,
 ) {

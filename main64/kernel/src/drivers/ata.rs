@@ -338,6 +338,21 @@ fn primary_ata_irq_handler(_vector: u8, frame: &mut SavedRegisters) -> *mut Save
 }
 
 /// Initialize the primary ATA controller.
+/// Returns whether a drive responds on the primary ATA channel.
+///
+/// Reads the primary status register (`PRIMARY_BASE + STATUS_COMMAND_OFFSET`, i.e. 0x1F7). An
+/// empty/disconnected channel floats high and reads back 0xFF; any other value indicates that a
+/// drive is present. This is used to distinguish a legacy BIOS boot (which always exposes a
+/// legacy IDE disk) from a UEFI boot (no legacy IDE), without a dedicated boot-source flag, and
+/// does not require [`init`] to have run (a plain status read has no lasting side effects here).
+pub fn primary_present() -> bool {
+    // SAFETY:
+    // - Hardware port I/O is outside Rust's memory-safety guarantees.
+    // - 0x1F7 is the documented primary ATA status register; a read is side-effect-free before init.
+    let status = unsafe { PortByte::new(PRIMARY_BASE + STATUS_COMMAND_OFFSET).read() };
+    status != 0xFF
+}
+
 pub fn init() {
     // Register ATA IRQ before exposing `initialized=true` so new requests
     // cannot miss handler installation.

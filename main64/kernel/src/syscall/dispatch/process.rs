@@ -2,7 +2,7 @@
 
 use crate::drivers::keyboard;
 use crate::scheduler;
-use crate::syscall::types::{SyscallResult, SyscallError, SYSCALL_OK};
+use crate::syscall::types::{SyscallError, SyscallResult, SYSCALL_OK};
 
 /// Implements `Yield`: cooperative handoff to scheduler.
 ///
@@ -319,5 +319,3 @@ pub fn syscall_poll_key_impl() -> SyscallResult<u64> {
         Ok(0)
     }
 }
-
-

@@ -6,12 +6,12 @@ use core::ptr;
 extern crate alloc;
 use alloc::vec::Vec;
 
-use crate::arch::fpu;
-use crate::arch::interrupts::{InterruptStackFrame, SavedRegisters};
-use crate::memory::vmm;
 use super::context::free_task_stack;
 use super::types::{SchedulerArchCallbacks, SchedulerMetadata, TaskEntry, TaskState};
 use super::{active_cr3_value, kernel_cr3_value, set_active_cr3};
+use crate::arch::fpu;
+use crate::arch::interrupts::{InterruptStackFrame, SavedRegisters};
+use crate::memory::vmm;
 
 /// Resolves a trap frame pointer back to its owning task slot.
 pub(crate) fn find_entry_by_frame(

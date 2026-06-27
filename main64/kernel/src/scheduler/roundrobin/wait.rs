@@ -1,12 +1,12 @@
 //! Task blocking, unblocking, and exit waiting queues.
 
-use crate::sync::waitqueue::WaitQueue;
-use crate::sync::waitqueue_adapter;
 use super::manager::remove_task;
 use super::types::TaskState;
 use super::{
     arch_callbacks, current_task_id, is_running, task_frame_ptr, with_scheduler, yield_now,
 };
+use crate::sync::waitqueue::WaitQueue;
+use crate::sync::waitqueue_adapter;
 
 /// Wait queue for tasks blocked in `wait_for_task_exit`.
 pub(crate) static TASK_EXIT_WAITQUEUE: WaitQueue = WaitQueue::new();

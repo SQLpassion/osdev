@@ -1,6 +1,6 @@
+use crate::token::Token;
 use alloc::string::String;
 use lib_kaos::println;
-use crate::token::Token;
 
 fn get_variable_index(name: &str) -> Option<usize> {
     let first = name.chars().next()?;
@@ -123,7 +123,9 @@ impl Interpreter {
             Token::If => {
                 index += 1;
                 let left = self.eval_expression(tokens, &mut index);
-                if index < tokens.len() && (tokens[index] == Token::Greater || tokens[index] == Token::Less) {
+                if index < tokens.len()
+                    && (tokens[index] == Token::Greater || tokens[index] == Token::Less)
+                {
                     let op = tokens[index].clone();
                     index += 1;
                     let right = self.eval_expression(tokens, &mut index);

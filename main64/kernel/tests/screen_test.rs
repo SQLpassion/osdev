@@ -6,8 +6,8 @@
 #![test_runner(kaos_kernel::testing::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
-use core::panic::PanicInfo;
 use core::fmt::Write;
+use core::panic::PanicInfo;
 use kaos_kernel::drivers::screen::{with_screen, Color, PanicScreenWriter, Screen};
 
 const VGA_BUFFER: usize = 0xFFFF8000000B8000;
@@ -18,6 +18,13 @@ const VGA_ROWS: usize = 25;
 #[link_section = ".text.boot"]
 pub extern "C" fn KernelMain(_kernel_size: u64) -> ! {
     kaos_kernel::drivers::serial::init();
+
+    // Step 1: Initialize memory management and heap to support dynamic allocations.
+    kaos_kernel::memory::pmm::init(false);
+    kaos_kernel::arch::interrupts::init();
+    kaos_kernel::memory::vmm::init(false);
+    kaos_kernel::memory::heap::init(false);
+
     test_main();
     loop {
         core::hint::spin_loop();
@@ -261,7 +268,10 @@ fn test_panic_screen_writer_writes_without_global_lock() {
         // - `cell` addresses the first-row VGA MMIO character cells.
         // - Volatile read is required for MMIO.
         let ch = unsafe { core::ptr::read_volatile(cell as *const u8) };
-        assert!(ch == *byte, "panic writer must write expected byte sequence");
+        assert!(
+            ch == *byte,
+            "panic writer must write expected byte sequence"
+        );
     }
 }
 
@@ -296,3 +306,98 @@ fn test_print_str_with_hyphen_renders_correctly() {
     }
 }
 
+/// Contract: console::init initializes GLOBAL_CONSOLE and with_console delegates successfully.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold, proving dynamic console routing is functional.
+#[test_case]
+fn test_dynamic_console_initialization_and_routing() {
+    // Step 1: Initialize the console module in VGA text mode.
+    kaos_kernel::console::init(kaos_kernel::boot_info::VideoModeType::VgaText);
+
+    // Step 2: Use the abstraction to clear the screen and write a test string.
+    kaos_kernel::console::with_console(|console| {
+        console.clear();
+        console.set_cursor(5, 10);
+        console.print_str("DYNAMIC TUI TEST");
+    });
+
+    // Step 3: Verify the string was written to the VGA buffer.
+    let expected = b"DYNAMIC TUI TEST";
+    for (idx, &byte) in expected.iter().enumerate() {
+        let cell = VGA_BUFFER + ((5 * VGA_COLS + 10 + idx) * 2);
+        // SAFETY:
+        // - Raw pointer read is required to verify actual hardware state.
+        // - Address is mapped and valid for read.
+        let ch = unsafe { core::ptr::read_volatile(cell as *const u8) };
+        assert!(ch == byte, "dynamic console must write expected character");
+    }
+}
+
+/// Contract: FramebufferConsole fallback creation and basic cursor advancement.
+/// Given: The subsystem is initialized in fallback mode (when BOOT_INFO_PTR is 0).
+/// When: We write a character.
+/// Then: The cursor coordinates advance correctly.
+#[test_case]
+fn test_framebuffer_console_fallback_creation_and_cursor() {
+    use kaos_kernel::console::KernelConsole;
+
+    let mut fb_console = kaos_kernel::console::FramebufferConsole::new();
+    assert_eq!(fb_console.get_cursor(), (0, 0));
+
+    // Write a character and check cursor advancement.
+    fb_console.print_char(b'A');
+    assert_eq!(fb_console.get_cursor(), (0, 1));
+}
+
+/// Contract: framebuffer console maps TUI CP437 bytes to non-fallback glyphs.
+/// Given: The framebuffer font selector receives bytes emitted by Ring-3 TUI widgets.
+/// When: The glyphs are selected for box, table, dialog, and progress-bar characters.
+/// Then: The renderer must not replace those bytes with the visible '?' fallback glyph.
+#[test_case]
+fn test_framebuffer_console_maps_tui_cp437_bytes_to_glyphs() {
+    let fallback = kaos_kernel::console::FramebufferConsole::glyph_for_byte(b'?');
+    let cp437_bytes = [
+        0xB0, 0xB3, 0xB4, 0xB5, 0xBA, 0xBB, 0xBC, 0xBF, 0xC0, 0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6,
+        0xC8, 0xC9, 0xCD, 0xD9, 0xDA, 0xDB,
+    ];
+
+    for &byte in cp437_bytes.iter() {
+        let glyph = kaos_kernel::console::FramebufferConsole::glyph_for_byte(byte);
+
+        assert!(
+            glyph != fallback,
+            "supported CP437 byte must not render as fallback '?'"
+        );
+    }
+}
+
+/// Contract: framebuffer console keeps ASCII glyph selection unchanged.
+/// Given: The framebuffer font selector receives a plain ASCII byte.
+/// When: The glyph is selected for that byte.
+/// Then: It must differ from the CP437 line glyph used for the TUI border path.
+#[test_case]
+fn test_framebuffer_console_keeps_ascii_glyphs_distinct_from_cp437_lines() {
+    let ascii_a = kaos_kernel::console::FramebufferConsole::glyph_for_byte(b'A');
+    let horizontal_line = kaos_kernel::console::FramebufferConsole::glyph_for_byte(0xC4);
+
+    assert!(
+        ascii_a != horizontal_line,
+        "ASCII glyph selection must remain distinct from CP437 line drawing"
+    );
+}
+
+/// Contract: framebuffer console keeps unsupported extended bytes visibly marked.
+/// Given: The framebuffer font selector receives an extended byte without a dedicated glyph.
+/// When: The glyph is selected directly from the 256-entry font table.
+/// Then: It must resolve to the same visible '?' fallback glyph as before.
+#[test_case]
+fn test_framebuffer_console_maps_unsupported_extended_byte_to_fallback_glyph() {
+    let fallback = kaos_kernel::console::FramebufferConsole::glyph_for_byte(b'?');
+    let unsupported = kaos_kernel::console::FramebufferConsole::glyph_for_byte(0x80);
+
+    assert!(
+        unsupported == fallback,
+        "unsupported extended byte must render as fallback '?'"
+    );
+}

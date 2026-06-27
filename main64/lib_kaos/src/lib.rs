@@ -44,7 +44,8 @@ pub mod time;
 /// required user memory pages.
 #[used]
 #[no_mangle]
-#[link_section = ".data.keep"]
+#[cfg_attr(target_os = "macos", link_section = "__DATA,.data.keep")]
+#[cfg_attr(not(target_os = "macos"), link_section = ".data.keep")]
 static DUMMY_PROGBITS_FORCE_DATA: u8 = 1;
 
 #[macro_export]

@@ -309,7 +309,10 @@ fn test_heap_rejects_free_with_corrupted_header_magic() {
     heap::init(false);
     let ptr1 = heap::malloc(64);
     let ptr2 = heap::malloc(64);
-    assert!(!ptr1.is_null() && !ptr2.is_null(), "allocations should succeed");
+    assert!(
+        !ptr1.is_null() && !ptr2.is_null(),
+        "allocations should succeed"
+    );
 
     // Step 1: Infer header size from two adjacent equal-size allocations.
     let block_stride = (ptr2 as usize).saturating_sub(ptr1 as usize);
@@ -337,7 +340,10 @@ fn test_heap_rejects_free_with_corrupted_header_magic() {
 
     // Step 3: The corrupted block must still be considered allocated and not reusable.
     let ptr3 = heap::malloc(64);
-    assert!(!ptr3.is_null(), "heap should remain usable after rejected free");
+    assert!(
+        !ptr3.is_null(),
+        "heap should remain usable after rejected free"
+    );
     assert!(
         ptr3 != ptr1,
         "corrupted header must prevent `ptr1` from being freed and reused"
@@ -403,8 +409,8 @@ fn test_heap_self_test_is_non_destructive_for_live_allocations() {
         core::ptr::write_volatile(ptr, 0x5A);
     }
 
-    let mut screen = kaos_kernel::drivers::screen::Screen::new();
-    heap::run_self_test(&mut screen);
+    let mut console = kaos_kernel::console::VgaConsole;
+    heap::run_self_test(&mut console);
 
     // SAFETY:
     // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
@@ -702,27 +708,35 @@ fn test_heap_environment_abstraction() {
     // grow_heap which writes to unmapped memory beyond the buffer.
     let mut buffer = [0u8; 4096];
     let env = DummyHeapEnv { max_size: 4096 };
-    
+
     // SAFETY:
     // - We construct and initialize a local Heap instance using a stack buffer.
     // - The environment maps the memory successfully.
     let start = buffer.as_mut_ptr() as usize;
     let mut user_heap = heap::Heap::new(env);
-    
-    user_heap.init(start, 4096).expect("initialization should succeed");
-    
+
+    user_heap
+        .init(start, 4096)
+        .expect("initialization should succeed");
+
     let layout1 = Layout::from_size_align(128, 8).unwrap();
     let ptr1 = user_heap.allocate(layout1);
     assert!(!ptr1.is_null(), "allocation 1 should succeed");
-    assert!((ptr1 as usize) >= start && (ptr1 as usize) < start + 4096, "pointer 1 within range");
+    assert!(
+        (ptr1 as usize) >= start && (ptr1 as usize) < start + 4096,
+        "pointer 1 within range"
+    );
     assert!((ptr1 as usize).is_multiple_of(8), "pointer 1 aligned");
-    
+
     let layout2 = Layout::from_size_align(256, 16).unwrap();
     let ptr2 = user_heap.allocate(layout2);
     assert!(!ptr2.is_null(), "allocation 2 should succeed");
     assert!(ptr1 != ptr2, "allocations must not overlap");
-    assert!((ptr2 as usize).is_multiple_of(16), "pointer 2 aligned to 16");
-    
+    assert!(
+        (ptr2 as usize).is_multiple_of(16),
+        "pointer 2 aligned to 16"
+    );
+
     // SAFETY:
     // - ptr1 and ptr2 are valid allocated pointers and layouts match.
     unsafe {
@@ -773,11 +787,17 @@ fn test_heap_environment_grow_failure() {
     // Exhaust the 4 KiB buffer with large allocations.
     let layout_big = Layout::from_size_align(3000, 8).unwrap();
     let ptr1 = test_heap.allocate(layout_big);
-    assert!(!ptr1.is_null(), "first large allocation should succeed within initial 4 KiB");
+    assert!(
+        !ptr1.is_null(),
+        "first large allocation should succeed within initial 4 KiB"
+    );
 
     // This allocation should fail because grow_heap will call map_memory which returns false.
     let ptr2 = test_heap.allocate(layout_big);
-    assert!(ptr2.is_null(), "second allocation must fail when environment rejects growth");
+    assert!(
+        ptr2.is_null(),
+        "second allocation must fail when environment rejects growth"
+    );
 }
 
 /// Contract: heap growth after a tail-merging free yields non-overlapping allocations.
@@ -811,7 +831,10 @@ fn test_generic_heap_grow_after_tail_merging_free_keeps_allocations_disjoint() {
     // Step 1: Two small allocations leave a free tail block at the arena end.
     let a = user_heap.allocate(layout_small);
     let b = user_heap.allocate(layout_small);
-    assert!(!a.is_null() && !b.is_null(), "setup allocations must succeed");
+    assert!(
+        !a.is_null() && !b.is_null(),
+        "setup allocations must succeed"
+    );
 
     // Step 2: Freeing `b` coalesces it forward with the free tail block.  The
     // merged block now starts at `b`'s block address and ends at heap_end —

@@ -19,13 +19,12 @@ extern crate alloc;
 use alloc::vec;
 use lib_kaos::console::{self, Key};
 use lib_tui::{
-    with_screen, Color, Gauge, Label, ProgressBar, Table, Tabs, TextBox, TreeNode, TreeView,
-    SCREEN_COLS, SCREEN_ROWS,
+    screen_cols, screen_rows, with_screen, Color, Gauge, Label, ProgressBar, Table, Tabs, TextBox,
+    TreeNode, TreeView,
 };
 
 #[path = "../../../kernel/src/drivers/pci/database.rs"]
 mod pci_database;
-
 
 /// Top-level TUI application — owns every widget across all four tabs.
 pub struct TuiApp {
@@ -218,15 +217,9 @@ impl TuiApp {
     /// Helper: Overwrites the central screen space with black spaces before switching tabs.
     fn clear_content_area(&self) {
         with_screen(|screen| {
-            screen.fill_rect(
-                1,
-                0,
-                SCREEN_COLS,
-                SCREEN_ROWS - 2,
-                b' ',
-                Color::White,
-                Color::Black,
-            );
+            let cols = screen.cols();
+            let rows = screen.rows();
+            screen.fill_rect(1, 0, cols, rows - 2, b' ', Color::White, Color::Black);
         });
     }
 
@@ -251,19 +244,13 @@ impl TuiApp {
     /// Helper: Draws the bottom footer showing help keybindings and active page status.
     fn draw_status_bar(&self) {
         with_screen(|screen| {
-            // Fill background of row 24 with LightGray.
-            screen.fill_rect(
-                SCREEN_ROWS - 1,
-                0,
-                SCREEN_COLS,
-                1,
-                b' ',
-                Color::Black,
-                Color::LightGray,
-            );
+            let cols = screen.cols();
+            let rows = screen.rows();
+            // Fill background of row rows - 1 with LightGray.
+            screen.fill_rect(rows - 1, 0, cols, 1, b' ', Color::Black, Color::LightGray);
             // Print left help binding text.
             screen.draw_at(
-                SCREEN_ROWS - 1,
+                rows - 1,
                 1,
                 "Left/Right: tab    Up/Down: scroll    q / Esc: quit",
                 Color::Black,
@@ -283,7 +270,7 @@ impl TuiApp {
             if lib_kaos::time::get_time(&mut udt).is_ok() {
                 // Format: "2026-06-08 19:30:13" (19 chars)
                 let mut time_buf = [0u8; 19];
-                
+
                 // Format Year
                 let y = udt.year;
                 time_buf[0] = b'0' + ((y / 1000) % 10) as u8;
@@ -291,30 +278,30 @@ impl TuiApp {
                 time_buf[2] = b'0' + ((y / 10) % 10) as u8;
                 time_buf[3] = b'0' + (y % 10) as u8;
                 time_buf[4] = b'-';
-                
+
                 time_buf[5] = b'0' + (udt.month / 10);
                 time_buf[6] = b'0' + (udt.month % 10);
                 time_buf[7] = b'-';
-                
+
                 time_buf[8] = b'0' + (udt.day / 10);
                 time_buf[9] = b'0' + (udt.day % 10);
                 time_buf[10] = b' ';
-                
+
                 time_buf[11] = b'0' + (udt.hour / 10);
                 time_buf[12] = b'0' + (udt.hour % 10);
                 time_buf[13] = b':';
-                
+
                 time_buf[14] = b'0' + (udt.minute / 10);
                 time_buf[15] = b'0' + (udt.minute % 10);
                 time_buf[16] = b':';
-                
+
                 time_buf[17] = b'0' + (udt.second / 10);
                 time_buf[18] = b'0' + (udt.second % 10);
 
-                let start_time = SCREEN_COLS - 21;
+                let start_time = cols - 21;
                 for (i, &byte) in time_buf.iter().enumerate() {
                     screen.draw_char_at(
-                        SCREEN_ROWS - 1,
+                        rows - 1,
                         start_time + i,
                         byte,
                         Color::Black,
@@ -375,8 +362,8 @@ impl TuiApp {
                     && dev.device == device
                     && dev.function == function
                 {
-                    use alloc::string::String;
                     use alloc::format;
+                    use alloc::string::String;
                     use alloc::vec;
 
                     let vendor_name = pci_database::vendor_to_str(dev.vendor_id);
@@ -384,14 +371,26 @@ impl TuiApp {
                     let class_name = pci_database::class_to_str(dev.class_code, dev.subclass);
 
                     let mut lines = vec![
-                        format!("BDF Address:  {:02x}:{:02x}.{}", dev.bus, dev.device, dev.function),
+                        format!(
+                            "BDF Address:  {:02x}:{:02x}.{}",
+                            dev.bus, dev.device, dev.function
+                        ),
                         format!("Vendor Name:  {}", vendor_name),
                         format!("Device Name:  {}", device_name),
-                        format!("IDs:          Vendor {:04x}, Device {:04x}", dev.vendor_id, dev.device_id),
-                        format!("Class Code:   {} ({:02x}:{:02x})", class_name, dev.class_code, dev.subclass),
+                        format!(
+                            "IDs:          Vendor {:04x}, Device {:04x}",
+                            dev.vendor_id, dev.device_id
+                        ),
+                        format!(
+                            "Class Code:   {} ({:02x}:{:02x})",
+                            class_name, dev.class_code, dev.subclass
+                        ),
                         format!("Revision ID:  {:#04x}", dev.revision_id),
                         format!("Prog IF:      {:#04x}", dev.prog_if),
-                        format!("Interrupts:   Line {}, Pin {}", dev.interrupt_line, dev.interrupt_pin),
+                        format!(
+                            "Interrupts:   Line {}, Pin {}",
+                            dev.interrupt_line, dev.interrupt_pin
+                        ),
                         String::from("Base Address Registers:"),
                     ];
 
@@ -405,7 +404,11 @@ impl TuiApp {
                                 3 => "Mem64",
                                 _ => "Unknown",
                             };
-                            let pref_str = if bar.flags == 1 { "prefetchable" } else { "non-pref" };
+                            let pref_str = if bar.flags == 1 {
+                                "prefetchable"
+                            } else {
+                                "non-pref"
+                            };
                             lines.push(format!(
                                 "  BAR {}: {} {:#x} (size {}, {})",
                                 i, type_str, bar.address, bar.size, pref_str
@@ -463,7 +466,8 @@ impl TuiApp {
                     let page_size = 4096u64;
                     let pages = region.size / page_size;
                     #[allow(clippy::manual_is_multiple_of)]
-                    let is_aligned = (region.start % page_size == 0) && (region.size % page_size == 0);
+                    let is_aligned =
+                        (region.start % page_size == 0) && (region.size % page_size == 0);
 
                     let lines = vec![
                         format!("Index:             {}", selected_idx),
@@ -473,11 +477,18 @@ impl TuiApp {
                         format!("Size in KB:        {} KB", region.size / 1024),
                         format!("Size in MB:        {} MB", region.size / 1024 / 1024),
                         format!("Physical Pages:    {} (4 KiB frames)", pages),
-                        format!("Page-Aligned:      {}", if is_aligned { "Yes" } else { "No" }),
-                        format!("Region Type:       {} (Raw: {})", type_str, region.region_type),
+                        format!(
+                            "Page-Aligned:      {}",
+                            if is_aligned { "Yes" } else { "No" }
+                        ),
+                        format!(
+                            "Region Type:       {} (Raw: {})",
+                            type_str, region.region_type
+                        ),
                     ];
 
-                    let dialog = lib_tui::Dialog::new(4, 10, 60, 16, "Memory Region Details", lines);
+                    let dialog =
+                        lib_tui::Dialog::new(4, 10, 60, 16, "Memory Region Details", lines);
                     dialog.draw();
                     with_screen(|screen| screen.flush());
 
@@ -502,6 +513,9 @@ pub fn run_demo() {
     // Step 1: Clear screen, disable VGA blink mode and hardware cursor.
     console::clear_screen().ok();
     console::set_vga_mode(0b00).ok();
+
+    let cols = screen_cols();
+    let rows = screen_rows();
 
     // ------------------------------------------------------------------
     // Tab 0 — Info (TextBox)
@@ -533,8 +547,8 @@ pub fn run_demo() {
     let info_box = TextBox::new(
         1,
         0,
-        80,
-        23,
+        cols,
+        rows - 2,
         info_lines,
         Color::LightGray,
         Color::Black,
@@ -547,7 +561,7 @@ pub fn run_demo() {
     let mem_header = Label::new(
         1,
         0,
-        80,
+        cols,
         " Memory Subsystem",
         Color::Black,
         Color::LightGreen,
@@ -556,14 +570,13 @@ pub fn run_demo() {
     let mut mem_table = Table::new(
         3,
         0,
-        80,
-        21,
+        cols,
+        rows - 4,
         &["Region", "Address", "Size / Type"],
-        &[22, 20, 28],
+        &[22, 20, cols.saturating_sub(44)],
     );
-    let leak_str = |s: alloc::string::String| -> &'static str {
-        alloc::boxed::Box::leak(s.into_boxed_str())
-    };
+    let leak_str =
+        |s: alloc::string::String| -> &'static str { alloc::boxed::Box::leak(s.into_boxed_str()) };
 
     use alloc::format;
 
@@ -610,16 +623,13 @@ pub fn run_demo() {
         ]);
     }
 
-
-
-
     // ------------------------------------------------------------------
     // Tab 3 — System (Gauge × 6 + ProgressBar × 3)
     // ------------------------------------------------------------------
     let sys_header = Label::new(
         1,
         0,
-        80,
+        cols,
         " System Health Overview",
         Color::White,
         Color::Magenta,
@@ -627,7 +637,7 @@ pub fn run_demo() {
     let sys_bar_header = Label::new(
         10,
         0,
-        80,
+        cols,
         " Standalone Progress Bars",
         Color::Black,
         Color::Brown,
@@ -635,7 +645,7 @@ pub fn run_demo() {
     let cpu_gauge = Gauge::new(
         3,
         2,
-        76,
+        cols - 4,
         "CPU Usage:       ",
         18,
         23,
@@ -645,7 +655,7 @@ pub fn run_demo() {
     let heap_gauge2 = Gauge::new(
         4,
         2,
-        76,
+        cols - 4,
         "Heap Memory:     ",
         18,
         62,
@@ -655,7 +665,7 @@ pub fn run_demo() {
     let pages_gauge = Gauge::new(
         5,
         2,
-        76,
+        cols - 4,
         "Physical Pages:  ",
         18,
         44,
@@ -665,7 +675,7 @@ pub fn run_demo() {
     let tasks_gauge = Gauge::new(
         6,
         2,
-        76,
+        cols - 4,
         "Tasks Running:   ",
         18,
         37,
@@ -675,7 +685,7 @@ pub fn run_demo() {
     let ata_gauge = Gauge::new(
         7,
         2,
-        76,
+        cols - 4,
         "ATA Driver:      ",
         18,
         100,
@@ -685,16 +695,40 @@ pub fn run_demo() {
     let fat_gauge = Gauge::new(
         8,
         2,
-        76,
+        cols - 4,
         "FAT12 Filesystem:",
         18,
         72,
         Color::LightCyan,
         Color::LightCyan,
     );
-    let bar1 = ProgressBar::new(12, 4, 72, 56, Color::White, Color::Black, Color::LightGreen);
-    let bar2 = ProgressBar::new(13, 4, 72, 87, Color::White, Color::Black, Color::Yellow);
-    let bar3 = ProgressBar::new(14, 4, 72, 12, Color::White, Color::Black, Color::LightRed);
+    let bar1 = ProgressBar::new(
+        12,
+        4,
+        cols - 8,
+        56,
+        Color::White,
+        Color::Black,
+        Color::LightGreen,
+    );
+    let bar2 = ProgressBar::new(
+        13,
+        4,
+        cols - 8,
+        87,
+        Color::White,
+        Color::Black,
+        Color::Yellow,
+    );
+    let bar3 = ProgressBar::new(
+        14,
+        4,
+        cols - 8,
+        12,
+        Color::White,
+        Color::Black,
+        Color::LightRed,
+    );
 
     // ------------------------------------------------------------------
     // Tab 4 — PCI Tree (dynamic hardware data)
@@ -739,11 +773,7 @@ pub fn run_demo() {
                 // Format a compact descriptive string to fit on the 80-column screen: "00:01.1 | Intel | PIIX IDE"
                 let dev_desc = format!(
                     "{:02x}:{:02x}.{} | {} | {}",
-                    dev.bus,
-                    dev.device,
-                    dev.function,
-                    vendor_name,
-                    device_name
+                    dev.bus, dev.device, dev.function, vendor_name, device_name
                 );
 
                 let leaf = TreeNode::leaf(dev_desc);
@@ -766,12 +796,12 @@ pub fn run_demo() {
         TreeNode::new("Bridge Devices", bridge_devices, false),
         TreeNode::new("Other Devices", other_devices, false),
     ];
-    let tree_view = TreeView::new(1, 0, 80, 23, tree_nodes);
+    let tree_view = TreeView::new(1, 0, cols, rows - 2, tree_nodes);
 
     // ------------------------------------------------------------------
     // Tab bar (row 0, full width)
     // ------------------------------------------------------------------
-    let mut tabs = Tabs::new(0, 0, 80);
+    let mut tabs = Tabs::new(0, 0, cols);
     tabs.add_tab("Info");
     tabs.add_tab("Memory");
     tabs.add_tab("System");

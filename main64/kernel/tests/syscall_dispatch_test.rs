@@ -73,19 +73,46 @@ fn test_syscall_ids_are_stable() {
         "WriteConsole syscall id changed"
     );
     assert!(SyscallId::GetChar as u64 == 4, "GetChar syscall id changed");
-    assert!(SyscallId::GetCursor as u64 == 5, "GetCursor syscall id changed");
-    assert!(SyscallId::SetCursor as u64 == 6, "SetCursor syscall id changed");
+    assert!(
+        SyscallId::GetCursor as u64 == 5,
+        "GetCursor syscall id changed"
+    );
+    assert!(
+        SyscallId::SetCursor as u64 == 6,
+        "SetCursor syscall id changed"
+    );
     assert!(
         SyscallId::ClearScreen as u64 == 7,
         "ClearScreen syscall id changed"
     );
-    assert!(SyscallId::OpenFile as u64 == 8, "OpenFile syscall id changed");
-    assert!(SyscallId::CloseFile as u64 == 9, "CloseFile syscall id changed");
-    assert!(SyscallId::ReadFile as u64 == 10, "ReadFile syscall id changed");
-    assert!(SyscallId::WriteFile as u64 == 11, "WriteFile syscall id changed");
-    assert!(SyscallId::DeleteFile as u64 == 12, "DeleteFile syscall id changed");
-    assert!(SyscallId::SeekFile as u64 == 13, "SeekFile syscall id changed");
-    assert!(SyscallId::EndOfFile as u64 == 14, "EndOfFile syscall id changed");
+    assert!(
+        SyscallId::OpenFile as u64 == 8,
+        "OpenFile syscall id changed"
+    );
+    assert!(
+        SyscallId::CloseFile as u64 == 9,
+        "CloseFile syscall id changed"
+    );
+    assert!(
+        SyscallId::ReadFile as u64 == 10,
+        "ReadFile syscall id changed"
+    );
+    assert!(
+        SyscallId::WriteFile as u64 == 11,
+        "WriteFile syscall id changed"
+    );
+    assert!(
+        SyscallId::DeleteFile as u64 == 12,
+        "DeleteFile syscall id changed"
+    );
+    assert!(
+        SyscallId::SeekFile as u64 == 13,
+        "SeekFile syscall id changed"
+    );
+    assert!(
+        SyscallId::EndOfFile as u64 == 14,
+        "EndOfFile syscall id changed"
+    );
     assert!(
         SyscallId::PrintRootDirectory as u64 == 15,
         "PrintRootDirectory syscall id changed"
@@ -93,12 +120,18 @@ fn test_syscall_ids_are_stable() {
     assert!(SyscallId::Mmap as u64 == 16, "Mmap syscall id changed");
     assert!(SyscallId::Exec as u64 == 17, "Exec syscall id changed");
     assert!(SyscallId::Wait as u64 == 18, "Wait syscall id changed");
-    assert!(SyscallId::Shutdown as u64 == 19, "Shutdown syscall id changed");
+    assert!(
+        SyscallId::Shutdown as u64 == 19,
+        "Shutdown syscall id changed"
+    );
     assert!(
         SyscallId::WriteFramebuffer as u64 == 20,
         "WriteFramebuffer syscall id changed"
     );
-    assert!(SyscallId::ReadKey as u64 == 21, "ReadKey syscall id changed");
+    assert!(
+        SyscallId::ReadKey as u64 == 21,
+        "ReadKey syscall id changed"
+    );
     assert!(
         SyscallId::SetVgaMode as u64 == 22,
         "SetVgaMode syscall id changed"
@@ -118,6 +151,10 @@ fn test_syscall_ids_are_stable() {
     assert!(
         SyscallId::GetBiosMemoryMapEntry as u64 == 26,
         "GetBiosMemoryMapEntry syscall id changed"
+    );
+    assert!(
+        SyscallId::GetConsoleDimensions as u64 == 29,
+        "GetConsoleDimensions syscall id changed"
     );
 }
 
@@ -185,7 +222,8 @@ fn test_syscall_name_mapping_for_logging_is_stable() {
         "EndOfFile mapping must stay stable for syscall trace output"
     );
     assert!(
-        syscall::syscall_name_for_number(SyscallId::PrintRootDirectory as u64) == "PrintRootDirectory",
+        syscall::syscall_name_for_number(SyscallId::PrintRootDirectory as u64)
+            == "PrintRootDirectory",
         "PrintRootDirectory mapping must stay stable for syscall trace output"
     );
     assert!(
@@ -217,7 +255,8 @@ fn test_syscall_name_mapping_for_logging_is_stable() {
         "SetVgaMode mapping must stay stable for syscall trace output"
     );
     assert!(
-        syscall::syscall_name_for_number(SyscallId::GetPciDeviceCount as u64) == "GetPciDeviceCount",
+        syscall::syscall_name_for_number(SyscallId::GetPciDeviceCount as u64)
+            == "GetPciDeviceCount",
         "GetPciDeviceCount mapping must stay stable for syscall trace output"
     );
     assert!(
@@ -225,12 +264,19 @@ fn test_syscall_name_mapping_for_logging_is_stable() {
         "GetPciDevice mapping must stay stable for syscall trace output"
     );
     assert!(
-        syscall::syscall_name_for_number(SyscallId::GetBiosMemoryMapEntryCount as u64) == "GetBiosMemoryMapEntryCount",
+        syscall::syscall_name_for_number(SyscallId::GetBiosMemoryMapEntryCount as u64)
+            == "GetBiosMemoryMapEntryCount",
         "GetBiosMemoryMapEntryCount mapping must stay stable for syscall trace output"
     );
     assert!(
-        syscall::syscall_name_for_number(SyscallId::GetBiosMemoryMapEntry as u64) == "GetBiosMemoryMapEntry",
+        syscall::syscall_name_for_number(SyscallId::GetBiosMemoryMapEntry as u64)
+            == "GetBiosMemoryMapEntry",
         "GetBiosMemoryMapEntry mapping must stay stable for syscall trace output"
+    );
+    assert!(
+        syscall::syscall_name_for_number(SyscallId::GetConsoleDimensions as u64)
+            == "GetConsoleDimensions",
+        "GetConsoleDimensions mapping must stay stable for syscall trace output"
     );
     assert!(
         syscall::syscall_name_for_number(0xDEAD) == "Unknown",
@@ -292,13 +338,19 @@ fn test_get_char_enum_id_is_stable() {
 /// Contract: GetCursor syscall enum id remains stable.
 #[test_case]
 fn test_get_cursor_enum_id_is_stable() {
-    assert!(SyscallId::GetCursor as u64 == 5, "GetCursor syscall id changed");
+    assert!(
+        SyscallId::GetCursor as u64 == 5,
+        "GetCursor syscall id changed"
+    );
 }
 
 /// Contract: SetCursor syscall enum id remains stable.
 #[test_case]
 fn test_set_cursor_enum_id_is_stable() {
-    assert!(SyscallId::SetCursor as u64 == 6, "SetCursor syscall id changed");
+    assert!(
+        SyscallId::SetCursor as u64 == 6,
+        "SetCursor syscall id changed"
+    );
 }
 
 /// Contract: ClearScreen syscall enum id remains stable.
@@ -688,13 +740,7 @@ fn test_write_console_rejects_overflowing_len() {
 #[test_case]
 fn test_write_console_rejects_len_crossing_canonical_boundary() {
     let ptr = 0x0000_8000_0000_0000u64 - 4096;
-    let ret = syscall::dispatch(
-        SyscallId::WriteConsole as u64,
-        ptr,
-        8193,
-        0,
-        0,
-    );
+    let ret = syscall::dispatch(SyscallId::WriteConsole as u64, ptr, 8193, 0, 0);
     assert!(
         ret == syscall::SYSCALL_ERR_INVALID_ARG,
         "write_console with (ptr, len) crossing canonical boundary must return EINVAL"
@@ -747,6 +793,16 @@ fn test_clear_screen_resets_cursor_to_origin() {
     let col = (packed & 0xFFFF_FFFF) as usize;
     assert!(row == 0, "clear_screen must reset row to 0");
     assert!(col == 0, "clear_screen must reset col to 0");
+}
+
+/// Contract: get_console_dimensions returns the expected screen dimensions (25 rows, 80 cols for VGA).
+#[test_case]
+fn test_get_console_dimensions() {
+    let packed = syscall::dispatch(SyscallId::GetConsoleDimensions as u64, 0, 0, 0, 0);
+    let rows = (packed >> 32) as usize;
+    let cols = (packed & 0xFFFF_FFFF) as usize;
+    assert!(rows == 25, "rows must be 25 for default VGA mode in tests");
+    assert!(cols == 80, "cols must be 80 for default VGA mode in tests");
 }
 
 /// Contract: exec with invalid user buffer returns invalid argument error.
@@ -816,13 +872,7 @@ fn test_write_framebuffer_rejects_invalid_len() {
 /// Contract: write_framebuffer rejects misaligned pointers.
 #[test_case]
 fn test_write_framebuffer_rejects_misaligned_pointer() {
-    let ret = syscall::dispatch(
-        SyscallId::WriteFramebuffer as u64,
-        0x1001,
-        2000,
-        0,
-        0,
-    );
+    let ret = syscall::dispatch(SyscallId::WriteFramebuffer as u64, 0x1001, 2000, 0, 0);
     assert!(
         ret == syscall::SYSCALL_ERR_INVALID_ARG,
         "write_framebuffer with misaligned ptr must return EINVAL"
@@ -864,13 +914,7 @@ fn test_write_framebuffer_success() {
         }
     }
 
-    let ret = syscall::dispatch(
-        SyscallId::WriteFramebuffer as u64,
-        user_va,
-        2000,
-        0,
-        0,
-    );
+    let ret = syscall::dispatch(SyscallId::WriteFramebuffer as u64, user_va, 2000, 0, 0);
     assert!(
         ret == syscall::SYSCALL_OK,
         "write_framebuffer with valid buffer must return OK"
@@ -880,25 +924,13 @@ fn test_write_framebuffer_success() {
 /// Contract: set_vga_mode succeeds with valid flags.
 #[test_case]
 fn test_set_vga_mode_success() {
-    let ret = syscall::dispatch(
-        SyscallId::SetVgaMode as u64,
-        0,
-        0,
-        0,
-        0,
-    );
+    let ret = syscall::dispatch(SyscallId::SetVgaMode as u64, 0, 0, 0, 0);
     assert!(
         ret == syscall::SYSCALL_OK,
         "set_vga_mode with 0 must return OK"
     );
 
-    let ret = syscall::dispatch(
-        SyscallId::SetVgaMode as u64,
-        3,
-        0,
-        0,
-        0,
-    );
+    let ret = syscall::dispatch(SyscallId::SetVgaMode as u64, 3, 0, 0, 0);
     assert!(
         ret == syscall::SYSCALL_OK,
         "set_vga_mode with 3 must return OK"
@@ -961,13 +993,7 @@ fn test_pci_constants_match_enum_ids() {
 fn test_pci_query_syscalls() {
     kaos_kernel::drivers::pci::init();
 
-    let count_ret = syscall::dispatch(
-        SyscallId::GetPciDeviceCount as u64,
-        0,
-        0,
-        0,
-        0,
-    );
+    let count_ret = syscall::dispatch(SyscallId::GetPciDeviceCount as u64, 0, 0, 0, 0);
     assert!(
         count_ret != syscall::SYSCALL_ERR_UNSUPPORTED,
         "GetPciDeviceCount must be supported"
@@ -976,13 +1002,7 @@ fn test_pci_query_syscalls() {
     let count = count_ret as usize;
 
     let invalid_idx = count as u64;
-    let ret = syscall::dispatch(
-        SyscallId::GetPciDevice as u64,
-        invalid_idx,
-        0,
-        0,
-        0,
-    );
+    let ret = syscall::dispatch(SyscallId::GetPciDevice as u64, invalid_idx, 0, 0, 0);
     assert!(
         ret == syscall::SYSCALL_ERR_INVALID_ARG,
         "querying out-of-bounds pci index must return invalid argument"
@@ -995,13 +1015,7 @@ fn test_pci_query_syscalls() {
 
         kaos_kernel::memory::vmm::map_user_page(user_va, pfn, true).unwrap();
 
-        let ret = syscall::dispatch(
-            SyscallId::GetPciDevice as u64,
-            0,
-            user_va,
-            0,
-            0,
-        );
+        let ret = syscall::dispatch(SyscallId::GetPciDevice as u64, 0, user_va, 0, 0);
         assert!(
             ret == syscall::SYSCALL_OK,
             "querying index 0 with valid user buffer must return OK"
@@ -1036,13 +1050,7 @@ fn test_bios_constants_match_enum_ids() {
 /// Contract: BIOS query syscalls correctly report entry count and copy metadata to user buffers.
 #[test_case]
 fn test_bios_memory_map_query_syscalls() {
-    let count_ret = syscall::dispatch(
-        SyscallId::GetBiosMemoryMapEntryCount as u64,
-        0,
-        0,
-        0,
-        0,
-    );
+    let count_ret = syscall::dispatch(SyscallId::GetBiosMemoryMapEntryCount as u64, 0, 0, 0, 0);
     assert!(
         count_ret != syscall::SYSCALL_ERR_UNSUPPORTED,
         "GetBiosMemoryMapEntryCount must be supported"
@@ -1070,13 +1078,7 @@ fn test_bios_memory_map_query_syscalls() {
 
         kaos_kernel::memory::vmm::map_user_page(user_va, pfn, true).unwrap();
 
-        let ret = syscall::dispatch(
-            SyscallId::GetBiosMemoryMapEntry as u64,
-            0,
-            user_va,
-            0,
-            0,
-        );
+        let ret = syscall::dispatch(SyscallId::GetBiosMemoryMapEntry as u64, 0, user_va, 0, 0);
         assert!(
             ret == syscall::SYSCALL_OK,
             "querying index 0 with valid user buffer must return OK"
@@ -1087,7 +1089,8 @@ fn test_bios_memory_map_query_syscalls() {
         // - `user_va` has been mapped to physical memory and populated by the kernel.
         // - We hold read-only access to this memory block.
         let size = unsafe { (*user_region).size };
-        let region = kaos_kernel::memory::bios::MEMORYMAP_OFFSET as *const kaos_kernel::memory::bios::BiosMemoryRegion;
+        let region = kaos_kernel::memory::bios::MEMORYMAP_OFFSET
+            as *const kaos_kernel::memory::bios::BiosMemoryRegion;
         let kernel_entry = unsafe { &*region };
         assert!(
             size == kernel_entry.size,
@@ -1095,5 +1098,3 @@ fn test_bios_memory_map_query_syscalls() {
         );
     }
 }
-
-

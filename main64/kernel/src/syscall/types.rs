@@ -60,6 +60,8 @@ pub enum SyscallId {
     GetTime = 27,
     /// Read a single extended key event from the keyboard (non-blocking).
     PollKey = 28,
+    /// Retrieve the current console dimensions (packed as `rows << 32 | cols`).
+    GetConsoleDimensions = 29,
 }
 
 impl SyscallId {
@@ -141,6 +143,8 @@ impl SyscallId {
     pub const GET_TIME: u64 = Self::GetTime as u64;
     /// Syscall number for PollKey (non-blocking keyboard query).
     pub const POLL_KEY: u64 = Self::PollKey as u64;
+    /// Syscall number for GetConsoleDimensions.
+    pub const GET_CONSOLE_DIMENSIONS: u64 = Self::GetConsoleDimensions as u64;
 }
 
 /// Unknown syscall number.
@@ -409,6 +413,3 @@ pub struct UserDateTime {
     /// Explicit padding for 8-byte alignment structure size matching.
     pub _padding: [u8; 7],
 }
-
-
-

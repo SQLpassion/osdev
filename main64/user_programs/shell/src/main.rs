@@ -5,8 +5,8 @@ extern crate alloc;
 
 mod fpu;
 
-use lib_kaos::{console, fs, print, println, process};
 use fpu::run_fpu_smoke_test;
+use lib_kaos::{console, fs, print, println, process};
 
 /// Renders the shell welcome banner on startup.
 fn print_welcome_banner() {

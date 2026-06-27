@@ -5,9 +5,14 @@ use core::arch::asm;
 pub const PT_ENTRIES: usize = 512;
 pub const PAGE_MASK: u64 = !(PAGE_SIZE_U64 - 1);
 
+/// PML4 slot used for the recursive self-map (PML4[511] -> the PML4 itself).
+pub const RECURSIVE_SLOT: usize = 511;
+
 pub const ENTRY_PRESENT: u64 = 1 << 0;
 pub const ENTRY_WRITABLE: u64 = 1 << 1;
 pub const ENTRY_USER: u64 = 1 << 2;
+pub const ENTRY_PWT: u64 = 1 << 3;
+pub const ENTRY_PCD: u64 = 1 << 4;
 pub const ENTRY_HUGE: u64 = 1 << 7;
 pub const ENTRY_GLOBAL: u64 = 1 << 8;
 pub const ENTRY_FRAME_MASK: u64 = 0x0000_FFFF_FFFF_F000;
@@ -80,6 +85,26 @@ impl PageTableEntry {
             self.0 |= ENTRY_USER;
         } else {
             self.0 &= !ENTRY_USER;
+        }
+    }
+
+    /// Sets or clears the Page-Level Write-Through (PWT) bit.
+    #[inline]
+    pub fn set_pwt(&mut self, val: bool) {
+        if val {
+            self.0 |= ENTRY_PWT;
+        } else {
+            self.0 &= !ENTRY_PWT;
+        }
+    }
+
+    /// Sets or clears the Page-Level Cache Disable (PCD) bit.
+    #[inline]
+    pub fn set_pcd(&mut self, val: bool) {
+        if val {
+            self.0 |= ENTRY_PCD;
+        } else {
+            self.0 &= !ENTRY_PCD;
         }
     }
 
@@ -164,9 +189,19 @@ impl PageTableEntry {
     }
 
     /// Returns whether the huge-page bit is set.
+    ///
+    /// Used during page walks to detect/reject huge-page (1 GiB / 2 MiB) leaves. The
+    /// kernel only ever *creates* 4 KiB mappings, so there is no `set_huge` setter.
     #[inline]
     pub fn huge(self) -> bool {
         (self.0 & ENTRY_HUGE) != 0
+    }
+
+    /// Returns the raw 64-bit entry value (frame bits + flags). Primarily for tests
+    /// that assert an exact, verbatim copy of an entry.
+    #[inline]
+    pub fn raw(self) -> u64 {
+        self.0
     }
 }
 
@@ -175,7 +210,23 @@ pub struct PageTable {
     pub entries: [PageTableEntry; PT_ENTRIES],
 }
 
+impl Default for PageTable {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PageTable {
+    /// Returns a fully zeroed (all-entries-not-present) page table. Useful for tests
+    /// and for any caller that wants a blank table to fill.
+    #[inline]
+    pub const fn new() -> Self {
+        Self {
+            entries: [PageTableEntry(0); PT_ENTRIES],
+        }
+    }
+
     /// Clears all page-table entries.
     #[inline]
     pub fn zero(&mut self) {
@@ -350,6 +401,101 @@ pub unsafe fn entry_ptr(table: *mut PageTable, idx: usize) -> *mut PageTableEntr
     core::ptr::addr_of_mut!((*table).entries[idx])
 }
 
+/// Builds a kernel PML4 in `dst` as a SUPERSET of the firmware PML4 in `src`:
+/// copies all 512 top-level entries verbatim, then installs the recursive self-map at
+/// `RECURSIVE_SLOT` (511) pointing at `dst_phys` — the physical frame backing `dst`.
+///
+/// This is the core of `vmm::init` on the UEFI path, factored out as a pure function so
+/// it can be unit-tested without switching CR3. See `vmm.md` §4 for the rationale (a
+/// minimal hand-built map reset real AMD hardware; cloning the firmware PML4 does not).
+///
+/// # Safety
+/// - `src` and `dst` must point to valid, mapped 4 KiB page-table pages.
+/// - `dst_phys` must be the physical address of the frame backing `dst`.
+/// - No other reference to either table may exist for the duration of the call.
+pub unsafe fn build_kernel_pml4_from_firmware(
+    src: *const PageTable,
+    dst: *mut PageTable,
+    dst_phys: u64,
+) {
+    // Copy every firmware top-level entry verbatim (full identity, higher-half mirror,
+    // SMM/ACPI/MMIO/runtime regions).
+    for i in 0..PT_ENTRIES {
+        // SAFETY: caller guarantees both tables are valid; `i < PT_ENTRIES`.
+        *entry_ptr(dst, i) = table_entry(src, i);
+    }
+    // Install the recursive self-map (overrides whatever firmware had at slot 511) so the
+    // VMM can edit page tables through the recursive window.
+    // SAFETY: `dst` is valid; `RECURSIVE_SLOT < PT_ENTRIES`.
+    (*entry_ptr(dst, RECURSIVE_SLOT)).set_mapping(phys_to_pfn(dst_phys), true, true, false);
+}
+
+/// Walks the firmware page-table hierarchy rooted at the current CR3 and marks
+/// every page-table frame (the PML4, plus all present PDPTs, PDs and PTs) as used
+/// in the PMM.
+///
+/// `vmm::init` builds the kernel PML4 as a clone of the firmware's top-level
+/// entries (see [`build_kernel_pml4_from_firmware`]), so the kernel keeps pointing
+/// at firmware-owned PDPT/PD/PT frames. The PMM has no idea those frames are in
+/// use and would otherwise hand them out via `alloc_frame()`, after which a later
+/// write would corrupt the live page tables — a sporadic, hard-to-debug failure.
+/// Reserving them here — right after `pmm::init` and *before* the first significant
+/// allocation (the kernel PML4 frame in `vmm::init`) — closes that window.
+///
+/// Frames are reached through the firmware identity map (physical == virtual),
+/// which is still active because CR3 has not been switched yet. Huge-page leaves
+/// (1 GiB PDPT entries, 2 MiB PD entries) map data rather than sub-tables, so we
+/// neither recurse into them nor reserve their targets; likewise PT entries are
+/// 4 KiB data leaves, not table frames.
+///
+/// # Safety
+/// - Must be called while the firmware identity map is active (before `write_cr3`),
+///   so that each table's physical address is also a valid virtual address.
+/// - The PMM must already be initialized.
+pub unsafe fn reserve_firmware_page_tables() {
+    let pml4_phys = read_cr3() & ENTRY_FRAME_MASK;
+
+    // Hold the PMM lock for the whole walk: it runs once at boot with interrupts
+    // disabled, and a single critical section keeps the reservation atomic.
+    pmm::with_pmm(|mgr| {
+        // The top-level table frame itself.
+        mgr.mark_frame_used(pml4_phys);
+
+        let pml4 = table_at(pml4_phys);
+        for i in 0..PT_ENTRIES {
+            let pml4e = table_entry(pml4, i);
+            if !pml4e.present() {
+                continue;
+            }
+            let pdpt_phys = pml4e.frame() * PAGE_SIZE_U64;
+            mgr.mark_frame_used(pdpt_phys);
+
+            let pdpt = table_at(pdpt_phys);
+            for j in 0..PT_ENTRIES {
+                let pdpte = table_entry(pdpt, j);
+                // Skip non-present entries and 1 GiB huge-page leaves (no sub-table).
+                if !pdpte.present() || pdpte.huge() {
+                    continue;
+                }
+                let pd_phys = pdpte.frame() * PAGE_SIZE_U64;
+                mgr.mark_frame_used(pd_phys);
+
+                let pd = table_at(pd_phys);
+                for k in 0..PT_ENTRIES {
+                    let pde = table_entry(pd, k);
+                    // Skip non-present entries and 2 MiB huge-page leaves (no sub-table).
+                    if !pde.present() || pde.huge() {
+                        continue;
+                    }
+                    let pt_phys = pde.frame() * PAGE_SIZE_U64;
+                    mgr.mark_frame_used(pt_phys);
+                    // PT entries are 4 KiB data leaves, not table frames — nothing to do.
+                }
+            }
+        }
+    });
+}
+
 /// Zeros one 4 KiB page in physical memory.
 ///
 /// Caller contract: `addr` must be writable and page-aligned physical memory.
@@ -419,6 +565,51 @@ pub fn is_leaf_present(virtual_address: u64) -> bool {
     let Some(pt) = pt_for_if_present(virtual_address) else {
         return false;
     };
+    table_entry(pt, pt_index(virtual_address)).present()
+}
+
+/// Returns whether `virtual_address` is currently mapped at ANY page granularity —
+/// a 4 KiB leaf PTE, a 2 MiB PD huge page, or a 1 GiB PDPT huge page.
+///
+/// Unlike [`is_leaf_present`] / [`pt_for_if_present`] (which return `false`/`None` for
+/// huge-page mappings because they only inspect the 4 KiB PT level), this recognizes huge
+/// pages too. That distinction matters for firmware-established mappings: UEFI commonly maps
+/// MMIO / framebuffer ranges with 2 MiB or 1 GiB pages, and those are cloned into the kernel
+/// PML4 by `build_kernel_pml4_from_firmware`. Callers that decide whether to create a fresh
+/// mapping (e.g. the framebuffer identity map) must use this, otherwise they would try to map
+/// over an existing huge page and corrupt the page-table walk.
+///
+/// The walk short-circuits before dereferencing a level that does not exist (a huge page has
+/// no lower table), so the recursive-mapping accesses below are always valid.
+#[inline]
+pub fn is_va_mapped(virtual_address: u64) -> bool {
+    let pml4 = table_at(PML4_TABLE_ADDR);
+    let pml4e = table_entry(pml4, pml4_index(virtual_address));
+    if !pml4e.present() {
+        return false;
+    }
+
+    let pdp = table_at(pdp_table_addr(virtual_address));
+    let pdpe = table_entry(pdp, pdp_index(virtual_address));
+    if !pdpe.present() {
+        return false;
+    }
+    // 1 GiB huge page: mapped, and there is no PD below it.
+    if pdpe.huge() {
+        return true;
+    }
+
+    let pd = table_at(pd_table_addr(virtual_address));
+    let pde = table_entry(pd, pd_index(virtual_address));
+    if !pde.present() {
+        return false;
+    }
+    // 2 MiB huge page: mapped, and there is no PT below it.
+    if pde.huge() {
+        return true;
+    }
+
+    let pt = table_at(pt_table_addr(virtual_address));
     table_entry(pt, pt_index(virtual_address)).present()
 }
 

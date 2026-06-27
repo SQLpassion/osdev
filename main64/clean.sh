@@ -20,47 +20,30 @@ safe_cargo_clean() {
     fi
 }
 
-# Step 1: Clean the Rust kernel and loaders locally
-echo "[1/3] Cleaning Rust kernel and loader..."
+# Step 1: Clean the Rust build output. With the Cargo workspace, every crate shares the single
+# `target/` at the workspace root, so one `cargo clean` here removes all build artifacts at once.
+echo "[1/3] Cleaning Rust workspace target..."
 echo "----------------------------------------"
-cd kernel
-echo "  -> Running cargo clean on kernel..."
+echo "  -> Running cargo clean on the workspace..."
 safe_cargo_clean
 
-cd ../kaosldr_64
-echo "  -> Running cargo clean on kaosldr_64..."
-safe_cargo_clean
-
-# Step 2: Clean Rust libraries and user programs
-echo "[2/3] Cleaning libraries and user programs..."
+# Step 2: Remove any stale per-crate `target/` directories left over from before the workspace
+# migration. Cargo no longer writes here, so these would only mislead the build scripts.
+echo "[2/3] Removing stale per-crate target directories..."
 echo "---------------------------------------------"
-cd ../lib_kaos
-if [ -f "Cargo.toml" ]; then
-    echo "  -> Running cargo clean on lib_kaos..."
-    safe_cargo_clean
-fi
-
-cd ../lib_tui
-if [ -f "Cargo.toml" ]; then
-    echo "  -> Running cargo clean on lib_tui..."
-    safe_cargo_clean
-fi
-
-cd ../user_programs
-for dir in */ ; do
-    if [ -f "${dir}Cargo.toml" ]; then
-        echo "  -> Running cargo clean on user_programs/${dir%/}"
-        (cd "$dir" && safe_cargo_clean)
-    fi
+rm -rf kernel/target kaosldr_64/target kaosldr_uefi/target
+for dir in user_programs/*/ ; do
+    rm -rf "${dir}target"
 done
 
 echo "[3/3] Cleaning build artifacts..."
 echo "---------------------------------"
-cd ..
 rm -f boot/bootsector.bin
 rm -f kaosldr_16/kldr16.bin
 rm -f kaosldr_16/*.o
 rm -f kaosldr_64/kldr64.bin
 rm -f kaosldr_64/*.o
 rm -f kaos64.img
+rm -f kaos64-uefi.img
 rm -f kaos64.qcow2
+rm -f *.map

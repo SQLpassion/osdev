@@ -2,8 +2,8 @@
 
 use crate::drivers;
 use crate::io::fat12::types::{
-    BYTES_PER_SECTOR, FAT1_LBA, FAT12_MIN_DATA_CLUSTER, DATA_AREA_START_LBA,
-    ROOT_DIRECTORY_LBA, ROOT_DIRECTORY_SECTORS, SECTORS_PER_FAT, Fat12Error,
+    Fat12Error, BYTES_PER_SECTOR, DATA_AREA_START_LBA, FAT12_MIN_DATA_CLUSTER, FAT1_LBA,
+    ROOT_DIRECTORY_LBA, ROOT_DIRECTORY_SECTORS, SECTORS_PER_FAT,
 };
 use alloc::vec;
 use alloc::vec::Vec;
@@ -31,7 +31,10 @@ pub fn read_fat_from_disk() -> Result<Vec<u8>, Fat12Error> {
 ///
 /// For standard FAT12 this is always 14 sectors at LBA 19.
 pub fn write_root_directory_to_disk(buffer: &[u8]) -> Result<(), Fat12Error> {
-    assert_eq!(buffer.len(), ROOT_DIRECTORY_SECTORS as usize * BYTES_PER_SECTOR);
+    assert_eq!(
+        buffer.len(),
+        ROOT_DIRECTORY_SECTORS as usize * BYTES_PER_SECTOR
+    );
     drivers::ata::write_sectors(buffer, ROOT_DIRECTORY_LBA, ROOT_DIRECTORY_SECTORS)?;
     Ok(())
 }
@@ -41,7 +44,10 @@ pub fn write_root_directory_to_disk(buffer: &[u8]) -> Result<(), Fat12Error> {
 /// Under FAT12 specifications, both FAT#1 (LBA 1) and FAT#2 (LBA 10) are
 /// mirrors and must be written simultaneously.
 pub fn write_fat_to_disk(fat_buffer: &[u8]) -> Result<(), Fat12Error> {
-    assert_eq!(fat_buffer.len(), SECTORS_PER_FAT as usize * BYTES_PER_SECTOR);
+    assert_eq!(
+        fat_buffer.len(),
+        SECTORS_PER_FAT as usize * BYTES_PER_SECTOR
+    );
     // Write FAT#1
     drivers::ata::write_sectors(fat_buffer, FAT1_LBA, SECTORS_PER_FAT as u8)?;
     // Write FAT#2 (LBA 10 = FAT1_LBA + SECTORS_PER_FAT)

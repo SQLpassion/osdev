@@ -76,7 +76,11 @@ unsafe fn load_file_into_memory(entry: &RootDirectoryEntry) -> i32 {
 
     // Read the first cluster of the file into memory.
     // Sector LBA = cluster + 33 - 2
-    read_sectors(current_kernel_buffer, (entry.first_cluster as u32) + 33 - 2, 1);
+    read_sectors(
+        current_kernel_buffer,
+        (entry.first_cluster as u32) + 33 - 2,
+        1,
+    );
     sector_count += 1;
 
     let mut next_cluster = fat_read(entry.first_cluster);

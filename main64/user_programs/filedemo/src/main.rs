@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use lib_kaos::{console, fs, process, print, println};
+use lib_kaos::{console, fs, print, println, process};
 
 #[no_mangle]
 #[link_section = ".ltext._start"]

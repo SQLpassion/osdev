@@ -22,16 +22,14 @@ use alloc::vec::Vec;
 use crate::debugln;
 use crate::sync::spinlock::SpinLock;
 
-pub mod types;
 pub mod config;
 pub mod database;
+pub mod types;
 
-pub use types::{BarType, PciBar, PciDevice};
 #[allow(unused_imports)]
-pub use config::{
-    pci_config_read, pci_config_read_u16, pci_config_read_u8, pci_config_write,
-};
+pub use config::{pci_config_read, pci_config_read_u16, pci_config_read_u8, pci_config_write};
 pub use database::{class_to_str, device_to_str, vendor_to_str};
+pub use types::{BarType, PciBar, PciDevice};
 
 /// Global list of scanned PCI devices, protected by a SpinLock.
 static PCI_DEVICES: SpinLock<Vec<PciDevice>> = SpinLock::new(Vec::new());
@@ -80,7 +78,10 @@ pub fn init() {
                 let interrupt_pin = unsafe { pci_config_read_u8(bus, slot, func, 0x3D) };
 
                 // Step 8: Parse all Base Address Registers (BARs).
-                let mut bars = [PciBar { bar_type: BarType::None, raw_value: 0 }; 6];
+                let mut bars = [PciBar {
+                    bar_type: BarType::None,
+                    raw_value: 0,
+                }; 6];
                 let mut skip_next = false;
                 for (bar_idx, bar_slot) in bars.iter_mut().enumerate() {
                     if skip_next {
@@ -136,13 +137,19 @@ pub fn get_device(index: usize) -> Option<PciDevice> {
 /// Find a PCI device by Vendor ID and Device ID.
 pub fn find_device(vendor_id: u16, device_id: u16) -> Option<PciDevice> {
     let devices = PCI_DEVICES.lock();
-    devices.iter().find(|d| d.vendor_id == vendor_id && d.device_id == device_id).cloned()
+    devices
+        .iter()
+        .find(|d| d.vendor_id == vendor_id && d.device_id == device_id)
+        .cloned()
 }
 
 /// Find a PCI device by Class and Subclass.
 pub fn find_by_class(class_code: u8, subclass: u8) -> Option<PciDevice> {
     let devices = PCI_DEVICES.lock();
-    devices.iter().find(|d| d.class_code == class_code && d.subclass == subclass).cloned()
+    devices
+        .iter()
+        .find(|d| d.class_code == class_code && d.subclass == subclass)
+        .cloned()
 }
 
 /// Filter a slice of PCI devices based on a category filter string.
@@ -153,23 +160,34 @@ pub fn find_by_class(class_code: u8, subclass: u8) -> Option<PciDevice> {
 /// - "--bridge" -> Class 0x06
 pub fn filter_by_category(devices: &[PciDevice], filter: &str) -> Vec<PciDevice> {
     let filter_lower = filter.trim();
-    devices.iter().filter(|d| {
-        // Class 0x02 corresponds to Network Controller
-        if filter_lower.eq_ignore_ascii_case("--ethernet") || filter_lower.eq_ignore_ascii_case("--network") {
-            d.class_code == 0x02
-        // Class 0x01 corresponds to Mass Storage Controller
-        } else if filter_lower.eq_ignore_ascii_case("--storage") || filter_lower.eq_ignore_ascii_case("--sata") || filter_lower.eq_ignore_ascii_case("--ide") {
-            d.class_code == 0x01
-        // Class 0x03 corresponds to Display Controller
-        } else if filter_lower.eq_ignore_ascii_case("--display") || filter_lower.eq_ignore_ascii_case("--vga") {
-            d.class_code == 0x03
-        // Class 0x06 corresponds to Bridge Device
-        } else if filter_lower.eq_ignore_ascii_case("--bridge") {
-            d.class_code == 0x06
-        } else {
-            false
-        }
-    }).cloned().collect()
+    devices
+        .iter()
+        .filter(|d| {
+            // Class 0x02 corresponds to Network Controller
+            if filter_lower.eq_ignore_ascii_case("--ethernet")
+                || filter_lower.eq_ignore_ascii_case("--network")
+            {
+                d.class_code == 0x02
+            // Class 0x01 corresponds to Mass Storage Controller
+            } else if filter_lower.eq_ignore_ascii_case("--storage")
+                || filter_lower.eq_ignore_ascii_case("--sata")
+                || filter_lower.eq_ignore_ascii_case("--ide")
+            {
+                d.class_code == 0x01
+            // Class 0x03 corresponds to Display Controller
+            } else if filter_lower.eq_ignore_ascii_case("--display")
+                || filter_lower.eq_ignore_ascii_case("--vga")
+            {
+                d.class_code == 0x03
+            // Class 0x06 corresponds to Bridge Device
+            } else if filter_lower.eq_ignore_ascii_case("--bridge") {
+                d.class_code == 0x06
+            } else {
+                false
+            }
+        })
+        .cloned()
+        .collect()
 }
 
 /// Print all discovered PCI devices to the screen or debug output.
@@ -198,7 +216,11 @@ pub fn print_devices() {
                 BarType::Io { port, size } => {
                     debugln!("  BAR {}: I/O Port {:#x} (size {})", i, port, size);
                 }
-                BarType::Memory32 { address, size, prefetchable } => {
+                BarType::Memory32 {
+                    address,
+                    size,
+                    prefetchable,
+                } => {
                     debugln!(
                         "  BAR {}: 32-bit Memory {:#010x} (size {}, prefetchable: {})",
                         i,
@@ -207,7 +229,11 @@ pub fn print_devices() {
                         prefetchable
                     );
                 }
-                BarType::Memory64 { address, size, prefetchable } => {
+                BarType::Memory64 {
+                    address,
+                    size,
+                    prefetchable,
+                } => {
                     debugln!(
                         "  BAR {}: 64-bit Memory {:#018x} (size {}, prefetchable: {})",
                         i,

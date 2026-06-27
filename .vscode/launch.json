@@ -6,7 +6,7 @@
             "type": "cppdbg",
             "request": "launch",
             "targetArchitecture": "x86_64",
-            "program": "${workspaceRoot}/main64/kernel/target/x86_64-unknown-none/debug/kaos_kernel",
+            "program": "${workspaceRoot}/main64/target/x86_64-unknown-none/debug/kaos_kernel",
             "miDebuggerServerAddress": "host.docker.internal:12345",
             "miDebuggerPath": "/usr/bin/gdb",
             "MIMode": "gdb",
@@ -23,11 +23,11 @@
                 },
                 {
                     "description": "Load Rust kernel symbols at virtual address",
-                    "text": "-interpreter-exec console \"add-symbol-file ${workspaceRoot}/main64/kernel/target/x86_64-unknown-none/debug/kaos_kernel 0xFFFF800000100000\""
+                    "text": "-interpreter-exec console \"add-symbol-file ${workspaceRoot}/main64/target/x86_64-unknown-none/debug/kaos_kernel 0xFFFF800000100000\""
                 },
                 {
-                    "description": "Load FILEDEMO user program symbols at virtual address",
-                    "text": "-interpreter-exec console \"add-symbol-file ${workspaceRoot}/main64/user_programs/filedemo/target/x86_64-unknown-none/debug/filedemo 0x0000700000000000\""
+                    "description": "Load SHELL user program symbols at virtual address",
+                    "text": "-interpreter-exec console \"add-symbol-file ${workspaceRoot}/main64/target/x86_64-unknown-none/debug/shell 0x0000700000000000\""
                 }
             ],
             "cwd": "${workspaceRoot}"
@@ -36,7 +36,7 @@
             "name": "Debug KAOS Rust x64 locally",
             "type": "cppdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/main64/kernel/target/x86_64-unknown-none/debug/kaos_kernel",
+            "program": "${workspaceFolder}/main64/target/x86_64-unknown-none/debug/kaos_kernel",
             "cwd": "${workspaceFolder}",
             "MIMode": "gdb",
             "miDebuggerPath": "rust-gdb",
@@ -57,11 +57,11 @@
                 },
                 {
                     "description": "Load Rust kernel symbols at virtual address",
-                    "text": "-interpreter-exec console \"add-symbol-file ${workspaceFolder}/main64/kernel/target/x86_64-unknown-none/debug/kaos_kernel 0xFFFF800000100000\""
+                    "text": "-interpreter-exec console \"add-symbol-file ${workspaceFolder}/main64/target/x86_64-unknown-none/debug/kaos_kernel 0xFFFF800000100000\""
                 },
                 {
-                    "description": "Load FILEDEMO user program symbols at virtual address",
-                    "text": "-interpreter-exec console \"add-symbol-file ${workspaceFolder}/main64/user_programs/filedemo/target/x86_64-unknown-none/debug/filedemo 0x0000700000000000\""
+                    "description": "Load SHELL user program symbols at virtual address",
+                    "text": "-interpreter-exec console \"add-symbol-file ${workspaceFolder}/main64/target/x86_64-unknown-none/debug/shell 0x0000700000000000\""
                 }
             ]
         }

@@ -1,10 +1,10 @@
 //! State inspection, query, and diagnostics APIs for the scheduler.
 
-use core::mem::size_of;
-use crate::arch::interrupts::{InterruptStackFrame, SavedRegisters};
-use crate::memory::vmm;
 use super::types::TaskState;
 use super::with_scheduler;
+use crate::arch::interrupts::{InterruptStackFrame, SavedRegisters};
+use crate::memory::vmm;
+use core::mem::size_of;
 
 /// Returns the saved frame pointer for `task_id` if that slot is active.
 ///

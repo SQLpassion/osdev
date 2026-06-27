@@ -1,9 +1,12 @@
 //! Filesystem-related system call implementations.
 
-use crate::syscall::types::{is_valid_user_buffer, SyscallResult, SyscallError};
+use crate::syscall::types::{is_valid_user_buffer, SyscallError, SyscallResult};
 
 /// Helper to read a null-terminated string from user space safely.
-pub fn read_user_string(ptr: *const u8, max_len: usize) -> Result<alloc::string::String, SyscallError> {
+pub fn read_user_string(
+    ptr: *const u8,
+    max_len: usize,
+) -> Result<alloc::string::String, SyscallError> {
     if ptr.is_null() {
         return Err(SyscallError::InvalidArg);
     }

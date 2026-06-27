@@ -1,24 +1,21 @@
 //! High-level file system interface for FAT12.
 
-use alloc::vec::Vec;
-use core::fmt::Write;
-use core::ops::ControlFlow;
 use crate::drivers;
 use crate::io::fat12::cluster::{deallocate_cluster_chain, fat12_next_cluster};
+use crate::io::fat12::directory::{
+    delete_file_entry, find_file_in_root_directory, for_each_active_root_entry, normalize_8_3_name,
+};
 use crate::io::fat12::disk::{
     cluster_to_lba, read_fat_from_disk, read_root_directory_from_disk, write_fat_to_disk,
     write_root_directory_to_disk,
 };
-use crate::io::fat12::directory::{
-    delete_file_entry, find_file_in_root_directory, for_each_active_root_entry,
-    normalize_8_3_name,
-};
 use crate::io::fat12::types::{
+    EntryState, Fat12Error, FileEntryMeta, RawRootDirectoryEntry, RootDirectoryRecord,
     ATTR_DIRECTORY, BYTES_PER_SECTOR, DIRECTORY_ENTRY_SIZE, FAT12_BAD_CLUSTER, FAT12_EOF_MIN,
     FAT12_MAX_CLUSTER_ID, FAT12_MIN_DATA_CLUSTER, MAX_FILE_SIZE, ROOT_DIRECTORY_ENTRIES,
-    EntryState, Fat12Error, FileEntryMeta, RawRootDirectoryEntry, RootDirectoryRecord,
 };
-
+use alloc::vec::Vec;
+use core::ops::ControlFlow;
 
 /// Initialize the FAT12 file system.
 ///
@@ -172,33 +169,36 @@ where
 ///         <count> File(s)    <total> bytes
 /// ```
 pub fn print_root_directory() {
-    // Cache-free behavior: always read current directory state from disk.
+    // Step 1: Read the current raw root directory sectors from the disk.
+    // This is cache-free to ensure we print the actual on-disk state.
     let root_dir = match read_root_directory_from_disk() {
         Ok(root_dir) => root_dir,
         Err(err) => {
-            // Surface media/I/O problems directly on screen for operator feedback.
-            drivers::screen::with_screen(|screen| {
-                let _ = writeln!(screen, "FAT12 read error: {}", err);
+            // Log/display the FAT12 read error to the active system console.
+            crate::console::with_console(|console| {
+                let _ = writeln!(console, "FAT12 read error: {}", err);
             });
             return;
         }
     };
 
-    drivers::screen::with_screen(|screen| {
+    // Step 2: Acquire access to the active system console and parse the root directory entries.
+    crate::console::with_console(|console| {
         let (file_count, total_size) = parse_root_directory(&root_dir, |entry| {
-            // Parsed name bytes are ASCII-normalized by parser; fallback kept defensive.
+            // Convert entry name bytes to a UTF-8 string slice.
             let name = core::str::from_utf8(&entry.name[..entry.name_len]).unwrap_or("???");
 
-            let _ = write!(screen, "{} bytes", entry.file_size);
-            let _ = write!(screen, "\tStart Cluster: {}", entry.first_cluster);
-            let _ = write!(screen, "\t{}", name);
-            screen.print_char(b'\n');
+            // Format and print each directory entry's size, start cluster, and name.
+            let _ = write!(console, "{} bytes", entry.file_size);
+            let _ = write!(console, "\tStart Cluster: {}", entry.first_cluster);
+            let _ = write!(console, "\t{}", name);
+            console.print_char(b'\n');
         });
 
-        // Match classic FAT listing footer with count and aggregated byte size.
-        let _ = write!(screen, "\t\t{} File(s)", file_count);
-        let _ = write!(screen, "\t{} bytes", total_size);
-        screen.print_char(b'\n');
+        // Step 3: Print classic FAT footer showing total files and aggregated size.
+        let _ = write!(console, "\t\t{} File(s)", file_count);
+        let _ = write!(console, "\t{} bytes", total_size);
+        console.print_char(b'\n');
     });
 }
 
@@ -217,7 +217,7 @@ pub fn delete_file(file_name: &str) -> Result<(), Fat12Error> {
                 let mut b = [0u8; DIRECTORY_ENTRY_SIZE];
                 b.copy_from_slice(entry_bytes);
                 b
-            }
+            },
         };
 
         match entry.state() {

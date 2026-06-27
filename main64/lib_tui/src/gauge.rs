@@ -3,9 +3,9 @@
 //! Combined representation of a static prefix text label and a standard fill bar,
 //! used to report system metrics like memory allocation or CPU load.
 
-use crate::screen::{Color, with_screen};
 use crate::progressbar::ProgressBar;
-use crate::SCREEN_ROWS;
+use crate::screen::{with_screen, Color};
+use crate::screen_rows;
 
 /// Labeled horizontal progress meter widget.
 ///
@@ -88,13 +88,21 @@ impl Gauge {
     /// Renders the label and the progress bar to the screen buffer.
     pub fn draw(&self) {
         // Step 1: Verify row index is within physical screen limits.
-        if self.row >= SCREEN_ROWS {
+        if self.row >= screen_rows() {
             return;
         }
 
         // Step 2: Draw the label text and pad any remaining label columns.
         with_screen(|screen| {
-            screen.fill_rect(self.row, self.col, self.label_width, 1, b' ', self.label_fg, self.bg);
+            screen.fill_rect(
+                self.row,
+                self.col,
+                self.label_width,
+                1,
+                b' ',
+                self.label_fg,
+                self.bg,
+            );
             screen.draw_at(self.row, self.col, self.label, self.label_fg, self.bg);
         });
 

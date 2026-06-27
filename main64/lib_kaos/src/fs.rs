@@ -3,15 +3,15 @@
 use crate::{
     decode_result,
     raw::{syscall0, syscall1, syscall2, syscall3},
-    SyscallId, SysError, MAX_PATH_LEN,
+    SysError, SyscallId, MAX_PATH_LEN,
 };
 
 /// Open mode passed to [`File::open`].
 #[repr(u64)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FileMode {
-    Read   = 0,
-    Write  = 1,
+    Read = 0,
+    Write = 1,
     Append = 2,
 }
 

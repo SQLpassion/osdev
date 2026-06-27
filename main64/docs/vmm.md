@@ -10,6 +10,33 @@ It is written as a technical onboarding guide, including concrete address exampl
 
 ---
 
+## Table of Contents
+- [1) Virtual memory vs physical memory (in this kernel)](#1-virtual-memory-vs-physical-memory-in-this-kernel)
+- [2) x86_64 page hierarchy used here](#2-x86_64-page-hierarchy-used-here)
+- [3) Page-table entry representation](#3-page-table-entry-representation)
+- [4) Initial VMM setup (`vmm::init`) — cloning the firmware PML4](#4-initial-vmm-setup-vmminit--cloning-the-firmware-pml4)
+  - [4.1 What it does now](#41-what-it-does-now)
+  - [4.2 What "clone the PML4" actually copies](#42-what-clone-the-pml4-actually-copies)
+  - [4.3 Why a minimal map reset real hardware (and the clone does not)](#43-why-a-minimal-map-reset-real-hardware-and-the-clone-does-not)
+  - [4.4 Known caveat (open follow-up)](#44-known-caveat-open-follow-up)
+- [5) Page faults: how the kernel handles them](#5-page-faults-how-the-kernel-handles-them)
+  - [5.1 Interrupt wiring](#51-interrupt-wiring)
+  - [5.2 Demand paging behavior](#52-demand-paging-behavior)
+- [6) Recursive page mapping: concept and mechanics](#6-recursive-page-mapping-concept-and-mechanics)
+  - [6.1 Why it exists](#61-why-it-exists)
+  - [6.2 Recursive windows used in current code](#62-recursive-windows-used-in-current-code)
+- [7) Concrete example: mapping a virtual address using recursive mapping](#7-concrete-example-mapping-a-virtual-address-using-recursive-mapping)
+- [8) ASCII diagrams: page walk and recursive modification](#8-ascii-diagrams-page-walk-and-recursive-modification)
+  - [8.1 Hardware page walk for one VA](#81-hardware-page-walk-for-one-va)
+  - [8.2 How recursive mapping gives virtual access to those tables](#82-how-recursive-mapping-gives-virtual-access-to-those-tables)
+- [9) Mapping and unmapping APIs](#9-mapping-and-unmapping-apis)
+- [10) VMM logging and console debug output](#10-vmm-logging-and-console-debug-output)
+- [11) `vmmtest` behavior (current)](#11-vmmtest-behavior-current)
+- [12) Safety boundaries and critical invariants](#12-safety-boundaries-and-critical-invariants)
+- [13) Scope and limitations (as of current code)](#13-scope-and-limitations-as-of-current-code)
+
+---
+
 ## 1) Virtual memory vs physical memory (in this kernel)
 
 ### Physical memory
@@ -27,11 +54,22 @@ In this kernel:
 - Table fanout: 512 entries per level
 
 ### Important note about huge pages
-The bootloader (`main64/kaosldr_16/longmode.asm`) initially uses 2 MiB huge pages to enter long mode quickly.
 
-After `vmm::init()` builds new page tables and switches CR3, those bootloader tables are no longer active.
+This differs between the two boot paths:
 
-**Therefore: after VMM initialization, the Rust kernel does not use huge pages.**
+- **Legacy BIOS path** (`main64/kaosldr_16/longmode.asm`): the bootloader uses 2 MiB huge pages
+  to enter long mode quickly. `vmm::init()` then builds fresh 4 KiB tables and switches CR3, so
+  the bootloader's huge-page tables are no longer active.
+
+- **UEFI path:** `vmm::init()` does **not** build a map from scratch — it **clones the firmware's
+  top-level page table** (see §4). The firmware's identity / higher-half mappings often use
+  **1 GiB or 2 MiB huge pages**, so after the CR3 switch the *active* tables for those regions
+  may still be huge pages. The kernel does not mind: the hardware page walker handles any page
+  size, and the recursive window the VMM uses for its *own* `map`/`unmap` operations always
+  creates 4 KiB page tables.
+
+**Bottom line:** the kernel's own mappings (heap, user space, on-demand pages) are always 4 KiB;
+the inherited firmware identity/higher-half mappings on the UEFI path may be huge pages.
 
 ---
 
@@ -80,30 +118,102 @@ Current kernel mappings in VMM are created as supervisor (`user = false`).
 
 ---
 
-## 4) Initial VMM setup (`vmm::init`)
+## 4) Initial VMM setup (`vmm::init`) — cloning the firmware PML4
 
-`vmm::init(debug_output)` allocates and initializes paging structures, then switches CR3.
+> **History / important:** earlier versions of `vmm::init` hand-built a *minimal* map from
+> scratch (allocate a fresh PML4 + an identity branch covering `0..4 MiB` + a higher-half branch
+> + a recursive entry, then switch CR3). That design **worked in QEMU but instantly reset real
+> AMD UEFI hardware** the moment CR3 was loaded. The current implementation instead **clones the
+> firmware's top-level page table**. The reasoning below is the hard-won result of a long
+> bisection; read it before "simplifying" this code.
 
-Allocated table frames:
+### 4.1 What it does now
 
-- 1x PML4
-- Identity branch: 1x PDP + 1x PD + 2x PT
-- Higher-half branch: 1x PDP + 1x PD + 2x PT
+When `KernelMain` calls `vmm::init`, the **firmware's page tables are still active** in CR3 (the
+UEFI loader handed off without changing CR3; it only mirrored `PML4[0]→PML4[256]` to create the
+higher half — see [`uefi.md`](uefi.md) §3.6). Because the firmware identity-maps RAM
+(physical == virtual), a physical address can be dereferenced directly as a pointer.
 
-Then:
+`vmm::init` therefore does, in full:
 
-- `PML4[0]` -> identity branch
-- `PML4[256]` -> higher-half branch
-- `PML4[511]` -> points to PML4 itself (recursive mapping)
+```rust
+// 1. Allocate + zero one fresh frame for the kernel's own PML4.
+let pml4 = alloc_frame_phys_or_panic(...);
+zero_phys_page(pml4);
 
-Mapped ranges:
+// 2. Find the firmware PML4 (CR3 holds its physical address; mask off flag bits).
+let fw_pml4 = read_cr3() & 0x000F_FFFF_FFFF_F000;
 
-- identity `0..4 MiB`
-- higher-half mirror of `0..4 MiB` at `0xFFFF_8000_0000_0000 + offset`
+// 3. Copy ALL 512 top-level entries from the firmware PML4 into ours.
+//    (phys == virt here, so table_at(x) just treats x as a *mut PageTable.)
+for i in 0..512 {
+    *entry_ptr(table_at(pml4), i) = *entry_ptr(table_at(fw_pml4), i);
+}
 
-Finally:
+// 4. Overwrite slot 511 with our recursive self-map (PML4[511] -> the PML4 itself).
+(*entry_ptr(table_at(pml4), 511)).set_mapping(phys_to_pfn(pml4), true, true, false);
 
-- `write_cr3(pml4_phys)` activates the new page tables.
+// 5. Publish state and activate the new root.
+write_cr3(pml4);
+```
+
+That is the **entire** function — about a dozen lines. There is no hand-built identity or
+higher-half branch anymore.
+
+### 4.2 What "clone the PML4" actually copies
+
+A PML4 is a single 4 KiB page of **512 entries × 8 bytes**. Each entry is a `u64` holding the
+**physical address of the next-level table (a PDPT)** plus flags. Copying the 512 entries copies
+only the **top-level pointers** — *not* the whole multi-level tree. Our new PML4 therefore points
+at the **same** PDPT/PD/PT sub-tables the firmware built; we share its entire lower hierarchy by
+reference. This works because page-table entries store **absolute physical addresses**, which are
+independent of which PML4 is currently in CR3.
+
+After step 5, the kernel's address space contains, simultaneously:
+
+| Slot      | Mapping                                                            | Origin                         |
+|-----------|-------------------------------------------------------------------|--------------------------------|
+| `PML4[0]` | **identity** (virt == phys) of low memory / all RAM               | cloned from firmware           |
+| `PML4[256]` | **higher-half** mirror (`0xFFFF8000…` → same physical as `0x0…`) | firmware slot the loader set   |
+| `PML4[511]` | **recursive** self-map (the VMM's window onto its own tables)    | written by us                  |
+| others    | SMM / ACPI / MMIO / firmware runtime regions                      | cloned from firmware           |
+
+So the **identity mapping stays active** after the switch. The kernel *code* runs in the higher
+half (`PML4[256]`), but any physical address is still reachable directly via `PML4[0]`. The
+end-of-boot framebuffer heartbeat and reads of the loader-provided `BootInfo` (which lives high in
+RAM) both rely on this.
+
+### 4.3 Why a minimal map reset real hardware (and the clone does not)
+
+Bisection on the real machine established, with certainty:
+
+- Switching to a **byte-identical clone of the firmware PML4** (even allocated in a high physical
+  frame) → **works**.
+- Clone **+ our recursive `PML4[511]`** → **works**.
+- Our **hand-built minimal map** (only `0..4 MiB` identity + higher-half + recursive, everything
+  else absent) → **instant hard reset at the `write_cr3`**, with **no CPU exception at all** (a
+  catch-all installed on every IDT vector 0–31 caught nothing; it was not `#PF`/`#GP`/`#MC`/NMI),
+  and **only on real hardware** (QEMU always tolerated it).
+
+A reset that bypasses the IDT entirely, only on real hardware, points at **System Management Mode
+(SMM)**: real firmware leaves SMM active and takes asynchronous **SMIs** (power/thermal/USB-legacy
+emulation). The platform's SMM path depends on the firmware's memory mappings; a minimal kernel
+map discards them, so the next SMI faults inside SMM and the platform hard-resets. QEMU has no
+such SMM activity. Cloning the firmware PML4 keeps every mapping the platform might need, so SMIs
+continue to resolve.
+
+This also fixes two latent bugs for free: the loader-provided **`BootInfo`** and the high
+**PMM-metadata region** (see [`pmm.md`](pmm.md)) both live in RAM that `PML4[0]` identity-maps, so
+they remain reachable after the switch — a hand-built 4 MiB map would have lost them.
+
+### 4.4 Known caveat (open follow-up)
+
+The cloned sub-tables are **firmware-owned frames** that the PMM does **not** know are in use, so
+it could later hand them out and corrupt the page tables. For the current bring-up (boot to a
+stable idle/heartbeat) this has not bitten, but a future "clean" address space should either
+reserve those frames or rebuild kernel-owned tables as a *proper superset* that still covers the
+critical firmware/SMM/MMIO regions. Do not assume the firmware sub-tables are private to the
+kernel.
 
 ---
 

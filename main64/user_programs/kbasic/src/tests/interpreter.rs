@@ -15,7 +15,7 @@ fn test_tokenize_less_than() {
 #[test]
 fn test_interpreter_less_than() {
     let mut interpreter = Interpreter::new();
-    
+
     // Execute LET A = 5
     let tokens_let = tokenize_line("LET A = 5");
     interpreter.execute(&tokens_let);
@@ -86,7 +86,10 @@ fn test_interpreter_let_string() {
 
     // String assignment
     interpreter.execute(&tokenize_line("LET A$ = \"hello world\""));
-    assert_eq!(interpreter.string_variables[0], Some(String::from("hello world")));
+    assert_eq!(
+        interpreter.string_variables[0],
+        Some(String::from("hello world"))
+    );
 
     // String variables are indexed by the starting letter
     interpreter.execute(&tokenize_line("LET Z$ = \"end\""));
@@ -96,7 +99,7 @@ fn test_interpreter_let_string() {
 #[test]
 fn test_interpreter_if_greater_than() {
     let mut interpreter = Interpreter::new();
-    
+
     interpreter.execute(&tokenize_line("LET A = 10"));
     interpreter.execute(&tokenize_line("LET B = 5"));
 

@@ -9,12 +9,6 @@ kernel = []
 [dependencies]
 lib_kaos = { path = "../../lib_kaos" }
 
-[profile.dev]
-panic = "abort"
-
-[profile.release]
-panic = "abort"
-
 [[bin]]
 name = "readline"
 path = "src/main.rs"

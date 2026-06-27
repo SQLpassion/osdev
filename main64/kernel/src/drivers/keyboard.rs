@@ -75,7 +75,8 @@ const SCANCODES_LOWER: [u8; SCANCODE_TABLE_LEN] = [
 /// Upper-case QWERTZ scan code map (printable ASCII only; 0 == ignored)
 const SCANCODES_UPPER: [u8; SCANCODE_TABLE_LEN] = [
     // 0x00..=0x10: error, Esc, !"§$%&/()=?, ?(Shift+ß), ´→backtick(Shift+´), Backspace, Tab, Q
-    0, 0x1B, b'!', b'"', b'\x00', b'$', b'%', b'&', b'/', b'(', b')', b'=', b'?', b'`', 0x08, 0, b'Q',
+    0, 0x1B, b'!', b'"', b'\x00', b'$', b'%', b'&', b'/', b'(', b')', b'=', b'?', b'`', 0x08, 0,
+    b'Q',
     // 0x11..=0x20: W, E, R, T, Z, U, I, O, P, Ü(mapped to ]), *, Enter, LCtrl, A, S, D
     b'W', b'E', b'R', b'T', b'Z', b'U', b'I', b'O', b'P', b']', b'*', b'\n', 0, b'A', b'S', b'D',
     // 0x21..=0x30: F, G, H, J, K, L, Ö(mapped to }), Ä(mapped to @), >, LShift, ', Y, X, C, V, B
@@ -87,7 +88,6 @@ const SCANCODES_UPPER: [u8; SCANCODE_TABLE_LEN] = [
     // 0x50..=0x58: Keypad 2..3, Keypad-0, Keypad-Del, Alt-SysRq, 0x55, >(ISO key Shift), F11, F12
     0, 0, 0, 0, 0, 0, b'>', 0, 0,
 ];
-
 
 #[derive(Debug, Clone, Copy)]
 struct KeyboardState {
@@ -148,8 +148,47 @@ static RAW_WAITQUEUE: SingleWaitQueue = SingleWaitQueue::new();
 /// Wakes consumer tasks when decoded characters are available.
 static INPUT_WAITQUEUE: WaitQueue = WaitQueue::new();
 
+/// Drain any stale bytes left in the 8042 controller output buffer (port 0x60).
+///
+/// The boot loader's video-mode menu reads a keypress through the BIOS while
+/// still in real mode. The matching key-release (break) scancode — and any
+/// other firmware-left byte — can still be sitting unread in the controller
+/// output buffer when the kernel takes over. The 8042 only raises a new IRQ1
+/// when a byte *transitions* into an empty output buffer; if the buffer is
+/// already full when IRQ1 is unmasked, the controller never raises another
+/// keyboard interrupt (it waits for the CPU to read the pending byte) and the
+/// keyboard appears completely dead. Reading the pending byte(s) here clears
+/// that condition before interrupts are enabled. This must run before
+/// `interrupts::enable()`.
+fn flush_controller_output_buffer() {
+    // The output buffer is one byte deep, but loop with a bound in case the
+    // controller has more queued — and to avoid spinning forever on a stuck
+    // line that always reports data-available (e.g. a floating 0xFF).
+    for _ in 0..16 {
+        // SAFETY:
+        // - This requires `unsafe` because hardware port I/O is outside Rust's memory-safety guarantees.
+        // - Reading the PS/2 status port (0x64) is the documented way to probe the output buffer.
+        // - Port access is valid in ring 0 during single-threaded init.
+        let status = unsafe { PortByte::new(KYBRD_CTRL_STATS_REG).read() };
+        if (status & KYBRD_CTRL_STATS_MASK_OUT_BUF) == 0 {
+            break;
+        }
+
+        // SAFETY:
+        // - This requires `unsafe` because hardware port I/O is outside Rust's memory-safety guarantees.
+        // - Output-buffer-full bit was checked above, so a byte is pending.
+        // - Reading the data port (0x60) consumes that byte and clears OBF.
+        let _ = unsafe { PortByte::new(KYBRD_ENC_INPUT_BUF).read() };
+    }
+}
+
 /// Initialize the keyboard driver state.
 pub fn init() {
+    // Discard any byte the firmware / boot-menu left in the hardware output
+    // buffer before IRQ1 is enabled; otherwise the controller may never raise
+    // another keyboard interrupt (see `flush_controller_output_buffer`).
+    flush_controller_output_buffer();
+
     KEYBOARD.raw.clear();
     KEYBOARD.buffer.clear();
     KEYBOARD.key_buffer.clear();
@@ -165,7 +204,6 @@ pub fn clear_buffers() {
     KEYBOARD.buffer.clear();
     KEYBOARD.key_buffer.clear();
 }
-
 
 /// Handle IRQ1 (keyboard) top half: enqueue raw scancode and wake the
 /// keyboard worker task so it can decode the scancode into ASCII.
@@ -218,7 +256,9 @@ pub fn read_char_blocking() -> u8 {
 
         if waitqueue_adapter::sleep_if_multi(&INPUT_WAITQUEUE, task_id, || {
             KEYBOARD.buffer.is_empty()
-        }).should_yield() {
+        })
+        .should_yield()
+        {
             scheduler::yield_now();
         }
     }
@@ -265,7 +305,9 @@ pub fn read_key_blocking() -> Key {
         // whenever any decoded input (char or key) becomes available.
         if waitqueue_adapter::sleep_if_multi(&INPUT_WAITQUEUE, task_id, || {
             KEYBOARD.key_buffer.is_empty()
-        }).should_yield() {
+        })
+        .should_yield()
+        {
             scheduler::yield_now();
         }
     }
@@ -290,31 +332,31 @@ pub fn read_key_blocking() -> Key {
 
 pub fn encode_key(key: Key) -> u8 {
     match key {
-        Key::Unknown        => 0x00,
-        Key::Char(b)        => b,
-        Key::Escape         => 0x80,
-        Key::Backspace      => 0x81,
-        Key::Enter          => 0x82,
-        Key::ArrowUp        => 0x83,
-        Key::ArrowDown      => 0x84,
-        Key::ArrowLeft      => 0x85,
-        Key::ArrowRight     => 0x86,
-        Key::F(n)           => 0x8F_u8.saturating_add(n),
+        Key::Unknown => 0x00,
+        Key::Char(b) => b,
+        Key::Escape => 0x80,
+        Key::Backspace => 0x81,
+        Key::Enter => 0x82,
+        Key::ArrowUp => 0x83,
+        Key::ArrowDown => 0x84,
+        Key::ArrowLeft => 0x85,
+        Key::ArrowRight => 0x86,
+        Key::F(n) => 0x8F_u8.saturating_add(n),
     }
 }
 
 fn decode_key(byte: u8) -> Key {
     match byte {
-        0x00        => Key::Unknown,
-        0x80        => Key::Escape,
-        0x81        => Key::Backspace,
-        0x82        => Key::Enter,
-        0x83        => Key::ArrowUp,
-        0x84        => Key::ArrowDown,
-        0x85        => Key::ArrowLeft,
-        0x86        => Key::ArrowRight,
+        0x00 => Key::Unknown,
+        0x80 => Key::Escape,
+        0x81 => Key::Backspace,
+        0x82 => Key::Enter,
+        0x83 => Key::ArrowUp,
+        0x84 => Key::ArrowDown,
+        0x85 => Key::ArrowLeft,
+        0x86 => Key::ArrowRight,
         0x90..=0x9B => Key::F(byte - 0x8F),
-        b           => Key::Char(b),
+        b => Key::Char(b),
     }
 }
 
@@ -368,9 +410,7 @@ pub fn process_pending_scancodes() -> bool {
 
     // Wake consumers when either the ASCII buffer or the Key buffer has data,
     // so both `read_char_blocking` and `read_key_blocking` callers are woken.
-    if processed_any
-        && (!KEYBOARD.buffer.is_empty() || !KEYBOARD.key_buffer.is_empty())
-    {
+    if processed_any && (!KEYBOARD.buffer.is_empty() || !KEYBOARD.key_buffer.is_empty()) {
         waitqueue_adapter::wake_all_multi(&INPUT_WAITQUEUE);
     }
 
@@ -417,7 +457,7 @@ fn handle_make(state: &mut KeyboardState, code: u8) {
             0x50 => Key::ArrowDown,
             0x4B => Key::ArrowLeft,
             0x4D => Key::ArrowRight,
-            _    => Key::Unknown,
+            _ => Key::Unknown,
         };
         // Push the encoded key into the extended key-event buffer.
         let _ = KEYBOARD.key_buffer.push(encode_key(key));
@@ -439,16 +479,46 @@ fn handle_make(state: &mut KeyboardState, code: u8) {
             return;
         }
         // F1–F10
-        0x3B => { let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(1)));  return; }
-        0x3C => { let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(2)));  return; }
-        0x3D => { let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(3)));  return; }
-        0x3E => { let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(4)));  return; }
-        0x3F => { let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(5)));  return; }
-        0x40 => { let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(6)));  return; }
-        0x41 => { let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(7)));  return; }
-        0x42 => { let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(8)));  return; }
-        0x43 => { let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(9)));  return; }
-        0x44 => { let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(10))); return; }
+        0x3B => {
+            let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(1)));
+            return;
+        }
+        0x3C => {
+            let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(2)));
+            return;
+        }
+        0x3D => {
+            let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(3)));
+            return;
+        }
+        0x3E => {
+            let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(4)));
+            return;
+        }
+        0x3F => {
+            let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(5)));
+            return;
+        }
+        0x40 => {
+            let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(6)));
+            return;
+        }
+        0x41 => {
+            let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(7)));
+            return;
+        }
+        0x42 => {
+            let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(8)));
+            return;
+        }
+        0x43 => {
+            let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(9)));
+            return;
+        }
+        0x44 => {
+            let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(10)));
+            return;
+        }
         _ => {}
     }
 

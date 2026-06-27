@@ -43,6 +43,62 @@ pub enum Color {
     White = 15,
 }
 
+impl Color {
+    /// Converts a 4-bit attribute nibble (VGA compatible) to its corresponding `Color` variant.
+    pub fn from_nibble(val: u8) -> Self {
+        match val & 0x0F {
+            0 => Color::Black,
+            1 => Color::Blue,
+            2 => Color::Green,
+            3 => Color::Cyan,
+            4 => Color::Red,
+            5 => Color::Magenta,
+            6 => Color::Brown,
+            7 => Color::LightGray,
+            8 => Color::DarkGray,
+            9 => Color::LightBlue,
+            10 => Color::LightGreen,
+            11 => Color::LightCyan,
+            12 => Color::LightRed,
+            13 => Color::Pink,
+            14 => Color::Yellow,
+            _ => Color::White,
+        }
+    }
+
+    /// Converts the color to a 32-bit RGB color word based on the target `PixelFormat`.
+    pub fn to_rgb(self, format: crate::boot_info::PixelFormat) -> u32 {
+        let bgr = match self {
+            Color::Black => 0x00000000,
+            Color::Blue => 0x000000AA,
+            Color::Green => 0x0000AA00,
+            Color::Cyan => 0x0000AAAA,
+            Color::Red => 0x00AA0000,
+            Color::Magenta => 0x00AA00AA,
+            Color::Brown => 0x00AA5500,
+            Color::LightGray => 0x00AAAAAA,
+            Color::DarkGray => 0x00555555,
+            Color::LightBlue => 0x005555FF,
+            Color::LightGreen => 0x0055FF55,
+            Color::LightCyan => 0x0055FFFF,
+            Color::LightRed => 0x00FF5555,
+            Color::Pink => 0x00FF55FF,
+            Color::Yellow => 0x00FFFF55,
+            Color::White => 0x00FFFFFF,
+        };
+
+        match format {
+            crate::boot_info::PixelFormat::Rgb => {
+                let r = (bgr >> 16) & 0xFF;
+                let g = (bgr >> 8) & 0xFF;
+                let b = bgr & 0xFF;
+                r | (g << 8) | (b << 16)
+            }
+            _ => bgr,
+        }
+    }
+}
+
 /// Represents a VGA character cell (character + attribute byte)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
@@ -202,8 +258,14 @@ impl Screen {
             background: Color::Black,
             num_cols: DEFAULT_COLS,
             num_rows: DEFAULT_ROWS,
-            back_buffer: [VgaChar { character: b' ', attribute: 0x07 }; DEFAULT_ROWS * DEFAULT_COLS],
-            front_buffer: [VgaChar { character: 0, attribute: 0 }; DEFAULT_ROWS * DEFAULT_COLS],
+            back_buffer: [VgaChar {
+                character: b' ',
+                attribute: 0x07,
+            }; DEFAULT_ROWS * DEFAULT_COLS],
+            front_buffer: [VgaChar {
+                character: 0,
+                attribute: 0,
+            }; DEFAULT_ROWS * DEFAULT_COLS],
             suspend_flush: false,
         }
     }
@@ -243,7 +305,9 @@ impl Screen {
             let back_cell = self.back_buffer[i];
             let front_cell = self.front_buffer[i];
 
-            if back_cell.character != front_cell.character || back_cell.attribute != front_cell.attribute {
+            if back_cell.character != front_cell.character
+                || back_cell.attribute != front_cell.attribute
+            {
                 let row = i / self.num_cols;
                 let col = i % self.num_cols;
                 let vga_ptr = self.vga_ptr(row, col);
@@ -255,7 +319,7 @@ impl Screen {
                 unsafe {
                     ptr::write_volatile(vga_ptr, back_cell);
                 }
-                
+
                 self.front_buffer[i] = back_cell;
             }
         }
@@ -453,9 +517,11 @@ impl Screen {
 
         // Build the attribute byte from the caller-supplied colors.
         let attr = ((bg as u8) << 4) | (fg as u8);
-        let mut c = col;
 
-        for byte in text.bytes() {
+        // Step 1: Iterate over string bytes and write them to VGA memory.
+        // We zip the bytes with an infinite sequence starting at `col` to keep
+        // track of the column index, stopping if we exceed the screen width.
+        for (c, byte) in (col..).zip(text.bytes()) {
             if c >= self.num_cols {
                 break;
             }
@@ -466,7 +532,6 @@ impl Screen {
             };
 
             self.write_vga(row, c, cell);
-            c += 1;
         }
     }
 

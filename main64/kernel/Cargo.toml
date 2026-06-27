@@ -8,7 +8,6 @@ authors = ["Klaus Aschenbrenner"]
 default = ["kernel"]
 kernel = []
 
-
 [lib]
 # Disable default test target for lib - we use integration tests only
 test = false
@@ -16,18 +15,6 @@ doctest = false
 harness = false
 
 [dependencies]
-
-[profile.dev]
-panic = "abort"
-opt-level = 0
-debug = true
-lto = false
-
-[profile.release]
-panic = "abort"
-lto = true
-opt-level = "z"
-debug = true
 
 [[bin]]
 name = "kaos_kernel"
@@ -96,7 +83,13 @@ name = "syscall_dispatch_test"
 name = "process_contract_test"
 
 [[test]]
-name = "cursor_demo_test"
+name = "boot_info_layout_test"
 
 [[test]]
-name = "treeview_test"
+name = "page_table_test"
+
+[[test]]
+name = "pmm_uefi_test"
+
+[[test]]
+name = "pmm_metadata_base_test"

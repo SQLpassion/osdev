@@ -1,9 +1,12 @@
 //! Physical memory manager implementation.
 
-use crate::memory::bios::{self, BiosInformationBlock, BiosMemoryRegion};
 use super::types::{
-    align_up, clear_bit, set_bit, virt_to_phys, PageFrame, PmmLayoutHeader, PmmRegion, KERNEL_OFFSET, PAGE_SIZE, STACK_TOP
+    align_up, clear_bit, set_bit, virt_to_phys, PageFrame, PmmLayoutHeader, PmmRegion,
+    KERNEL_OFFSET, PAGE_SIZE, STACK_TOP,
 };
+use crate::boot_info::{BootInfo, UnifiedMemoryEntry, BOOT_INFO_PTR};
+use crate::memory::bios::{self, BiosInformationBlock, BiosMemoryRegion};
+use core::sync::atomic::Ordering;
 
 extern "C" {
     /// Linker-defined symbol marking the end of the kernel BSS section
@@ -22,6 +25,25 @@ pub struct PhysicalMemoryManager {
 // - The PMM layout is stable after initialization.
 unsafe impl Send for PhysicalMemoryManager {}
 
+/// Chooses the physical base for the PMM layout (header + region array + bitmaps).
+///
+/// Returns the bootloader-reserved region (`boot_pmm_metadata_base`) when a
+/// BootInfo was published with a non-zero base; otherwise falls back to
+/// `kernel_end_phys` (the address right after the kernel image/BSS). This is the
+/// exact rule `PhysicalMemoryManager::new()` applies, factored out as a pure
+/// function so it can be unit-tested without touching `BOOT_INFO_PTR` or the
+/// `__bss_end` linker symbol.
+///
+/// `boot_pmm_metadata_base` is `None` when no BootInfo is present (BIOS loader /
+/// tests) and `Some(field)` when one is — including `Some(0)`, which means "BootInfo
+/// present but no reserved region", and falls back just like the absent case.
+pub fn select_metadata_base(boot_pmm_metadata_base: Option<u64>, kernel_end_phys: u64) -> u64 {
+    match boot_pmm_metadata_base {
+        Some(base) if base != 0 => base,
+        _ => kernel_end_phys,
+    }
+}
+
 impl PhysicalMemoryManager {
     /// Returns a mutable slice over the PMM region array stored after the header.
     fn regions(&mut self) -> &mut [PmmRegion] {
@@ -36,28 +58,53 @@ impl PhysicalMemoryManager {
         }
     }
 
+    /// Returns a read-only snapshot of the parsed PMM region array.
+    ///
+    /// Intended for diagnostics and tests that need to inspect the regions/bitmap
+    /// bookkeeping (`start`, `frames_total`, `frames_free`, …) without the mutable
+    /// borrow that the internal [`regions`](Self::regions) helper requires.
+    pub fn regions_snapshot(&self) -> &[PmmRegion] {
+        // SAFETY:
+        // - `self.header` is initialized in `new()` before this method is reachable.
+        // - `region_count`/`regions_ptr` describe the in-memory PMM layout.
+        // - The returned shared slice is tied to `&self`, preventing aliasing with
+        //   the mutable `regions()` view.
+        unsafe {
+            let count = (*self.header).region_count as usize;
+            let regions_ptr = (*self.header).regions_ptr;
+            core::slice::from_raw_parts(regions_ptr, count)
+        }
+    }
+
     /// Constructs the PMM layout and initializes region metadata.
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
-        // SAFETY:
-        // - Bootloader populated BIOS data at fixed offsets before kernel entry.
-        // - `BIB_OFFSET` and `MEMORYMAP_OFFSET` point to valid static data.
-        let (bib, region) = unsafe {
-            (
-                (bios::BIB_OFFSET as *mut BiosInformationBlock)
-                    .as_mut()
-                    .unwrap(),
-                bios::MEMORYMAP_OFFSET as *const BiosMemoryRegion,
-            )
-        };
-
-        // Place PMM layout right after the kernel image (including BSS), aligned to 4K.
+        // Decide where the PMM layout (header + region array + bitmaps) lives.
+        //
+        // Preferred: a dedicated region the bootloader reserved for us and sized to
+        // the machine's RAM (see `BootInfo::pmm_metadata_base`). The bitmaps grow
+        // ~32 KiB per GiB of RAM, so on large-memory systems they are far too big to
+        // sit right after the kernel image in low memory — doing so overran into
+        // firmware memory and triple-faulted on real 128 GiB hardware.
+        //
+        // Fallback (BIOS loader / integration tests, which provide no region): place
+        // the layout right after the kernel image (including BSS), aligned to 4 KiB.
         // SAFETY: `__bss_end` is a linker-defined symbol with static lifetime.
         let kernel_end_virt = unsafe { &__bss_end as *const u8 as u64 };
         let kernel_end_phys = virt_to_phys(kernel_end_virt);
-        let start_addr = align_up(kernel_end_phys, PAGE_SIZE);
+        let boot_info_raw_early = BOOT_INFO_PTR.load(Ordering::Acquire);
+        let boot_pmm_metadata_base = if boot_info_raw_early != 0 {
+            // SAFETY: `boot_info_raw_early` is the validated BootInfo pointer stored
+            // in `KernelMain`; the magic was checked before publishing it.
+            let bi = unsafe { &*(boot_info_raw_early as *const BootInfo) };
+            Some(bi.pmm_metadata_base)
+        } else {
+            None
+        };
+        let metadata_base = select_metadata_base(boot_pmm_metadata_base, kernel_end_phys);
+        let start_addr = align_up(metadata_base, PAGE_SIZE);
         let header = start_addr as *mut PmmLayoutHeader;
-        
+
         // SAFETY:
         // - `header` points into reserved physical memory owned by PMM metadata.
         // - We initialize the layout header exactly once during PMM construction.
@@ -70,49 +117,105 @@ impl PhysicalMemoryManager {
 
         let mut pmm = Self { header };
 
-        // Count usable regions first
+        // Count usable regions and initialize region array
         let mut count = 0u32;
+        let boot_info_raw = BOOT_INFO_PTR.load(Ordering::Acquire);
 
-        for i in 0..bib.memory_map_entries as usize {
+        if boot_info_raw != 0 {
             // SAFETY:
-            // - `i` is bounded by `memory_map_entries`.
-            // - `region` points to a contiguous BIOS memory map array.
-            let r = unsafe { &*region.add(i) };
-            if r.region_type == 1 && r.start >= KERNEL_OFFSET {
-                count += 1;
+            // - `boot_info_raw` contains a valid pointer to the unified BootInfo structure.
+            // - The memory map array it references contains valid, aligned records in low memory.
+            unsafe {
+                let boot_info = &*(boot_info_raw as *const BootInfo);
+                let entries = boot_info.memory_map_len as usize;
+                let entry_ptr = boot_info.memory_map_addr as *const UnifiedMemoryEntry;
+
+                // Step 1: Count usable regions above 1MB
+                for i in 0..entries {
+                    let entry = &*entry_ptr.add(i);
+                    if entry.is_usable && entry.start >= KERNEL_OFFSET {
+                        count += 1;
+                    }
+                }
+
+                (*header).region_count = count;
+                let regions = pmm.regions();
+                let mut idx = 0usize;
+
+                // Step 2: Populate the region table from the unified map
+                for i in 0..entries {
+                    let entry = &*entry_ptr.add(i);
+                    if entry.is_usable && entry.start >= KERNEL_OFFSET {
+                        let frames = entry.size / PAGE_SIZE;
+                        let bitmap_bytes = align_up(frames.div_ceil(8), 8);
+
+                        regions[idx] = PmmRegion {
+                            start: entry.start,
+                            frames_total: frames,
+                            frames_free: frames,
+                            bitmap_start: 0,
+                            bitmap_bytes,
+                        };
+                        idx += 1;
+                    }
+                }
             }
-        }
-        
-        // SAFETY: `header` is valid and writable during PMM initialization.
-        unsafe {
-            (*header).region_count = count;
+        } else {
+            // SAFETY:
+            // - Bootloader populated BIOS data at fixed offsets before kernel entry.
+            // - `BIB_OFFSET` and `MEMORYMAP_OFFSET` point to valid static data.
+            let (bib, region) = unsafe {
+                (
+                    (bios::BIB_OFFSET as *mut BiosInformationBlock)
+                        .as_mut()
+                        .unwrap(),
+                    bios::MEMORYMAP_OFFSET as *const BiosMemoryRegion,
+                )
+            };
+
+            // Step 1: Count usable regions above 1MB
+            for i in 0..bib.memory_map_entries as usize {
+                // SAFETY:
+                // - `i` is bounded by `memory_map_entries`.
+                // - `region` points to a contiguous BIOS memory map array.
+                let r = unsafe { &*region.add(i) };
+                if r.region_type == 1 && r.start >= KERNEL_OFFSET {
+                    count += 1;
+                }
+            }
+
+            // SAFETY: `header` is valid and writable during PMM initialization.
+            unsafe {
+                (*header).region_count = count;
+            }
+
+            let regions = pmm.regions();
+            let mut idx = 0usize;
+
+            // Step 2: Populate the region table from the BIOS map
+            for i in 0..bib.memory_map_entries as usize {
+                // SAFETY:
+                // - `i` is bounded by `memory_map_entries`.
+                // - `region` points to a contiguous BIOS memory map array.
+                let r = unsafe { &*region.add(i) };
+
+                if r.region_type == 1 && r.start >= KERNEL_OFFSET {
+                    let frames = r.size / PAGE_SIZE;
+                    let bitmap_bytes = align_up(frames.div_ceil(8), 8);
+
+                    regions[idx] = PmmRegion {
+                        start: r.start,
+                        frames_total: frames,
+                        frames_free: frames,
+                        bitmap_start: 0,
+                        bitmap_bytes,
+                    };
+                    idx += 1;
+                }
+            }
         }
 
         let regions = pmm.regions();
-
-        // Fill regions
-        let mut idx = 0usize;
-
-        for i in 0..bib.memory_map_entries as usize {
-            // SAFETY:
-            // - `i` is bounded by `memory_map_entries`.
-            // - `region` points to a contiguous BIOS memory map array.
-            let r = unsafe { &*region.add(i) };
-
-            if r.region_type == 1 && r.start >= KERNEL_OFFSET {
-                let frames = r.size / PAGE_SIZE;
-                let bitmap_bytes = align_up(frames.div_ceil(8), 8);
-
-                regions[idx] = PmmRegion {
-                    start: r.start,
-                    frames_total: frames,
-                    frames_free: frames,
-                    bitmap_start: 0,
-                    bitmap_bytes,
-                };
-                idx += 1;
-            }
-        }
 
         // Bitmaps right after the region array.
         let mut bitmap_base =
@@ -131,11 +234,31 @@ impl PhysicalMemoryManager {
 
         // Mark the kernel, stack, and PMM metadata as used.
         // `bitmap_base` already points past the last bitmap, so it is the
-        // true end of all PMM metadata. We take the max with STACK_TOP to
-        // also cover the bootloader stack, then align up to a page boundary.
+        // true end of all PMM metadata.
         let metadata_end = bitmap_base;
-        let reserved_end = align_up(metadata_end.max(STACK_TOP), PAGE_SIZE);
-        pmm.mark_range_used(KERNEL_OFFSET, reserved_end);
+
+        if metadata_base == kernel_end_phys {
+            // BIOS / fallback path: the metadata sits contiguously right after the
+            // kernel image, so a single span from the kernel base through the end of
+            // the metadata (and at least the bootstrap stack) wastes nothing. We take
+            // the max with STACK_TOP to also cover the bootloader stack, then align up.
+            let reserved_end = align_up(metadata_end.max(STACK_TOP), PAGE_SIZE);
+            pmm.mark_range_used(KERNEL_OFFSET, reserved_end);
+        } else {
+            // UEFI path: the loader placed the PMM metadata region tens of GiB up
+            // (`AllocateAnyPages`). Reserving one span from the kernel base up to there
+            // would mark almost all of RAM as used. Reserve the two real blocks
+            // separately so the large gap between them stays free and allocatable:
+            //   1. the low kernel image + bootstrap-stack block `[KERNEL_OFFSET, STACK_TOP)`,
+            //   2. the (far away) PMM metadata region `[start_addr, metadata_end)`.
+            let stack_end = align_up(STACK_TOP, PAGE_SIZE);
+            pmm.mark_range_used(KERNEL_OFFSET, stack_end);
+
+            // `start_addr` is the page-aligned header base; `metadata_end` is the end
+            // of the last bitmap. Align the end up so the final partial page is covered.
+            let metadata_region_end = align_up(metadata_end, PAGE_SIZE);
+            pmm.mark_range_used(start_addr, metadata_region_end);
+        }
 
         pmm
     }
@@ -169,6 +292,54 @@ impl PhysicalMemoryManager {
                 r.frames_free -= 1;
             }
         }
+    }
+
+    /// Marks the single page frame containing `phys_addr` as used, idempotently.
+    ///
+    /// Unlike [`mark_range_used`](Self::mark_range_used), this first inspects the
+    /// bitmap bit and only flips it (and decrements `frames_free`) when the frame
+    /// transitions from free to used. That makes it safe to call on a frame that
+    /// might already be reserved — e.g. a firmware page-table frame that happens to
+    /// fall inside the kernel's already-reserved low block — without underflowing
+    /// `frames_free`.
+    ///
+    /// Returns `true` if the frame was newly marked used, `false` if it was already
+    /// used or lies outside every known region (frames in firmware-reserved memory
+    /// are simply not tracked by the PMM, so reserving them is an automatic no-op).
+    pub fn mark_frame_used(&mut self, phys_addr: u64) -> bool {
+        let frame_start = phys_addr & !(PAGE_SIZE - 1);
+        let regions = self.regions();
+
+        for r in regions.iter_mut() {
+            let region_end = r.start + r.frames_total * PAGE_SIZE;
+            if frame_start < r.start || frame_start >= region_end {
+                continue;
+            }
+
+            let bit_idx = (frame_start - r.start) / PAGE_SIZE;
+            let bitmap = r.bitmap_start as *mut u64;
+            let word_idx = (bit_idx / 64) as usize;
+            let bit_mask = 1u64 << (bit_idx % 64);
+
+            // SAFETY:
+            // - `bit_idx` is derived from a frame proven to be inside this region,
+            //   so `word_idx` addresses a valid bitmap word.
+            // - `bitmap` points to writable PMM bitmap memory.
+            let word_val = unsafe { *bitmap.add(word_idx) };
+            if (word_val & bit_mask) != 0 {
+                // Already marked used (e.g. inside the kernel/metadata reservation).
+                return false;
+            }
+
+            // SAFETY:
+            // - `bit_idx` is within this region's bitmap bounds.
+            // - `bitmap` points to writable PMM bitmap memory.
+            unsafe { set_bit(bit_idx, bitmap) };
+            r.frames_free -= 1;
+            return true;
+        }
+
+        false
     }
 
     /// Allocates a single page frame from the first available region.
@@ -233,12 +404,12 @@ impl PhysicalMemoryManager {
             let bitmap = r.bitmap_start as *mut u64;
             let word_idx = (bit_idx / 64) as usize;
             let bit_mask = 1u64 << (bit_idx % 64);
-            
+
             // SAFETY:
             // - `bit_idx` is derived from a PFN proven to be inside this region.
             // - Therefore `word_idx` addresses a valid bitmap word.
             let word_ptr = unsafe { bitmap.add(word_idx) };
-            
+
             // SAFETY: `word_ptr` points to a valid bitmap word for this region.
             let word_val = unsafe { *word_ptr };
 

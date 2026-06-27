@@ -1,13 +1,13 @@
 //! Task spawning implementation and validation logic.
 
-use crate::arch::fpu;
-use crate::memory::vmm;
 use super::context::{
     allocate_task_stack, build_initial_kernel_task_frame, build_initial_user_task_frame,
     free_task_stack,
 };
 use super::types::{SpawnError, SpawnKind, TaskEntry, TaskState};
 use super::{with_scheduler, TASK_STACK_SIZE};
+use crate::arch::fpu;
+use crate::memory::vmm;
 
 /// Creates a new kernel task and appends it to the run queue.
 ///
@@ -104,7 +104,8 @@ fn spawn_internal(kind: SpawnKind) -> Result<usize, SpawnError> {
             .try_reserve(1)
             .map_err(|_| SpawnError::StackAllocationFailed)?;
 
-        let (frame_ptr, cr3, user_rsp, kernel_rsp_top, is_user, release_user_code_pfns) = match kind {
+        let (frame_ptr, cr3, user_rsp, kernel_rsp_top, is_user, release_user_code_pfns) = match kind
+        {
             SpawnKind::Kernel { entry } => {
                 let (frame_ptr, kernel_rsp_top) =
                     build_initial_kernel_task_frame(stack_ptr, TASK_STACK_SIZE, entry);

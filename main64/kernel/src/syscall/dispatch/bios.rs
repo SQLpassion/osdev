@@ -1,7 +1,9 @@
 //! BIOS-related system call implementations.
 
 use crate::memory::bios::{self, BiosInformationBlock, BiosMemoryRegion};
-use crate::syscall::types::{is_valid_user_buffer, SyscallError, SyscallResult, UserBiosMemoryRegion};
+use crate::syscall::types::{
+    is_valid_user_buffer, SyscallError, SyscallResult, UserBiosMemoryRegion,
+};
 
 /// Implements `GetBiosMemoryMapEntryCount()`.
 ///
@@ -101,4 +103,3 @@ pub fn syscall_get_time_impl(
 
     Ok(0)
 }
-

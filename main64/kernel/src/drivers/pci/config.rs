@@ -19,7 +19,7 @@ pub unsafe fn pci_config_read(bus: u8, slot: u8, func: u8, offset: u8) -> u32 {
         | ((slot as u32) << 11)
         | ((func as u32) << 8)
         | ((offset & 0xFC) as u32);
-    
+
     let address_port = PortLong::new(PCI_CONFIG_ADDRESS);
     let data_port = PortLong::new(PCI_CONFIG_DATA);
 
@@ -43,7 +43,7 @@ pub unsafe fn pci_config_write(bus: u8, slot: u8, func: u8, offset: u8, val: u32
         | ((slot as u32) << 11)
         | ((func as u32) << 8)
         | ((offset & 0xFC) as u32);
-    
+
     let address_port = PortLong::new(PCI_CONFIG_ADDRESS);
     let data_port = PortLong::new(PCI_CONFIG_DATA);
 
@@ -138,7 +138,7 @@ pub fn read_bar(bus: u8, slot: u8, func: u8, bar_index: usize) -> PciBar {
             // Step 5c: 64-bit Memory BAR. Next BAR holds upper 32 bits.
             if bar_index < 5 {
                 let next_offset = offset + 4;
-                
+
                 // Read next BAR original value.
                 // SAFETY:
                 // - Standard PCI configuration read.
@@ -156,26 +156,46 @@ pub fn read_bar(bus: u8, slot: u8, func: u8, bar_index: usize) -> PciBar {
                 let size = if full_mask == 0 { 0 } else { !full_mask + 1 };
 
                 PciBar {
-                    bar_type: BarType::Memory64 { address, size, prefetchable },
+                    bar_type: BarType::Memory64 {
+                        address,
+                        size,
+                        prefetchable,
+                    },
                     raw_value: original,
                 }
             } else {
                 // Invalid state: 64-bit Memory BAR at BAR5. Fall back to 32-bit.
                 let address = original & 0xFFFFFFF0;
-                let size = if size_mask == 0 { 0 } else { !(size_mask & 0xFFFFFFF0) + 1 };
+                let size = if size_mask == 0 {
+                    0
+                } else {
+                    !(size_mask & 0xFFFFFFF0) + 1
+                };
 
                 PciBar {
-                    bar_type: BarType::Memory32 { address, size, prefetchable },
+                    bar_type: BarType::Memory32 {
+                        address,
+                        size,
+                        prefetchable,
+                    },
                     raw_value: original,
                 }
             }
         } else {
             // Step 5d: 32-bit Memory BAR.
             let address = original & 0xFFFFFFF0;
-            let size = if size_mask == 0 { 0 } else { !(size_mask & 0xFFFFFFF0) + 1 };
+            let size = if size_mask == 0 {
+                0
+            } else {
+                !(size_mask & 0xFFFFFFF0) + 1
+            };
 
             PciBar {
-                bar_type: BarType::Memory32 { address, size, prefetchable },
+                bar_type: BarType::Memory32 {
+                    address,
+                    size,
+                    prefetchable,
+                },
                 raw_value: original,
             }
         }
