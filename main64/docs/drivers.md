@@ -73,7 +73,9 @@ introducing a second, parallel load/link system.
 ### The accepted trade-off
 
 Option B costs **performance** (a context switch per IRQ and per hardware
-access). For high-throughput devices (10GbE, NVMe) Ring 0 would be faster. For
+access). For high-throughput devices (10GbE, NVMe) Ring 0 would be faster. The
+per-*access* part of this cost can moreover be largely eliminated without leaving
+Ring 3 — see the direct-access model in section 3.6. For
 KAOS as a teaching/design-oriented kernel with devices like PS/2, serial ports,
 older NICs (RTL8139) and ATA, isolation and simplicity clearly win. Should real
 performance demand arise later, an individual driver can be pulled into Ring 0
@@ -208,6 +210,90 @@ match.
 - The gating reliably protects against the **realistic case**: a driver with a
   *bug*. Errors stay local, the rest of the system remains intact.
 
+### 3.6 Alternative enforcement: direct hardware access (IOPB + MMIO mapping)
+
+The syscall-mediated model of section 3.3 puts the kernel on the path of *every*
+port access (`int 0x80` per `in`/`out`). That is simple and maximally mediated,
+but it is also the source of Option B's per-access cost (section 2). x86 offers a
+second enforcement model that keeps the **isolation and least-privilege**
+properties of section 3 while removing the per-access context switch: let the
+driver touch *only its own* hardware **directly** in Ring 3, with the **hardware**
+(MMU + TSS) enforcing the grant instead of a kernel check per access.
+
+This is the same split Linux uses for its user-space driver frameworks
+(UIO/VFIO, and `ioperm()` for ports) — see the precedent note at the end of this
+section.
+
+**MMIO registers — map once, then access directly.**
+`MapPhysical` (syscall 31, section 5) already does exactly this: the BAR is mapped
+page-by-page into the driver address space (`USER_MMIO_BASE`, NX+PCD). Afterwards
+the driver performs `read_volatile`/`write_volatile` **directly in Ring 3 — no
+syscall per access**. The page tables enforce the grant: touching an unmapped
+address faults (#PF) and the fault is contained in the process. So for memory-BAR
+devices the direct model *is* already the plan — there is no `IoPortRead/Write`
+equivalent on the hot path.
+
+**Port registers — the I/O Permission Bitmap (IOPB).**
+The port-I/O analogue is the **IOPB in the TSS** (together with the IOPL field).
+By setting the bits for a driver's granted ports in a per-task I/O bitmap, the CPU
+allows that Ring-3 task to execute `in`/`out` on **exactly those ports** directly;
+any other port raises #GP (contained in the process). This gives the same
+granularity as `ResourceGrants.io_ports` — but enforced by hardware, with **no
+syscall per access** — and it would make syscalls 29/30 unnecessary.
+
+> Current state: the IOPB is deliberately **disabled** today. `arch/gdt.rs:273`
+> sets `io_map_base` beyond the TSS limit ("Disable I/O bitmap … No per-port
+> permission bitmap is active"), and there is a single shared TSS (single-core,
+> no SMP).
+
+The two models are symmetric:
+
+| Resource | Mediated (syscalls 29/30) | Direct (this section) | Enforced by |
+|---|---|---|---|
+| MMIO register | — (already mapped) | map BAR, then `read/write_volatile` | page tables (#PF) |
+| Port register | `int 0x80` per access | `in`/`out` after IOPB grant | TSS IOPB (#GP) |
+| Grant granularity | per-access check | per-resource, set at spawn | hardware |
+| Per-access cost | one syscall | none | — |
+
+**What the direct model gives up.**
+Direct access weakens point 2 of section 3 (*"mediated access — validate,
+restrict, revoke"*). The kernel only mediates at **grant time**, not per access:
+- no per-access validation or logging,
+- **revocation becomes coarse**: revoking a port grant means rewriting the IOPB +
+  reloading the TSS; revoking an MMIO grant means unmapping pages + a TLB flush —
+  not a cheap per-call `PermissionDenied`.
+
+**Plumbing cost of the IOPB.**
+Full per-port granularity is an **8 KiB bitmap (65536 bits) per task**. With a
+single shared TSS the bitmap must be **rewritten on every context switch** into a
+driver task (or a per-task TSS must be introduced). By contrast the syscall path
+(section 3.3) needs **no new CPU structures** — it reuses `int 0x80`.
+
+**It does not help the IRQ path.**
+The dominant cost for an interrupt-driven driver is **waking the Ring-3 task per
+IRQ** (the bridge, syscalls 33–35), not the register poke. Direct access removes
+the per-register syscall but leaves the per-IRQ context switch untouched. For a
+low-traffic device like the COM2 PoC (a few bytes per IRQ) the per-access syscall
+is negligible against the IRQ wake.
+
+**Recommendation.**
+- Keep the **mediated port-I/O syscalls (29/30)** for the COM2 PoC and other
+  low-traffic, port-only devices: simplest, fully mediated, zero new CPU plumbing.
+- Use **MMIO-direct mapping (syscall 31)** wherever a device exposes a memory BAR
+  — already the plan, and the right fast path.
+- Treat the **IOPB** as a *later* optimization, justified only once a
+  high-throughput, port-only device makes the per-access syscall a measured
+  bottleneck. At that point it can replace 29/30 with hardware-enforced grants.
+
+**Linux precedent.** Mainline Linux drivers run in Ring 0, so they access both
+MMIO (`ioremap` + `readl/writel`) and ports (`inb/outb`) directly — at the price
+of zero isolation (a driver bug panics the kernel = Option A). Linux's *isolated*
+user-space drivers use exactly the mechanisms above: **UIO** maps the BAR and
+delivers IRQs via a file descriptor; **VFIO** adds the IOMMU for safe DMA (the gap
+of section 3.5); **`ioperm()`** sets the TSS IOPB for direct port access from
+Ring 3. KAOS Option B is therefore closest to UIO/VFIO, not to a mainline `.ko`
+driver.
+
 ---
 
 ## 4. Current state: what exists, what is missing
@@ -248,6 +334,15 @@ Append to `SyscallId` (`syscall/types.rs:63`, next free number = **29**):
 | 34 | `IrqWait` | vector, timeout_ms | `IRQ` + IRQ grant | Blocks until the subscribed IRQ fires (or timeout) |
 | 35 | `IrqAck` | vector | `IRQ` + IRQ grant | Acknowledges handling (manages the PIC EOI) |
 | 36 | `SpawnDriver` | name_ptr, caps, grants_ptr | `SPAWN_DRIVER` | Loads+spawns a driver with defined grants (driver manager only) |
+
+> **Note on `IoPortRead`/`IoPortWrite` (29/30):** these mediate *every* port
+> access through `int 0x80`. They are the right choice for the COM2 PoC and other
+> low-traffic, port-only devices (simple, fully mediated, zero new CPU plumbing).
+> For a high-throughput, port-only device they can later be **replaced by the TSS
+> I/O Permission Bitmap (IOPB)**, which grants direct, hardware-enforced `in`/`out`
+> on exactly the allowed ports with no syscall per access — see section 3.6 for
+> the trade-offs. MMIO already takes the direct path via `MapPhysical` (31), so
+> 29/30 are only needed for port-mapped registers.
 
 To be extended alongside:
 - The `SyscallId` enum + `*_u64` constants (`syscall/types.rs`)
