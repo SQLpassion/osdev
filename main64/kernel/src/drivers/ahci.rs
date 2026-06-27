@@ -4,7 +4,33 @@
 
 use crate::debugln;
 use crate::drivers::pci;
-use crate::memory::vmm;
+use crate::memory::{pmm, vmm};
+
+/// AHCI Command bits
+const AHCI_PORT_CMD_ST: u32 = 1 << 0;
+const AHCI_PORT_CMD_FRE: u32 = 1 << 4;
+const AHCI_PORT_CMD_FR: u32 = 1 << 14;
+const AHCI_PORT_CMD_CR: u32 = 1 << 15;
+
+/// SATA Signatures
+const SATA_SIG_ATA: u32 = 0x00000101;
+
+
+/// Command List Header
+#[repr(C)]
+pub struct HbaCmdHeader {
+    /// DW0
+    pub cfl: u8, // Command FIS length in DWORDS, 2 ~ 16
+    pub flags: u8,  // A, W, P, C flags
+    pub prdtl: u16, // Physical region descriptor table length in entries
+    /// DW1
+    pub prdbc: u32, // Physical region descriptor byte count transferred
+    /// DW2, 3
+    pub ctba: u32, // Command table descriptor base address
+    pub ctbau: u32, // Command table descriptor base address upper 32 bits
+    /// DW4 - 7
+    pub rsv1: [u32; 4],
+}
 
 /// Generic Host Control registers (HBA Memory Registers)
 #[repr(C)]
@@ -85,6 +111,9 @@ pub struct HbaPort {
     pub vendor: [u32; 4],
 }
 
+/// Global pointer to the active AHCI port (for later use in read/write)
+static mut ACTIVE_PORT: Option<*mut HbaPort> = None;
+
 /// Initializes the AHCI controller if present.
 pub fn init() {
     // Step 1: Find AHCI controller (Class 0x01, Subclass 0x06)
@@ -150,7 +179,106 @@ pub fn init() {
         debugln!("AHCI: Ports Implemented (PI) = 0x{:08x}", ptr.pi);
         debugln!("AHCI: Host Capabilities (CAP) = 0x{:08x}", ptr.cap);
         debugln!("AHCI: Version (VS) = 0x{:08x}", ptr.vs);
+
+        // Step 3: Find and initialize the first active SATA port
+        init_ports(hba_mem);
     }
 
     debugln!("AHCI: Initialization Step 1 & 2 complete.");
+}
+
+/// Iterates over implemented ports and initializes the first valid SATA drive.
+unsafe fn init_ports(hba: *mut HbaMem) {
+    let pi = (*hba).pi;
+    for i in 0..32 {
+        if (pi & (1 << i)) != 0 {
+            let port = &mut (*hba).ports[i];
+            let ssts = port.ssts;
+
+            let ipm = (ssts >> 8) & 0x0F;
+            let det = ssts & 0x0F;
+
+            // Check if device is present and active (DET=3, IPM=1)
+            if det != 3 || ipm != 1 {
+                continue;
+            }
+
+            if port.sig != SATA_SIG_ATA {
+                debugln!(
+                    "AHCI: Device at port {} is not a SATA disk (SIG=0x{:08x})",
+                    i,
+                    port.sig
+                );
+                continue;
+            }
+
+            debugln!("AHCI: Found SATA drive at port {}", i);
+            port_rebase(port);
+            ACTIVE_PORT = Some(port as *mut HbaPort);
+            return;
+        }
+    }
+    debugln!("AHCI: No active SATA drive found.");
+}
+
+/// Stops the port, allocates DMA memory, and restarts the engine.
+unsafe fn port_rebase(port: *mut HbaPort) {
+    let p = &mut *port;
+
+    // Step 3.1: Stop command engine
+    p.cmd &= !AHCI_PORT_CMD_ST;
+    p.cmd &= !AHCI_PORT_CMD_FRE;
+
+    // Wait until FR and CR are cleared
+    loop {
+        if (p.cmd & AHCI_PORT_CMD_FR) == 0 && (p.cmd & AHCI_PORT_CMD_CR) == 0 {
+            break;
+        }
+        core::hint::spin_loop();
+    }
+
+    // Step 3.2: Allocate physical frame for Port Structures
+    // We request 1 frame (4096 bytes) per port.
+    let frame = pmm::with_pmm(|mgr| mgr.alloc_frame()).expect("AHCI: out of physical memory");
+    let frame_phys = frame.physical_address();
+
+    // Identity map the allocated frame so we can zero it and access it via virtual address
+    if !vmm::is_va_mapped(frame_phys) {
+        vmm::map_virtual_to_physical(frame_phys, frame_phys);
+    }
+
+    // Zero the frame
+    core::ptr::write_bytes(frame_phys as *mut u8, 0, 4096);
+
+    // Offset 0: Command List (1024 bytes)
+    p.clb = frame_phys as u32;
+    p.clbu = (frame_phys >> 32) as u32;
+
+    // Offset 1024: FIS (256 bytes)
+    let fis_phys = frame_phys + 1024;
+    p.fb = fis_phys as u32;
+    p.fbu = (fis_phys >> 32) as u32;
+
+    // Offset 1280: Command Table for slot 0
+    let ct_phys = frame_phys + 1280;
+
+    // We must link the Command Table base address into the first slot of the Command List
+    let cmd_header = &mut *(frame_phys as *mut HbaCmdHeader);
+    cmd_header.prdtl = 8; // Example: we will provide room for 8 PRDT entries per command
+    cmd_header.ctba = ct_phys as u32;
+    cmd_header.ctbau = (ct_phys >> 32) as u32;
+
+    // Step 3.3: Restart command engine
+    // Wait for any pending operations
+    loop {
+        if (p.cmd & AHCI_PORT_CMD_CR) == 0 {
+            break;
+        }
+        core::hint::spin_loop();
+    }
+
+    p.cmd |= AHCI_PORT_CMD_FRE;
+    p.cmd |= AHCI_PORT_CMD_ST;
+
+    debugln!("AHCI: Port structures allocated and command engine started.");
 }
