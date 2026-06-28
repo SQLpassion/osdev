@@ -257,7 +257,15 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
         debugln!("AHCI First 16 bytes: {:02X?}", &sector[0..16]);
         // --- END AHCI VERIFICATION ---
 
-        // Step 2: Halt the CPU in the low-power idle loop.
+        // --- START GPT PARSING (Step 2) ---
+        let esp_lba = crate::io::gpt::find_esp_start_lba();
+        crate::console::with_console(|console| {
+            let _ = writeln!(console, "ESP Start LBA: {:?}", esp_lba);
+        });
+        debugln!("ESP Start LBA: {:?}", esp_lba);
+        // --- END GPT PARSING ---
+
+        // Step 3 (Pending): Halt the CPU in the low-power idle loop.
         idle_loop();
     }
 
