@@ -77,6 +77,7 @@ fn map_err(err: Fat12Error, fd_context: bool) -> FsError {
                 FsError::NotFound
             }
         }
+        Fat12Error::InvalidFileName => FsError::InvalidName,
         Fat12Error::Block(crate::drivers::block::BlockError::Unsupported) => FsError::Unsupported,
         _ => FsError::Io,
     }

@@ -18,6 +18,8 @@ pub enum FsError {
     Unsupported,
     /// General I/O or transport-layer error occurred during execution.
     Io,
+    /// The provided filename is invalid or cannot be parsed.
+    InvalidName,
 }
 
 /// File opening mode.

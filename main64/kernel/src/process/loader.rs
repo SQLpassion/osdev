@@ -2,7 +2,7 @@
 
 use alloc::vec::Vec;
 
-use crate::io::fat12::{self, Fat12Error};
+use crate::io::vfs::{self, FsError};
 use crate::memory::{pmm, vmm};
 use crate::scheduler;
 
@@ -60,7 +60,7 @@ struct MapState {
 /// - mapping code/stack pages
 /// - spawning a scheduler task
 pub fn load_program_image(file_name_8_3: &str) -> ExecResult<Vec<u8>> {
-    let image = fat12::read_file(file_name_8_3).map_err(map_fat12_error)?;
+    let image = vfs::read_file(file_name_8_3).map_err(map_fs_error)?;
     validate_program_image_len(image.len())?;
     Ok(image)
 }
@@ -289,18 +289,16 @@ pub const fn validate_program_image_len(image_len: usize) -> ExecResult<()> {
     }
 }
 
-/// Maps FAT12-specific load errors into process-level exec errors.
+/// Maps VFS load errors into process-level exec errors.
 ///
 /// This translation layer keeps callers independent of filesystem internals.
-fn map_fat12_error(error: Fat12Error) -> ExecError {
+fn map_fs_error(error: FsError) -> ExecError {
     match error {
-        Fat12Error::InvalidFileName => ExecError::InvalidName,
-        Fat12Error::NotFound => ExecError::NotFound,
-        Fat12Error::IsDirectory => ExecError::IsDirectory,
-        Fat12Error::Block(_)
-        | Fat12Error::CorruptDirectoryEntry
-        | Fat12Error::CorruptFatChain
-        | Fat12Error::UnexpectedEof => ExecError::Io,
+        FsError::InvalidName => ExecError::InvalidName,
+        FsError::NotFound => ExecError::NotFound,
+        FsError::Unsupported | FsError::NotMounted | FsError::InvalidFd | FsError::Io => {
+            ExecError::Io
+        }
     }
 }
 

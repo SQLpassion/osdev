@@ -259,9 +259,9 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
         debugln!("ESP Start LBA: {}", esp_lba);
 
         let vol = io::fat32::Fat32Volume::mount(esp_lba).expect("FAT32 ESP mount failed");
-        let image = vol
-            .read_file("shell.bin")
-            .expect("failed to read SHELL.BIN from ESP");
+        io::vfs::mount(alloc::boxed::Box::new(io::fat32::Fat32Fs::new(vol)));
+
+        let image = io::vfs::read_file("shell.bin").expect("failed to read SHELL.BIN from ESP");
         debugln!("Loaded SHELL.BIN from ESP: {} bytes", image.len());
 
         crate::console::with_console(|console| {
@@ -282,7 +282,9 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
         io::fat12::init();
         debugln!("FAT12 file system initialized");
 
-        process::load_program_image("shell.bin").expect("failed to load SHELL.BIN from FAT12")
+        io::vfs::mount(alloc::boxed::Box::new(io::fat12::Fat12Fs));
+
+        io::vfs::read_file("shell.bin").expect("failed to load SHELL.BIN from FAT12")
     };
 
     // --- Shared scheduler bring-up (both boot paths) ---

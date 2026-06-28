@@ -28,6 +28,7 @@ pub extern "C" fn KernelMain(_kernel_size: u64) -> ! {
     kaos_kernel::drivers::ata::init();
     kaos_kernel::drivers::block::init_ata();
     kaos_kernel::io::fat12::init();
+    kaos_kernel::io::vfs::mount(alloc::boxed::Box::new(kaos_kernel::io::fat12::Fat12Fs));
     test_main();
     loop {
         core::hint::spin_loop();

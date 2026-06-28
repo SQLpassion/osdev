@@ -41,19 +41,19 @@ pub fn read_user_string(
 pub fn syscall_open_file_impl(name_ptr: *const u8, mode_raw: u64) -> SyscallResult<u64> {
     let name = read_user_string(name_ptr, 128)?;
     let mode = match mode_raw {
-        0 => crate::io::fat12::FileMode::Read,
-        1 => crate::io::fat12::FileMode::Write,
-        2 => crate::io::fat12::FileMode::Append,
+        0 => crate::io::vfs::FileMode::Read,
+        1 => crate::io::vfs::FileMode::Write,
+        2 => crate::io::vfs::FileMode::Append,
         _ => return Err(SyscallError::InvalidArg),
     };
 
-    let fd = crate::io::fat12::open_file(&name, mode).map_err(|_| SyscallError::Io)?;
+    let fd = crate::io::vfs::open(&name, mode).map_err(map_fs_error)?;
     Ok(fd as u64)
 }
 
 /// Implements `CloseFile()`.
 pub fn syscall_close_file_impl(fd: u64) -> SyscallResult<u64> {
-    crate::io::fat12::close_file(fd as usize).map_err(|_| SyscallError::InvalidArg)?;
+    crate::io::vfs::close(fd as usize).map_err(map_fs_error)?;
     Ok(0)
 }
 
@@ -69,8 +69,7 @@ pub fn syscall_read_file_impl(fd: u64, buf_ptr: *mut u8, len: u64) -> SyscallRes
     // SAFETY:
     // - We validated the buffer is a valid user memory range.
     let buffer = unsafe { core::slice::from_raw_parts_mut(buf_ptr, len as usize) };
-    let bytes_read =
-        crate::io::fat12::read_file_fd(fd as usize, buffer).map_err(|_| SyscallError::Io)?;
+    let bytes_read = crate::io::vfs::read(fd as usize, buffer).map_err(map_fs_error)?;
     Ok(bytes_read as u64)
 }
 
@@ -86,33 +85,38 @@ pub fn syscall_write_file_impl(fd: u64, buf_ptr: *const u8, len: u64) -> Syscall
     // SAFETY:
     // - We validated the buffer is a valid user memory range.
     let buffer = unsafe { core::slice::from_raw_parts(buf_ptr, len as usize) };
-    let bytes_written =
-        crate::io::fat12::write_file_fd(fd as usize, buffer).map_err(|_| SyscallError::Io)?;
+    let bytes_written = crate::io::vfs::write(fd as usize, buffer).map_err(map_fs_error)?;
     Ok(bytes_written as u64)
 }
 
 /// Implements `DeleteFile()`.
 pub fn syscall_delete_file_impl(name_ptr: *const u8) -> SyscallResult<u64> {
     let name = read_user_string(name_ptr, 128)?;
-    crate::io::fat12::delete_file(&name).map_err(|_| SyscallError::Io)?;
+    crate::io::vfs::delete(&name).map_err(map_fs_error)?;
     Ok(0)
 }
 
 /// Implements `SeekFile()`.
 pub fn syscall_seek_file_impl(fd: u64, offset: u64) -> SyscallResult<u64> {
-    crate::io::fat12::seek_file(fd as usize, offset as u32)
-        .map_err(|_| SyscallError::InvalidArg)?;
+    crate::io::vfs::seek(fd as usize, offset as u32).map_err(map_fs_error)?;
     Ok(0)
 }
 
 /// Implements `EndOfFile()`.
 pub fn syscall_end_of_file_impl(fd: u64) -> SyscallResult<u64> {
-    let eof = crate::io::fat12::eof_file(fd as usize).map_err(|_| SyscallError::InvalidArg)?;
+    let eof = crate::io::vfs::eof(fd as usize).map_err(map_fs_error)?;
     Ok(if eof { 1 } else { 0 })
 }
 
 /// Implements `PrintRootDirectory()`.
 pub fn syscall_print_root_directory_impl() -> SyscallResult<u64> {
-    crate::io::fat12::print_root_directory();
+    crate::io::vfs::print_root_directory();
     Ok(0)
+}
+
+fn map_fs_error(err: crate::io::vfs::FsError) -> SyscallError {
+    match err {
+        crate::io::vfs::FsError::InvalidFd => SyscallError::InvalidArg,
+        _ => SyscallError::Io,
+    }
 }

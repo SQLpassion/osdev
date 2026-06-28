@@ -56,6 +56,7 @@ mcopy   -i "$IMG@@$PART_OFFSET" "user_programs/readline/readline.bin" ::/READLIN
 mcopy   -i "$IMG@@$PART_OFFSET" "user_programs/filedemo/filedemo.bin" ::/FILEDEMO.BIN
 mcopy   -i "$IMG@@$PART_OFFSET" "user_programs/tui_app/tui.bin"       ::/TUI.BIN
 mcopy   -i "$IMG@@$PART_OFFSET" "user_programs/kbasic/kbasic.bin"     ::/KBASIC.BIN
+mcopy   -i "$IMG@@$PART_OFFSET" "user_programs/kbasic/src/demo.bas"   ::/DEMO.BAS
 echo "==> $IMG ready. Flash to a USB stick with (DESTRUCTIVE - pick the right device!):"
 echo "        sudo dd if=$IMG of=/dev/<your-usb> bs=4M conv=fsync"
 
