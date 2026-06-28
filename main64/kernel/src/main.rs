@@ -239,6 +239,24 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
             let _ = writeln!(console, "System halted.");
         });
 
+        // --- START AHCI VERIFICATION (Step 1) ---
+        drivers::ahci::init();
+        let mut sector = [0u8; 512];
+        let read_result = drivers::ahci::read_sectors(&mut sector, 1, 1);
+        let efi_part_found = &sector[0..8] == b"EFI PART";
+
+        crate::console::with_console(|console| {
+            let _ = writeln!(console, "AHCI read_sectors result: {:?}", read_result);
+            let _ = writeln!(
+                console,
+                "GPT Signature matches 'EFI PART': {}",
+                efi_part_found
+            );
+        });
+
+        debugln!("AHCI First 16 bytes: {:02X?}", &sector[0..16]);
+        // --- END AHCI VERIFICATION ---
+
         // Step 2: Halt the CPU in the low-power idle loop.
         idle_loop();
     }

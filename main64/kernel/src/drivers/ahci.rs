@@ -6,11 +6,30 @@ use crate::debugln;
 use crate::drivers::pci;
 use crate::memory::{pmm, vmm};
 
-/// AHCI Command bits
+/// AHCI Command bits (PxCMD)
 const AHCI_PORT_CMD_ST: u32 = 1 << 0;
+const AHCI_PORT_CMD_SUD: u32 = 1 << 1;
+const AHCI_PORT_CMD_POD: u32 = 1 << 2;
 const AHCI_PORT_CMD_FRE: u32 = 1 << 4;
 const AHCI_PORT_CMD_FR: u32 = 1 << 14;
 const AHCI_PORT_CMD_CR: u32 = 1 << 15;
+const AHCI_PORT_CMD_CPD: u32 = 1 << 20;
+/// PxCMD.ICC (Interface Communication Control), bits 28..31
+const AHCI_PORT_CMD_ICC_MASK: u32 = 0xF << 28;
+const AHCI_PORT_CMD_ICC_ACTIVE: u32 = 0x1 << 28;
+
+/// HBA capability bits (CAP)
+const HBA_CAP_SSS: u32 = 1 << 27; // Supports Staggered Spin-up
+
+/// PxSSTS.DET — device present and Phy communication established
+const HBA_PORT_DET_PRESENT: u32 = 3;
+
+/// PxSCTL.DET — initiate interface reset (COMRESET)
+const HBA_PORT_SCTL_DET_COMRESET: u32 = 1;
+
+/// PxTFD status bits
+const HBA_PORT_TFD_BSY: u32 = 1 << 7;
+const HBA_PORT_TFD_DRQ: u32 = 1 << 3;
 
 /// SATA Signatures
 const SATA_SIG_ATA: u32 = 0x00000101;
@@ -153,47 +172,80 @@ static mut ACTIVE_PORT: Option<*mut HbaPort> = None;
 /// Physical address of the DMA buffer used for sector reads
 static mut DMA_BUFFER_PHYS: u64 = 0;
 
-/// Initializes the AHCI controller if present.
+/// Initializes the first AHCI controller that exposes an active SATA port.
+///
+/// A system can have more than one AHCI (class 01:06) controller. On QEMU/Proxmox
+/// q35, for example, the chipset's built-in ICH9 AHCI at 00:1f.2 is present but
+/// *empty*, while the disk is attached to a separate `ich9-ahci` controller on a
+/// PCIe port. Picking the first controller blindly therefore talks to the wrong
+/// (empty) HBA — exactly the `det=0 on all ports` failure seen on Proxmox. So we
+/// scan every AHCI controller and use the first one that yields a usable device.
 pub fn init() {
-    // Step 1: Find AHCI controller (Class 0x01, Subclass 0x06)
-    let ahci_device = pci::find_by_class(0x01, 0x06);
-    let dev = match ahci_device {
-        Some(d) => d,
-        None => {
-            debugln!("AHCI: No controller found.");
-            return;
+    let devices = pci::get_devices();
+
+    let mut controller_count = 0usize;
+    for dev in devices
+        .iter()
+        .filter(|d| d.class_code == 0x01 && d.subclass == 0x06)
+    {
+        controller_count += 1;
+        if try_init_controller(dev) {
+            return; // Found a controller with an active SATA port.
         }
-    };
+    }
 
-    debugln!(
-        "AHCI: Controller found at PCI {:02x}:{:02x}.{}",
-        dev.bus,
-        dev.device,
-        dev.function
-    );
+    crate::console::with_console(|c| {
+        if controller_count == 0 {
+            let _ = core::fmt::Write::write_fmt(
+                c,
+                core::format_args!("AHCI init: No controller (Class 01:06) found.\n"),
+            );
+        } else {
+            let _ = core::fmt::Write::write_fmt(
+                c,
+                core::format_args!(
+                    "AHCI init: scanned {} controller(s), none had an active SATA port.\n",
+                    controller_count
+                ),
+            );
+        }
+    });
+    debugln!("AHCI: init found no usable controller ({} scanned).", controller_count);
+}
 
-    // BAR5 contains the ABAR (AHCI Base Address Register)
+/// Sets up one AHCI controller and tries to activate a SATA port on it.
+///
+/// Returns `true` if an active SATA device was found and its command engine was
+/// started, `false` otherwise (e.g. an empty controller, so the caller moves on
+/// to the next one).
+fn try_init_controller(dev: &pci::PciDevice) -> bool {
+    // Enable Memory Space (bit 1) and Bus Master (bit 2) in the PCI Command
+    // Register. Real hardware may not have these enabled by default, which would
+    // make MMIO accesses fail.
+    unsafe {
+        let mut cmd_status = pci::pci_config_read(dev.bus, dev.device, dev.function, 0x04);
+        cmd_status |= (1 << 1) | (1 << 2);
+        pci::pci_config_write(dev.bus, dev.device, dev.function, 0x04, cmd_status);
+    }
+
+    // BAR5 contains the ABAR (AHCI Base Address Register).
     let bar5 = dev.bars[5];
     let phys_base = match bar5.bar_type {
         pci::BarType::Memory32 { address, .. } => address as u64,
         pci::BarType::Memory64 { address, .. } => address,
         _ => {
-            debugln!("AHCI: BAR5 is not a memory BAR.");
-            return;
+            debugln!("AHCI: BAR5 is not a memory BAR (bus {}).", dev.bus);
+            return false;
         }
     };
 
     if phys_base == 0 {
-        debugln!("AHCI: Invalid ABAR address (0x0).");
-        return;
+        debugln!("AHCI: Invalid ABAR address (0x0) on bus {}.", dev.bus);
+        return false;
     }
 
-    debugln!("AHCI: ABAR physical base at 0x{:x}", phys_base);
-
-    // Step 2: Map MMIO and initialize HBA
-    // We identity map the ABAR physical address to a virtual address.
-    // AHCI registers fit well within a 4KB page (0x1100 bytes for 32 ports, up to 0x1100).
-    // Let's map 2 pages (8KB) just to be safe and cover all 32 ports.
+    // Identity-map the ABAR MMIO region. The registers for 32 ports fit well
+    // within two 4KB pages.
     let virt_base = phys_base;
     for i in 0..2 {
         let page_addr = virt_base + (i * 4096);
@@ -205,75 +257,133 @@ pub fn init() {
     let hba_mem = virt_base as *mut HbaMem;
 
     // SAFETY:
-    // - `virt_base` is mapped to the valid physical MMIO region reported by PCI BAR5.
+    // - `virt_base` is mapped to the valid physical MMIO region reported by BAR5.
     // - We just mapped the pages ensuring they are present.
     // - Memory accesses are within the bounds of HbaMem.
     unsafe {
-        let ptr = &mut *hba_mem;
+        // Enable AHCI mode by setting GHC.AE (bit 31).
+        let ghc = core::ptr::read_volatile(&(*hba_mem).ghc);
+        core::ptr::write_volatile(&mut (*hba_mem).ghc, ghc | (1 << 31));
 
-        // Enable AHCI mode by setting GHC.AE (bit 31)
-        ptr.ghc |= 1 << 31;
-
-        debugln!("AHCI: Global Host Control (GHC) = 0x{:08x}", ptr.ghc);
-        debugln!("AHCI: Ports Implemented (PI) = 0x{:08x}", ptr.pi);
-        debugln!("AHCI: Host Capabilities (CAP) = 0x{:08x}", ptr.cap);
-        debugln!("AHCI: Version (VS) = 0x{:08x}", ptr.vs);
-
-        // Step 3: Find and initialize the first active SATA port
-        init_ports(hba_mem);
+        init_ports(hba_mem, phys_base)
     }
-
-    debugln!("AHCI: Initialization Step 1 & 2 complete.");
 }
 
 /// Iterates over implemented ports and initializes the first valid SATA drive.
-unsafe fn init_ports(hba: *mut HbaMem) {
-    let pi = (*hba).pi;
+///
+/// Returns `true` if a SATA device was found and started on this controller.
+unsafe fn init_ports(hba: *mut HbaMem, phys_base: u64) -> bool {
+    // Staggered Spin-up support decides whether we must set PxCMD.SUD to power a
+    // device up; on controllers without it, SUD is reserved and must stay clear.
+    let cap = core::ptr::read_volatile(&(*hba).cap);
+    let sss = (cap & HBA_CAP_SSS) != 0;
+
+    let pi = core::ptr::read_volatile(&(*hba).pi);
     for i in 0..32 {
-        if (pi & (1 << i)) != 0 {
-            let port = &mut (*hba).ports[i];
-            let ssts = port.ssts;
-
-            let ipm = (ssts >> 8) & 0x0F;
-            let det = ssts & 0x0F;
-
-            // Check if device is present and active (DET=3, IPM=1)
-            if det != 3 || ipm != 1 {
-                continue;
-            }
-
-            if port.sig != SATA_SIG_ATA {
-                debugln!(
-                    "AHCI: Device at port {} is not a SATA disk (SIG=0x{:08x})",
-                    i,
-                    port.sig
-                );
-                continue;
-            }
-
-            debugln!("AHCI: Found SATA drive at port {}", i);
-            port_rebase(port);
-            ACTIVE_PORT = Some(port as *mut HbaPort);
-            return;
+        if (pi & (1 << i)) == 0 {
+            continue;
         }
+
+        let port = &mut (*hba).ports[i];
+
+        // Cheap check first: a port with no device detected and no staggered
+        // spin-up to wake one is empty — skip it without allocating structures or
+        // paying the COMRESET/link-training wait. This is every port on the empty
+        // built-in ICH9 HBA, so without this the driver spends seconds per port
+        // there before reaching the controller that actually has the disk.
+        let det = core::ptr::read_volatile(&port.ssts) & 0x0F;
+        if det == 0 && !sss {
+            continue;
+        }
+
+        // Set up our command list / FIS / command table structures and enable
+        // FIS reception, so a signature FIS produced by the link bring-up below
+        // is latched into PxSIG.
+        port_rebase(port);
+
+        // Only reset the link if it is not already established. QEMU and firmware
+        // that already used the disk present DET=3 — resetting such a live link
+        // is needless and risks a too-short retrain wait on real hardware. A port
+        // handed over offline (DET=4) or without communication (DET=1) — common
+        // on real hardware — gets a COMRESET / spin-up to bring the Phy online.
+        if det != HBA_PORT_DET_PRESENT && !port_bring_up(port, sss) {
+            continue;
+        }
+
+        // Wait for the device to leave the busy state, then confirm it is an ATA
+        // disk before claiming it.
+        if !port_wait_ready(port) {
+            continue;
+        }
+        if core::ptr::read_volatile(&port.sig) != SATA_SIG_ATA {
+            continue;
+        }
+
+        // Device is ready: start the command engine and remember the port.
+        port_start(port);
+        ACTIVE_PORT = Some(port as *mut HbaPort);
+        return true;
     }
-    debugln!("AHCI: No active SATA drive found.");
+
+    // No active ATA port on this controller. Print diagnostics; the caller will
+    // try the next AHCI controller (if any).
+    crate::console::with_console(|c| {
+        let _ = core::fmt::Write::write_fmt(
+            c,
+            core::format_args!(
+                "AHCI: no active SATA port on controller ABAR={:#x} (PI={:#x}).\n",
+                phys_base,
+                pi
+            ),
+        );
+        let mut printed = 0;
+        for i in 0..32 {
+            if (pi & (1 << i)) != 0 {
+                let port = &mut (*hba).ports[i];
+                let ssts = port.ssts;
+                let ipm = (ssts >> 8) & 0x0F;
+                let det = ssts & 0x0F;
+                let _ = core::fmt::Write::write_fmt(
+                    c,
+                    core::format_args!(
+                        " -> Port {}: SSTS={:#010x} (det={}, ipm={}), SIG={:#010x}\n",
+                        i,
+                        ssts,
+                        det,
+                        ipm,
+                        port.sig
+                    ),
+                );
+                printed += 1;
+                if printed >= 5 {
+                    let _ = core::fmt::Write::write_fmt(
+                        c,
+                        core::format_args!(" -> ... more ports omitted ...\n"),
+                    );
+                    break;
+                }
+            }
+        }
+    });
+
+    false
 }
 
 /// Stops the port, allocates DMA memory, and restarts the engine.
 unsafe fn port_rebase(port: *mut HbaPort) {
     let p = &mut *port;
 
-    // Step 3.1: Stop command engine
-    p.cmd &= !AHCI_PORT_CMD_ST;
-    p.cmd &= !AHCI_PORT_CMD_FRE;
+    // Step 3.1: Stop command engine (clear ST and FRE).
+    let cmd = core::ptr::read_volatile(&p.cmd);
+    core::ptr::write_volatile(&mut p.cmd, cmd & !(AHCI_PORT_CMD_ST | AHCI_PORT_CMD_FRE));
 
-    // Wait until FR and CR are cleared
-    loop {
-        if (p.cmd & AHCI_PORT_CMD_FR) == 0 && (p.cmd & AHCI_PORT_CMD_CR) == 0 {
+    // Wait until FR and CR are cleared. Bounded, and without `PAUSE` (see
+    // `delay_ms`): a tight PAUSE loop storms VM exits under KVM.
+    for _ in 0..1_000_000 {
+        let cmd = core::ptr::read_volatile(&p.cmd);
+        if (cmd & AHCI_PORT_CMD_FR) == 0 && (cmd & AHCI_PORT_CMD_CR) == 0 {
             break;
         }
-        core::hint::spin_loop();
     }
 
     // Step 3.2: Allocate physical frame for Port Structures
@@ -310,19 +420,147 @@ unsafe fn port_rebase(port: *mut HbaPort) {
     cmd_header.ctba = ct_phys as u32;
     cmd_header.ctbau = (ct_phys >> 32) as u32;
 
-    // Step 3.3: Restart command engine
-    // Wait for any pending operations
-    loop {
-        if (p.cmd & AHCI_PORT_CMD_CR) == 0 {
+    // Enable FIS reception now so the device's signature FIS is captured during
+    // the link bring-up that follows. The command engine (PxCMD.ST) is started
+    // later in `port_start`, only after the link is confirmed up.
+    for _ in 0..1_000_000 {
+        if (core::ptr::read_volatile(&p.cmd) & AHCI_PORT_CMD_CR) == 0 {
             break;
         }
-        core::hint::spin_loop();
     }
 
-    p.cmd |= AHCI_PORT_CMD_FRE;
-    p.cmd |= AHCI_PORT_CMD_ST;
+    let cmd = core::ptr::read_volatile(&p.cmd);
+    core::ptr::write_volatile(&mut p.cmd, cmd | AHCI_PORT_CMD_FRE);
 
-    debugln!("AHCI: Port structures allocated and command engine started.");
+    debugln!("AHCI: Port structures allocated, FIS reception enabled.");
+}
+
+/// Brings a port's Phy online via a wake + COMRESET sequence.
+///
+/// Real firmware often hands the controller over with the port either offline
+/// (`PxSSTS.DET == 4`) or without established communication (`DET == 1`). The
+/// previous code only accepted an already-running port (as QEMU presents it), so
+/// it never recovered such ports. The COMRESET issued here is the only way to
+/// transition a Phy out of the offline state.
+///
+/// Returns `true` once the link is established (`DET == 3`); the caller then uses
+/// `port_wait_ready` before reading `PxSIG`. Returns `false` if no device
+/// responded within the timeout.
+unsafe fn port_bring_up(port: *mut HbaPort, sss: bool) -> bool {
+    let p = &mut *port;
+
+    // Clear any latched SATA errors before touching the link.
+    core::ptr::write_volatile(&mut p.serr, 0xFFFF_FFFF);
+
+    // Wake the device: request spin-up (only meaningful when the controller
+    // supports staggered spin-up), power it on if cold-presence is reported, and
+    // force the interface into the active power-management state.
+    let mut cmd = core::ptr::read_volatile(&p.cmd);
+    if sss {
+        cmd |= AHCI_PORT_CMD_SUD;
+    }
+    if (cmd & AHCI_PORT_CMD_CPD) != 0 {
+        cmd |= AHCI_PORT_CMD_POD;
+    }
+    cmd = (cmd & !AHCI_PORT_CMD_ICC_MASK) | AHCI_PORT_CMD_ICC_ACTIVE;
+    core::ptr::write_volatile(&mut p.cmd, cmd);
+
+    // COMRESET: drive PxSCTL.DET to 1 for at least 1ms, then release it back to
+    // 0. This is the only mechanism that pulls a Phy out of the offline (DET=4)
+    // state; it also re-establishes a stalled link (DET=1).
+    let sctl = core::ptr::read_volatile(&p.sctl);
+    core::ptr::write_volatile(&mut p.sctl, (sctl & !0xF) | HBA_PORT_SCTL_DET_COMRESET);
+    delay_ms(2);
+    core::ptr::write_volatile(&mut p.sctl, sctl & !0xF);
+
+    // Wait for the Phy to establish communication (DET == 3). A present device
+    // walks DET 0 -> 1 (detected) -> 3 (link up); an empty port stays at 0. So we
+    // grant the full link-training budget only once a device has been detected,
+    // and bail out early on a port that never even reports presence. This keeps a
+    // controller's empty ports from each costing the full timeout — the main
+    // source of the ~2 s init delay on real hardware where CAP.SSS is set (so
+    // empty ports are not fast-skipped before bring-up).
+    const PRESENCE_BUDGET_MS: u32 = 50; // empty ports give up after this
+    const LINK_BUDGET_MS: u32 = 200; // detected ports get the full training window
+    let mut established = false;
+    let mut device_seen = false;
+    let mut waited = 0u32;
+    while waited < LINK_BUDGET_MS {
+        let det = core::ptr::read_volatile(&p.ssts) & 0x0F;
+        if det == HBA_PORT_DET_PRESENT {
+            established = true;
+            break;
+        }
+        if det != 0 {
+            device_seen = true; // detected: allow the full link-training window
+        }
+        if !device_seen && waited >= PRESENCE_BUDGET_MS {
+            break; // nothing on this port, don't wait out the full timeout
+        }
+        delay_ms(1);
+        waited += 1;
+    }
+    if !established {
+        // No device responded on this port; nothing more to do here.
+        return false;
+    }
+
+    // Clear errors produced by the reset itself.
+    core::ptr::write_volatile(&mut p.serr, 0xFFFF_FFFF);
+
+    debugln!("AHCI: Port Phy online.");
+    true
+}
+
+/// Waits for the device on a port to leave the busy / data-request state so that
+/// its task file and signature register are valid. Returns `false` on timeout.
+unsafe fn port_wait_ready(port: *mut HbaPort) -> bool {
+    let p = &mut *port;
+    for _ in 0..200 {
+        let tfd = core::ptr::read_volatile(&p.tfd);
+        if (tfd & (HBA_PORT_TFD_BSY | HBA_PORT_TFD_DRQ)) == 0 {
+            return true;
+        }
+        delay_ms(1);
+    }
+    false
+}
+
+/// Starts the command engine for a port whose link is already up.
+unsafe fn port_start(port: *mut HbaPort) {
+    let p = &mut *port;
+
+    // Ensure the command list engine is idle before (re)starting it.
+    for _ in 0..1_000_000 {
+        if (core::ptr::read_volatile(&p.cmd) & AHCI_PORT_CMD_CR) == 0 {
+            break;
+        }
+    }
+
+    let mut cmd = core::ptr::read_volatile(&p.cmd);
+    cmd |= AHCI_PORT_CMD_FRE; // keep FIS reception enabled
+    cmd |= AHCI_PORT_CMD_ST; // start command processing
+    core::ptr::write_volatile(&mut p.cmd, cmd);
+
+    debugln!("AHCI: Command engine started.");
+}
+
+/// Crude busy-wait used during port bring-up.
+///
+/// No reliable timer is wired up this early on the UEFI path. Critically, this
+/// must NOT use `core::hint::spin_loop()` (`PAUSE`): under KVM/Proxmox,
+/// PAUSE-loop-exiting turns a tight PAUSE loop into a storm of VM exits, which
+/// made `init` appear to hang for minutes. A plain arithmetic loop runs at native
+/// speed inside the guest. The iteration count is a rough calibration; slight
+/// over-waiting is harmless as this runs only a handful of times at init.
+fn delay_ms(ms: u32) {
+    let mut sink: u32 = 0;
+    for i in 0..ms.saturating_mul(300_000) {
+        sink = sink.wrapping_add(i);
+        // Volatile read keeps the loop from being optimized away — without
+        // issuing any PAUSE or MMIO access (so it triggers no VM exits).
+        unsafe { core::ptr::read_volatile(&sink) };
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -364,7 +602,6 @@ pub fn read_sectors(buffer: &mut [u8], lba: u32, sector_count: u8) -> Result<(),
                 if timeout == 0 {
                     return Err(AhciError::Timeout);
                 }
-                core::hint::spin_loop();
             }
 
             let clb_phys = (p.clb as u64) | ((p.clbu as u64) << 32);
@@ -426,7 +663,6 @@ pub fn read_sectors(buffer: &mut [u8], lba: u32, sector_count: u8) -> Result<(),
                 if timeout2 == 0 {
                     return Err(AhciError::Timeout);
                 }
-                core::hint::spin_loop();
             }
 
             // Copy from DMA buffer to caller's buffer
