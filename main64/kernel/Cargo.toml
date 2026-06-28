@@ -99,3 +99,7 @@ name = "gpt_test"
 
 [[test]]
 name = "fat32_test"
+
+[[test]]
+name = "block_test"
+

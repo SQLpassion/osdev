@@ -156,8 +156,7 @@ fn panic(info: &PanicInfo) -> ! {
         fb.clear(bg);
         render_panic(&mut fb, info);
     } else {
-        let mut screen =
-            crate::drivers::screen::PanicScreenWriter::new(Color::White, Color::Blue);
+        let mut screen = crate::drivers::screen::PanicScreenWriter::new(Color::White, Color::Blue);
         screen.clear();
         render_panic(&mut screen, info);
     }

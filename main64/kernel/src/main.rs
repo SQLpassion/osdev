@@ -264,7 +264,11 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
         debugln!("Loaded SHELL.BIN from ESP: {} bytes", image.len());
 
         crate::console::with_console(|console| {
-            let _ = writeln!(console, "Loaded SHELL.BIN ({} bytes). Starting...", image.len());
+            let _ = writeln!(
+                console,
+                "Loaded SHELL.BIN ({} bytes). Starting...",
+                image.len()
+            );
         });
 
         image
@@ -311,7 +315,11 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
     // faulted; present but no shell => the scheduler never preempted (timer/IRQ).
     if uefi {
         crate::console::with_console(|console| {
-            let _ = writeln!(console, "Shell mapped (PID {}). Starting scheduler...", shell_pid);
+            let _ = writeln!(
+                console,
+                "Shell mapped (PID {}). Starting scheduler...",
+                shell_pid
+            );
         });
     }
 
