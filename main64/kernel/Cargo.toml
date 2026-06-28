@@ -103,3 +103,7 @@ name = "fat32_test"
 [[test]]
 name = "block_test"
 
+[[test]]
+name = "vfs_test"
+
+

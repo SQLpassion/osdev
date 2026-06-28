@@ -245,6 +245,114 @@ impl Fat32Volume {
         Ok(content)
     }
 
+    /// Walk the root directory and print all active entries.
+    pub fn print_root_directory(&self) {
+        let mut current_cluster = self.root_cluster;
+        let mut file_count = 0;
+        let mut total_size = 0;
+
+        crate::console::with_console(|console| {
+            let mut cluster_count = 0;
+            'dir_walk: while (2..0x0FFF_FFF8).contains(&current_cluster) {
+                cluster_count += 1;
+                if cluster_count > 1_000_000 {
+                    break;
+                }
+
+                let cluster_lba = self.cluster_to_lba(current_cluster);
+                for i in 0..self.sec_per_clus {
+                    let mut sector = [0u8; 512];
+                    if crate::drivers::block::read_sectors(cluster_lba + i as u64, 1, &mut sector)
+                        .is_err()
+                    {
+                        let _ = writeln!(console, "FAT32 read error during print_root_directory");
+                        return;
+                    }
+
+                    for entry_idx in 0..(512 / 32) {
+                        let offset = entry_idx * 32;
+                        let first_byte = sector[offset];
+                        if first_byte == 0x00 {
+                            break 'dir_walk;
+                        }
+                        if first_byte == 0xE5 {
+                            continue;
+                        }
+                        let attr = sector[offset + 0x0B];
+                        if attr == 0x0F {
+                            continue;
+                        }
+
+                        // Parse the name in standard 8.3 format
+                        let mut name_buf = [0u8; 13];
+                        let mut pos = 0;
+
+                        // Base name (8 bytes)
+                        for &b in &sector[offset..offset + 8] {
+                            if b == b' ' {
+                                break;
+                            }
+                            name_buf[pos] = b.to_ascii_lowercase();
+                            pos += 1;
+                        }
+
+                        // Extension (3 bytes)
+                        let ext = &sector[offset + 8..offset + 11];
+                        if ext.iter().any(|&b| b != b' ') {
+                            name_buf[pos] = b'.';
+                            pos += 1;
+                            for &b in ext {
+                                if b == b' ' {
+                                    break;
+                                }
+                                name_buf[pos] = b.to_ascii_lowercase();
+                                pos += 1;
+                            }
+                        }
+
+                        let name = core::str::from_utf8(&name_buf[..pos]).unwrap_or("???");
+
+                        let clus_hi = u16::from_le_bytes(
+                            sector[offset + 0x14..offset + 0x16].try_into().unwrap(),
+                        ) as u32;
+                        let clus_lo = u16::from_le_bytes(
+                            sector[offset + 0x1A..offset + 0x1C].try_into().unwrap(),
+                        ) as u32;
+                        let first_cluster = (clus_hi << 16) | clus_lo;
+                        let file_size = u32::from_le_bytes(
+                            sector[offset + 0x1C..offset + 0x20].try_into().unwrap(),
+                        );
+
+                        // Format and print each directory entry's size, start cluster, and name
+                        let _ = write!(console, "{} bytes", file_size);
+                        let _ = write!(console, "\tStart Cluster: {}", first_cluster);
+                        let _ = write!(console, "\t{}", name);
+                        console.print_char(b'\n');
+
+                        // Summary metrics only for regular files
+                        let is_directory = (attr & 0x10) != 0;
+                        if !is_directory {
+                            file_count += 1;
+                            total_size += file_size;
+                        }
+                    }
+                }
+
+                // Look up the next cluster
+                if let Ok(next) = self.next_cluster(current_cluster) {
+                    current_cluster = next;
+                } else {
+                    break;
+                }
+            }
+
+            // Print footer
+            let _ = write!(console, "\t\t{} File(s)", file_count);
+            let _ = write!(console, "\t{} bytes", total_size);
+            console.print_char(b'\n');
+        });
+    }
+
     /// Helper to translate a cluster number to its first LBA.
     fn cluster_to_lba(&self, cluster: u32) -> u64 {
         self.data_start_lba + (cluster as u64 - 2) * self.sec_per_clus as u64
@@ -315,4 +423,155 @@ pub fn normalize_name(name: &str) -> Option<[u8; 11]> {
     }
 
     Some(result)
+}
+
+// ---- FAT32 Open File state cache --------------------------------------------
+
+struct Fat32OpenFile {
+    #[allow(dead_code)]
+    name: alloc::string::String,
+    data: Vec<u8>,
+    offset: usize,
+}
+
+// ---- FAT32 VFS adapter ------------------------------------------------------
+
+/// FileSystem adapter for the FAT32 volume implementation.
+pub struct Fat32Fs {
+    volume: Fat32Volume,
+    open_files: crate::sync::spinlock::SpinLock<alloc::vec::Vec<Option<Fat32OpenFile>>>,
+}
+
+impl Fat32Fs {
+    pub fn new(volume: Fat32Volume) -> Self {
+        Self {
+            volume,
+            open_files: crate::sync::spinlock::SpinLock::new(alloc::vec::Vec::new()),
+        }
+    }
+}
+
+impl crate::io::vfs::FileSystem for Fat32Fs {
+    fn open(
+        &self,
+        name: &str,
+        mode: crate::io::vfs::FileMode,
+    ) -> Result<usize, crate::io::vfs::FsError> {
+        // Step 1: Reject any write operations since FAT32 is currently read-only.
+        if mode != crate::io::vfs::FileMode::Read {
+            return Err(crate::io::vfs::FsError::Unsupported);
+        }
+
+        // Step 2: Read whole file content without holding the lock (prevent deadlock/interrupt-disabling during block I/O).
+        let data = self.volume.read_file(name).map_err(map_fat32_err)?;
+
+        // Step 3: Lock the open file descriptors table and insert the newly opened file.
+        let mut files = self.open_files.lock();
+        let file = Fat32OpenFile {
+            name: alloc::string::String::from(name),
+            data,
+            offset: 0,
+        };
+
+        if let Some(free_idx) = files.iter().position(|slot| slot.is_none()) {
+            files[free_idx] = Some(file);
+            Ok(free_idx)
+        } else {
+            files.push(Some(file));
+            Ok(files.len() - 1)
+        }
+    }
+
+    fn close(&self, fd: usize) -> Result<(), crate::io::vfs::FsError> {
+        // Step 1: Lock files list and remove active descriptor at the index.
+        let mut files = self.open_files.lock();
+        if fd >= files.len() || files[fd].is_none() {
+            return Err(crate::io::vfs::FsError::InvalidFd);
+        }
+        files[fd] = None;
+        Ok(())
+    }
+
+    fn read(&self, fd: usize, buf: &mut [u8]) -> Result<usize, crate::io::vfs::FsError> {
+        // Step 1: Lock files list and retrieve a mutable reference to the open file state.
+        let mut files = self.open_files.lock();
+        if fd >= files.len() {
+            return Err(crate::io::vfs::FsError::InvalidFd);
+        }
+        let file = files[fd]
+            .as_mut()
+            .ok_or(crate::io::vfs::FsError::InvalidFd)?;
+
+        // Step 2: Return 0 immediately if the cursor is already at EOF.
+        if file.offset >= file.data.len() {
+            return Ok(0);
+        }
+
+        // Step 3: Copy bytes from cache to output buffer and advance cursor.
+        let bytes_to_read = core::cmp::min(buf.len(), file.data.len() - file.offset);
+        buf[..bytes_to_read].copy_from_slice(&file.data[file.offset..file.offset + bytes_to_read]);
+        file.offset += bytes_to_read;
+        Ok(bytes_to_read)
+    }
+
+    fn write(&self, _fd: usize, _buf: &[u8]) -> Result<usize, crate::io::vfs::FsError> {
+        // Out of scope: FAT32 is read-only.
+        Err(crate::io::vfs::FsError::Unsupported)
+    }
+
+    fn seek(&self, fd: usize, offset: u32) -> Result<(), crate::io::vfs::FsError> {
+        // Step 1: Lock files list and retrieve file state.
+        let mut files = self.open_files.lock();
+        if fd >= files.len() {
+            return Err(crate::io::vfs::FsError::InvalidFd);
+        }
+        let file = files[fd]
+            .as_mut()
+            .ok_or(crate::io::vfs::FsError::InvalidFd)?;
+
+        // Step 2: Ensure offset doesn't exceed file size (mirroring FAT12's UnexpectedEof behavior).
+        if offset as usize > file.data.len() {
+            return Err(crate::io::vfs::FsError::Io);
+        }
+        file.offset = offset as usize;
+        Ok(())
+    }
+
+    fn eof(&self, fd: usize) -> Result<bool, crate::io::vfs::FsError> {
+        // Step 1: Lock files list and verify cursor offset is at or past size.
+        let files = self.open_files.lock();
+        if fd >= files.len() {
+            return Err(crate::io::vfs::FsError::InvalidFd);
+        }
+        let file = files[fd]
+            .as_ref()
+            .ok_or(crate::io::vfs::FsError::InvalidFd)?;
+        Ok(file.offset >= file.data.len())
+    }
+
+    fn delete(&self, _name: &str) -> Result<(), crate::io::vfs::FsError> {
+        // Out of scope: FAT32 is read-only.
+        Err(crate::io::vfs::FsError::Unsupported)
+    }
+
+    fn read_file(&self, name: &str) -> Result<alloc::vec::Vec<u8>, crate::io::vfs::FsError> {
+        // Step 1: Directly forward to volume read_file without lock.
+        self.volume.read_file(name).map_err(map_fat32_err)
+    }
+
+    fn print_root_directory(&self) {
+        // Step 1: Directly forward to volume print_root_directory.
+        self.volume.print_root_directory();
+    }
+}
+
+/// Translate FAT32 errors into VFS FsError variants.
+fn map_fat32_err(err: Fat32Error) -> crate::io::vfs::FsError {
+    match err {
+        Fat32Error::NotFound => crate::io::vfs::FsError::NotFound,
+        Fat32Error::Block(crate::drivers::block::BlockError::Unsupported) => {
+            crate::io::vfs::FsError::Unsupported
+        }
+        _ => crate::io::vfs::FsError::Io,
+    }
 }
