@@ -353,36 +353,6 @@ fn booted_via_framebuffer(boot_info_raw: u64, has_boot_info: bool) -> bool {
     bi.video_type == boot_info::VideoModeType::Framebuffer && bi.fb_info.base_address != 0
 }
 
-/// Fills the entire framebuffer with a single `color` (0x00RRGGBB). No-op when
-/// not booted via a framebuffer. Used for the end-of-boot heartbeat on the UEFI path.
-fn fill_screen(boot_info_raw: u64, color: u32) {
-    if !booted_via_framebuffer(boot_info_raw, true) {
-        return;
-    }
-    // SAFETY:
-    // - `boot_info_raw` contains a valid physical address to a `BootInfo` structure.
-    // - The structure is mapped, valid for reads, and alignment is guaranteed by `#[repr(C)]`.
-    // - If it was invalid, the dereference would cause a page fault.
-    let bi = unsafe { &*(boot_info_raw as *const boot_info::BootInfo) };
-    let fb = bi.fb_info;
-    let fb_ptr = fb.base_address as *mut u32;
-    let mut y = 0u32;
-    while y < fb.height {
-        let row = (y * fb.pixels_per_scanline) as isize;
-        let mut x = 0u32;
-        while x < fb.width {
-            // SAFETY:
-            // - The framebuffer is mapped and writable.
-            // - `row + x` is within the valid physical bounds of the framebuffer as provided by `fb.size`.
-            // - Aliasing and concurrency are prevented because we are in a single-threaded early boot phase or panic state.
-            // - If the address was unmapped or misconfigured, it would trigger a page fault.
-            unsafe { fb_ptr.offset(row + x as isize).write_volatile(color) };
-            x += 1;
-        }
-        y += 1;
-    }
-}
-
 /// Identity-maps the linear framebuffer's physical range into the kernel address space.
 ///
 /// On a BIOS/VBE boot the bootstrap loader only identity-maps the low 16 MiB, but the linear
@@ -447,19 +417,6 @@ fn map_framebuffer(boot_info_raw: u64) {
         end,
         fb.size
     );
-}
-
-/// Low-power idle loop entered after the scheduler is started.
-fn idle_loop() -> ! {
-    loop {
-        // SAFETY:
-        // - This requires `unsafe` because inline assembly and privileged CPU instructions are outside Rust's static safety model.
-        // - `hlt` is valid in ring 0 and used for intentional idle waiting.
-        // - Interrupt handlers wake the CPU and resume control flow.
-        unsafe {
-            core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
-        }
-    }
 }
 
 /// Converts higher-half kernel VA to physical address by removing base offset.
