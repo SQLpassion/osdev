@@ -21,6 +21,27 @@
             },
             "group": "build",
             "isBackground": true
+        },
+        {
+            "label": "Build & Run KAOS UEFI",
+            "type": "shell",
+            "command": "${workspaceFolder}/main64/build_uefi.sh -gdb tcp::12345 -S",
+            "options": {
+                "cwd": "${workspaceFolder}/main64"
+            },
+            "problemMatcher": {
+                "owner": "custom",
+                "pattern": {
+                    "regexp": "^.*$"
+                },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": "^.*$",
+                    "endsPattern": "^.*$"
+                }
+            },
+            "group": "build",
+            "isBackground": true
         }
     ]
 }

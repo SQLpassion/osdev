@@ -162,4 +162,5 @@ qemu-system-x86_64 \
     -vga virtio \
     "${QEMU_DISPLAY[@]}" \
     -net none \
-    -m 256M
+    -m 256M \
+    "$@"

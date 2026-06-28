@@ -172,6 +172,7 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
     } else {
         boot_info::VideoModeType::VgaText
     };
+
     console::init(video_type);
     debugln!("Kernel console initialized");
 

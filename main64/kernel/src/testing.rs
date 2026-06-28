@@ -124,6 +124,7 @@ fn print_summary() {
 
 /// Macro to assert equality with better error messages for tests
 #[macro_export]
+#[collapse_debuginfo(yes)]
 macro_rules! test_assert_eq {
     ($left:expr, $right:expr) => {
         if $left != $right {
@@ -145,6 +146,7 @@ macro_rules! test_assert_eq {
 
 /// Macro to assert a condition is true
 #[macro_export]
+#[collapse_debuginfo(yes)]
 macro_rules! test_assert {
     ($cond:expr) => {
         if !$cond {

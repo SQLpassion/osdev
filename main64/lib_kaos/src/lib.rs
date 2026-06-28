@@ -49,6 +49,7 @@ pub mod time;
 static DUMMY_PROGBITS_FORCE_DATA: u8 = 1;
 
 #[macro_export]
+#[collapse_debuginfo(yes)]
 macro_rules! print {
     ($($arg:tt)*) => {
         $crate::console::_print(format_args!($($arg)*))
@@ -56,6 +57,7 @@ macro_rules! print {
 }
 
 #[macro_export]
+#[collapse_debuginfo(yes)]
 macro_rules! println {
     () => {
         $crate::print!("\n")
