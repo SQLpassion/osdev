@@ -1,6 +1,6 @@
 //! File descriptor operations for FAT12.
 
-use crate::drivers;
+use crate::drivers::block;
 use crate::io::fat12::cluster::{
     allocate_new_cluster, deallocate_cluster_chain, fat12_next_cluster,
 };
@@ -206,7 +206,7 @@ pub fn read_file_fd(fd: usize, buffer: &mut [u8]) -> Result<usize, Fat12Error> {
 
     while bytes_read < bytes_to_read {
         let cluster_lba = cluster_to_lba(current_cluster)?;
-        drivers::ata::read_sectors(&mut temp_buffer, cluster_lba, 1)?;
+        block::read_sectors(cluster_lba as u64, 1, &mut temp_buffer)?;
 
         let chunk_offset = if bytes_read == 0 { byte_offset } else { 0 };
         let chunk_len = core::cmp::min(bytes_to_read - bytes_read, BYTES_PER_SECTOR - chunk_offset);
@@ -278,12 +278,12 @@ pub fn write_file_fd(fd: usize, buffer: &[u8]) -> Result<usize, Fat12Error> {
         );
 
         if chunk_len < BYTES_PER_SECTOR {
-            drivers::ata::read_sectors(&mut temp_buffer, cluster_lba, 1)?;
+            block::read_sectors(cluster_lba as u64, 1, &mut temp_buffer)?;
         }
 
         temp_buffer[chunk_offset..chunk_offset + chunk_len]
             .copy_from_slice(&buffer[bytes_written..bytes_written + chunk_len]);
-        drivers::ata::write_sectors(&temp_buffer, cluster_lba, 1)?;
+        block::write_sectors(cluster_lba as u64, 1, &temp_buffer)?;
 
         bytes_written += chunk_len;
         entry.current_offset += chunk_len as u32;

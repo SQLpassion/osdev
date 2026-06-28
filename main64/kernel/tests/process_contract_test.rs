@@ -26,6 +26,7 @@ pub extern "C" fn KernelMain(_kernel_size: u64) -> ! {
     vmm::init(false);
     heap::init(false);
     kaos_kernel::drivers::ata::init();
+    kaos_kernel::drivers::block::init_ata();
     kaos_kernel::io::fat12::init();
     test_main();
     loop {

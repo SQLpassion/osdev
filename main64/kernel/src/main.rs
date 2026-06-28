@@ -253,6 +253,7 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
 
         // Reach the FAT32 EFI System Partition through the AHCI controller.
         drivers::ahci::init();
+        drivers::block::init_ahci();
 
         let esp_lba = io::gpt::find_esp_start_lba().expect("ESP not found on GPT disk");
         debugln!("ESP Start LBA: {}", esp_lba);
@@ -275,6 +276,7 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
     } else {
         // Legacy BIOS path: the shell lives on the FAT12 disk reached via ATA PIO.
         drivers::ata::init();
+        drivers::block::init_ata();
         debugln!("ATA PIO driver initialized");
 
         io::fat12::init();

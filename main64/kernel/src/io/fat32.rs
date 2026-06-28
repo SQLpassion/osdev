@@ -29,8 +29,8 @@ pub struct Fat32Volume {
 /// Errors that can occur during FAT32 operations.
 #[derive(Debug, Clone, Copy)]
 pub enum Fat32Error {
-    /// An underlying disk/AHCI read error occurred.
-    Ahci,
+    /// An underlying block device read error occurred.
+    Block(crate::drivers::block::BlockError),
 
     /// The volume does not conform to the expected FAT32 structure (e.g., bad signature).
     NotFat32,
@@ -59,8 +59,7 @@ impl Fat32Volume {
         // Step 1: Read the BPB
         // We read the first sector of the partition (the BIOS Parameter Block) via AHCI
         // to extract the filesystem geometry. If the read fails, we abort.
-        crate::drivers::ahci::read_sectors(&mut sector, part_lba as u32, 1)
-            .map_err(|_| Fat32Error::Ahci)?;
+        crate::drivers::block::read_sectors(part_lba, 1, &mut sector).map_err(Fat32Error::Block)?;
 
         // Step 2: Validate FAT32 parameters
         // We verify that the sector size is exactly 512 bytes, as our implementation
@@ -140,8 +139,8 @@ impl Fat32Volume {
             let cluster_lba = self.cluster_to_lba(current_cluster);
             for i in 0..self.sec_per_clus {
                 let mut sector = [0u8; 512];
-                crate::drivers::ahci::read_sectors(&mut sector, (cluster_lba + i as u64) as u32, 1)
-                    .map_err(|_| Fat32Error::Ahci)?;
+                crate::drivers::block::read_sectors(cluster_lba + i as u64, 1, &mut sector)
+                    .map_err(Fat32Error::Block)?;
 
                 // Process 32-byte directory entries in the sector
                 // Each sector can hold exactly 16 (512/32) directory entries.
@@ -220,8 +219,8 @@ impl Fat32Volume {
             let cluster_lba = self.cluster_to_lba(current_cluster);
             for i in 0..self.sec_per_clus {
                 let mut sector = [0u8; 512];
-                crate::drivers::ahci::read_sectors(&mut sector, (cluster_lba + i as u64) as u32, 1)
-                    .map_err(|_| Fat32Error::Ahci)?;
+                crate::drivers::block::read_sectors(cluster_lba + i as u64, 1, &mut sector)
+                    .map_err(Fat32Error::Block)?;
 
                 // Only copy the bytes that actually belong to the file, to avoid reading
                 // padding zeros from the last sector.
@@ -265,8 +264,8 @@ impl Fat32Volume {
         // Step 2: Read the FAT sector
         // We perform a read via AHCI to retrieve the specific FAT sector.
         let mut sector = [0u8; 512];
-        crate::drivers::ahci::read_sectors(&mut sector, fat_sector as u32, 1)
-            .map_err(|_| Fat32Error::Ahci)?;
+        crate::drivers::block::read_sectors(fat_sector, 1, &mut sector)
+            .map_err(Fat32Error::Block)?;
 
         // Step 3: Extract and validate the next cluster
         // Mask out the top 4 bits (which are reserved in FAT32) and interpret the result.

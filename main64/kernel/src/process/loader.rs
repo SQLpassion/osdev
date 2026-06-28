@@ -297,7 +297,7 @@ fn map_fat12_error(error: Fat12Error) -> ExecError {
         Fat12Error::InvalidFileName => ExecError::InvalidName,
         Fat12Error::NotFound => ExecError::NotFound,
         Fat12Error::IsDirectory => ExecError::IsDirectory,
-        Fat12Error::Ata(_)
+        Fat12Error::Block(_)
         | Fat12Error::CorruptDirectoryEntry
         | Fat12Error::CorruptFatChain
         | Fat12Error::UnexpectedEof => ExecError::Io,

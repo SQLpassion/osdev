@@ -36,6 +36,8 @@ pub extern "C" fn KernelMain(_kernel_size: u64) -> ! {
     vmm::init(false);
     heap::init(false);
 
+    kaos_kernel::drivers::block::init_ata();
+
     // Step 2: Run the FAT12 contract suite with allocator + paging fully initialized.
     test_main();
     loop {

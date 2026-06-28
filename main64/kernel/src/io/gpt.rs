@@ -1,6 +1,6 @@
 //! Minimal GPT parsing to locate the EFI System Partition.
 
-use crate::drivers::ahci;
+use crate::drivers::block;
 
 /// The canonical type GUID for the EFI System Partition (mixed-endian on disk).
 const ESP_TYPE_GUID: [u8; 16] = [
@@ -16,7 +16,7 @@ pub fn find_esp_start_lba() -> Option<u64> {
 
     // Step 1: Read LBA 1 to find the GPT header.
     // We expect the AHCI driver to succeed in reading this sector.
-    if ahci::read_sectors(&mut header_sector, 1, 1).is_err() {
+    if block::read_sectors(1, 1, &mut header_sector).is_err() {
         return fallback_esp();
     }
 
@@ -40,7 +40,7 @@ pub fn find_esp_start_lba() -> Option<u64> {
         // Cast the physical LBA to u32, which is safe since the GPT is at the start of the disk.
         let lba = (entry_lba + sector_offset as u64) as u32;
 
-        if ahci::read_sectors(&mut entry_sector, lba, 1).is_err() {
+        if block::read_sectors(lba as u64, 1, &mut entry_sector).is_err() {
             return fallback_esp();
         }
 
