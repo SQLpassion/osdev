@@ -210,7 +210,10 @@ pub fn init() {
             );
         }
     });
-    debugln!("AHCI: init found no usable controller ({} scanned).", controller_count);
+    debugln!(
+        "AHCI: init found no usable controller ({} scanned).",
+        controller_count
+    );
 }
 
 /// Sets up one AHCI controller and tries to activate a SATA port on it.

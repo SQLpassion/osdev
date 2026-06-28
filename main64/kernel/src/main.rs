@@ -265,7 +265,52 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
         debugln!("ESP Start LBA: {:?}", esp_lba);
         // --- END GPT PARSING ---
 
-        // Step 3 (Pending): Halt the CPU in the low-power idle loop.
+        // --- START FAT32 VERIFICATION (Step 3) ---
+        if let Some(lba) = esp_lba {
+            match crate::io::fat32::Fat32Volume::mount(lba) {
+                Ok(vol) => {
+                    crate::console::with_console(|console| {
+                        let _ =
+                            writeln!(console, "FAT32 Volume mounted successfully at LBA {}", lba);
+                    });
+
+                    // Verify that we can read an existing file
+                    match vol.read_file("kernel.bin") {
+                        Ok(bytes) => {
+                            crate::console::with_console(|console| {
+                                let _ = writeln!(
+                                    console,
+                                    "Successfully read KERNEL.BIN ({} bytes) from ESP",
+                                    bytes.len()
+                                );
+                            });
+                            debugln!("Successfully read KERNEL.BIN: {} bytes", bytes.len());
+                        }
+                        Err(e) => {
+                            crate::console::with_console(|console| {
+                                let _ = writeln!(console, "Failed to read KERNEL.BIN: {:?}", e);
+                            });
+                            debugln!("Failed to read KERNEL.BIN: {:?}", e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    crate::console::with_console(|console| {
+                        let _ = writeln!(console, "FAT32 mount failed: {:?}", e);
+                    });
+                    debugln!("FAT32 mount failed: {:?}", e);
+                }
+            }
+        } else {
+            crate::console::with_console(|console| {
+                let _ = writeln!(console, "ESP not found, skipping FAT32 verification");
+            });
+            debugln!("ESP not found, skipping FAT32 verification");
+        }
+        // --- END FAT32 VERIFICATION ---
+
+        // Step 4 (Pending): Run the shell and share scheduler bring-up.
+
         idle_loop();
     }
 

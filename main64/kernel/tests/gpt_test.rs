@@ -35,15 +35,14 @@ fn panic(info: &PanicInfo) -> ! {
 // ============================================================================
 
 const ESP_TYPE_GUID: [u8; 16] = [
-    0x28, 0x73, 0x2A, 0xC1, 0x1F, 0xF8, 0xD2, 0x11,
-    0xBA, 0x4B, 0x00, 0xA0, 0xC9, 0x3E, 0xC9, 0x3B,
+    0x28, 0x73, 0x2A, 0xC1, 0x1F, 0xF8, 0xD2, 0x11, 0xBA, 0x4B, 0x00, 0xA0, 0xC9, 0x3E, 0xC9, 0x3B,
 ];
 
 #[test_case]
 fn test_parse_gpt_header_valid() {
     let mut header = [0u8; 512];
     header[0..8].copy_from_slice(b"EFI PART");
-    
+
     // PartitionEntryLBA = 2
     header[0x48..0x50].copy_from_slice(&2u64.to_le_bytes());
     // NumberOfPartitionEntries = 128
@@ -71,7 +70,7 @@ fn test_parse_gpt_header_invalid_entry_size() {
     // SizeOfPartitionEntry = 0
     header[0x54..0x58].copy_from_slice(&0u32.to_le_bytes());
     assert_eq!(gpt::parse_gpt_header(&header), None);
-    
+
     // SizeOfPartitionEntry = 123 (not cleanly dividing 512)
     header[0x54..0x58].copy_from_slice(&123u32.to_le_bytes());
     assert_eq!(gpt::parse_gpt_header(&header), None);
@@ -81,7 +80,7 @@ fn test_parse_gpt_header_invalid_entry_size() {
 fn test_parse_gpt_entries_sector_found() {
     let mut sector = [0u8; 512];
     let entry_size = 128;
-    
+
     // Second entry (offset 128) is ESP
     sector[128..128 + 16].copy_from_slice(&ESP_TYPE_GUID);
     // Start LBA = 2048
@@ -95,7 +94,7 @@ fn test_parse_gpt_entries_sector_found() {
 fn test_parse_gpt_entries_sector_not_found() {
     let mut sector = [0u8; 512];
     let entry_size = 128;
-    
+
     // Use a dummy GUID for all entries
     let dummy_guid = [0x11; 16];
     sector[0..16].copy_from_slice(&dummy_guid);

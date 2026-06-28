@@ -96,3 +96,6 @@ name = "pmm_metadata_base_test"
 
 [[test]]
 name = "gpt_test"
+
+[[test]]
+name = "fat32_test"
