@@ -88,6 +88,25 @@ pub fn exec_from_fat12(file_name_8_3: &str) -> ExecResult<usize> {
     spawn_loaded_program(loaded)
 }
 
+/// End-to-end process exec path for an already-loaded flat user binary.
+///
+/// Unlike [`exec_from_fat12`], this takes the program bytes from the caller
+/// instead of reading them from FAT12.  It is the filesystem-agnostic entry
+/// point used by the UEFI boot path, which obtains `SHELL.BIN` from the FAT32
+/// EFI System Partition via AHCI rather than from the legacy FAT12 disk.
+///
+/// Flow:
+/// 1. map/copy the provided image into a fresh user address space
+///    (`map_program_image_into_user_address_space` validates the image length)
+/// 2. spawn a scheduler user task from the prepared descriptor
+///
+/// On spawn failure, the newly created user address space is destroyed to avoid
+/// leaking process-owned mappings and frames.
+pub fn exec_from_image(image: &[u8]) -> ExecResult<usize> {
+    let loaded = map_program_image_into_user_address_space(image)?;
+    spawn_loaded_program(loaded)
+}
+
 /// Maps a validated flat image into a fresh user address space and copies bytes.
 ///
 /// Mapping policy:
