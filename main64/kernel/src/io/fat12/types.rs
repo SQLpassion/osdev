@@ -1,6 +1,5 @@
 //! Common types, errors, and constants for the FAT12 driver.
 
-use crate::drivers;
 use core::fmt::{Display, Formatter};
 
 // FAT12 disk geometry constants for a 1.44 MB floppy layout.
@@ -49,8 +48,8 @@ pub const MAX_FILE_SIZE: usize = 2 * 1024 * 1024;
 /// semantics such as invalid names, missing entries, and FAT-chain corruption.
 #[derive(Debug, Clone, Copy)]
 pub enum Fat12Error {
-    /// ATA controller or transport error while reading sectors.
-    Ata(drivers::ata::AtaError),
+    /// Block device error while reading/writing sectors.
+    Block(crate::drivers::block::BlockError),
 
     /// Input file name is not representable as a valid FAT 8.3 short name.
     InvalidFileName,
@@ -71,17 +70,17 @@ pub enum Fat12Error {
     UnexpectedEof,
 }
 
-impl From<drivers::ata::AtaError> for Fat12Error {
-    fn from(value: drivers::ata::AtaError) -> Self {
+impl From<crate::drivers::block::BlockError> for Fat12Error {
+    fn from(value: crate::drivers::block::BlockError) -> Self {
         // Preserve original transport-layer failure while adapting to FAT12 API.
-        Self::Ata(value)
+        Self::Block(value)
     }
 }
 
 impl Display for Fat12Error {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::Ata(err) => write!(f, "ATA error: {:?}", err),
+            Self::Block(err) => write!(f, "Block error: {:?}", err),
             Self::InvalidFileName => f.write_str("invalid FAT 8.3 file name"),
             Self::NotFound => f.write_str("file not found in FAT12 root directory"),
             Self::IsDirectory => f.write_str("entry is a directory, not a regular file"),

@@ -1,6 +1,6 @@
 //! High-level file system interface for FAT12.
 
-use crate::drivers;
+use crate::drivers::block;
 use crate::io::fat12::cluster::{deallocate_cluster_chain, fat12_next_cluster};
 use crate::io::fat12::directory::{
     delete_file_entry, find_file_in_root_directory, for_each_active_root_entry, normalize_8_3_name,
@@ -74,7 +74,7 @@ pub fn read_file_from_entry(file_meta: FileEntryMeta, fat: &[u8]) -> Result<Vec<
         // FAT12 on this media profile is 1 sector per cluster.
         let cluster_lba = cluster_to_lba(current_cluster)?;
         let mut sector = [0u8; BYTES_PER_SECTOR];
-        drivers::ata::read_sectors(&mut sector, cluster_lba, 1)?;
+        block::read_sectors(cluster_lba as u64, 1, &mut sector)?;
 
         // The last cluster may contain trailing bytes beyond logical file size.
         let remaining = file_size - content.len();

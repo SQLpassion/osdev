@@ -93,3 +93,17 @@ name = "pmm_uefi_test"
 
 [[test]]
 name = "pmm_metadata_base_test"
+
+[[test]]
+name = "gpt_test"
+
+[[test]]
+name = "fat32_test"
+
+[[test]]
+name = "block_test"
+
+[[test]]
+name = "vfs_test"
+
+

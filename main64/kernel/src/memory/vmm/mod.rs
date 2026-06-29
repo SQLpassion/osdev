@@ -60,7 +60,17 @@ pub use page_table::{
 
 /// Temporary kernel virtual address used as a one-page scratch mapping when
 /// cloning page-table roots.
-pub const TEMP_CLONE_PML4_VA: u64 = 0xFFFF_8000_0DEA_D000;
+///
+/// This MUST live in a PML4 slot that no boot path maps with large pages, so the
+/// VMM can install a fresh 4 KiB mapping here without having to split a huge page
+/// (which `map_virtual_to_physical` does not support).  The UEFI loader mirrors
+/// the low-512 GiB identity map (slot 0) into the higher-half kernel slot 256 and
+/// that identity map uses 2 MiB/1 GiB huge pages; a scratch VA inside slot 256
+/// would therefore resolve through a huge page and silently alias a physical RAM
+/// address instead of the intended clone frame, corrupting the clone.  Slot 257
+/// (base `0xFFFF_8080_0000_0000`) is unmapped on both the legacy and UEFI paths,
+/// so mapping it builds a private 4 KiB hierarchy with no huge-page collision.
+pub const TEMP_CLONE_PML4_VA: u64 = 0xFFFF_8080_0000_0000;
 
 /// Classified user virtual address region.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

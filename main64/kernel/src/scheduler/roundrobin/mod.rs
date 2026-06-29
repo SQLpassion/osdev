@@ -337,9 +337,9 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
             // Always update bootstrap_frame to the latest non-task frame.
             // This is necessary because the boot stack layout may shift
             // between the initial capture (inside KernelMain) and later
-            // ticks (inside idle_loop after the call), which would leave
-            // bootstrap_frame pointing at a stale IRET frame with
-            // corrupted CS/SS values.
+            // ticks (while idling after KernelMain, e.g. blocked in
+            // wait_for_task_exit), which would leave bootstrap_frame
+            // pointing at a stale IRET frame with corrupted CS/SS values.
             meta.bootstrap_frame = current_frame;
         }
 

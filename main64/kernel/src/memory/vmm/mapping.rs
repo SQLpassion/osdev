@@ -31,6 +31,15 @@ pub enum MapError {
 
     /// PMM had no free physical frames for required intermediate page tables.
     OutOfMemory { virtual_address: u64 },
+
+    /// An intermediate level on the path is a present huge-page (2 MiB / 1 GiB)
+    /// leaf. The kernel only creates 4 KiB mappings and cannot split a huge page,
+    /// so descending into it would corrupt the huge page's backing data. The
+    /// `level` field names the offending page-table level ("PDP" or "PD").
+    HugePageInPath {
+        virtual_address: u64,
+        level: &'static str,
+    },
 }
 
 /// Builds any missing intermediate page tables (PML4/PDP/PD) for `virtual_address`.
@@ -84,6 +93,14 @@ pub fn populate_page_table_path(virtual_address: u64, user: bool) -> Result<(), 
         let new_pd = table_at(pd_table_addr(virtual_address));
         table_zero(new_pd);
         debug_alloc("PDP", pdp_idx, table_entry(pdp, pdp_idx).frame());
+    } else if table_entry(pdp, pdp_idx).huge() {
+        // A present 1 GiB huge-page leaf occupies this slot. Descending would
+        // reinterpret the huge page's data frame as a PD and write into it
+        // (silent corruption); we cannot split it into 4 KiB pages. Fail loud.
+        return Err(MapError::HugePageInPath {
+            virtual_address,
+            level: "PDP",
+        });
     } else if user {
         // Existing path: elevate permissions for user mapping requests.
         // SAFETY: `pdp` is a valid PDP page, `pdp_idx < PT_ENTRIES`, interrupts disabled.
@@ -112,6 +129,14 @@ pub fn populate_page_table_path(virtual_address: u64, user: bool) -> Result<(), 
         let new_pt = table_at(pt_table_addr(virtual_address));
         table_zero(new_pt);
         debug_alloc("PD", pd_idx, table_entry(pd, pd_idx).frame());
+    } else if table_entry(pd, pd_idx).huge() {
+        // A present 2 MiB huge-page leaf occupies this slot. Descending would
+        // reinterpret the huge page's data frame as a PT and write into it
+        // (silent corruption); we cannot split it into 4 KiB pages. Fail loud.
+        return Err(MapError::HugePageInPath {
+            virtual_address,
+            level: "PD",
+        });
     } else if user {
         // Existing path: elevate permissions for user mapping requests.
         // SAFETY: `pd` is a valid PD page, `pd_idx < PT_ENTRIES`, interrupts disabled.
@@ -310,6 +335,15 @@ pub fn map_virtual_to_physical(virtual_address: u64, physical_address: u64) {
                 virtual_address
             );
         }
+        Err(MapError::HugePageInPath {
+            virtual_address,
+            level,
+        }) => {
+            panic!(
+                "VMM: cannot map VA 0x{:x}: {} level holds a huge page (no 4 KiB split support)",
+                virtual_address, level
+            );
+        }
     }
 }
 
@@ -500,6 +534,21 @@ pub fn clone_kernel_pml4_for_user() -> u64 {
     unsafe {
         (*entry_ptr(clone_pml4, 511)).set_mapping(phys_to_pfn(new_pml4_phys), true, true, false)
     };
+
+    // Drop the transient scratch entry from the clone.
+    //
+    // `TEMP_CLONE_PML4_VA` lives in its own PML4 slot, so the memcpy above also
+    // copied the kernel's scratch mapping (the slot pointing at the scratch
+    // PDPT) into the clone. The `unmap_without_release` below prunes and frees
+    // that scratch hierarchy on the *kernel* side, which would leave the clone's
+    // copied entry dangling at a soon-to-be-reused frame. Nothing ever walks
+    // this slot in a user address space, but clear it so the clone carries no
+    // stale mapping.
+    let scratch_pml4_idx = ((TEMP_CLONE_PML4_VA >> 39) & 0x1FF) as usize;
+    // SAFETY:
+    // - `clone_pml4` is a valid PML4 page; `scratch_pml4_idx < PT_ENTRIES`.
+    // - Interrupts disabled throughout; no concurrent access.
+    unsafe { (*entry_ptr(clone_pml4, scratch_pml4_idx)).clear() };
 
     unmap_without_release(TEMP_CLONE_PML4_VA);
 
@@ -702,7 +751,8 @@ pub fn map_user_page(virtual_address: u64, pfn: u64, writable: bool) -> Result<(
     //   - CODE  → no_execute = false  (pages must be executable)
     //   - STACK → no_execute = true   (pages must not be executable; prevents stack injection)
     //   - HEAP  → no_execute = true
-    // EFER.NXE is activated in kaosldr_16/longmode.asm; without it bit 63 is ignored by the CPU.
+    // EFER.NXE is enabled early in the kernel (arch::msr::enable_no_execute, called
+    // from KernelMain); without it bit 63 is reserved and faults on real hardware.
     let no_execute = match classify_user_region(virtual_address) {
         Some(UserRegion::Code) => false,
         Some(UserRegion::Stack) => true,

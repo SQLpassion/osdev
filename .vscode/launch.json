@@ -64,6 +64,39 @@
                     "text": "-interpreter-exec console \"add-symbol-file ${workspaceFolder}/main64/target/x86_64-unknown-none/debug/shell 0x0000700000000000\""
                 }
             ]
+        },
+        {
+            "name": "Debug KAOS UEFI locally",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/main64/target/x86_64-unknown-none/debug/kaos_kernel",
+            "cwd": "${workspaceFolder}",
+            "MIMode": "gdb",
+            "miDebuggerPath": "rust-gdb",
+            "miDebuggerServerAddress": "localhost:12345",
+            "preLaunchTask": "Build & Run KAOS UEFI",
+            "stopAtEntry": true,
+            "externalConsole": false,
+            "setupCommands": [
+                {
+                    "description": "Set architecture to x64",
+                    "text": "set architecture i386:x86-64",
+                    "ignoreFailures": false
+                },
+                {
+                    "description": "Enable flex/layout settings",
+                    "text": "set disassembly-flavor intel",
+                    "ignoreFailures": true
+                },
+                {
+                    "description": "Load Rust kernel symbols at virtual address",
+                    "text": "-interpreter-exec console \"add-symbol-file ${workspaceFolder}/main64/target/x86_64-unknown-none/debug/kaos_kernel 0xFFFF800000100000\""
+                },
+                {
+                    "description": "Load SHELL user program symbols at virtual address",
+                    "text": "-interpreter-exec console \"add-symbol-file ${workspaceFolder}/main64/target/x86_64-unknown-none/debug/shell 0x0000700000000000\""
+                }
+            ]
         }
     ]
 }

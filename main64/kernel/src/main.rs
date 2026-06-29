@@ -134,6 +134,14 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
     fpu::init();
     debugln!("FPU/SSE subsystem initialized");
 
+    // Enable EFER.NXE so the No-Execute (bit 63) flag the kernel sets on user
+    // stack/heap pages is honored. The legacy loader enables this, but the UEFI
+    // loader does not — without it, real hardware raises a reserved-bit page
+    // fault on the first access to an NX page. Enabling it in the kernel makes
+    // this independent of the boot loader.
+    arch::msr::enable_no_execute();
+    debugln!("EFER.NXE enabled (No-Execute paging active)");
+
     // Initialize the Physical Memory Manager
     pmm::init(true);
     debugln!("Physical Memory Manager initialized");
@@ -172,6 +180,7 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
     } else {
         boot_info::VideoModeType::VgaText
     };
+
     console::init(video_type);
     debugln!("Kernel console initialized");
 
@@ -207,18 +216,27 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
     drivers::time::init();
     debugln!("Time driver initialized");
 
-    // A UEFI/Framebuffer bring-up has no legacy ATA disk, so the disk-dependent path below (ATA PIO,
-    // FAT12, loading the user-space shell from disk) cannot run yet — end execution here in a
-    // steady BLACK<->WHITE framebuffer heartbeat. A legacy BIOS boot always has an ATA disk
-    // (including the BIOS+VBE graphics path), so it falls through to the disk + scheduler + shell
-    // path below. `primary_present()` distinguishes the two without a dedicated boot-source flag.
-    if booted_via_framebuffer(boot_info_raw, has_boot_info) && !drivers::ata::primary_present() {
+    // Both boot paths converge on a single scheduler bring-up that runs the
+    // user-space shell. They differ only in how the shell image is obtained:
+    //
+    // - A UEFI/Framebuffer boot has no legacy ATA disk. The shell lives on the
+    //   FAT32 EFI System Partition and is reached through the AHCI controller:
+    //   `ahci::init` -> `gpt::find_esp_start_lba` -> `fat32::mount` -> read
+    //   `SHELL.BIN`.
+    // - A legacy BIOS boot always has an ATA disk (including the BIOS+VBE
+    //   graphics path), so it reads `SHELL.BIN` from the FAT12 disk as before.
+    //
+    // `primary_present()` distinguishes the two without a dedicated boot-source
+    // flag, and is callable before `drivers::ata::init()`.
+    let uefi =
+        booted_via_framebuffer(boot_info_raw, has_boot_info) && !drivers::ata::primary_present();
+
+    let shell_image = if uefi {
         // SAFETY:
         // - `boot_info_raw` contains a valid physical address to a `BootInfo` structure.
         let bi = unsafe { &*(boot_info_raw as *const boot_info::BootInfo) };
         let fb = bi.fb_info;
 
-        // Step 1: Clear screen and display successful boot messages on the Framebuffer Console.
         crate::console::with_console(|console| {
             console.clear();
             let _ = writeln!(console, "========================================");
@@ -230,26 +248,46 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
                 "Resolution: {}x{} px (stride: {})",
                 fb.width, fb.height, fb.pixels_per_scanline
             );
-            let _ = writeln!(
-                console,
-                "Framebuffer physical address: 0x{:x}",
-                fb.base_address
-            );
-            let _ = writeln!(console, "No legacy ATA disk detected.");
-            let _ = writeln!(console, "System halted.");
+            let _ = writeln!(console, "Loading SHELL.BIN from the ESP via AHCI...");
         });
 
-        // Step 2: Halt the CPU in the low-power idle loop.
-        idle_loop();
-    }
+        // Reach the FAT32 EFI System Partition through the AHCI controller.
+        drivers::ahci::init();
+        drivers::block::init_ahci();
 
-    // Initialize the ATA PIO driver
-    drivers::ata::init();
-    debugln!("ATA PIO driver initialized");
+        let esp_lba = io::gpt::find_esp_start_lba().expect("ESP not found on GPT disk");
+        debugln!("ESP Start LBA: {}", esp_lba);
 
-    // Initialize the FAT12 file system (loads root directory from disk)
-    io::fat12::init();
-    debugln!("FAT12 file system initialized");
+        let vol = io::fat32::Fat32Volume::mount(esp_lba).expect("FAT32 ESP mount failed");
+        io::vfs::mount(alloc::boxed::Box::new(io::fat32::Fat32Fs::new(vol)));
+
+        let image = io::vfs::read_file("shell.bin").expect("failed to read SHELL.BIN from ESP");
+        debugln!("Loaded SHELL.BIN from ESP: {} bytes", image.len());
+
+        crate::console::with_console(|console| {
+            let _ = writeln!(
+                console,
+                "Loaded SHELL.BIN ({} bytes). Starting...",
+                image.len()
+            );
+        });
+
+        image
+    } else {
+        // Legacy BIOS path: the shell lives on the FAT12 disk reached via ATA PIO.
+        drivers::ata::init();
+        drivers::block::init_ata();
+        debugln!("ATA PIO driver initialized");
+
+        io::fat12::init();
+        debugln!("FAT12 file system initialized");
+
+        io::vfs::mount(alloc::boxed::Box::new(io::fat12::Fat12Fs));
+
+        io::vfs::read_file("shell.bin").expect("failed to load SHELL.BIN from FAT12")
+    };
+
+    // --- Shared scheduler bring-up (both boot paths) ---
 
     // Initialize interrupt handling and the keyboard ring buffer.
     interrupts::register_irq_handler(interrupts::IRQ1_KEYBOARD_VECTOR, |_, frame| {
@@ -270,15 +308,36 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
     scheduler::spawn_kernel_task(keyboard::keyboard_worker_task)
         .expect("failed to spawn keyboard worker task");
 
-    // Spawn the user-space shell task from the FAT12 disk
+    // Spawn the user-space shell task from the image loaded above (FAT32/ESP on
+    // the UEFI path, FAT12 on the legacy path).
     let shell_pid =
-        process::exec_from_fat12("shell.bin").expect("failed to spawn SHELL.BIN user-mode task");
+        process::exec_from_image(&shell_image).expect("failed to spawn SHELL.BIN user-mode task");
+
+    // On the UEFI path there is no serial console on real hardware, so leave a
+    // visible breadcrumb on the framebuffer. If boot stalls after "Starting...",
+    // whether these lines appear localizes the failure: missing => exec/mapping
+    // faulted; present but no shell => the scheduler never preempted (timer/IRQ).
+    if uefi {
+        crate::console::with_console(|console| {
+            let _ = writeln!(
+                console,
+                "Shell mapped (PID {}). Starting scheduler...",
+                shell_pid
+            );
+        });
+    }
 
     scheduler::start();
     debugln!(
         "Scheduler started with keyboard worker + SHELL.BIN (PID {})",
         shell_pid
     );
+
+    if uefi {
+        crate::console::with_console(|console| {
+            let _ = writeln!(console, "Scheduler running, awaiting shell...");
+        });
+    }
 
     // Enable interrupts — the first timer tick will preempt into a task.
     interrupts::enable();
@@ -304,36 +363,6 @@ fn booted_via_framebuffer(boot_info_raw: u64, has_boot_info: bool) -> bool {
     // - If `boot_info_raw` was null or pointing to invalid memory, this dereference would trigger a page fault.
     let bi = unsafe { &*(boot_info_raw as *const boot_info::BootInfo) };
     bi.video_type == boot_info::VideoModeType::Framebuffer && bi.fb_info.base_address != 0
-}
-
-/// Fills the entire framebuffer with a single `color` (0x00RRGGBB). No-op when
-/// not booted via a framebuffer. Used for the end-of-boot heartbeat on the UEFI path.
-fn fill_screen(boot_info_raw: u64, color: u32) {
-    if !booted_via_framebuffer(boot_info_raw, true) {
-        return;
-    }
-    // SAFETY:
-    // - `boot_info_raw` contains a valid physical address to a `BootInfo` structure.
-    // - The structure is mapped, valid for reads, and alignment is guaranteed by `#[repr(C)]`.
-    // - If it was invalid, the dereference would cause a page fault.
-    let bi = unsafe { &*(boot_info_raw as *const boot_info::BootInfo) };
-    let fb = bi.fb_info;
-    let fb_ptr = fb.base_address as *mut u32;
-    let mut y = 0u32;
-    while y < fb.height {
-        let row = (y * fb.pixels_per_scanline) as isize;
-        let mut x = 0u32;
-        while x < fb.width {
-            // SAFETY:
-            // - The framebuffer is mapped and writable.
-            // - `row + x` is within the valid physical bounds of the framebuffer as provided by `fb.size`.
-            // - Aliasing and concurrency are prevented because we are in a single-threaded early boot phase or panic state.
-            // - If the address was unmapped or misconfigured, it would trigger a page fault.
-            unsafe { fb_ptr.offset(row + x as isize).write_volatile(color) };
-            x += 1;
-        }
-        y += 1;
-    }
 }
 
 /// Identity-maps the linear framebuffer's physical range into the kernel address space.
@@ -400,19 +429,6 @@ fn map_framebuffer(boot_info_raw: u64) {
         end,
         fb.size
     );
-}
-
-/// Low-power idle loop entered after the scheduler is started.
-fn idle_loop() -> ! {
-    loop {
-        // SAFETY:
-        // - This requires `unsafe` because inline assembly and privileged CPU instructions are outside Rust's static safety model.
-        // - `hlt` is valid in ring 0 and used for intentional idle waiting.
-        // - Interrupt handlers wake the CPU and resume control flow.
-        unsafe {
-            core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
-        }
-    }
 }
 
 /// Converts higher-half kernel VA to physical address by removing base offset.

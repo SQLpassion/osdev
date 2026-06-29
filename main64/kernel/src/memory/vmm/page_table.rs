@@ -20,7 +20,7 @@ pub const ENTRY_FRAME_MASK: u64 = 0x0000_FFFF_FFFF_F000;
 /// No-Execute bit (bit 63) in a page table leaf entry.
 ///
 /// When set, instruction fetches from this page raise a #PF (page fault).
-/// Only effective after EFER.NXE is set — see `kaosldr_16/longmode.asm`.
+/// Only effective after EFER.NXE is set — enabled by `arch::msr::enable_no_execute`.
 /// Applied to user stack pages to prevent code injection via stack buffer overflows.
 /// Must NOT be set on code pages (USER_CODE region).
 pub const ENTRY_NO_EXECUTE: u64 = 1 << 63;
@@ -139,7 +139,7 @@ impl PageTableEntry {
     /// Returns whether the No-Execute bit is set.
     ///
     /// When set, instruction fetches from this page raise a #PF.
-    /// Requires EFER.NXE to be active (set in `kaosldr_16/longmode.asm`);
+    /// Requires EFER.NXE to be active (enabled by `arch::msr::enable_no_execute`);
     /// without it the CPU ignores this bit and the page remains executable.
     #[inline]
     #[cfg_attr(not(test), allow(dead_code))]
@@ -151,7 +151,7 @@ impl PageTableEntry {
     ///
     /// Set this on stack and data pages to prevent code injection attacks.
     /// Never set this on code pages (USER_CODE region) — they must remain executable.
-    /// Requires EFER.NXE to be active (set in `kaosldr_16/longmode.asm`).
+    /// Requires EFER.NXE to be active (enabled by `arch::msr::enable_no_execute`).
     #[inline]
     pub fn set_no_execute(&mut self, val: bool) {
         if val {

@@ -179,6 +179,7 @@ pub fn _debug_print(args: fmt::Arguments) {
 /// debug!("Multiple values: {} and {}", x, y);
 /// ```
 #[macro_export]
+#[collapse_debuginfo(yes)]
 macro_rules! debug {
     ($($arg:tt)*) => {
         $crate::drivers::serial::_debug_print(format_args!($($arg)*))
@@ -194,6 +195,7 @@ macro_rules! debug {
 /// debugln!();  // Just a newline
 /// ```
 #[macro_export]
+#[collapse_debuginfo(yes)]
 macro_rules! debugln {
     () => {
         $crate::logging::logln("kernel", format_args!(""))

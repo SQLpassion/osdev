@@ -10,6 +10,10 @@ pub mod disk;
 pub mod fd;
 pub mod fs;
 pub mod types;
+pub mod vfs_impl;
+
+#[allow(unused_imports)]
+pub use vfs_impl::Fat12Fs;
 
 #[allow(unused_imports)]
 pub use directory::normalize_8_3_name;

@@ -27,6 +27,9 @@ echo "==> Building kernel..."
 echo "==> Building kaosldr_uefi ($TARGET, $PROFILE)..."
 ( cd kaosldr_uefi && cargo build )
 
+echo "==> Building user-mode programs..."
+"$SCRIPT_DIR/build_user_programs.sh" "$PROFILE"
+
 # 2) Build the bootable GPT/ESP disk image (kaos64-uefi.img): a GPT disk with one FAT32 EFI
 # System Partition holding /EFI/BOOT/BOOTX64.EFI and /KERNEL.BIN.
 echo "==> Creating bootable GPT/ESP image $IMG ..."
@@ -44,6 +47,16 @@ mformat -i "$IMG@@$PART_OFFSET" -F ::
 mmd     -i "$IMG@@$PART_OFFSET" ::/EFI ::/EFI/BOOT
 mcopy   -i "$IMG@@$PART_OFFSET" "$EFI_BIN" ::/EFI/BOOT/BOOTX64.EFI
 mcopy   -i "$IMG@@$PART_OFFSET" "target/x86_64-unknown-none/debug/kernel.bin" ::/KERNEL.BIN
+# User-mode programs. SHELL.BIN is the root shell the kernel runs on the UEFI
+# path; the others are launched from within the shell (matching the legacy
+# FAT12 image populated by build.sh). 8.3 uppercase names, as stored by mcopy.
+mcopy   -i "$IMG@@$PART_OFFSET" "user_programs/shell/shell.bin"       ::/SHELL.BIN
+mcopy   -i "$IMG@@$PART_OFFSET" "user_programs/hello/hello.bin"       ::/HELLO.BIN
+mcopy   -i "$IMG@@$PART_OFFSET" "user_programs/readline/readline.bin" ::/READLINE.BIN
+mcopy   -i "$IMG@@$PART_OFFSET" "user_programs/filedemo/filedemo.bin" ::/FILEDEMO.BIN
+mcopy   -i "$IMG@@$PART_OFFSET" "user_programs/tui_app/tui.bin"       ::/TUI.BIN
+mcopy   -i "$IMG@@$PART_OFFSET" "user_programs/kbasic/kbasic.bin"     ::/KBASIC.BIN
+mcopy   -i "$IMG@@$PART_OFFSET" "user_programs/kbasic/src/demo.bas"   ::/DEMO.BAS
 echo "==> $IMG ready. Flash to a USB stick with (DESTRUCTIVE - pick the right device!):"
 echo "        sudo dd if=$IMG of=/dev/<your-usb> bs=4M conv=fsync"
 
@@ -162,4 +175,5 @@ qemu-system-x86_64 \
     -vga virtio \
     "${QEMU_DISPLAY[@]}" \
     -net none \
-    -m 256M
+    -m 256M \
+    "$@"

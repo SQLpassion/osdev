@@ -1,6 +1,6 @@
 //! Cluster chain management functions for FAT12.
 
-use crate::drivers;
+use crate::drivers::block;
 use crate::io::fat12::disk::cluster_to_lba;
 use crate::io::fat12::types::{
     Fat12Error, BYTES_PER_SECTOR, FAT12_EOF_MIN, FAT12_MIN_DATA_CLUSTER,
@@ -92,7 +92,7 @@ pub fn allocate_new_cluster(fat: &mut [u8], current_cluster: u16) -> Result<u16,
     // Security Zeroing: overwrite sector of the new cluster with zero bytes
     let cluster_lba = cluster_to_lba(new_cluster)?;
     let empty_sector = [0u8; BYTES_PER_SECTOR];
-    drivers::ata::write_sectors(&empty_sector, cluster_lba, 1)?;
+    block::write_sectors(cluster_lba as u64, 1, &empty_sector)?;
 
     Ok(new_cluster)
 }
@@ -116,7 +116,7 @@ pub fn deallocate_cluster_chain(fat: &mut [u8], start_cluster: u16) -> Result<()
 
         // Clear sector on disk
         if let Ok(cluster_lba) = cluster_to_lba(current_cluster) {
-            let _ = drivers::ata::write_sectors(&empty_sector, cluster_lba, 1);
+            let _ = block::write_sectors(cluster_lba as u64, 1, &empty_sector);
         }
 
         if !(FAT12_MIN_DATA_CLUSTER..FAT12_EOF_MIN).contains(&next_cluster) {
