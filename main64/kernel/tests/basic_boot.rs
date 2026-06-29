@@ -112,6 +112,13 @@ fn test_boot_info_parsing() {
         kernel_size: 123456,
         pmm_metadata_base: 0,
         pmm_metadata_size: 0,
+        boot_year: 0,
+        boot_month: 0,
+        boot_day: 0,
+        boot_hour: 0,
+        boot_minute: 0,
+        boot_second: 0,
+        boot_timezone: 0,
     };
 
     let raw_ptr = &info as *const BootInfo as u64;

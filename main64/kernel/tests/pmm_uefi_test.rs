@@ -72,6 +72,13 @@ static mut SYN_BOOT_INFO: BootInfo = BootInfo {
     kernel_size: 0,
     pmm_metadata_base: 0,
     pmm_metadata_size: 0,
+    boot_year: 0,
+    boot_month: 0,
+    boot_day: 0,
+    boot_hour: 0,
+    boot_minute: 0,
+    boot_second: 0,
+    boot_timezone: 0,
 };
 
 #[no_mangle]

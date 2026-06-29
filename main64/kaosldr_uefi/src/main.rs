@@ -287,6 +287,62 @@ struct EfiBootServices {
     ) -> Status,
 }
 
+/// UEFI Time structure (`EFI_TIME`).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct EfiTime {
+    /// Year (1900 - 9999).
+    pub year: u16,
+    /// Month (1 - 12).
+    pub month: u8,
+    /// Day (1 - 31).
+    pub day: u8,
+    /// Hour (0 - 23).
+    pub hour: u8,
+    /// Minute (0 - 59).
+    pub minute: u8,
+    /// Second (0 - 59).
+    pub second: u8,
+    /// Padding.
+    pub pad1: u8,
+    /// Nanosecond (0 - 999,999,999).
+    pub nanosecond: u32,
+    /// Timezone (-1440 to 1440 or 2047 for local/unknown).
+    pub time_zone: i16,
+    /// Daylight savings flags.
+    pub daylight: u8,
+    /// Padding.
+    pub pad2: u8,
+}
+
+/// UEFI Time capabilities structure (`EFI_TIME_CAPABILITIES`).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct EfiTimeCapabilities {
+    pub resolution: u32,
+    pub accuracy: u32,
+    pub sets_to_zero: bool,
+}
+
+/// UEFI Runtime Services table (`EFI_RUNTIME_SERVICES`).
+#[repr(C)]
+struct EfiRuntimeServices {
+    hdr: EfiTableHeader,
+    /// Queries the current time and date.
+    get_time:
+        extern "efiapi" fn(time: *mut EfiTime, capabilities: *mut EfiTimeCapabilities) -> Status,
+    set_time: *const c_void,
+    get_wakeup_time: *const c_void,
+    set_wakeup_time: *const c_void,
+    set_virtual_address_map: *const c_void,
+    convert_pointer: *const c_void,
+    get_variable: *const c_void,
+    get_next_variable_name: *const c_void,
+    set_variable: *const c_void,
+    get_next_high_monotonic_count: *const c_void,
+    reset_system: *const c_void,
+}
+
 /// UEFI System Table (`EFI_SYSTEM_TABLE`).
 ///
 /// The master system parameters containing standard console streams and tables.
@@ -302,7 +358,7 @@ pub struct EfiSystemTable {
     con_out: *mut EfiSimpleTextOutputProtocol,
     standard_error_handle: Handle,
     std_err: *mut c_void,
-    runtime_services: *mut c_void,
+    runtime_services: *mut EfiRuntimeServices,
     /// Pointer to the boot services function table.
     boot_services: *mut EfiBootServices,
 }
@@ -360,6 +416,13 @@ pub struct BootInfo {
     pub kernel_size: u64,
     pub pmm_metadata_base: u64,
     pub pmm_metadata_size: u64,
+    pub boot_year: u16,
+    pub boot_month: u8,
+    pub boot_day: u8,
+    pub boot_hour: u8,
+    pub boot_minute: u8,
+    pub boot_second: u8,
+    pub boot_timezone: i16,
 }
 
 /// Statically allocated memory map buffer passed to the kernel.
@@ -386,6 +449,13 @@ static mut BOOT_INFO: BootInfo = BootInfo {
     kernel_size: 0,
     pmm_metadata_base: 0,
     pmm_metadata_size: 0,
+    boot_year: 0,
+    boot_month: 0,
+    boot_day: 0,
+    boot_hour: 0,
+    boot_minute: 0,
+    boot_second: 0,
+    boot_timezone: 0,
 };
 
 /// Entry point of the UEFI application.
@@ -514,6 +584,53 @@ pub unsafe extern "efiapi" fn efi_main(
     }
 
     print(con_out, "  -> GOP queried successfully.\r\n");
+
+    // Step 2b: Query current date & time via UEFI Runtime Services and populate BIOS Information Block (BIB) at 0x1000.
+    print(con_out, "  -> Querying UEFI system time...\r\n");
+    let mut efi_time = EfiTime {
+        year: 0,
+        month: 0,
+        day: 0,
+        hour: 0,
+        minute: 0,
+        second: 0,
+        pad1: 0,
+        nanosecond: 0,
+        time_zone: 0,
+        daylight: 0,
+        pad2: 0,
+    };
+
+    // SAFETY:
+    // - `system_table` is a valid pointer to the system table provided by firmware at entry.
+    // - `runtime_services` within `system_table` is a valid pointer to the `EfiRuntimeServices` table.
+    // - `get_time` is a valid function pointer provided by the firmware.
+    // - `efi_time` is a valid, aligned stack-allocated structure.
+    // - Passing a null pointer for capabilities is allowed by the UEFI specification.
+    // - If any of the pointers were null or invalid, it would cause a CPU exception.
+    let time_status = unsafe {
+        ((*(*system_table).runtime_services).get_time)(
+            &mut efi_time as *mut EfiTime,
+            core::ptr::null_mut(),
+        )
+    };
+
+    if time_status == 0 {
+        // SAFETY:
+        // - We modify the static mutable BootInfo structure before exiting boot services.
+        // - There are no concurrent threads executing during early boot loader stage.
+        unsafe {
+            BOOT_INFO.boot_year = efi_time.year;
+            BOOT_INFO.boot_month = efi_time.month;
+            BOOT_INFO.boot_day = efi_time.day;
+            BOOT_INFO.boot_hour = efi_time.hour;
+            BOOT_INFO.boot_minute = efi_time.minute;
+            BOOT_INFO.boot_second = efi_time.second;
+            BOOT_INFO.boot_timezone = efi_time.time_zone;
+        }
+    } else {
+        print(con_out, "WARNING: Failed to query UEFI system time!\r\n");
+    }
 
     // Step 3: Open Volume and Load KERNEL.BIN
     print(con_out, "  -> Opening filesystem root...\r\n");

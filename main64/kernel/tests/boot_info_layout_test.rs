@@ -78,7 +78,14 @@ fn test_bootinfo_field_offsets() {
     assert_eq!(offset_of!(BootInfo, kernel_size), 64);
     assert_eq!(offset_of!(BootInfo, pmm_metadata_base), 72);
     assert_eq!(offset_of!(BootInfo, pmm_metadata_size), 80);
-    assert_eq!(size_of::<BootInfo>(), 88);
+    assert_eq!(offset_of!(BootInfo, boot_year), 88);
+    assert_eq!(offset_of!(BootInfo, boot_month), 90);
+    assert_eq!(offset_of!(BootInfo, boot_day), 91);
+    assert_eq!(offset_of!(BootInfo, boot_hour), 92);
+    assert_eq!(offset_of!(BootInfo, boot_minute), 93);
+    assert_eq!(offset_of!(BootInfo, boot_second), 94);
+    assert_eq!(offset_of!(BootInfo, boot_timezone), 96);
+    assert_eq!(size_of::<BootInfo>(), 104);
     assert_eq!(align_of::<BootInfo>(), 8);
 }
 

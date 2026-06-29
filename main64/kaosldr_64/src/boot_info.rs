@@ -109,4 +109,25 @@ pub struct BootInfo {
 
     /// Size in bytes of the reserved PMM metadata region (0 if not provided).
     pub pmm_metadata_size: u64,
+
+    /// Year when the system was booted.
+    pub boot_year: u16,
+
+    /// Month when the system was booted.
+    pub boot_month: u8,
+
+    /// Day when the system was booted.
+    pub boot_day: u8,
+
+    /// Hour when the system was booted.
+    pub boot_hour: u8,
+
+    /// Minute when the system was booted.
+    pub boot_minute: u8,
+
+    /// Second when the system was booted.
+    pub boot_second: u8,
+
+    /// Timezone offset at boot time (minutes relative to UTC).
+    pub boot_timezone: i16,
 }

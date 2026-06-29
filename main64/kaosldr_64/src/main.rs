@@ -57,7 +57,6 @@ static mut UNIFIED_MEM_MAP: [UnifiedMemoryEntry; 128] = [UnifiedMemoryEntry {
     is_usable: false,
 }; 128];
 
-/// Static buffer to hold the BootInfo structure passed to the kernel.
 static mut BOOT_INFO: BootInfo = BootInfo {
     magic: 0x4B414F535F424F4F,
     video_type: VideoModeType::VgaText,
@@ -74,6 +73,13 @@ static mut BOOT_INFO: BootInfo = BootInfo {
     kernel_size: 0,
     pmm_metadata_base: 0,
     pmm_metadata_size: 0,
+    boot_year: 0,
+    boot_month: 0,
+    boot_day: 0,
+    boot_hour: 0,
+    boot_minute: 0,
+    boot_second: 0,
+    boot_timezone: 0,
 };
 
 /// Entry point of KLDR64.BIN
@@ -137,6 +143,35 @@ pub unsafe extern "C" fn kaosldr_main() -> ! {
                     pixels_per_scanline: bib.fb_pixels_per_scanline,
                     pixel_format: boot_info::PixelFormat::Bgr,
                 };
+
+                // Copy date and time from the legacy BIOS Information Block (BIB)
+                BOOT_INFO.boot_year = bib.year.max(0) as u16;
+                BOOT_INFO.boot_month = if bib.month >= 1 && bib.month <= 12 {
+                    bib.month as u8
+                } else {
+                    1
+                };
+                BOOT_INFO.boot_day = if bib.day >= 1 && bib.day <= 31 {
+                    bib.day as u8
+                } else {
+                    1
+                };
+                BOOT_INFO.boot_hour = if bib.hour >= 0 && bib.hour < 24 {
+                    bib.hour as u8
+                } else {
+                    0
+                };
+                BOOT_INFO.boot_minute = if bib.minute >= 0 && bib.minute < 60 {
+                    bib.minute as u8
+                } else {
+                    0
+                };
+                BOOT_INFO.boot_second = if bib.second >= 0 && bib.second < 60 {
+                    bib.second as u8
+                } else {
+                    0
+                };
+                BOOT_INFO.boot_timezone = 0; // BIOS RTC is local/unknown timezone
 
                 // Execute the Kernel, passing a pointer to the BootInfo struct.
                 // This function call will never return...
