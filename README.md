@@ -186,8 +186,7 @@ Detailed, implementation-level documentation for each subsystem lives in
 ### Design notes & roadmap
 | Document | Topic |
 |---|---|
-| [storage_abstraction.md](main64/docs/storage_abstraction.md) | Design plan that motivated the unified storage/VFS architecture |
-| [drivers.md](main64/docs/drivers.md) | *(Planned)* dynamic, loadable Ring-3 user-space driver infrastructure |
+| [todo_drivers.md](main64/docs/todo_drivers.md) | *(Planned)* dynamic, loadable Ring-3 user-space driver infrastructure |
 | [todo_uefi_kernel_pagetables.md](main64/docs/todo_uefi_kernel_pagetables.md) | Plan for kernel-owned page tables on the UEFI path |
 | [todo_elf.md](main64/docs/todo_elf.md) | Plan for ELF program loading |
 
