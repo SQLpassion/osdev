@@ -29,7 +29,9 @@ pub extern "C" fn KernelMain(_kernel_size: u64) -> ! {
     kaos_kernel::drivers::block::init_ata();
     let vol = kaos_kernel::io::fat32::Fat32Volume::mount(0)
         .expect("FAT32 superfloppy must mount at LBA 0 in the test image");
-    kaos_kernel::io::vfs::mount(alloc::boxed::Box::new(kaos_kernel::io::fat32::Fat32Fs::new(vol)));
+    kaos_kernel::io::vfs::mount(alloc::boxed::Box::new(
+        kaos_kernel::io::fat32::Fat32Fs::new(vol),
+    ));
     test_main();
     loop {
         core::hint::spin_loop();

@@ -2,9 +2,9 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "Build & Run KAOS Rust",
+            "label": "Build & Run KAOS BIOS",
             "type": "shell",
-            "command": "${workspaceFolder}/main64/build_bios_debug.sh -gdb tcp::12345 -S",
+            "command": "${workspaceFolder}/main64/build/build_bios_debug.sh -gdb tcp::12345 -S",
             "options": {
                 "cwd": "${workspaceFolder}/main64"
             },
@@ -25,7 +25,7 @@
         {
             "label": "Build & Run KAOS UEFI",
             "type": "shell",
-            "command": "${workspaceFolder}/main64/build_uefi_debug.sh -gdb tcp::12345 -S",
+            "command": "${workspaceFolder}/main64/build/build_uefi_debug.sh -gdb tcp::12345 -S",
             "options": {
                 "cwd": "${workspaceFolder}/main64"
             },

@@ -14,7 +14,8 @@
 set -e  # Exit on error
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$SCRIPT_DIR"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$PROJECT_ROOT"
 
 echo "========================================"
 echo "  KAOS Rust Kernel Build Script"
@@ -36,7 +37,7 @@ rust-objcopy -O binary ../target/x86_64-unknown-none/release/kaos_kernel ../targ
 echo "  -> Rust kernel built: target/x86_64-unknown-none/release/kernel.bin"
 ls -la ../target/x86_64-unknown-none/release/kernel.bin
 
-cd "$SCRIPT_DIR"
+cd "$PROJECT_ROOT"
 echo ""
 
 # Step 1b: Build Rust 64-bit kernel loader locally (release mode)
@@ -53,7 +54,7 @@ rust-objcopy -O binary ../target/x86_64-unknown-none/release/kldr64 ../target/x8
 echo "  -> Rust kernel loader built: target/x86_64-unknown-none/release/kldr64.bin"
 ls -la ../target/x86_64-unknown-none/release/kldr64.bin
 
-cd "$SCRIPT_DIR"
+cd "$PROJECT_ROOT"
 echo ""
 
 # Step 2: Build user-mode programs
@@ -89,7 +90,7 @@ echo "  -> Disk image created successfully!"
 ls -la kaos64.img
 
 echo "  -> Creating qcow2 image for UTM..."
-cd "$SCRIPT_DIR"
+cd "$PROJECT_ROOT"
 qemu-img convert -O qcow2 kaos64.img kaos64.qcow2 
 cp kaos64.qcow2 "$HOME/Library/Containers/com.utmapp.UTM/Data/Documents/KAOS x64.utm/Data/kaos64.qcow2"
 echo ""

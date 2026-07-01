@@ -9,13 +9,14 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 PVE_HOST="192.168.1.99"
 PVE_USER="${PVE_USER:-root}"
 PVE_SSH_PORT="${PVE_SSH_PORT:-22}"
 VMID="${VMID:-602}"
 STORAGE="${STORAGE:-data}"
-LOCAL_IMG="${LOCAL_IMG:-${SCRIPT_DIR}/kaos64-uefi.img}"
+LOCAL_IMG="${LOCAL_IMG:-${PROJECT_ROOT}/kaos64-uefi.img}"
 REMOTE_IMG="${REMOTE_IMG:-/tmp/kaos64-uefi-${VMID}.img}"
 
 if ! [[ "$VMID" =~ ^[0-9]+$ ]]; then

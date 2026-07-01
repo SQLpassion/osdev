@@ -11,7 +11,7 @@
 > `boot/bootsector.asm` (FAT32 BPB + fixed reserved-sector reads), `boot/functions.asm`
 > (FAT12 logic removed), new `kaosldr_64/src/fat32.rs` (no-alloc FAT32 reader) replacing
 > `fat12.rs`, `kernel/src/main.rs` (legacy branch mounts FAT32 over ATA at LBA 0), and a
-> shared `helper_make_fat32_bios_image.sh` (mtools) called by the build scripts (`build_bios_debug_devcontainer.sh`, `build_bios_debug.sh`, and `build_bios_release.sh`)
+> shared `build/helper_make_fat32_bios_image.sh` (mtools) called by the build scripts (`build/build_bios_debug_devcontainer.sh`, `build/build_bios_debug.sh`, and `build/build_bios_release.sh`)
 > (the latter keeps `nasm` in Docker but builds the image on the host). `io::fat12` is kept
 > for now (read-only decision E3); its removal (§6 / Phase 7) is still optional/pending.
 
@@ -37,11 +37,11 @@
 
 ### 1.2 Image creation
 
-- `build_bios_debug_devcontainer.sh` / `build_bios_release.sh` use **`fat_imgen`** and produce a
+- `build/build_bios_debug_devcontainer.sh` / `build/build_bios_release.sh` use **`fat_imgen`** and produce a
   1.44 MB FAT12 superfloppy `kaos64.img` (no partition table, VBR @LBA0).
 - The image is written to a SATA SSD via `dd`. The 1.44" floppy geometry is **not**
   used — the image is effectively treated as a flat block device.
-- `build_uefi_debug.sh` already uses `sgdisk` + `mformat`/`mcopy` (mtools) for the FAT32 ESP.
+- `build/build_uefi_debug.sh` already uses `sgdisk` + `mformat`/`mcopy` (mtools) for the FAT32 ESP.
 
 ### 1.3 Key architectural insight
 
@@ -288,8 +288,8 @@ signature `0x55AA`@`0x1FE`.
 | D | `kaosldr_64/src/main.rs` | `fat12::load_kernel_into_memory` → `fat32::…` | small |
 | E | `kaosldr_64/src/fat12.rs` | remove (after C) | small |
 | F | `kernel/src/main.rs` | else branch: FAT12 mount → FAT32 mount (`Fat32Volume::mount(0)` over ATA) | small |
-| G | `build_bios_debug_devcontainer.sh` | `mformat`/`mcopy` + reserved region + boot-sector overlay | medium |
-| H | `build_bios_release.sh` | same (Docker block) | medium |
+| G | `build/build_bios_debug_devcontainer.sh` | `mformat`/`mcopy` + reserved region + boot-sector overlay | medium |
+| H | `build/build_bios_release.sh` | same (Docker block) | medium |
 | I | `kernel/src/io/fat12/**`, `io/mod.rs` | remove after migration (optional, §6) | small |
 | J | `docs/boot_bios.md` | document FAT12→FAT32 | small |
 
@@ -489,7 +489,7 @@ let shell_image = io::vfs::read_file("shell.bin").expect("failed to load SHELL.B
 ### Step G+H — Migrate the build scripts to FAT32
 
 Replace `fat_imgen` (FAT12) with `mtools`. **Recommended approach** (analogous to
-`build_uefi_debug.sh`, but superfloppy instead of GPT):
+`build/build_uefi_debug.sh`, but superfloppy instead of GPT):
 
 ```sh
 IMG=kaos64.img
@@ -537,9 +537,9 @@ rm -f bpb_save.bin
 ```
 
 Adjustments:
-- Migrate **both** `build_bios_debug_devcontainer.sh` (debug, local) and `build_bios_release.sh` (Docker block).
+- Migrate **both** `build/build_bios_debug_devcontainer.sh` (debug, local) and `build/build_bios_release.sh` (Docker block).
 - Ensure `mtools` is available in the dev container **and** locally (macOS:
-  `brew install mtools`) — it is already a prerequisite for `build_uefi_debug.sh`.
+  `brew install mtools`) — it is already a prerequisite for `build/build_uefi_debug.sh`.
 - `qemu-img convert` to `kaos64.qcow2` (release script) stays unchanged.
 - `fat_imgen` is **removed entirely** from both scripts.
 
@@ -577,7 +577,7 @@ Once FAT32 is verified working **and** the write decision (E3) has been made:
 | 6 | (Optional, E3) implement **FAT32 write/delete** | `filedemo` writes/deletes successfully |
 | 7 | (Optional) **remove FAT12** (§6) | Build green, all tests green |
 
-> Each phase is testable on its own in QEMU (legacy: `deploy_pve_bios.sh` / the `build_bios_debug_devcontainer.sh`
+> Each phase is testable on its own in QEMU (legacy: `build/deploy_pve_bios.sh` / the `build/build_bios_debug_devcontainer.sh`
 > hint; the UEFI path must **stay** green after each phase, since it uses the same
 > `io::fat32`).
 
@@ -617,9 +617,9 @@ Once FAT32 is verified working **and** the write decision (E3) has been made:
 - [ ] `mdir -i kaos64.img ::` lists `KERNEL.BIN`, `SHELL.BIN`, all `*.BIN/*.BAS/*.TXT`.
 - [ ] Hexdump LBA0 offset `0x52`: `"FAT32   "`; offset `0x1FE`: `55 AA`.
 - [ ] Hexdump LBA `KLDR16_LBA`/`KLDR64_LBA`: contains loader code (not 0x00).
-- [ ] QEMU legacy boot (`build_bios_debug_devcontainer.sh` + `deploy_pve_bios.sh`): up to the user shell.
+- [ ] QEMU legacy boot (`build/build_bios_debug_devcontainer.sh` + `build/deploy_pve_bios.sh`): up to the user shell.
 - [ ] Shell: read a file (e.g. `cat SFILE.TXT` / `type`), start a program (`hello`).
-- [ ] UEFI boot (`build_uefi_debug.sh`) **still** green.
+- [ ] UEFI boot (`build/build_uefi_debug.sh`) **still** green.
 - [ ] `cargo test -p kernel` green (`io::fat32`/`vfs` tests; FAT12 tests removed if applicable).
 - [ ] Boot from a real SSD via `dd` (if legacy HW is available).
 

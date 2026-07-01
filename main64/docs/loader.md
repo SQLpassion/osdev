@@ -234,7 +234,7 @@ Because the binary is linked at the same fixed virtual address as `USER_PROGRAM_
 
 ## 11) Build and FAT12 Image Integration
 
-The standard Rust-kernel build scripts currently invoke `main64/helper_build_user_programs.sh` to compile user payloads and produce `hello.bin`. During disk-image creation, the build/deploy scripts inject that payload into the disk image.
+The standard Rust-kernel build scripts currently invoke `main64/build/helper_build_user_programs.sh` to compile user payloads and produce `hello.bin`. During disk-image creation, the build/deploy scripts inject that payload into the disk image.
 
 That is why runtime invocation from REPL is simply:
 

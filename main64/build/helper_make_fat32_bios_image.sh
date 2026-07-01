@@ -14,7 +14,8 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$SCRIPT_DIR"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$PROJECT_ROOT"
 
 PROFILE_DIR="${1:?usage: helper_make_fat32_bios_image.sh <profile-target-dir>}"
 IMG=kaos64.img

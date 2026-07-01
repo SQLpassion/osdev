@@ -10,6 +10,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PROFILE="${1:-debug}"
 
 if [ "$PROFILE" != "debug" ] && [ "$PROFILE" != "release" ]; then
@@ -17,8 +18,8 @@ if [ "$PROFILE" != "debug" ] && [ "$PROFILE" != "release" ]; then
     exit 1
 fi
 
-HELLO_DIR="$SCRIPT_DIR/user_programs/hello"
-READLINE_DIR="$SCRIPT_DIR/user_programs/readline"
+HELLO_DIR="$PROJECT_ROOT/user_programs/hello"
+READLINE_DIR="$PROJECT_ROOT/user_programs/readline"
 
 echo "========================================"
 echo "  Building user programs ($PROFILE)"
@@ -30,10 +31,10 @@ cd "$HELLO_DIR"
 
 if [ "$PROFILE" = "release" ]; then
     cargo +nightly build --release --target x86_64-unknown-none -Z build-std=core,alloc
-    INPUT_ELF="$SCRIPT_DIR/target/x86_64-unknown-none/release/hello"
+    INPUT_ELF="$PROJECT_ROOT/target/x86_64-unknown-none/release/hello"
 else
     cargo +nightly build --target x86_64-unknown-none
-    INPUT_ELF="$SCRIPT_DIR/target/x86_64-unknown-none/debug/hello"
+    INPUT_ELF="$PROJECT_ROOT/target/x86_64-unknown-none/debug/hello"
 fi
 
 llvm-objcopy -O binary "$INPUT_ELF" hello.bin 2>/dev/null || \
@@ -50,10 +51,10 @@ cd "$READLINE_DIR"
 
 if [ "$PROFILE" = "release" ]; then
     cargo +nightly build --release --target x86_64-unknown-none -Z build-std=core,alloc
-    INPUT_ELF="$SCRIPT_DIR/target/x86_64-unknown-none/release/readline"
+    INPUT_ELF="$PROJECT_ROOT/target/x86_64-unknown-none/release/readline"
 else
     cargo +nightly build --target x86_64-unknown-none
-    INPUT_ELF="$SCRIPT_DIR/target/x86_64-unknown-none/debug/readline"
+    INPUT_ELF="$PROJECT_ROOT/target/x86_64-unknown-none/debug/readline"
 fi
 
 llvm-objcopy -O binary "$INPUT_ELF" readline.bin 2>/dev/null || \
@@ -63,7 +64,7 @@ llvm-objcopy -O binary "$INPUT_ELF" readline.bin 2>/dev/null || \
 echo "-> Built: $READLINE_DIR/readline.bin"
 ls -la readline.bin
 
-FILEDEMO_DIR="$SCRIPT_DIR/user_programs/filedemo"
+FILEDEMO_DIR="$PROJECT_ROOT/user_programs/filedemo"
 echo ""
 echo "-> Building filedemo user program..."
 
@@ -71,10 +72,10 @@ cd "$FILEDEMO_DIR"
 
 if [ "$PROFILE" = "release" ]; then
     cargo +nightly build --release --target x86_64-unknown-none -Z build-std=core,alloc
-    INPUT_ELF="$SCRIPT_DIR/target/x86_64-unknown-none/release/filedemo"
+    INPUT_ELF="$PROJECT_ROOT/target/x86_64-unknown-none/release/filedemo"
 else
     cargo +nightly build --target x86_64-unknown-none
-    INPUT_ELF="$SCRIPT_DIR/target/x86_64-unknown-none/debug/filedemo"
+    INPUT_ELF="$PROJECT_ROOT/target/x86_64-unknown-none/debug/filedemo"
 fi
 
 llvm-objcopy -O binary "$INPUT_ELF" filedemo.bin 2>/dev/null || \
@@ -84,7 +85,7 @@ llvm-objcopy -O binary "$INPUT_ELF" filedemo.bin 2>/dev/null || \
 echo "-> Built: $FILEDEMO_DIR/filedemo.bin"
 ls -la filedemo.bin
 
-SHELL_DIR="$SCRIPT_DIR/user_programs/shell"
+SHELL_DIR="$PROJECT_ROOT/user_programs/shell"
 echo ""
 echo "-> Building shell user program..."
 
@@ -92,10 +93,10 @@ cd "$SHELL_DIR"
 
 if [ "$PROFILE" = "release" ]; then
     cargo +nightly build --release --target x86_64-unknown-none -Z build-std=core,alloc
-    INPUT_ELF="$SCRIPT_DIR/target/x86_64-unknown-none/release/shell"
+    INPUT_ELF="$PROJECT_ROOT/target/x86_64-unknown-none/release/shell"
 else
     cargo +nightly build --target x86_64-unknown-none
-    INPUT_ELF="$SCRIPT_DIR/target/x86_64-unknown-none/debug/shell"
+    INPUT_ELF="$PROJECT_ROOT/target/x86_64-unknown-none/debug/shell"
 fi
 
 llvm-objcopy -O binary "$INPUT_ELF" shell.bin 2>/dev/null || \
@@ -105,7 +106,7 @@ llvm-objcopy -O binary "$INPUT_ELF" shell.bin 2>/dev/null || \
 echo "-> Built: $SHELL_DIR/shell.bin"
 ls -la shell.bin
 
-TUI_DIR="$SCRIPT_DIR/user_programs/tui_app"
+TUI_DIR="$PROJECT_ROOT/user_programs/tui_app"
 echo ""
 echo "-> Building tui user program..."
 
@@ -113,10 +114,10 @@ cd "$TUI_DIR"
 
 if [ "$PROFILE" = "release" ]; then
     cargo +nightly build --release --target x86_64-unknown-none -Z build-std=core,alloc
-    INPUT_ELF="$SCRIPT_DIR/target/x86_64-unknown-none/release/tui"
+    INPUT_ELF="$PROJECT_ROOT/target/x86_64-unknown-none/release/tui"
 else
     cargo +nightly build --target x86_64-unknown-none
-    INPUT_ELF="$SCRIPT_DIR/target/x86_64-unknown-none/debug/tui"
+    INPUT_ELF="$PROJECT_ROOT/target/x86_64-unknown-none/debug/tui"
 fi
 
 llvm-objcopy -O binary "$INPUT_ELF" tui.bin 2>/dev/null || \
@@ -127,7 +128,7 @@ echo "-> Built: $TUI_DIR/tui.bin"
 ls -la tui.bin
 
 
-KBASIC_DIR="$SCRIPT_DIR/user_programs/kbasic"
+KBASIC_DIR="$PROJECT_ROOT/user_programs/kbasic"
 echo ""
 echo "-> Building kbasic user program..."
 
@@ -135,10 +136,10 @@ cd "$KBASIC_DIR"
 
 if [ "$PROFILE" = "release" ]; then
     cargo +nightly build --release --target x86_64-unknown-none -Z build-std=core,alloc
-    INPUT_ELF="$SCRIPT_DIR/target/x86_64-unknown-none/release/kbasic"
+    INPUT_ELF="$PROJECT_ROOT/target/x86_64-unknown-none/release/kbasic"
 else
     cargo +nightly build --target x86_64-unknown-none
-    INPUT_ELF="$SCRIPT_DIR/target/x86_64-unknown-none/debug/kbasic"
+    INPUT_ELF="$PROJECT_ROOT/target/x86_64-unknown-none/debug/kbasic"
 fi
 
 llvm-objcopy -O binary "$INPUT_ELF" kbasic.bin 2>/dev/null || \

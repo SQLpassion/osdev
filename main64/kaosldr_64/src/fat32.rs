@@ -56,7 +56,10 @@ unsafe fn rd_u16(p: *const u8, off: usize) -> u16 {
 /// `p + off + 3` must be a valid, readable address.
 unsafe fn rd_u32(p: *const u8, off: usize) -> u32 {
     let p = p.add(off);
-    (*p as u32) | ((*p.add(1) as u32) << 8) | ((*p.add(2) as u32) << 16) | ((*p.add(3) as u32) << 24)
+    (*p as u32)
+        | ((*p.add(1) as u32) << 8)
+        | ((*p.add(2) as u32) << 16)
+        | ((*p.add(3) as u32) << 24)
 }
 
 impl Fat32Reader {

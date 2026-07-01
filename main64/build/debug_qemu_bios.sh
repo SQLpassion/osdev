@@ -7,7 +7,8 @@
 # Required tools: qemu-system-x86_64.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$SCRIPT_DIR"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$PROJECT_ROOT"
 
 qemu-system-x86_64 \
     -drive format=raw,file=kaos64.img \

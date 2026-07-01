@@ -2,10 +2,10 @@
   "permissions": {
     "allow": [
       "Bash(grep -E \"\\\\.\\(sh|py|c|rs|asm\\)$\")",
-      "Bash(chmod +x build_uefi_debug.sh)",
+      "Bash(chmod +x build/build_uefi_debug.sh)",
       "Bash(cargo build *)",
-      "Bash(bash -n build_uefi_debug.sh)",
-      "Bash(DISPLAY_MODE=serial ./build_uefi_debug.sh)",
+      "Bash(bash -n build/build_uefi_debug.sh)",
+      "Bash(DISPLAY_MODE=serial ./build/build_uefi_debug.sh)",
       "Bash(echo \"launched pid $!\")",
       "Bash(rust-objdump -f target/x86_64-unknown-none/debug/kernel)",
       "Bash(rust-objdump -h target/x86_64-unknown-none/debug/kernel)",

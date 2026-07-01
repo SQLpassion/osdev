@@ -1,24 +1,25 @@
 #####################
 # Building on Mac OS
 #####################
-- Open Terminal:
-    ./build_kaos_debug.sh && qemu-system-x86_64 -drive format=raw,file=../kaos64.img --serial stdio
-    ./build_kaos_release.sh && qemu-system-x86_64 -drive format=raw,file=../kaos64.img --serial stdio
-    ./build_kaos_debug.sh && qemu-system-x86_64 -drive format=raw,file=../kaos64.img -display curses
+- Open Terminal (in main64 directory):
+    ./build/build_bios_debug.sh
+    ./build/build_bios_release.sh
+    ./build/build_uefi_debug.sh
+    ./build/build_uefi_release.sh
 
 ####################################
 # Building inside the Dev Container
 ####################################
 - Inside the Dev Container:
-    ./build.sh && qemu-system-x86_64 -drive format=raw,file=kaos64.img -display curses
+    ./build/build_bios_debug_devcontainer.sh
 - On the host OS:
-    docker exec -it kaos-devcontainer /workspace/main64/build.sh
+    docker exec -it kaos-devcontainer /workspace/main64/build/build_bios_debug_devcontainer.sh
 
 #####################################
 # Debugging inside the Dev Container
 #####################################
 - Start QEMU on the host OS:
-    ./debug_qemu.sh
+    ./build/debug_qemu_bios.sh
 - Inside the Dev Container:
     Run the task "Attach to QEMU on host OS" in VScode
 
@@ -33,7 +34,7 @@
 ###########################
 # Run on physical Notebook
 ###########################
-- Write the final FAT12 image to a physical disk:
+- Write the final FAT32 image (BIOS: kaos64.img, UEFI: kaos64-uefi.img) to a physical disk:
     Mac:
         ls /dev/d*
         sudo dd if=kaos64.img of=/dev/disk4 (where /dev/disk4 is the attached physical hard disk!)

@@ -63,7 +63,7 @@ Build details specific to this project:
   Protocol) and the COM1 serial driver are hand-declared in `src/main.rs` and `src/serial.rs`.
 
 **What `bootx64.efi` is *not*:** it is not a disk image, not a partition, and not a boot sector.
-It is just the bare executable. Turning it into a bootable medium is the job of `build_uefi_debug.sh`
+It is just the bare executable. Turning it into a bootable medium is the job of `build/build_uefi_debug.sh`
 (§2).
 
 ---
@@ -80,7 +80,7 @@ for the QEMU test and for real hardware (no separate "test vs. flash" artifacts)
             ▼
   target/x86_64-unknown-uefi/debug/bootx64.efi      ← PE32+ "EFI Application"
             │
-            │  build_uefi_debug.sh  (dd + sgdisk + mtools, no root)
+            │  build/build_uefi_debug.sh  (dd + sgdisk + mtools, no root)
             ▼
   kaos64-uefi.img                                   ← GPT disk image
    ├─ protective MBR + GPT header
@@ -459,7 +459,7 @@ hardware**. Privilege ladder for orientation:
 
 ### Real hardware
 
-Because `build_uefi_debug.sh` already produces a real GPT/ESP image, real hardware needs **no
+Because `build/build_uefi_debug.sh` already produces a real GPT/ESP image, real hardware needs **no
 different artifact** — write the very same `kaos64-uefi.img` 1:1 to a USB stick (or SSD):
 
 ```bash
@@ -484,10 +484,10 @@ instant `vmm::init` loads CR3 (§3.9) — is **not reproducible in QEMU or any u
 appears on real hardware. So real-HW validation is a manual, but **repeatable and recorded**,
 step. Run this checklist after any change to the page-table / PMM / CR3-switch code:
 
-1. **Build the image and QEMU pre-flight in one step** (`build_uefi_debug.sh` produces the GPT/ESP
+1. **Build the image and QEMU pre-flight in one step** (`build/build_uefi_debug.sh` produces the GPT/ESP
    image *and* boots it in QEMU under OVMF — the same artifact you flash, see §2):
    ```bash
-   ./build_uefi_debug.sh          # builds kaos64-uefi.img and launches QEMU+OVMF
+   ./build/build_uefi_debug.sh          # builds kaos64-uefi.img and launches QEMU+OVMF
    ```
    Expect the markers in step 4 below. A QEMU pass does **not** prove the SMM path is safe —
    only real hardware does — but a QEMU failure means don't bother flashing yet.
@@ -591,7 +591,7 @@ Microsoft-free despite being a PE/COFF file.
 
 - `cargo build` emits one artifact: `bootx64.efi`, a PE32+ "EFI Application" with entry
   `efi_main` (`extern "efiapi"`) — not a disk image.
-- `build_uefi_debug.sh` then: builds it → assembles a real GPT disk image `kaos64-uefi.img` with a
+- `build/build_uefi_debug.sh` then: builds it → assembles a real GPT disk image `kaos64-uefi.img` with a
   FAT32 EFI System Partition holding `/EFI/BOOT/BOOTX64.EFI` (`dd` + `sgdisk` + `mtools`, no
   root) → obtains OVMF code + a writable vars copy → boots that image in QEMU with OVMF as
   `pflash`.

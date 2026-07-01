@@ -41,7 +41,7 @@
             "MIMode": "gdb",
             "miDebuggerPath": "/Users/klaus/.cargo/bin/rust-gdb",
             "miDebuggerServerAddress": "localhost:12345",
-            "preLaunchTask": "Build & Run KAOS Rust",
+            "preLaunchTask": "Build & Run KAOS BIOS",
             "stopAtEntry": true,
             "externalConsole": false,
             "setupCommands": [

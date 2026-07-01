@@ -55,7 +55,7 @@ Anything an ELF loader needs to replace, modify, or interoperate with:
 | Region classifier | `main64/kernel/src/memory/vmm/mod.rs` | `classify_user_region()` returns `UserRegion::{Code,Stack,Guard,Heap}` |
 | Demand-paging policy | `main64/kernel/src/memory/vmm/page_fault.rs` | derives `writable` and `no_execute` from `UserRegion` — coupled to today's "code-only" assumption |
 | Page-table primitives | `main64/kernel/src/memory/vmm/mapping.rs`, `page_table.rs` | `map_user_page(va, pfn, writable)`, `destroy_user_address_space_with_page_counts()` |
-| Build pipeline | `main64/build_user_programs.sh` | `cargo build` → `objcopy -O binary` for every user program |
+| Build pipeline | `main64/build/helper_build_user_programs.sh` | `cargo build` → `objcopy -O binary` for every user program |
 | User-program linker scripts | `main64/user_programs/*/link.ld` | currently merge `.bss/.lbss/COMMON` into `.data` as a workaround |
 
 ---
@@ -256,7 +256,7 @@ directly, the objcopy step is removed entirely:
   matter to the loader, only the magic does).
 - Drop the per-program `.bin` filename and use the cargo target output
   directly (or copy it under a `.elf` name for clarity).
-- `build_kernel_debug.sh` / `build_kernel_release.sh` references that touch
+- `build/build_bios_debug.sh` / `build/build_bios_release.sh` references that touch
   the user binaries must be updated to copy the ELF instead of the stripped
   flat blob.
 
@@ -325,9 +325,9 @@ main64/kernel/src/memory/vmm/page_fault.rs     (drop USER_CODE demand-paging)
 main64/kernel/src/memory/vmm/mapping.rs        (per-segment teardown API)
 main64/kernel/src/memory/vmm/mod.rs            (classify_user_region naming)
 main64/kernel/src/scheduler/roundrobin.rs      (TaskEntry segment list, if chosen)
-main64/build_user_programs.sh                       (drop objcopy, ship ELF)
-main64/build_kernel_debug.sh                        (copy ELF instead of .bin)
-main64/build_kernel_release.sh                      (copy ELF instead of .bin)
+main64/build/helper_build_user_programs.sh                       (drop objcopy, ship ELF)
+main64/build/build_bios_debug.sh                        (copy ELF instead of .bin)
+main64/build/build_bios_release.sh                      (copy ELF instead of .bin)
 main64/user_programs/*/link.ld                      (undo .bss-merge workaround,
                                                      add PHDRS PT_LOAD groups)
 ```
