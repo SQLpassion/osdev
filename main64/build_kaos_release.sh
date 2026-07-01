@@ -1,6 +1,6 @@
 #!/bin/bash
 # Build script for KAOS Rust Kernel (Release Build)
-# This script builds the Rust kernel in release mode locally and uses Docker for bootloaders
+# This script builds the Rust kernel in release mode and the bootloaders locally
 
 set -e  # Exit on error
 
@@ -53,15 +53,11 @@ echo "------------------------------------"
 "$SCRIPT_DIR/build_user_programs.sh" release
 echo ""
 
-# Step 3: Build bootloaders and create disk image in Docker
-echo "[3/3] Building bootloaders and disk image in Docker..."
+# Step 3: Build bootloaders and create disk image
+echo "[3/3] Building bootloaders and disk image..."
 echo "-------------------------------------------------------"
 
-# Assemble the boot sector and Stage 2 loader inside the build container (nasm toolchain).
-docker run --rm -v "$(dirname "$SCRIPT_DIR")":/src sqlpassion/kaos-buildenv /bin/sh -c '
-set -e
-cd /src/main64
-
+# Assemble the boot sector and Stage 2 loader locally using nasm toolchain.
 echo "  -> Building boot sector..."
 cd kernel
 nasm -fbin ../boot/bootsector.asm -o ../boot/bootsector.bin
@@ -71,10 +67,8 @@ echo "  -> Building kldr16.bin..."
 cd kaosldr_16
 nasm -fbin kaosldr_entry.asm -o kldr16.bin
 cd ..
-'
 
-# Build the bootable FAT32 superfloppy on the host (mtools). The image creation no longer
-# runs in Docker because it needs mtools; assembling stays containerized for reproducibility.
+# Build the bootable FAT32 superfloppy on the host (mtools).
 echo "  -> Removing old disk image if exists..."
 rm -f kaos64.img
 
