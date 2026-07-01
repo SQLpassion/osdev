@@ -1,5 +1,11 @@
 #!/bin/bash
-# Build script for user-mode programs stored in main64/user_programs.
+# helper_build_user_programs.sh - Build KAOS user-mode programs (hello, readline, filedemo, shell, tui, kbasic).
+#
+# This script compiles all user-mode applications located in the user_programs/ subdirectories
+# for the x86_64-unknown-none target (using debug or release profiles) and extracts their flat
+# binaries via llvm-objcopy/rust-objcopy for filesystem inclusion.
+#
+# Required tools: cargo (Rust nightly target x86_64-unknown-none), llvm-objcopy / rust-objcopy.
 
 set -e
 

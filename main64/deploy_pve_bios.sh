@@ -1,4 +1,11 @@
 #!/usr/bin/env bash
+# deploy_pve_bios.sh - Deploy the legacy BIOS disk image (kaos64.img) to a Proxmox VE (PVE) host.
+#
+# This script uploads the local BIOS image via SCP to the remote Proxmox server, deletes any existing
+# VM with the specified VMID (default 601), creates a new Seabios-based legacy BIOS VM with std VGA
+# and socket serial console, imports the disk image to the Proxmox storage, and starts the VM.
+#
+# Required tools: ssh, scp.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

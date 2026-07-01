@@ -64,7 +64,7 @@ llvm-objcopy -O binary "$TEST_BINARY" "$TEST_BIN" 2>/dev/null || \
 if [ ! -f "$MAIN64_DIR/boot/bootsector.bin" ] || \
    [ ! -f "$MAIN64_DIR/kaosldr_16/kldr16.bin" ]; then
    echo "  -> Bootloader files not found. Building bootloaders..."
-    echo "     Please run build_kernel_debug.sh first to create bootloader files."
+    echo "     Please run build_bios_debug.sh or build_bios_debug_devcontainer.sh first to create bootloader files."
     exit 1
 fi
 
@@ -74,7 +74,7 @@ USER_PROGRAM_READLINE_BIN="$MAIN64_DIR/user_programs/readline/readline.bin"
 USER_PROGRAM_FILEDEMO_BIN="$MAIN64_DIR/user_programs/filedemo/filedemo.bin"
 if [ ! -f "$USER_PROGRAM_HELLO_BIN" ] || [ ! -f "$USER_PROGRAM_READLINE_BIN" ] || [ ! -f "$USER_PROGRAM_FILEDEMO_BIN" ]; then
     echo "  -> User program binary missing. Building user-mode programs..."
-    "$MAIN64_DIR/build_user_programs.sh" debug
+    "$MAIN64_DIR/helper_build_user_programs.sh" debug
 fi
 
 if [ ! -f "$USER_PROGRAM_HELLO_BIN" ]; then

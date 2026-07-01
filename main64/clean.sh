@@ -1,4 +1,11 @@
 #!/bin/bash
+# clean.sh - Clean up all build targets and generated artifacts in the workspace.
+#
+# This script runs cargo clean on the workspace (safely handling cases where target/ is mounted),
+# removes legacy per-crate target directories, and deletes generated binary loaders, flat binaries,
+# Map files, QCOW2 files, and disk images (.img) produced by BIOS and UEFI build scripts.
+#
+# Required tools: cargo.
 
 set -e  # Exit on error
 

@@ -1,30 +1,22 @@
 #!/bin/bash
-# make_fat32_image.sh - build the bootable legacy-BIOS FAT32 superfloppy (kaos64.img).
+# helper_make_fat32_bios_image.sh - Build the bootable legacy-BIOS FAT32 superfloppy (kaos64.img).
 #
-# Usage: make_fat32_image.sh <profile-target-dir>
-#   <profile-target-dir>  e.g. "target/x86_64-unknown-none/debug"
-#                         or   "target/x86_64-unknown-none/release"
+# This script formats a raw 64 MiB file as a FAT32 superfloppy with an enlarged reserved region,
+# copies the kernel and user programs as standard files, writes the early loaders at fixed LBAs
+# in the reserved area, and overlays our custom boot sector onto the VBR while preserving the BPB.
 #
-# Prerequisites (already produced by the calling build script):
-#   - boot/bootsector.bin           (assembled FAT32 boot sector)
-#   - kaosldr_16/kldr16.bin         (Stage 2 loader)
-#   - <profile-target-dir>/kldr64.bin and kernel.bin
-#   - the user programs under user_programs/*/
+# Usage: helper_make_fat32_bios_image.sh <profile-target-dir>
+#   <profile-target-dir>  e.g. "target/x86_64-unknown-none/debug" or "release"
 #
-# Requires: mtools (mformat, mcopy). Install with `brew install mtools` (macOS) or
-# `apt-get install mtools` (Linux); already present in the dev container.
-#
-# The image is a FAT32 *superfloppy* (FAT32 VBR at LBA 0, no partition table). The two
-# early loaders live at fixed LBAs in the enlarged reserved-sector region so the 512-byte
-# boot sector needs no filesystem parsing; KERNEL.BIN and the user programs are normal
-# FAT32 files read later by kaosldr_64 and the kernel. See docs/todo_fat32_unification.md.
+# Required tools: mtools (mformat, mcopy), dd.
+# See docs/todo_fat32_unification.md for architecture details.
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
-PROFILE_DIR="${1:?usage: make_fat32_image.sh <profile-target-dir>}"
+PROFILE_DIR="${1:?usage: helper_make_fat32_bios_image.sh <profile-target-dir>}"
 IMG=kaos64.img
 
 # Disk layout constants - MUST match boot/bootsector.asm (KLDR*_LBA / *_MAX_SECTORS).

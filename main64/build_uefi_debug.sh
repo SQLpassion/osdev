@@ -1,12 +1,12 @@
 #!/bin/bash
-# build_uefi.sh - build the KAOS UEFI loader (kaosldr_uefi), produce a bootable disk image,
+# build_uefi_debug.sh - build the KAOS UEFI loader (kaosldr_uefi), produce a bootable disk image,
 # and boot it in QEMU under OVMF.
 #
 # This builds a real GPT disk image with a FAT32 EFI System Partition, kaos64-uefi.img, holding
 # /EFI/BOOT/BOOTX64.EFI. The same image boots in QEMU here AND can be written 1:1 to a USB stick
 # for real hardware (see docs/uefi.md).
 #
-# Required host tools: a Rust nightly with the x86_64-unknown-uefi target, QEMU + OVMF, and
+# Required host tools locally: a Rust nightly with the x86_64-unknown-uefi target, QEMU + OVMF, and
 # gptfdisk (sgdisk) + mtools. All are preinstalled in the dev container; on macOS install them
 # with `brew install qemu gptfdisk mtools`.
 
@@ -28,7 +28,7 @@ echo "==> Building kaosldr_uefi ($TARGET, $PROFILE)..."
 ( cd kaosldr_uefi && cargo build )
 
 echo "==> Building user-mode programs..."
-"$SCRIPT_DIR/build_user_programs.sh" "$PROFILE"
+"$SCRIPT_DIR/helper_build_user_programs.sh" "$PROFILE"
 
 # 2) Build the bootable GPT/ESP disk image (kaos64-uefi.img): a GPT disk with one FAT32 EFI
 # System Partition holding /EFI/BOOT/BOOTX64.EFI and /KERNEL.BIN.
@@ -49,7 +49,7 @@ mcopy   -i "$IMG@@$PART_OFFSET" "$EFI_BIN" ::/EFI/BOOT/BOOTX64.EFI
 mcopy   -i "$IMG@@$PART_OFFSET" "target/x86_64-unknown-none/debug/kernel.bin" ::/KERNEL.BIN
 # User-mode programs. SHELL.BIN is the root shell the kernel runs on the UEFI
 # path; the others are launched from within the shell (matching the legacy
-# FAT32 image populated by build.sh). 8.3 uppercase names, as stored by mcopy.
+# FAT32 image populated by build_bios_debug.sh / build_bios_debug_devcontainer.sh). 8.3 uppercase names, as stored by mcopy.
 mcopy   -i "$IMG@@$PART_OFFSET" "user_programs/shell/shell.bin"       ::/SHELL.BIN
 mcopy   -i "$IMG@@$PART_OFFSET" "user_programs/hello/hello.bin"       ::/HELLO.BIN
 mcopy   -i "$IMG@@$PART_OFFSET" "user_programs/readline/readline.bin" ::/READLINE.BIN
@@ -121,7 +121,7 @@ cp "$OVMF_VARS_SRC" "$OVMF_VARS"
 #            choice in a headless dev container or over SSH (matches the test runner).
 #   vnc    - headless but exposes the graphical framebuffer on VNC :0 (port 5900); connect a
 #            VNC viewer. Use this to *see* the GOP framebuffer from inside a container.
-# Override with e.g. `DISPLAY_MODE=serial ./build_uefi.sh`.
+# Override with e.g. `DISPLAY_MODE=serial ./build_uefi_debug.sh`.
 #
 # The 'auto' default picks 'gui' whenever a desktop is available and 'serial' otherwise:
 #   - macOS / Windows                      -> gui (always has a desktop)

@@ -556,7 +556,7 @@ that exercises MMIO **and** DMA (and thus motivates the IOMMU work).
 
 ## 9. Build integration
 
-Drivers are built like user programs (`build_user_programs.sh`):
+Drivers are built like user programs (`helper_build_user_programs.sh`):
 `cargo build --target x86_64-unknown-none` → `objcopy -O binary` → copy `*.DRV`
 to the FAT12 disk. Because of FAT12 8.3, driver files must live flat in the root
 and have short names (e.g. `RTL8139.DRV`).

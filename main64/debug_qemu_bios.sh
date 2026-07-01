@@ -1,6 +1,10 @@
 #!/bin/bash
-# debug_qemu.sh - run it on the host OS
-# Starts QEMU, opens the GDB server on port 12345, and stops the CPU prior the boot (-S)
+# debug_qemu_bios.sh - Run the legacy BIOS disk image in QEMU under GDB debugging control.
+#
+# This script starts QEMU with the raw BIOS disk image (kaos64.img), exposes a GDB remote
+# debugging server on TCP port 12345, and pauses execution at boot (-S) waiting for GDB to connect.
+#
+# Required tools: qemu-system-x86_64.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"

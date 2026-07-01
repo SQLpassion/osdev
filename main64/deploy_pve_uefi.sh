@@ -1,4 +1,11 @@
 #!/usr/bin/env bash
+# deploy_pve_uefi.sh - Deploy the UEFI disk image (kaos64-uefi.img) to a Proxmox VE (PVE) host.
+#
+# This script uploads the local UEFI image via SCP to the remote Proxmox server, deletes any existing
+# VM with the specified VMID (default 602), creates a new OVMF-based UEFI VM (Q35 machine, std VGA,
+# socket serial, and custom UEFI disk), imports the raw disk image, and starts the VM.
+#
+# Required tools: ssh, scp.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

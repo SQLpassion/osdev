@@ -6,7 +6,7 @@
 # /EFI/BOOT/BOOTX64.EFI. The same image boots in QEMU here AND can be written 1:1 to a USB stick
 # for real hardware (see docs/uefi.md).
 #
-# Required host tools: a Rust nightly with the x86_64-unknown-uefi target, QEMU + OVMF, and
+# Required host tools locally: a Rust nightly with the x86_64-unknown-uefi target, QEMU + OVMF, and
 # gptfdisk (sgdisk) + mtools. All are preinstalled in the dev container; on macOS install them
 # with `brew install qemu gptfdisk mtools`.
 
@@ -22,7 +22,7 @@ IMG="kaos64-uefi.img"
 
 # 1) Build the kernel and loader (produces kernel.bin and bootx64.efi).
 echo "==> Building kernel (release)..."
-( cd kernel && cargo build --release && cargo objcopy --release -- -O binary ../target/x86_64-unknown-none/release/kernel.bin )
+( cd kernel && cargo build --release -Z build-std=core,alloc && rust-objcopy -O binary ../target/x86_64-unknown-none/release/kaos_kernel ../target/x86_64-unknown-none/release/kernel.bin )
 
 echo "==> Building kaosldr_uefi ($TARGET, $PROFILE)..."
 ( cd kaosldr_uefi && cargo build --release )

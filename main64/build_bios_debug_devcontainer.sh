@@ -1,5 +1,15 @@
 #!/bin/bash
-# Build script for KAOS Rust Kernel inside the Dev-Container
+# build_bios_debug_devcontainer.sh - Build the KAOS Rust Kernel and bootloaders inside the dev container.
+#
+# This script compiles the 16-bit real-mode entry loader, the 64-bit kernel loader, the kernel (debug),
+# and user programs. It packages them into a raw bootable legacy BIOS FAT32 disk image (kaos64.img)
+# using a helper script, without performing host-specific operations or deployments.
+#
+# Required tools: nasm, cargo (Rust nightly target x86_64-unknown-none), cargo-binutils (cargo objcopy),
+# and mtools. All are preinstalled in the dev container; on macOS install them with:
+#   brew install nasm mtools
+#   rustup component add llvm-tools-preview
+#   cargo install cargo-binutils
 
 set -e  # Exit on error
 
@@ -48,7 +58,7 @@ echo ""
 # Step 2: Build user-mode programs
 echo "[2/3] Building user-mode programs..."
 echo "------------------------------------"
-"$SCRIPT_DIR/build_user_programs.sh" debug
+"$SCRIPT_DIR/helper_build_user_programs.sh" debug
 echo ""
 
 # Step 3: Build bootloaders and create disk image
@@ -69,7 +79,7 @@ echo "  -> Removing old disk image if exists..."
 rm -f kaos64.img
 
 echo "  -> Creating FAT32 disk image (superfloppy)..."
-"$SCRIPT_DIR/make_fat32_image.sh" "target/x86_64-unknown-none/debug"
+"$SCRIPT_DIR/helper_make_fat32_bios_image.sh" "target/x86_64-unknown-none/debug"
 
 echo ""
 echo "  -> Disk image created successfully!"
