@@ -27,8 +27,9 @@ pub extern "C" fn KernelMain(_kernel_size: u64) -> ! {
     heap::init(false);
     kaos_kernel::drivers::ata::init();
     kaos_kernel::drivers::block::init_ata();
-    kaos_kernel::io::fat12::init();
-    kaos_kernel::io::vfs::mount(alloc::boxed::Box::new(kaos_kernel::io::fat12::Fat12Fs));
+    let vol = kaos_kernel::io::fat32::Fat32Volume::mount(0)
+        .expect("FAT32 superfloppy must mount at LBA 0 in the test image");
+    kaos_kernel::io::vfs::mount(alloc::boxed::Box::new(kaos_kernel::io::fat32::Fat32Fs::new(vol)));
     test_main();
     loop {
         core::hint::spin_loop();
@@ -154,7 +155,7 @@ fn test_exec_error_variant_distinction() {
 fn test_exec_error_display_messages() {
     assert!(
         alloc::format!("{}", process::ExecError::InvalidName)
-            == "invalid file name (expected FAT12 8.3 format)",
+            == "invalid file name (expected 8.3 format)",
         "InvalidName display text must stay stable"
     );
     assert!(
@@ -168,13 +169,13 @@ fn test_exec_error_display_messages() {
     );
 }
 
-/// Contract: FAT12 loader returns the bundled user program and validates size bounds.
+/// Contract: the loader returns the bundled user program and validates size bounds.
 #[test_case]
 fn test_load_program_image_reads_hello_bin() {
     kaos_kernel::drivers::ata::init();
 
     let image = process::load_program_image("hello.bin")
-        .expect("hello.bin must be loadable via process FAT12 loader");
+        .expect("hello.bin must be loadable via the VFS-backed process loader");
     assert!(!image.is_empty(), "loaded user image must contain bytes");
     assert!(
         image.len() <= process::USER_PROGRAM_MAX_IMAGE_SIZE,
@@ -182,7 +183,7 @@ fn test_load_program_image_reads_hello_bin() {
     );
 }
 
-/// Contract: loader maps FAT12 invalid-name failures to `ExecError::InvalidName`.
+/// Contract: loader maps invalid-name failures to `ExecError::InvalidName`.
 #[test_case]
 fn test_load_program_image_maps_invalid_name_error() {
     let result = process::load_program_image("invalid.name.txt");
@@ -192,7 +193,7 @@ fn test_load_program_image_maps_invalid_name_error() {
     );
 }
 
-/// Contract: loader maps FAT12 missing-file failures to `ExecError::NotFound`.
+/// Contract: loader maps missing-file failures to `ExecError::NotFound`.
 #[test_case]
 fn test_load_program_image_maps_not_found_error() {
     kaos_kernel::drivers::ata::init();
@@ -200,7 +201,7 @@ fn test_load_program_image_maps_not_found_error() {
     let result = process::load_program_image("missing.bin");
     assert!(
         matches!(result, Err(process::ExecError::NotFound)),
-        "missing FAT12 entry must map to ExecError::NotFound"
+        "missing filesystem entry must map to ExecError::NotFound"
     );
 }
 
@@ -407,18 +408,18 @@ fn test_map_program_image_into_user_address_space_zeroes_bootstrap_stack_page() 
     });
 }
 
-/// Contract: `exec_from_fat12` maps image and spawns a scheduler user task.
+/// Contract: `exec_from_vfs` maps image and spawns a scheduler user task.
 #[test_case]
-fn test_exec_from_fat12_spawns_user_task() {
+fn test_exec_from_vfs_spawns_user_task() {
     scheduler::init();
     scheduler::set_kernel_address_space_cr3(vmm::get_pml4_address());
 
     let task_id =
-        process::exec_from_fat12("hello.bin").expect("hello.bin exec path must spawn user task");
+        process::exec_from_vfs("hello.bin").expect("hello.bin exec path must spawn user task");
 
     assert!(
         scheduler::is_user_task(task_id),
-        "exec_from_fat12 must create a user-mode scheduler entry"
+        "exec_from_vfs must create a user-mode scheduler entry"
     );
 
     let (task_cr3, user_rsp, _kernel_rsp_top) = scheduler::task_context(task_id)
@@ -446,13 +447,13 @@ fn test_exec_from_fat12_spawns_user_task() {
     );
 }
 
-/// Contract: `exec_from_fat12` can spawn the bundled readline user program.
+/// Contract: `exec_from_vfs` can spawn the bundled readline user program.
 #[test_case]
-fn test_exec_from_fat12_spawns_readline_user_task() {
+fn test_exec_from_vfs_spawns_readline_user_task() {
     scheduler::init();
     scheduler::set_kernel_address_space_cr3(vmm::get_pml4_address());
 
-    let task_id = process::exec_from_fat12("readline.bin")
+    let task_id = process::exec_from_vfs("readline.bin")
         .expect("readline.bin exec path must spawn user task");
 
     assert!(
@@ -468,12 +469,12 @@ fn test_exec_from_fat12_spawns_readline_user_task() {
 
 /// Contract: terminating an exec-loaded task releases loader-owned code PFNs.
 #[test_case]
-fn test_exec_from_fat12_terminate_releases_loader_code_pfn() {
+fn test_exec_from_vfs_terminate_releases_loader_code_pfn() {
     scheduler::init();
     scheduler::set_kernel_address_space_cr3(vmm::get_pml4_address());
 
     let task_id =
-        process::exec_from_fat12("hello.bin").expect("hello.bin exec path must spawn user task");
+        process::exec_from_vfs("hello.bin").expect("hello.bin exec path must spawn user task");
     let (task_cr3, _, _) = scheduler::task_context(task_id)
         .expect("spawned user task must expose scheduler context tuple");
 
@@ -494,13 +495,13 @@ fn test_exec_from_fat12_terminate_releases_loader_code_pfn() {
     );
 }
 
-/// Contract: `exec_from_fat12` maps scheduler spawn errors to `ExecError::SpawnFailed`.
+/// Contract: `exec_from_vfs` maps scheduler spawn errors to `ExecError::SpawnFailed`.
 #[test_case]
-fn test_exec_from_fat12_maps_spawn_failure_to_spawn_failed() {
+fn test_exec_from_vfs_maps_spawn_failure_to_spawn_failed() {
     // Reset initialization state to guarantee a scheduler spawn error (NotInitialized).
     scheduler::reset_initialization_for_test();
 
-    let result = process::exec_from_fat12("hello.bin");
+    let result = process::exec_from_vfs("hello.bin");
     assert!(
         matches!(result, Err(process::ExecError::SpawnFailed)),
         "scheduler spawn failure must map to ExecError::SpawnFailed"
@@ -511,10 +512,10 @@ fn test_exec_from_fat12_maps_spawn_failure_to_spawn_failed() {
     scheduler::set_kernel_address_space_cr3(vmm::get_pml4_address());
 }
 
-/// Contract: `exec_from_fat12` maps invalid FAT12 short names to `ExecError::InvalidName`.
+/// Contract: `exec_from_vfs` maps invalid 8.3 short names to `ExecError::InvalidName`.
 #[test_case]
-fn test_exec_from_fat12_maps_invalid_name_error() {
-    let result = process::exec_from_fat12("invalid.name.txt");
+fn test_exec_from_vfs_maps_invalid_name_error() {
+    let result = process::exec_from_vfs("invalid.name.txt");
     assert!(
         matches!(result, Err(process::ExecError::InvalidName)),
         "invalid 8.3 input must fail early with ExecError::InvalidName"

@@ -49,7 +49,7 @@ mcopy   -i "$IMG@@$PART_OFFSET" "$EFI_BIN" ::/EFI/BOOT/BOOTX64.EFI
 mcopy   -i "$IMG@@$PART_OFFSET" "target/x86_64-unknown-none/debug/kernel.bin" ::/KERNEL.BIN
 # User-mode programs. SHELL.BIN is the root shell the kernel runs on the UEFI
 # path; the others are launched from within the shell (matching the legacy
-# FAT12 image populated by build.sh). 8.3 uppercase names, as stored by mcopy.
+# FAT32 image populated by build.sh). 8.3 uppercase names, as stored by mcopy.
 mcopy   -i "$IMG@@$PART_OFFSET" "user_programs/shell/shell.bin"       ::/SHELL.BIN
 mcopy   -i "$IMG@@$PART_OFFSET" "user_programs/hello/hello.bin"       ::/HELLO.BIN
 mcopy   -i "$IMG@@$PART_OFFSET" "user_programs/readline/readline.bin" ::/READLINE.BIN

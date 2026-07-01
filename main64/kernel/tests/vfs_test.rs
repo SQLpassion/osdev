@@ -62,13 +62,14 @@ fn test_vfs_unmounted_returns_not_mounted() {
 }
 
 /// Contract: VFS opens fail with NotFound for missing files on disk.
-/// Given: A valid Fat12Fs filesystem is mounted.
+/// Given: A valid Fat32Fs filesystem is mounted.
 /// When: open is called on a non-existent filename.
 /// Then: The call must return FsError::NotFound.
 #[test_case]
 fn test_vfs_mounted_open_missing_file_returns_not_found() {
-    // Step 1: Mount the FAT12 filesystem.
-    vfs::mount(Box::new(kaos_kernel::io::fat12::Fat12Fs));
+    // Step 1: Mount the FAT32 filesystem (superfloppy VBR at LBA 0).
+    let vol = kaos_kernel::io::fat32::Fat32Volume::mount(0).expect("FAT32 must mount at LBA 0");
+    vfs::mount(Box::new(kaos_kernel::io::fat32::Fat32Fs::new(vol)));
 
     // Step 2: Attempt to open a missing file.
     let result = vfs::open("missing.txt", FileMode::Read);
@@ -79,14 +80,17 @@ fn test_vfs_mounted_open_missing_file_returns_not_found() {
     );
 }
 
-/// Contract: VFS read/write/seek/close return InvalidFd for invalid file descriptor indices.
-/// Given: A valid filesystem is mounted.
-/// When: Close, read, write, seek, or eof are called with a bogus file descriptor (e.g. 9999).
-/// Then: They must return FsError::InvalidFd.
+/// Contract: VFS read/seek/close/eof return InvalidFd for invalid file descriptor indices,
+/// and write returns Unsupported on the read-only FAT32 backend.
+/// Given: A valid (read-only) FAT32 filesystem is mounted.
+/// When: Close, read, seek, or eof are called with a bogus file descriptor (e.g. 9999).
+/// Then: They must return FsError::InvalidFd. Write is rejected as Unsupported before any
+/// fd check because FAT32 is read-only.
 #[test_case]
 fn test_vfs_invalid_fd_returns_invalid_fd() {
-    // Step 1: Mount the FAT12 filesystem.
-    vfs::mount(Box::new(kaos_kernel::io::fat12::Fat12Fs));
+    // Step 1: Mount the FAT32 filesystem (superfloppy VBR at LBA 0).
+    let vol = kaos_kernel::io::fat32::Fat32Volume::mount(0).expect("FAT32 must mount at LBA 0");
+    vfs::mount(Box::new(kaos_kernel::io::fat32::Fat32Fs::new(vol)));
 
     // Step 2: Issue file operations with a bad descriptor ID.
     let bad_fd = 9999;
@@ -101,8 +105,8 @@ fn test_vfs_invalid_fd_returns_invalid_fd() {
         "read must reject invalid fd"
     );
     assert!(
-        matches!(vfs::write(bad_fd, &buf), Err(FsError::InvalidFd)),
-        "write must reject invalid fd"
+        matches!(vfs::write(bad_fd, &buf), Err(FsError::Unsupported)),
+        "write must be unsupported on the read-only FAT32 backend"
     );
     assert!(
         matches!(vfs::seek(bad_fd, 0), Err(FsError::InvalidFd)),

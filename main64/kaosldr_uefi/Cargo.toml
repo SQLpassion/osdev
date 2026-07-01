@@ -7,7 +7,7 @@ authors = ["Klaus Aschenbrenner"]
 # No external dependencies: the minimal subset of the UEFI System Table and the
 # Simple Text Output Protocol that this loader needs is declared by hand in src/main.rs.
 # This keeps the loader self-contained and in the same "build it yourself" spirit as the
-# rest of the KAOS code base (own ATA, own FAT12, own heap, ...).
+# rest of the KAOS code base (own ATA, own FAT32, own heap, ...).
 [dependencies]
 
 [[bin]]

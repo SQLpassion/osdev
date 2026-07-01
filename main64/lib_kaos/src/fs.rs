@@ -166,7 +166,7 @@ pub fn delete_file(name: &str) -> Result<(), SysError> {
     decode_result(raw).map(|_| ())
 }
 
-/// Prints the root directory listing of the FAT12 disk to the console.
+/// Prints the root directory listing of the FAT32 disk to the console.
 #[inline(always)]
 pub fn print_root_directory() -> Result<(), SysError> {
     let raw = unsafe {

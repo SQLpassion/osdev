@@ -224,7 +224,8 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
     //   `ahci::init` -> `gpt::find_esp_start_lba` -> `fat32::mount` -> read
     //   `SHELL.BIN`.
     // - A legacy BIOS boot always has an ATA disk (including the BIOS+VBE
-    //   graphics path), so it reads `SHELL.BIN` from the FAT12 disk as before.
+    //   graphics path), so it reads `SHELL.BIN` from the FAT32 superfloppy
+    //   (VBR at LBA 0) over ATA PIO.
     //
     // `primary_present()` distinguishes the two without a dedicated boot-source
     // flag, and is callable before `drivers::ata::init()`.
@@ -274,17 +275,18 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
 
         image
     } else {
-        // Legacy BIOS path: the shell lives on the FAT12 disk reached via ATA PIO.
+        // Legacy BIOS path: the shell lives on a FAT32 superfloppy (VBR at LBA 0)
+        // reached via ATA PIO. This now uses the same read-only FAT32 backend as the
+        // UEFI path; the only differences are the transport (ATA) and part_lba (0).
         drivers::ata::init();
         drivers::block::init_ata();
         debugln!("ATA PIO driver initialized");
 
-        io::fat12::init();
-        debugln!("FAT12 file system initialized");
+        let vol = io::fat32::Fat32Volume::mount(0).expect("FAT32 mount (ATA, LBA0) failed");
+        io::vfs::mount(alloc::boxed::Box::new(io::fat32::Fat32Fs::new(vol)));
+        debugln!("FAT32 file system mounted (ATA, LBA0)");
 
-        io::vfs::mount(alloc::boxed::Box::new(io::fat12::Fat12Fs));
-
-        io::vfs::read_file("shell.bin").expect("failed to load SHELL.BIN from FAT12")
+        io::vfs::read_file("shell.bin").expect("failed to load SHELL.BIN from FAT32")
     };
 
     // --- Shared scheduler bring-up (both boot paths) ---
@@ -308,8 +310,8 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
     scheduler::spawn_kernel_task(keyboard::keyboard_worker_task)
         .expect("failed to spawn keyboard worker task");
 
-    // Spawn the user-space shell task from the image loaded above (FAT32/ESP on
-    // the UEFI path, FAT12 on the legacy path).
+    // Spawn the user-space shell task from the image loaded above (FAT32 on both
+    // paths: ESP via AHCI on UEFI, superfloppy at LBA 0 via ATA on legacy BIOS).
     let shell_pid =
         process::exec_from_image(&shell_image).expect("failed to spawn SHELL.BIN user-mode task");
 

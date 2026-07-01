@@ -57,7 +57,7 @@ fn execute_command(line: &str) {
             println!("  help            - show this help menu");
             println!("  echo <text>     - print the entered text");
             println!("  cls             - clear the console screen");
-            println!("  dir             - list directory contents of the FAT12 disk");
+            println!("  dir             - list directory contents of the FAT32 disk");
             println!("  cat <file>      - read and print the contents of a file");
             println!("  exec <file>     - run a program in the foreground");
             println!("  fputest         - run FPU/SSE smoke test (ring 3)");

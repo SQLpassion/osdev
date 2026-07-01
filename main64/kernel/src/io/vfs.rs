@@ -1,4 +1,4 @@
-//! Single-mount filesystem facade. One filesystem (FAT12 or FAT32) is mounted at
+//! Single-mount filesystem facade. One filesystem (FAT32) is mounted at
 //! boot; syscalls and the program loader call this instead of a concrete FS.
 
 use crate::sync::spinlock::SpinLock;

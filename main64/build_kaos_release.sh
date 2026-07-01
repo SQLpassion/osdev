@@ -57,6 +57,7 @@ echo ""
 echo "[3/3] Building bootloaders and disk image in Docker..."
 echo "-------------------------------------------------------"
 
+# Assemble the boot sector and Stage 2 loader inside the build container (nasm toolchain).
 docker run --rm -v "$(dirname "$SCRIPT_DIR")":/src sqlpassion/kaos-buildenv /bin/sh -c '
 set -e
 cd /src/main64
@@ -70,31 +71,19 @@ echo "  -> Building kldr16.bin..."
 cd kaosldr_16
 nasm -fbin kaosldr_entry.asm -o kldr16.bin
 cd ..
+'
 
+# Build the bootable FAT32 superfloppy on the host (mtools). The image creation no longer
+# runs in Docker because it needs mtools; assembling stays containerized for reproducibility.
 echo "  -> Removing old disk image if exists..."
 rm -f kaos64.img
 
-echo "  -> Creating FAT12 disk image..."
-fat_imgen -c -s boot/bootsector.bin -f kaos64.img
-fat_imgen -m -f kaos64.img -i kaosldr_16/kldr16.bin
-fat_imgen -m -f kaos64.img -i target/x86_64-unknown-none/release/kldr64.bin
-fat_imgen -m -f kaos64.img -i target/x86_64-unknown-none/release/kernel.bin
-fat_imgen -m -f kaos64.img -i user_programs/hello/hello.bin -n HELLO.BIN
-fat_imgen -m -f kaos64.img -i user_programs/readline/readline.bin -n READLINE.BIN
-fat_imgen -m -f kaos64.img -i user_programs/filedemo/filedemo.bin -n FILEDEMO.BIN
-fat_imgen -m -f kaos64.img -i user_programs/shell/shell.bin -n SHELL.BIN
-fat_imgen -m -f kaos64.img -i user_programs/tui_app/tui.bin -n TUI.BIN
-fat_imgen -m -f kaos64.img -i user_programs/kbasic/kbasic.bin -n KBASIC.BIN
-fat_imgen -m -f kaos64.img -i SFile.txt
-fat_imgen -m -f kaos64.img -i BigFile.txt
-fat_imgen -m -f kaos64.img -i user_programs/kbasic/src/demo.bas
-
-
+echo "  -> Creating FAT32 disk image (superfloppy)..."
+"$SCRIPT_DIR/make_fat32_image.sh" "target/x86_64-unknown-none/release"
 
 echo ""
 echo "  -> Disk image created successfully!"
 ls -la kaos64.img
-'
 
 echo "  -> Creating qcow2 image for UTM..."
 cd "$SCRIPT_DIR"

@@ -1,4 +1,4 @@
-//! FAT12-backed loader for flat user-mode binaries.
+//! VFS-backed loader for flat user-mode binaries.
 
 use alloc::vec::Vec;
 
@@ -44,16 +44,15 @@ struct MapState {
     stack_mapped: bool,
 }
 
-/// Loads a flat user program from FAT12 and validates its image length.
+/// Loads a flat user program from the mounted filesystem and validates its image length.
 ///
-/// Phase 4 scope:
-/// - read file content from FAT12
-/// - map FAT12-level errors into process exec errors
+/// Scope:
+/// - read file content through the VFS facade (FAT32 on both boot paths)
+/// - map filesystem errors into process exec errors
 /// - reject images larger than the configured user code window
 ///
 /// Caller requirements:
-/// - ATA driver must be initialized before calling this function
-/// - FAT12 layer must be initialized as part of normal kernel boot
+/// - the active block device and a filesystem must be mounted (normal kernel boot)
 ///
 /// Not part of this function:
 /// - creating a dedicated user address space
@@ -65,7 +64,7 @@ pub fn load_program_image(file_name_8_3: &str) -> ExecResult<Vec<u8>> {
     Ok(image)
 }
 
-/// Loads a flat user program from FAT12 and maps/copies it into a fresh user CR3.
+/// Loads a flat user program from the filesystem and maps/copies it into a fresh user CR3.
 ///
 /// This function performs load + map/copy only and intentionally does not spawn
 /// a scheduler task yet.
@@ -74,26 +73,25 @@ pub fn load_program_into_user_address_space(file_name_8_3: &str) -> ExecResult<L
     map_program_image_into_user_address_space(&image)
 }
 
-/// End-to-end process exec path for FAT12-backed flat user binaries.
+/// End-to-end process exec path that reads a flat user binary by name from the VFS.
 ///
 /// Flow:
-/// 1. read + validate image from FAT12
+/// 1. read + validate image through the VFS facade (FAT32 on both boot paths)
 /// 2. map/copy image into a fresh user address space
 /// 3. spawn scheduler user task from the prepared descriptor
 ///
 /// On spawn failure, any newly created user address space is destroyed to avoid
 /// leaking process-owned mappings and frames.
-pub fn exec_from_fat12(file_name_8_3: &str) -> ExecResult<usize> {
+pub fn exec_from_vfs(file_name_8_3: &str) -> ExecResult<usize> {
     let loaded = load_program_into_user_address_space(file_name_8_3)?;
     spawn_loaded_program(loaded)
 }
 
 /// End-to-end process exec path for an already-loaded flat user binary.
 ///
-/// Unlike [`exec_from_fat12`], this takes the program bytes from the caller
-/// instead of reading them from FAT12.  It is the filesystem-agnostic entry
-/// point used by the UEFI boot path, which obtains `SHELL.BIN` from the FAT32
-/// EFI System Partition via AHCI rather than from the legacy FAT12 disk.
+/// Unlike [`exec_from_vfs`], this takes the program bytes from the caller
+/// instead of reading them from the filesystem.  It is used by the boot path to
+/// launch the initial shell from an image already read into a buffer.
 ///
 /// Flow:
 /// 1. map/copy the provided image into a fresh user address space

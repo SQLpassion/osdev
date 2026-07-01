@@ -36,7 +36,7 @@ pub enum SyscallId {
     PrintRootDirectory = 15,
     /// Map memory pages.
     Mmap = 16,
-    /// Execute a flat binary from the FAT12 disk.
+    /// Execute a flat binary from the mounted filesystem.
     Exec = 17,
     /// Wait for a user-space task to exit.
     Wait = 18,

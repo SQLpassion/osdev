@@ -59,7 +59,7 @@ pub enum ExecError {
 impl fmt::Display for ExecError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidName => f.write_str("invalid file name (expected FAT12 8.3 format)"),
+            Self::InvalidName => f.write_str("invalid file name (expected 8.3 format)"),
             Self::NotFound => f.write_str("file not found"),
             Self::IsDirectory => f.write_str("path points to a directory, not a program file"),
             Self::EmptyImage => f.write_str("program image is empty"),

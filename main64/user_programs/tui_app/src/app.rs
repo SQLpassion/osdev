@@ -50,7 +50,7 @@ pub struct TuiApp {
     tasks_gauge: Gauge,
     /// Tab 3: Gauge showing ATA PIO read speed metrics.
     ata_gauge: Gauge,
-    /// Tab 3: Gauge showing FAT12 disk usage capacity.
+    /// Tab 3: Gauge showing FAT32 disk usage capacity.
     fat_gauge: Gauge,
     /// Tab 3: Progress bar instance 1.
     bar1: ProgressBar,
@@ -537,7 +537,7 @@ pub fn run_demo() {
         "   PS/2 Keyboard Driver           - IRQ1, dual ring buffer",
         "   VGA Text Mode Driver           - direct MMIO, 80x25, 16 colors",
         "   ATA PIO Driver                 - LBA28, read/write sectors",
-        "   FAT12 File System              - read-only, root dir listing",
+        "   FAT32 File System              - read-only, root dir listing",
         "   PCI Bus Scanner                - class/vendor lookup",
         "   Ring-3 Syscall Interface       - int 0x80, 23 syscalls",
         "   TUI Engine                     - this screen! (Ring-3)",
@@ -696,7 +696,7 @@ pub fn run_demo() {
         8,
         2,
         cols - 4,
-        "FAT12 Filesystem:",
+        "FAT32 Filesystem:",
         18,
         72,
         Color::LightCyan,

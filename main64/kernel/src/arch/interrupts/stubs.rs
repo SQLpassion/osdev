@@ -320,7 +320,7 @@ int80_syscall_stub:
     mov rdi, rsp
     and rsp, -16
     // Re-enable interrupts now that all GPRs are saved and the kernel stack
-    // is aligned.  Blocking syscalls (e.g. Exec reads FAT12 via ATA PIO and
+    // is aligned.  Blocking syscalls (e.g. Exec reads files via ATA PIO and
     // waits for IRQ14) must receive hardware interrupts while running in
     // kernel context, otherwise the ATA wait loop times out and the syscall
     // fails.  iretq restores RFLAGS from the user trap frame (IF=1), so no

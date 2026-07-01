@@ -6,7 +6,7 @@ use crate::{
     SysError, SyscallId, MAX_PATH_LEN,
 };
 
-/// Executes a flat binary from the FAT12 disk.
+/// Executes a flat binary from the mounted filesystem.
 ///
 /// `name` is automatically null-terminated in a stack buffer before the syscall.
 /// Returns the task ID of the spawned process on success.

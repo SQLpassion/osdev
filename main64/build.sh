@@ -68,20 +68,8 @@ cd ..
 echo "  -> Removing old disk image if exists..."
 rm -f kaos64.img
 
-echo "  -> Creating FAT12 disk image..."
-fat_imgen -c -s boot/bootsector.bin -f kaos64.img
-fat_imgen -m -f kaos64.img -i kaosldr_16/kldr16.bin
-fat_imgen -m -f kaos64.img -i target/x86_64-unknown-none/debug/kldr64.bin
-fat_imgen -m -f kaos64.img -i target/x86_64-unknown-none/debug/kernel.bin
-fat_imgen -m -f kaos64.img -i user_programs/hello/hello.bin -n HELLO.BIN
-fat_imgen -m -f kaos64.img -i user_programs/readline/readline.bin -n READLINE.BIN
-fat_imgen -m -f kaos64.img -i user_programs/filedemo/filedemo.bin -n FILEDEMO.BIN
-fat_imgen -m -f kaos64.img -i user_programs/shell/shell.bin -n SHELL.BIN
-fat_imgen -m -f kaos64.img -i user_programs/tui_app/tui.bin -n TUI.BIN
-fat_imgen -m -f kaos64.img -i user_programs/kbasic/kbasic.bin -n KBASIC.BIN
-fat_imgen -m -f kaos64.img -i SFile.txt
-fat_imgen -m -f kaos64.img -i BigFile.txt
-fat_imgen -m -f kaos64.img -i user_programs/kbasic/src/demo.bas
+echo "  -> Creating FAT32 disk image (superfloppy)..."
+"$SCRIPT_DIR/make_fat32_image.sh" "target/x86_64-unknown-none/debug"
 
 echo ""
 echo "  -> Disk image created successfully!"

@@ -8,12 +8,12 @@ use core::panic::PanicInfo;
 mod asm;
 mod ata;
 mod boot_info;
-mod fat12;
+mod fat32;
 mod vga;
 
 use asm::execute_kernel;
 use boot_info::{BootInfo, FramebufferInfo, UnifiedMemoryEntry, VideoModeType};
-use fat12::load_kernel_into_memory;
+use fat32::load_kernel_into_memory;
 use vga::VgaWriter;
 
 /// Physical address of the BIOS information block

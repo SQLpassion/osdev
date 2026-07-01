@@ -68,7 +68,7 @@ if [ ! -f "$MAIN64_DIR/boot/bootsector.bin" ] || \
     exit 1
 fi
 
-# Ensure user-mode binaries exist for FAT12 integration tests.
+# Ensure user-mode binaries exist for filesystem integration tests.
 USER_PROGRAM_HELLO_BIN="$MAIN64_DIR/user_programs/hello/hello.bin"
 USER_PROGRAM_READLINE_BIN="$MAIN64_DIR/user_programs/readline/readline.bin"
 USER_PROGRAM_FILEDEMO_BIN="$MAIN64_DIR/user_programs/filedemo/filedemo.bin"
@@ -92,42 +92,45 @@ if [ ! -f "$USER_PROGRAM_FILEDEMO_BIN" ]; then
     exit 1
 fi
 
-# Create test disk image in main64 directory
+# Create test disk image in main64 directory (FAT32 superfloppy, matching the boot path).
 TEST_IMG="$MAIN64_DIR/kaos64_test.img"
 
-# Create test disk image
-if command -v fat_imgen &>/dev/null; then
-    echo "  -> Creating test disk image natively..."
-    (
-        cd "$MAIN64_DIR"
-        rm -f kaos64_test.img
-        fat_imgen -c -s boot/bootsector.bin -f kaos64_test.img
-        fat_imgen -m -f kaos64_test.img -i kaosldr_16/kldr16.bin
-        fat_imgen -m -f kaos64_test.img -i target/x86_64-unknown-none/debug/kldr64.bin
-        fat_imgen -m -f kaos64_test.img -i SFile.txt
-        fat_imgen -m -f kaos64_test.img -i BigFile.txt
-        fat_imgen -m -f kaos64_test.img -i user_programs/hello/hello.bin -n HELLO.BIN
-        fat_imgen -m -f kaos64_test.img -i user_programs/readline/readline.bin -n READLINE.BIN
-        fat_imgen -m -f kaos64_test.img -i user_programs/filedemo/filedemo.bin -n FILEDEMO.BIN
-        fat_imgen -m -f kaos64_test.img -i test_kernel.bin -n kernel.bin
-    )
-else
-    # Use Docker to create disk image since we are running locally on macOS
-    echo "  -> Creating test disk image via Docker..."
-    docker run --rm -v "$MAIN64_DIR":/src sqlpassion/kaos-buildenv /bin/sh -c "
-        cd /src
-        rm -f kaos64_test.img
-        fat_imgen -c -s boot/bootsector.bin -f kaos64_test.img
-        fat_imgen -m -f kaos64_test.img -i kaosldr_16/kldr16.bin
-        fat_imgen -m -f kaos64_test.img -i target/x86_64-unknown-none/debug/kldr64.bin
-        fat_imgen -m -f kaos64_test.img -i SFile.txt
-        fat_imgen -m -f kaos64_test.img -i BigFile.txt
-        fat_imgen -m -f kaos64_test.img -i user_programs/hello/hello.bin -n HELLO.BIN
-        fat_imgen -m -f kaos64_test.img -i user_programs/readline/readline.bin -n READLINE.BIN
-        fat_imgen -m -f kaos64_test.img -i user_programs/filedemo/filedemo.bin -n FILEDEMO.BIN
-        fat_imgen -m -f kaos64_test.img -i test_kernel.bin -n kernel.bin
-    " 2>/dev/null
+if ! command -v mformat &>/dev/null || ! command -v mcopy &>/dev/null; then
+    echo "Error: mtools (mformat/mcopy) is required to build the FAT32 test image." >&2
+    echo "       Install with 'brew install mtools' (macOS) or 'apt-get install mtools' (Linux)." >&2
+    exit 1
 fi
+
+echo "  -> Creating FAT32 test disk image..."
+(
+    cd "$MAIN64_DIR"
+    # Disk layout constants - MUST match boot/bootsector.asm.
+    RESERVED_SECTORS=64
+    KLDR16_LBA=8
+    KLDR64_LBA=16
+
+    rm -f kaos64_test.img
+    dd if=/dev/zero of=kaos64_test.img bs=1048576 count=64 2>/dev/null
+    mformat -i kaos64_test.img -F -R "$RESERVED_SECTORS" ::
+
+    # The test kernel is the boot kernel for this run (loaded as KERNEL.BIN by kaosldr_64).
+    mcopy -i kaos64_test.img test_kernel.bin                     ::/KERNEL.BIN
+    mcopy -i kaos64_test.img SFile.txt                           ::/SFILE.TXT
+    mcopy -i kaos64_test.img BigFile.txt                         ::/BIGFILE.TXT
+    mcopy -i kaos64_test.img user_programs/hello/hello.bin       ::/HELLO.BIN
+    mcopy -i kaos64_test.img user_programs/readline/readline.bin ::/READLINE.BIN
+    mcopy -i kaos64_test.img user_programs/filedemo/filedemo.bin ::/FILEDEMO.BIN
+
+    # Early loaders at their fixed reserved LBAs.
+    dd if=kaosldr_16/kldr16.bin of=kaos64_test.img bs=512 seek="$KLDR16_LBA" conv=notrunc 2>/dev/null
+    dd if=target/x86_64-unknown-none/debug/kldr64.bin of=kaos64_test.img bs=512 seek="$KLDR64_LBA" conv=notrunc 2>/dev/null
+
+    # Overlay our boot code onto the VBR while preserving mformat's FAT32 BPB.
+    dd if=kaos64_test.img of=bpb_save.bin bs=1 skip=11 count=79 2>/dev/null
+    dd if=boot/bootsector.bin of=kaos64_test.img bs=512 count=1 conv=notrunc 2>/dev/null
+    dd if=bpb_save.bin of=kaos64_test.img bs=1 seek=11 count=79 conv=notrunc 2>/dev/null
+    rm -f bpb_save.bin
+)
 
 # Run QEMU with the test kernel
 echo ""

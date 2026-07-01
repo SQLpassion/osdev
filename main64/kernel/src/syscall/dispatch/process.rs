@@ -239,7 +239,7 @@ pub fn syscall_mmap_impl(addr: u64, length: usize) -> SyscallResult<u64> {
     Ok(current_heap_top)
 }
 
-/// Implements `Exec(name_ptr)`: load and spawn a new user task from FAT12.
+/// Implements `Exec(name_ptr)`: load and spawn a new user task from the filesystem.
 ///
 /// Reads the name string from user space safely and invokes the file loader.
 /// Each `ExecError` variant is mapped to the most appropriate `SyscallError`
@@ -255,7 +255,7 @@ pub fn syscall_exec_impl(name_ptr: *const u8) -> SyscallResult<u64> {
     let name = super::fs::read_user_string(name_ptr, 128)?;
 
     // Step 3: Attempt to load the program image and spawn a user task.
-    let result = crate::process::exec_from_fat12(&name);
+    let result = crate::process::exec_from_vfs(&name);
 
     // Step 4: Log the outcome to serial so failures are visible without a debugger.
     match &result {

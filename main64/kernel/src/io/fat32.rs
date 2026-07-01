@@ -457,12 +457,18 @@ impl crate::io::vfs::FileSystem for Fat32Fs {
         name: &str,
         mode: crate::io::vfs::FileMode,
     ) -> Result<usize, crate::io::vfs::FsError> {
-        // Step 1: Reject any write operations since FAT32 is currently read-only.
+        // Step 1: Reject names that cannot be expressed in 8.3 form with a dedicated
+        // error so callers can distinguish a malformed name from a missing file.
+        if normalize_name(name).is_none() {
+            return Err(crate::io::vfs::FsError::InvalidName);
+        }
+
+        // Step 2: Reject any write operations since FAT32 is currently read-only.
         if mode != crate::io::vfs::FileMode::Read {
             return Err(crate::io::vfs::FsError::Unsupported);
         }
 
-        // Step 2: Read whole file content without holding the lock (prevent deadlock/interrupt-disabling during block I/O).
+        // Step 3: Read whole file content without holding the lock (prevent deadlock/interrupt-disabling during block I/O).
         let data = self.volume.read_file(name).map_err(map_fat32_err)?;
 
         // Step 3: Lock the open file descriptors table and insert the newly opened file.
@@ -529,7 +535,7 @@ impl crate::io::vfs::FileSystem for Fat32Fs {
             .as_mut()
             .ok_or(crate::io::vfs::FsError::InvalidFd)?;
 
-        // Step 2: Ensure offset doesn't exceed file size (mirroring FAT12's UnexpectedEof behavior).
+        // Step 2: Ensure offset doesn't exceed file size (seeking past EOF is an I/O error).
         if offset as usize > file.data.len() {
             return Err(crate::io::vfs::FsError::Io);
         }
@@ -555,7 +561,12 @@ impl crate::io::vfs::FileSystem for Fat32Fs {
     }
 
     fn read_file(&self, name: &str) -> Result<alloc::vec::Vec<u8>, crate::io::vfs::FsError> {
-        // Step 1: Directly forward to volume read_file without lock.
+        // Step 1: Reject malformed 8.3 names as InvalidName (distinct from a missing file).
+        if normalize_name(name).is_none() {
+            return Err(crate::io::vfs::FsError::InvalidName);
+        }
+
+        // Step 2: Directly forward to volume read_file without lock.
         self.volume.read_file(name).map_err(map_fat32_err)
     }
 
