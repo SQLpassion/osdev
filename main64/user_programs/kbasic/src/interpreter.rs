@@ -1,6 +1,58 @@
 use crate::token::Token;
 use alloc::string::String;
-use lib_kaos::println;
+use alloc::vec::Vec;
+use core::fmt::Write as _;
+use lib_kaos::console;
+
+/// Maximum number of bytes handed to a single `WriteConsole` syscall.
+///
+/// Chosen to match the kernel's `MAX_CONSOLE_WRITE_LEN`; the accumulated output
+/// is split into chunks of this size when flushed.
+const OUTPUT_FLUSH_CHUNK: usize = 4096;
+
+/// Batches interpreter output so that many `PRINT` statements collapse into a
+/// few large `WriteConsole` syscalls instead of one syscall per line.
+///
+/// Every console write forces the kernel to push the affected region to VRAM
+/// (framebuffer) or the VGA text buffer, and a newline that scrolls the screen
+/// forces a *full-screen* copy. Flushing once per `PRINT` line therefore made
+/// script output far slower than the shell's `cat`, which already batches its
+/// reads into a single write per chunk. Accumulating output here restores
+/// parity — a run of `PRINT`s now costs one syscall (and one screen flush) per
+/// `OUTPUT_FLUSH_CHUNK` bytes rather than per line.
+#[derive(Default)]
+struct OutputBuffer {
+    buf: Vec<u8>,
+}
+
+impl OutputBuffer {
+    /// Pushes all buffered bytes to the console in `OUTPUT_FLUSH_CHUNK`-sized
+    /// syscalls, then clears the buffer. A no-op when nothing is buffered.
+    fn flush(&mut self) {
+        let mut offset = 0;
+        while offset < self.buf.len() {
+            let end = (offset + OUTPUT_FLUSH_CHUNK).min(self.buf.len());
+            let _ = console::writeline(&self.buf[offset..end]);
+            offset = end;
+        }
+        self.buf.clear();
+    }
+
+    /// Flushes eagerly once a full chunk has accumulated, bounding memory use
+    /// and output latency for long-running scripts.
+    fn flush_if_full(&mut self) {
+        if self.buf.len() >= OUTPUT_FLUSH_CHUNK {
+            self.flush();
+        }
+    }
+}
+
+impl core::fmt::Write for OutputBuffer {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        self.buf.extend_from_slice(s.as_bytes());
+        Ok(())
+    }
+}
 
 fn get_variable_index(name: &str) -> Option<usize> {
     let first = name.chars().next()?;
@@ -15,6 +67,8 @@ fn get_variable_index(name: &str) -> Option<usize> {
 pub struct Interpreter {
     numeric_variables: [i32; 26],
     string_variables: [Option<String>; 26],
+    /// Accumulates `PRINT` output for batched flushing (see [`OutputBuffer`]).
+    output: OutputBuffer,
 }
 
 impl Interpreter {
@@ -22,7 +76,17 @@ impl Interpreter {
         Self {
             numeric_variables: [0; 26],
             string_variables: Default::default(),
+            output: OutputBuffer::default(),
         }
+    }
+
+    /// Flushes any buffered `PRINT` output to the console.
+    ///
+    /// The interactive REPL calls this after each executed line so that command
+    /// output appears immediately; [`execute_script`](Self::execute_script)
+    /// flushes once at the end of a run.
+    pub fn flush_output(&mut self) {
+        self.output.flush();
     }
 
     /// Executes multiple lines of BASIC code from a script content string.
@@ -34,6 +98,8 @@ impl Interpreter {
                 self.execute(&tokens);
             }
         }
+        // Emit any output still buffered from the final `PRINT` statements.
+        self.output.flush();
     }
 
     fn eval_expression(&self, tokens: &[Token], index: &mut usize) -> i32 {
@@ -100,24 +166,26 @@ impl Interpreter {
                             if let Some(idx) = get_variable_index(name) {
                                 if is_string {
                                     if let Some(val) = &self.string_variables[idx] {
-                                        println!("{}", val);
+                                        let _ = writeln!(self.output, "{}", val);
                                     } else {
-                                        println!();
+                                        let _ = writeln!(self.output);
                                     }
                                 } else {
-                                    println!("{}", self.numeric_variables[idx]);
+                                    let _ = writeln!(self.output, "{}", self.numeric_variables[idx]);
                                 }
                             }
                         }
                         Token::StringLiteral(s) => {
-                            println!("{}", s);
+                            let _ = writeln!(self.output, "{}", s);
                         }
                         Token::Number(_) => {
                             let val = self.eval_expression(tokens, &mut index);
-                            println!("{}", val);
+                            let _ = writeln!(self.output, "{}", val);
                         }
                         _ => {}
                     }
+                    // Keep the buffer bounded during long output-heavy scripts.
+                    self.output.flush_if_full();
                 }
             }
             Token::If => {

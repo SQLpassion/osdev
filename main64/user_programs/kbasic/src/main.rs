@@ -82,6 +82,9 @@ pub extern "C" fn _start() -> ! {
                 }
                 let tokens = tokenize_line(line_trimmed);
                 interpreter.execute(&tokens);
+                // Interactive commands must show their output immediately;
+                // `execute` only buffers it (script runs flush at the end).
+                interpreter.flush_output();
             } else {
                 println!("(invalid UTF-8 input)");
             }

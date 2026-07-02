@@ -118,13 +118,75 @@ pub fn readline(buf: &mut [u8]) -> Result<usize, SysError> {
     Ok(len)
 }
 
+/// Capacity of the per-call console formatting buffer.
+///
+/// A single `print!`/`println!` invocation collects its formatted output into a
+/// stack buffer of this size and flushes it with as few `WriteConsole` syscalls
+/// as possible. Sized to comfortably hold a full text-mode line (80 columns)
+/// plus formatting overhead, so the common one-line print costs exactly one
+/// syscall. Output longer than this is flushed in `CONSOLE_WRITE_BUF`-byte
+/// chunks rather than one syscall per format fragment.
+const CONSOLE_WRITE_BUF: usize = 256;
+
+/// Buffering sink for the `print!`/`println!` macros.
+///
+/// Rust's formatting machinery calls [`core::fmt::Write::write_str`] once per
+/// literal fragment and once per interpolated argument. Issuing a syscall per
+/// fragment (as the previous implementation did) made a single `println!("{}",
+/// x)` cost 2–3 `WriteConsole` syscalls — one for the value and a separate
+/// one-byte call for the trailing newline. Each syscall additionally forces the
+/// kernel console to flush to VRAM (framebuffer) or update the hardware cursor
+/// (VGA text mode), so fragmented output was dramatically slower than a single
+/// batched write.
+///
+/// This writer instead accumulates all fragments into a stack buffer and emits
+/// them together, collapsing the typical formatted line to a single syscall.
 #[doc(hidden)]
-pub struct ConsoleWriter;
+pub struct ConsoleWriter {
+    buf: [u8; CONSOLE_WRITE_BUF],
+    len: usize,
+}
+
+impl ConsoleWriter {
+    #[inline(always)]
+    fn new() -> Self {
+        Self {
+            buf: [0u8; CONSOLE_WRITE_BUF],
+            len: 0,
+        }
+    }
+
+    /// Emits the buffered bytes with a single `WriteConsole` syscall and resets
+    /// the buffer. A no-op when the buffer is empty.
+    #[inline(always)]
+    fn flush(&mut self) {
+        if self.len > 0 {
+            let _ = writeline(&self.buf[..self.len]);
+            self.len = 0;
+        }
+    }
+}
 
 impl core::fmt::Write for ConsoleWriter {
     #[inline(always)]
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        let _ = writeline(s.as_bytes());
+        let mut bytes = s.as_bytes();
+
+        // Copy into the buffer, flushing whenever it fills. A fragment larger
+        // than the buffer is therefore split across several syscalls while
+        // preserving byte order — still far fewer calls than one per fragment.
+        while !bytes.is_empty() {
+            let remaining = self.buf.len() - self.len;
+            if remaining == 0 {
+                self.flush();
+                continue;
+            }
+            let to_copy = bytes.len().min(remaining);
+            self.buf[self.len..self.len + to_copy].copy_from_slice(&bytes[..to_copy]);
+            self.len += to_copy;
+            bytes = &bytes[to_copy..];
+        }
+
         Ok(())
     }
 }
@@ -133,7 +195,10 @@ impl core::fmt::Write for ConsoleWriter {
 #[inline(always)]
 pub fn _print(args: core::fmt::Arguments) {
     use core::fmt::Write;
-    let _ = ConsoleWriter.write_fmt(args);
+    let mut writer = ConsoleWriter::new();
+    let _ = writer.write_fmt(args);
+    // Flush whatever the format fragments left buffered as one final syscall.
+    writer.flush();
 }
 
 /// Extended key event decoded from the `ReadKey` syscall return value.

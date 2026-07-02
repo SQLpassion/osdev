@@ -85,9 +85,14 @@ pub fn syscall_write_console_impl(ptr: *const u8, len: usize) -> SyscallResult<u
         slice::from_raw_parts(ptr, actual_len)
     };
 
-    with_console(|console| {
-        for byte in bytes {
-            console.print_char(*byte);
+    with_console(|console| match core::str::from_utf8(bytes) {
+        Ok(valid_str) => {
+            console.print_str(valid_str);
+        }
+        Err(_) => {
+            for byte in bytes {
+                console.print_char(*byte);
+            }
         }
     });
 

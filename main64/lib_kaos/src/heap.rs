@@ -32,7 +32,7 @@ const INITIAL_PAGE_SIZE: usize = 4096;
 const ARENA_OFFSET: usize = 1024;
 
 /// Set to `false` to silence per-allocation serial log lines.
-const HEAP_DEBUG_LOGGING: bool = true;
+const HEAP_DEBUG_LOGGING: bool = false;
 
 // ── HeapEnvironment impl ─────────────────────────────────────────────────────
 

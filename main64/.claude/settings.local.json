@@ -10,7 +10,8 @@
       "Bash(rust-objdump -f target/x86_64-unknown-none/debug/kernel)",
       "Bash(rust-objdump -h target/x86_64-unknown-none/debug/kernel)",
       "Bash(rust-nm target/x86_64-unknown-none/debug/kernel)",
-      "Skill(code-review)"
+      "Skill(code-review)",
+      "Bash(grep -E \"\\\\.\\(rs|toml\\)$\")"
     ]
   }
 }
