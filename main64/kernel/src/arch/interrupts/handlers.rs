@@ -260,35 +260,124 @@ pub unsafe extern "C" fn invalid_opcode_handler_rust(
         );
     }
 
-    // Step 3: Format one shared diagnostic for the serial and interactive
-    // consoles. Reusing the same formatting arguments keeps both displays in
-    // lockstep for the fault address and privilege-level diagnosis.
+    // Step 3: All user-triggerable fatal exceptions use one termination path so
+    // logging, input cleanup, deferred reaping, and frame switching stay equal.
+    terminate_user_exception(frame, "#UD", 0, iret_frame)
+}
+
+/// Handles `#DE` (Divide Error, vector 0) raised by a user task.
+///
+/// A divide-by-zero or quotient-overflow fault cannot be repaired by retrying
+/// the instruction, so the faulting task is terminated. Kernel-originated
+/// faults retain the fatal exception policy.
+///
+/// # Safety
+///
+/// - Must only be entered from `isr0_divide_by_zero_stub` with interrupts disabled.
+/// - `frame` must point to the complete register-save area created by that stub.
+/// - The hardware IRET frame without an error code must follow `SavedRegisters`.
+#[no_mangle]
+pub unsafe extern "C" fn divide_error_handler_rust(
+    frame: *mut SavedRegisters,
+) -> *mut SavedRegisters {
+    // Step 1: #DE has no CPU-pushed error code, so the IRET frame follows the
+    // saved registers directly.
+    let iret_ptr = (frame as usize) + size_of::<SavedRegisters>();
+    let iret_frame = unsafe {
+        // SAFETY:
+        // - `frame` is supplied by the dedicated #DE assembly stub.
+        // - The stub saves exactly one `SavedRegisters` block.
+        // - #DE does not push an exception error code.
+        &*(iret_ptr as *const InterruptStackFrame)
+    };
+
+    // Step 2: A kernel divide error indicates a kernel bug and must remain
+    // fatal instead of being mistaken for a recoverable process fault.
+    if !exception_originated_from_user_mode(iret_frame.cs) {
+        exception_handler_rust(
+            crate::arch::interrupts::types::EXCEPTION_DIVIDE_ERROR,
+            0,
+            frame,
+        );
+    }
+
+    // Step 3: Isolate the unrecoverable arithmetic fault to this task.
+    terminate_user_exception(frame, "#DE", 0, iret_frame)
+}
+
+/// Handles `#GP` (General Protection Fault, vector 13) raised by a user task.
+///
+/// User-mode protection violations terminate only the offending task. The
+/// error code is retained in the diagnostic because it identifies the failing
+/// selector or descriptor access. Kernel-originated faults remain fatal.
+///
+/// # Safety
+///
+/// - Must only be entered from `isr13_general_protection_fault_stub` with interrupts disabled.
+/// - `frame` must point to the complete register-save area created by that stub.
+/// - The CPU error code and IRET frame must follow `SavedRegisters`.
+#[no_mangle]
+pub unsafe extern "C" fn general_protection_fault_handler_rust(
+    frame: *mut SavedRegisters,
+    error_code: u64,
+) -> *mut SavedRegisters {
+    // Step 1: #GP pushes one error-code word before the hardware IRET frame.
+    let iret_ptr = (frame as usize) + size_of::<SavedRegisters>() + size_of::<u64>();
+    let iret_frame = unsafe {
+        // SAFETY:
+        // - `frame` is supplied by the dedicated #GP assembly stub.
+        // - The stub saves exactly one `SavedRegisters` block.
+        // - #GP always pushes one exception error-code word.
+        &*(iret_ptr as *const InterruptStackFrame)
+    };
+
+    // Step 2: A kernel protection fault is never safe to resume.
+    if !exception_originated_from_user_mode(iret_frame.cs) {
+        exception_handler_rust(
+            crate::arch::interrupts::types::EXCEPTION_GENERAL_PROTECTION,
+            error_code,
+            frame,
+        );
+    }
+
+    // Step 3: Terminate only the user task that violated a protection rule.
+    terminate_user_exception(frame, "#GP", error_code, iret_frame)
+}
+
+/// Terminates a user task after an unrecoverable synchronous CPU exception.
+///
+/// The current stack and address space remain owned by the scheduler until a
+/// later reaper pass, because the exception stub still needs the old frame
+/// while it switches to the returned task frame.
+fn terminate_user_exception(
+    frame: *mut SavedRegisters,
+    name: &str,
+    error_code: u64,
+    iret_frame: &InterruptStackFrame,
+) -> *mut SavedRegisters {
+    // Step 1: Emit a compact diagnostic before changing task ownership.
     let diagnostic = format_args!(
-        "USER EXCEPTION #UD: terminating task at rip=0x{:016x} cs=0x{:04x}\n",
-        iret_frame.rip, iret_frame.cs
+        "USER EXCEPTION {}: terminating task at rip=0x{:016x} err=0x{:016x} cs=0x{:04x}\n",
+        name, iret_frame.rip, error_code, iret_frame.cs
     );
     crate::drivers::serial::_debug_print(diagnostic);
 
-    // Step 4: Ring-3 execution means no kernel console operation is in progress:
-    // the system call that returned to user mode released its console lock.
-    // Emit the same diagnostic before scheduling another task.
+    // Step 2: The user task cannot hold the console lock while executing the
+    // exception, so the same diagnostic can safely reach the visible console.
     crate::console::with_console(|console| {
         let _ = console.write_fmt(diagnostic);
     });
 
-    // Step 5: Discard decoded input that the faulting program may have consumed
-    // through ReadKey but left in the legacy character queue. This matches the
-    // Exit syscall contract and prevents the next shell/REPL task from receiving
-    // the exception program's menu selection as its own input.
+    // Step 3: Remove input consumed by the dying task so the next task cannot
+    // accidentally interpret its test/menu key as new input.
     crate::drivers::keyboard::clear_buffers();
 
-    // Step 6: Keep the task's stack and address space alive until execution has
-    // switched away. The scheduler's deferred zombie reaper performs cleanup on
-    // a later tick, when neither this handler nor the stub uses the old stack.
+    // Step 4: Defer stack/address-space reclamation until execution has moved
+    // off the faulting exception stack.
     crate::scheduler::mark_current_as_zombie();
 
-    // Step 7: Select a runnable replacement while IF remains clear. The stub
-    // restores the returned frame and `iretq` restores that task's RFLAGS.
+    // Step 5: Select a replacement with interrupts disabled; `iretq` restores
+    // that task's saved RFLAGS and re-enables interrupts as appropriate.
     crate::arch::interrupts::disable();
     crate::scheduler::on_timer_tick(frame)
 }

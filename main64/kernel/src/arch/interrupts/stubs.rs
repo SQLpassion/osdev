@@ -1,12 +1,11 @@
 use core::arch::global_asm;
 
 use super::types::{
-    EXCEPTION_DIVIDE_ERROR, EXCEPTION_DOUBLE_FAULT, EXCEPTION_GENERAL_PROTECTION,
-    IRQ0_PIT_TIMER_VECTOR, IRQ10_FREE_VECTOR, IRQ11_FREE_VECTOR, IRQ12_PS2_MOUSE_VECTOR,
-    IRQ13_FPU_VECTOR, IRQ14_PRIMARY_ATA_VECTOR, IRQ15_SECONDARY_ATA_VECTOR, IRQ1_KEYBOARD_VECTOR,
-    IRQ2_PIC_CASCADE_VECTOR, IRQ3_COM2_VECTOR, IRQ4_COM1_VECTOR, IRQ5_LPT2_OR_SOUND_VECTOR,
-    IRQ6_FLOPPY_VECTOR, IRQ7_LPT1_OR_SPURIOUS_VECTOR, IRQ8_CMOS_RTC_VECTOR,
-    IRQ9_ACPI_OR_LEGACY_VECTOR,
+    EXCEPTION_DOUBLE_FAULT, IRQ0_PIT_TIMER_VECTOR, IRQ10_FREE_VECTOR, IRQ11_FREE_VECTOR,
+    IRQ12_PS2_MOUSE_VECTOR, IRQ13_FPU_VECTOR, IRQ14_PRIMARY_ATA_VECTOR, IRQ15_SECONDARY_ATA_VECTOR,
+    IRQ1_KEYBOARD_VECTOR, IRQ2_PIC_CASCADE_VECTOR, IRQ3_COM2_VECTOR, IRQ4_COM1_VECTOR,
+    IRQ5_LPT2_OR_SOUND_VECTOR, IRQ6_FLOPPY_VECTOR, IRQ7_LPT1_OR_SPURIOUS_VECTOR,
+    IRQ8_CMOS_RTC_VECTOR, IRQ9_ACPI_OR_LEGACY_VECTOR,
 };
 
 /// Number of general-purpose registers saved by IRQ/ISR stubs.
@@ -66,50 +65,6 @@ macro_rules! irq_stub_asm {
                 "    pop rcx\n",
                 "    pop rax\n",
                 "    iretq\n",
-            ),
-            vector = const $vector,
-        );
-    };
-}
-
-macro_rules! isr_stub_without_error_code_asm {
-    ($name:ident, $vector:expr) => {
-        global_asm!(
-            concat!(
-                ".section .text\n",
-                ".global ",
-                stringify!($name),
-                "\n",
-                ".type ",
-                stringify!($name),
-                ", @function\n",
-                stringify!($name),
-                ":\n",
-                "    cli\n",
-                "    push rax\n",
-                "    push rcx\n",
-                "    push rdx\n",
-                "    push rbx\n",
-                "    push rbp\n",
-                "    push rsi\n",
-                "    push rdi\n",
-                "    push r8\n",
-                "    push r9\n",
-                "    push r10\n",
-                "    push r11\n",
-                "    push r12\n",
-                "    push r13\n",
-                "    push r14\n",
-                "    push r15\n",
-                "    mov edi, {vector}\n",
-                "    xor esi, esi\n",
-                "    mov rdx, rsp\n",
-                "    and rsp, -16\n",
-                "    call exception_handler_rust\n",
-                "1:\n",
-                "    cli\n",
-                "    hlt\n",
-                "    jmp 1b\n",
             ),
             vector = const $vector,
         );
@@ -178,7 +133,52 @@ irq_stub_asm!(irq13_fpu_stub, IRQ13_FPU_VECTOR);
 irq_stub_asm!(irq14_primary_ata_stub, IRQ14_PRIMARY_ATA_VECTOR);
 irq_stub_asm!(irq15_secondary_ata_stub, IRQ15_SECONDARY_ATA_VECTOR);
 
-isr_stub_without_error_code_asm!(isr0_divide_by_zero_stub, EXCEPTION_DIVIDE_ERROR);
+// Vector 0 (#DE — Divide Error) may terminate a Ring-3 task and therefore
+// must return the scheduler-selected frame instead of entering the fatal halt.
+global_asm!(
+    r#"
+    .section .text
+    .global isr0_divide_by_zero_stub
+    .type isr0_divide_by_zero_stub, @function
+isr0_divide_by_zero_stub:
+    cli
+    push rax
+    push rcx
+    push rdx
+    push rbx
+    push rbp
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+    mov rdi, rsp
+    and rsp, -16
+    call divide_error_handler_rust
+    mov rsp, rax
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rbp
+    pop rbx
+    pop rdx
+    pop rcx
+    pop rax
+    iretq
+"#,
+);
 
 // Vector 6 (#UD — Invalid Opcode) has a returnable Ring-3 path. The Rust
 // handler returns either another task's saved frame or never returns for a
@@ -290,9 +290,59 @@ isr7_nm_stub:
 "#,
 );
 isr_stub_with_error_code_asm!(isr8_double_fault_stub, EXCEPTION_DOUBLE_FAULT);
-isr_stub_with_error_code_asm!(
-    isr13_general_protection_fault_stub,
-    EXCEPTION_GENERAL_PROTECTION
+// Vector 13 (#GP — General Protection) carries an error code, which is
+// removed before `iretq` after the replacement frame has been restored.
+global_asm!(
+    r#"
+    .section .text
+    .global isr13_general_protection_fault_stub
+    .type isr13_general_protection_fault_stub, @function
+isr13_general_protection_fault_stub:
+    cli
+    push rax
+    push rcx
+    push rdx
+    push rbx
+    push rbp
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+    mov rdi, rsp
+    mov rsi, [rsp + {error_code_stack_offset}]
+    mov rbx, rsp
+    and rsp, -16
+    call general_protection_fault_handler_rust
+    cmp rax, rbx
+    mov rsp, rax
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rbp
+    pop rbx
+    pop rdx
+    pop rcx
+    pop rax
+    je 1f
+    iretq
+1:
+    add rsp, 8
+    iretq
+"#,
+    error_code_stack_offset = const STUB_ERROR_CODE_STACK_OFFSET,
 );
 
 // Vector 14 (#PF — Page Fault) has a returnable Ring-3 path. The Rust

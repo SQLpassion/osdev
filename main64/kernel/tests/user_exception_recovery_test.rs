@@ -27,6 +27,8 @@ const VGA_TEXT_BUFFER: usize = 0xFFFF_8000_000B_8000;
 const VGA_COLS: usize = 80;
 const VGA_ROWS: usize = 25;
 const USER_UD_MESSAGE_PREFIX: &[u8] = b"USER EXCEPTION #UD: terminating task at rip=0x";
+const USER_DE_MESSAGE_PREFIX: &[u8] = b"USER EXCEPTION #DE: terminating task at rip=0x";
+const USER_GP_MESSAGE_PREFIX: &[u8] = b"USER EXCEPTION #GP: terminating task at rip=0x";
 const USER_PF_MESSAGE_PREFIX: &[u8] = b"USER EXCEPTION #PF: terminating task at rip=0x";
 
 static FAULTING_TASK_ID: AtomicUsize = AtomicUsize::new(NO_TASK);
@@ -208,6 +210,34 @@ fn test_ring3_ud2_terminates_only_faulting_task() {
     );
 }
 
+/// Contract: A Ring-3 divide error terminates only its task.
+/// Given: EXCEPT.BIN receives `D` and executes a zero-divisor instruction.
+/// When: The CPU raises vector 0 from Ring 3.
+/// Then: The task is reaped and the observer continues running.
+#[test_case]
+fn test_ring3_divide_error_terminates_only_faulting_task() {
+    // Scancode 0x20 is `d` in the QWERTZ map.
+    assert_ring3_exception_terminates_only_faulting_task(
+        0x20,
+        USER_DE_MESSAGE_PREFIX,
+        "Ring-3 #DE",
+    );
+}
+
+/// Contract: A Ring-3 general-protection fault terminates only its task.
+/// Given: EXCEPT.BIN receives `G` and loads an invalid segment selector.
+/// When: The CPU raises vector 13 from Ring 3.
+/// Then: The task is reaped and the observer continues running.
+#[test_case]
+fn test_ring3_general_protection_terminates_only_faulting_task() {
+    // Scancode 0x22 is `g` in the QWERTZ map.
+    assert_ring3_exception_terminates_only_faulting_task(
+        0x22,
+        USER_GP_MESSAGE_PREFIX,
+        "Ring-3 #GP",
+    );
+}
+
 /// Contract: A Ring-3 access to an unmapped address terminates only its task.
 /// Given: The mounted EXCEPT.BIN program, an injected `P` menu key, and a scheduler with one kernel observer.
 /// When: EXCEPT.BIN reads the key and performs a volatile read outside all user mapping windows.
@@ -220,5 +250,27 @@ fn test_ring3_unmapped_page_fault_terminates_only_faulting_task() {
         0x19,
         USER_PF_MESSAGE_PREFIX,
         "Ring-3 #PF",
+    );
+}
+
+/// Contract: A Ring-3 read from a supervisor-only kernel mapping terminates only its task.
+#[test_case]
+fn test_ring3_kernel_page_protection_fault_terminates_only_faulting_task() {
+    // Scancode 0x25 is `k` in the QWERTZ map.
+    assert_ring3_exception_terminates_only_faulting_task(
+        0x25,
+        USER_PF_MESSAGE_PREFIX,
+        "Ring-3 kernel-page #PF",
+    );
+}
+
+/// Contract: A Ring-3 instruction fetch from an NX stack page terminates only its task.
+#[test_case]
+fn test_ring3_nx_instruction_fetch_terminates_only_faulting_task() {
+    // Scancode 0x2d is `x` in the QWERTZ map.
+    assert_ring3_exception_terminates_only_faulting_task(
+        0x2d,
+        USER_PF_MESSAGE_PREFIX,
+        "Ring-3 NX #PF",
     );
 }

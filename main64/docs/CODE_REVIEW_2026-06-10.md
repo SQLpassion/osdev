@@ -23,45 +23,6 @@ separate kernels in QEMU, see the `[[test]]` entries in `Cargo.toml`).
 
 ---
 
-## Priority 1 — CRITICAL
-
-### R-01 `[ ]` Ring-3 exceptions halt the entire kernel (user-triggerable kernel DoS)
-
-- **Severity:** CRITICAL · **Category:** Security
-- **Files:**
-  - `src/arch/interrupts/handlers.rs:117-156` (`exception_handler_rust` is `-> !`)
-  - `src/arch/interrupts/stubs.rs:110-113, 154-157` (halt loops after the call)
-  - `src/memory/vmm/page_fault.rs:217-240` (`handle_page_fault` panics on protection fault / OOM)
-
-**Problem:** `#DE` (0), `#UD` (6), and `#GP` (13) all route into `exception_handler_rust`, which prints a
-banner and unconditionally enters `cli; hlt` — without checking the RPL in the saved `iret_frame.cs`.
-Page-fault protection violations (`P=1` in the error code) and OOM end in `panic!`. No path distinguishes
-a ring-3 origin from a ring-0 origin.
-
-**Concrete attacks from an unprivileged ring-3 binary (each a full system halt):**
-- `ud2` → #UD → halt
-- `xor edi,edi; div edi` → #DE → halt
-- read access to a present-but-supervisor mapped kernel address → #PF with `P=1` → `panic!`
-- invalid segment / non-canonical RIP → #GP → halt
-
-**Fix:**
-1. In `exception_handler_rust`, check `iret_frame.cs & 3`. If RPL == 3 (fault originated in user mode):
-   do not halt — log, mark the current task as Zombie, and reschedule onto another task's frame, mirroring
-   the Exit syscall path:
-   `crate::arch::interrupts::disable(); return crate::scheduler::on_timer_tick(frame);`
-2. Switch the user-mode-recoverable stubs (#DE, #UD, #GP, #PF) to the IRQ-stub return convention
-   (`mov rsp, rax; pop ...; iretq`) instead of an unconditional halt, so the handler can swap to a new
-   task frame. Keep the halt path only for genuine ring-0 faults.
-3. In `handle_page_fault`: kill the task instead of `panic!` when the fault came from ring 3. Note: the
-   page-fault stub already uses a returnable convention (`add rsp,8; iretq`), but the Rust handler
-   discards the return value — it must participate in task switching for the kill path.
-
-**Verification:** New integration test: user task executes `ud2` → task is terminated, kernel and other
-tasks keep running. Adapt the existing `page_fault_death_test` (ring-0 faults must still halt).
-Note the relationship with R-02 (same panic sink).
-
----
-
 ## Priority 2 — HIGH
 
 ### R-02 `[ ]` Kernel writes to user pointers are not permission-checked — write to a read-only user page = kernel panic
