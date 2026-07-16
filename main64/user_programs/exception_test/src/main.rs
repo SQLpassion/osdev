@@ -34,10 +34,10 @@ fn show_welcome_screen() {
     println!("Launch it from SHELL.BIN: exec except.bin\n");
     println!("Available now:");
     println!("  [U] Invalid opcode (#UD) - terminates this task");
+    println!("  [P] Unmapped user page (#PF) - terminates this task");
     println!("\nReserved until their kernel recovery paths exist:");
     println!("  [D] Divide error (#DE)");
     println!("  [G] General protection (#GP)");
-    println!("  [P] Unmapped user page (#PF)");
     println!("  [K] Kernel page access (#PF protection)");
     println!("  [X] Execute an NX page (#PF instruction fetch)");
     println!("\n  [Q] Exit without triggering an exception");
@@ -66,7 +66,10 @@ fn run_selected_fault(fault: FaultKind) {
         }
         FaultKind::DivideError => unavailable("#DE", "divide-error"),
         FaultKind::GeneralProtection => unavailable("#GP", "general-protection"),
-        FaultKind::UnmappedPage => unavailable("#PF", "unmapped-page"),
+        FaultKind::UnmappedPage => {
+            println!("Triggering #PF. The shell should return after this task exits.");
+            trigger_unmapped_page_fault();
+        }
         FaultKind::KernelPage => unavailable("#PF", "kernel-page protection"),
         FaultKind::NoExecutePage => unavailable("#PF", "NX instruction-fetch"),
     }
@@ -90,6 +93,23 @@ fn trigger_invalid_opcode() -> ! {
     //   still preferable to continuing with an invalid diagnostic state.
     unsafe {
         core::arch::asm!("ud2", options(noreturn));
+    }
+}
+
+/// Reads an unmapped user address to raise a non-present Ring-3 page fault.
+fn trigger_unmapped_page_fault() -> ! {
+    const UNMAPPED_USER_ADDRESS: usize = 0x0000_6000_0000_0000;
+
+    // SAFETY:
+    // - The address lies outside every user mapping window configured by the kernel.
+    // - A volatile read ensures the compiler emits the access that raises #PF.
+    // - The access never completes because the kernel terminates this task.
+    unsafe {
+        core::ptr::read_volatile(UNMAPPED_USER_ADDRESS as *const u8);
+    }
+
+    loop {
+        core::hint::spin_loop();
     }
 }
 

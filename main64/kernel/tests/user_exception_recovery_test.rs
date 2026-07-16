@@ -1,8 +1,8 @@
-//! Ring-3 invalid-opcode recovery integration test.
+//! Ring-3 exception-recovery integration tests.
 //!
 //! Loads the interactive `EXCEPT.BIN` user program, supplies its `U` selection,
-//! and verifies that its real `ud2` instruction terminates only that task while
-//! a kernel observer task continues running.
+//! and verifies that exceptions terminate only the faulting task while a kernel
+//! observer task continues running.
 
 #![no_std]
 #![no_main]
@@ -27,9 +27,10 @@ const VGA_TEXT_BUFFER: usize = 0xFFFF_8000_000B_8000;
 const VGA_COLS: usize = 80;
 const VGA_ROWS: usize = 25;
 const USER_UD_MESSAGE_PREFIX: &[u8] = b"USER EXCEPTION #UD: terminating task at rip=0x";
+const USER_PF_MESSAGE_PREFIX: &[u8] = b"USER EXCEPTION #PF: terminating task at rip=0x";
 
 static FAULTING_TASK_ID: AtomicUsize = AtomicUsize::new(NO_TASK);
-static KERNEL_SURVIVED_USER_UD: AtomicBool = AtomicBool::new(false);
+static KERNEL_SURVIVED_USER_EXCEPTION: AtomicBool = AtomicBool::new(false);
 
 /// Returns whether a VGA text row begins with `prefix`.
 fn vga_contains_row_prefix(prefix: &[u8]) -> bool {
@@ -113,7 +114,7 @@ extern "C" fn survivor_task() -> ! {
                 Some(TaskState::Zombie) | None
             )
         {
-            KERNEL_SURVIVED_USER_UD.store(true, Ordering::Release);
+            KERNEL_SURVIVED_USER_EXCEPTION.store(true, Ordering::Release);
 
             // Return control to the test's bootstrap frame after recording the
             // result. The software yield performs the actual frame switch.
@@ -126,23 +127,22 @@ extern "C" fn survivor_task() -> ! {
     }
 }
 
-/// Contract: EXCEPT.BIN's real Ring-3 `ud2` terminates only its task.
-/// Given: The mounted EXCEPT.BIN program, an injected `U` menu key, and a scheduler with one kernel observer.
-/// When: EXCEPT.BIN displays its menu, reads the key, and raises invalid-opcode exception vector 6.
-/// Then: The user task becomes Zombie/reaped, its menu input is discarded, the kernel emits a visible diagnostic, the kernel observer runs, and control returns to the test kernel.
-/// Failure Impact: The interactive diagnostic program is missing/broken, the kernel halts, or the faulting user task resumes.
-#[test_case]
-fn test_ring3_ud2_terminates_only_faulting_task() {
+/// Runs one EXCEPT.BIN fault scenario and verifies that only its task dies.
+fn assert_ring3_exception_terminates_only_faulting_task(
+    scancode: u8,
+    diagnostic_prefix: &[u8],
+    scenario: &str,
+) {
     FAULTING_TASK_ID.store(NO_TASK, Ordering::Release);
-    KERNEL_SURVIVED_USER_UD.store(false, Ordering::Release);
+    KERNEL_SURVIVED_USER_EXCEPTION.store(false, Ordering::Release);
 
-    // Step 1: Put the `U` selection into the decoded-key queue before the user
-    // program starts. Scancode 0x16 is `u` in the kernel's QWERTZ map.
+    // Step 1: Put the selected menu key into the decoded-key queue before the
+    // user program starts. The supplied scancode uses the kernel's QWERTZ map.
     keyboard::init();
-    keyboard::enqueue_raw_scancode(0x16);
+    keyboard::enqueue_raw_scancode(scancode);
     assert!(
         keyboard::process_pending_scancodes(),
-        "injected U scancode must reach the exception exerciser"
+        "injected scenario key must reach the exception exerciser"
     );
 
     // Step 2: Start the observer first so it can yield into EXCEPT.BIN and
@@ -162,7 +162,7 @@ fn test_ring3_ud2_terminates_only_faulting_task() {
 
     let mut recovered = false;
     for _ in 0..5_000_000usize {
-        if KERNEL_SURVIVED_USER_UD.load(Ordering::Acquire) && !scheduler::is_running() {
+        if KERNEL_SURVIVED_USER_EXCEPTION.load(Ordering::Acquire) && !scheduler::is_running() {
             recovered = true;
             break;
         }
@@ -173,22 +173,52 @@ fn test_ring3_ud2_terminates_only_faulting_task() {
 
     assert!(
         recovered,
-        "kernel did not resume a survivor task after Ring-3 #UD"
+        "kernel did not resume a survivor task after {scenario}"
     );
     assert!(
         scheduler::task_state(user_task).is_none(),
-        "faulting Ring-3 task must be reaped after #UD recovery"
+        "faulting Ring-3 task must be reaped after {scenario} recovery"
     );
     assert!(
         keyboard::read_char().is_none(),
-        "Ring-3 #UD recovery must discard the menu key left in the character buffer"
+        "{scenario} recovery must discard the menu key left in the character buffer"
     );
     assert!(
         keyboard::read_key().is_none(),
-        "Ring-3 #UD recovery must leave no stale key events for the next task"
+        "{scenario} recovery must leave no stale key events for the next task"
     );
     assert!(
-        vga_contains_row_prefix(USER_UD_MESSAGE_PREFIX),
-        "Ring-3 #UD recovery must show the serial diagnostic prefix on the kernel console"
+        vga_contains_row_prefix(diagnostic_prefix),
+        "{scenario} recovery must show the serial diagnostic prefix on the kernel console"
+    );
+}
+
+/// Contract: EXCEPT.BIN's real Ring-3 `ud2` terminates only its task.
+/// Given: The mounted EXCEPT.BIN program, an injected `U` menu key, and a scheduler with one kernel observer.
+/// When: EXCEPT.BIN displays its menu, reads the key, and raises invalid-opcode exception vector 6.
+/// Then: The user task becomes Zombie/reaped, its menu input is discarded, the kernel emits a visible diagnostic, the kernel observer runs, and control returns to the test kernel.
+/// Failure Impact: The interactive diagnostic program is missing/broken, the kernel halts, or the faulting user task resumes.
+#[test_case]
+fn test_ring3_ud2_terminates_only_faulting_task() {
+    // Scancode 0x16 is `u` in the kernel's QWERTZ map.
+    assert_ring3_exception_terminates_only_faulting_task(
+        0x16,
+        USER_UD_MESSAGE_PREFIX,
+        "Ring-3 #UD",
+    );
+}
+
+/// Contract: A Ring-3 access to an unmapped address terminates only its task.
+/// Given: The mounted EXCEPT.BIN program, an injected `P` menu key, and a scheduler with one kernel observer.
+/// When: EXCEPT.BIN reads the key and performs a volatile read outside all user mapping windows.
+/// Then: The #PF handler rejects the address, reaps only the user task, and the observer returns control to the test kernel.
+/// Failure Impact: A user page fault can still panic the kernel, map an arbitrary address, or resume the faulty task.
+#[test_case]
+fn test_ring3_unmapped_page_fault_terminates_only_faulting_task() {
+    // Scancode 0x19 is `p` in the kernel's QWERTZ map.
+    assert_ring3_exception_terminates_only_faulting_task(
+        0x19,
+        USER_PF_MESSAGE_PREFIX,
+        "Ring-3 #PF",
     );
 }

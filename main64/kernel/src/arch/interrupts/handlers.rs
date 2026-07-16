@@ -12,9 +12,66 @@ const VGA_COLS: usize = 80;
 /// White-on-red attribute byte used for fatal exception banners.
 const VGA_ATTR_FATAL: u8 = 0x4F;
 
+/// Handles `#PF` (Page Fault, vector 14) exceptions.
+///
+/// Ring-3 faults may return only after the VMM grows the bounded user stack.
+/// Every other Ring-3 fault terminates that task and selects a replacement
+/// frame. Ring-0 faults retain the existing fatal VMM policy.
+///
+/// # Safety
+///
+/// - Must only be entered from `isr14_page_fault_stub` with interrupts disabled.
+/// - `frame` must point to the complete register-save area created by that stub.
+/// - The CPU error code and IRET frame must immediately follow `SavedRegisters`.
 #[no_mangle]
-pub extern "C" fn page_fault_handler_rust(faulting_address: u64, error_code: u64) {
-    crate::memory::vmm::handle_page_fault(faulting_address, error_code);
+pub unsafe extern "C" fn page_fault_handler_rust(
+    frame: *mut SavedRegisters,
+    faulting_address: u64,
+    error_code: u64,
+) -> *mut SavedRegisters {
+    // Step 1: #PF always has a CPU-pushed error code, so locate the IRET frame
+    // after that word and use its CS selector to determine the fault origin.
+    let iret_ptr = (frame as usize) + size_of::<SavedRegisters>() + size_of::<u64>();
+    let iret_frame = unsafe {
+        // SAFETY:
+        // - `frame` is supplied by the dedicated #PF assembly stub.
+        // - That stub saves exactly one `SavedRegisters` block.
+        // - #PF always pushes one error-code word before the CPU IRET frame.
+        &*(iret_ptr as *const InterruptStackFrame)
+    };
+
+    // Step 2: Kernel faults remain fatal. The existing VMM handler may resolve
+    // trusted kernel demand mappings, but preserves its panic path on failure.
+    if !exception_originated_from_user_mode(iret_frame.cs) {
+        crate::memory::vmm::handle_page_fault(faulting_address, error_code);
+        return frame;
+    }
+
+    // Step 3: Resume a user task only for bounded, non-present stack growth.
+    // Code, heap, guard-page, permission, reserved-bit, and OOM faults all
+    // fall through to task termination below.
+    if crate::memory::vmm::try_handle_user_page_fault(faulting_address, error_code).is_ok() {
+        return frame;
+    }
+
+    // Step 4: A rejected Ring-3 fault is isolated to its process. The zombie
+    // reaper delays freeing its address space and stack until this ISR no
+    // longer references the old frame.
+    let diagnostic = format_args!(
+        "USER EXCEPTION #PF: terminating task at rip=0x{:016x} cr2=0x{:016x} err=0x{:016x} cs=0x{:04x}\n",
+        iret_frame.rip, faulting_address, error_code, iret_frame.cs
+    );
+    crate::drivers::serial::_debug_print(diagnostic);
+    crate::console::with_console(|console| {
+        let _ = console.write_fmt(diagnostic);
+    });
+    crate::drivers::keyboard::clear_buffers();
+    crate::scheduler::mark_current_as_zombie();
+
+    // Step 5: Select the replacement while IF is clear. The assembly stub
+    // restores its returned frame and lets `iretq` restore its saved RFLAGS.
+    crate::arch::interrupts::disable();
+    crate::scheduler::on_timer_tick(frame)
 }
 
 /// Entry point for the `#NM` (Device Not Available, vector 7) exception.

@@ -51,7 +51,9 @@ pub use mapping::{
     unmap_virtual_address, with_address_space, MapError,
 };
 #[allow(unused_imports)]
-pub use page_fault::{handle_page_fault, try_handle_page_fault, PageFaultError};
+pub use page_fault::{
+    handle_page_fault, try_handle_page_fault, try_handle_user_page_fault, PageFaultError,
+};
 #[allow(unused_imports)]
 pub use page_table::{
     invlpg, is_va_mapped, read_cr3, reserve_firmware_page_tables, write_cr3, PAGE_MASK,

@@ -11,6 +11,7 @@ use super::{
 };
 
 pub const PF_ERR_PRESENT: u64 = 1 << 0;
+pub const PF_ERR_RESERVED_BIT: u64 = 1 << 3;
 
 /// Error returned by the checked page-fault handling path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,6 +28,47 @@ pub enum PageFaultError {
         virtual_address: u64,
         error_code: u64,
     },
+
+    /// Ring-3 fault was outside the narrow set of demand-paging cases that
+    /// may safely resume the faulting task.
+    InvalidUserAccess {
+        virtual_address: u64,
+        error_code: u64,
+    },
+}
+
+/// Handles the only Ring-3 page-fault case that may resume execution.
+///
+/// User programs may grow their assigned stack downward on a non-present
+/// access. All other user faults, including code and heap holes, are rejected:
+/// program loading and the `brk` syscall are the sole owners of those mappings.
+pub fn try_handle_user_page_fault(
+    virtual_address: u64,
+    error_code: u64,
+) -> Result<(), PageFaultError> {
+    // Step 1: Protection and reserved-bit faults cannot be repaired by adding
+    // mappings. Retrying them would reproduce the same CPU exception.
+    if (error_code & (PF_ERR_PRESENT | PF_ERR_RESERVED_BIT)) != 0 {
+        return Err(PageFaultError::InvalidUserAccess {
+            virtual_address,
+            error_code,
+        });
+    }
+
+    let page_address = page_align_down(virtual_address);
+
+    // Step 2: Keep user demand paging limited to the bounded stack window.
+    // The guard page and every other address terminate the current task.
+    if !matches!(classify_user_region(page_address), Some(UserRegion::Stack)) {
+        return Err(PageFaultError::InvalidUserAccess {
+            virtual_address,
+            error_code,
+        });
+    }
+
+    // Step 3: Grow only the current task's user stack. The helper preserves
+    // contiguous mappings and returns OOM instead of corrupting page tables.
+    demand_map_user_stack_growth(page_address, virtual_address, error_code)
 }
 
 /// Handles page faults by demand-allocating page tables and target page frame.
@@ -234,6 +276,15 @@ pub fn handle_page_fault(virtual_address: u64, error_code: u64) {
         }) => {
             panic!(
                 "VMM: out of physical memory while handling page fault at 0x{:x} err=0x{:x}",
+                virtual_address, error_code
+            );
+        }
+        Err(PageFaultError::InvalidUserAccess {
+            virtual_address,
+            error_code,
+        }) => {
+            panic!(
+                "VMM: invalid user page-fault policy invocation at 0x{:x} err=0x{:x}",
                 virtual_address, error_code
             );
         }

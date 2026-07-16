@@ -295,12 +295,17 @@ isr_stub_with_error_code_asm!(
     EXCEPTION_GENERAL_PROTECTION
 );
 
+// Vector 14 (#PF — Page Fault) has a returnable Ring-3 path. The Rust
+// handler either resolves a bounded user-stack fault and returns the original
+// frame, or returns a replacement scheduler frame after terminating the task.
+// #PF always pushes an error code between SavedRegisters and the IRET frame.
 global_asm!(
     r#"
     .section .text
     .global isr14_page_fault_stub
     .type isr14_page_fault_stub, @function
 isr14_page_fault_stub:
+    cli
     push rax
     push rcx
     push rdx
@@ -317,11 +322,14 @@ isr14_page_fault_stub:
     push r14
     push r15
 
-    mov rdi, cr2
-    mov rsi, [rsp + {error_code_stack_offset}]
-    sub rsp, 8
+    mov rdi, rsp
+    mov rsi, cr2
+    mov rdx, [rsp + {error_code_stack_offset}]
+    mov rbx, rsp
+    and rsp, -16
     call page_fault_handler_rust
-    add rsp, 8
+    cmp rax, rbx
+    mov rsp, rax
 
     pop r15
     pop r14
@@ -338,6 +346,9 @@ isr14_page_fault_stub:
     pop rdx
     pop rcx
     pop rax
+    je 1f
+    iretq
+1:
     add rsp, 8
     iretq
 "#,
