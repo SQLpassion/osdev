@@ -72,7 +72,8 @@ fi
 USER_PROGRAM_HELLO_BIN="$MAIN64_DIR/user_programs/hello/hello.bin"
 USER_PROGRAM_READLINE_BIN="$MAIN64_DIR/user_programs/readline/readline.bin"
 USER_PROGRAM_FILEDEMO_BIN="$MAIN64_DIR/user_programs/filedemo/filedemo.bin"
-if [ ! -f "$USER_PROGRAM_HELLO_BIN" ] || [ ! -f "$USER_PROGRAM_READLINE_BIN" ] || [ ! -f "$USER_PROGRAM_FILEDEMO_BIN" ]; then
+USER_PROGRAM_EXCEPTION_TEST_BIN="$MAIN64_DIR/user_programs/exception_test/except.bin"
+if [ ! -f "$USER_PROGRAM_HELLO_BIN" ] || [ ! -f "$USER_PROGRAM_READLINE_BIN" ] || [ ! -f "$USER_PROGRAM_FILEDEMO_BIN" ] || [ ! -f "$USER_PROGRAM_EXCEPTION_TEST_BIN" ]; then
     echo "  -> User program binary missing. Building user-mode programs..."
     "$MAIN64_DIR/build/helper_build_user_programs.sh" debug
 fi
@@ -89,6 +90,11 @@ fi
 
 if [ ! -f "$USER_PROGRAM_FILEDEMO_BIN" ]; then
     echo "Error: User program binary not found after build: $USER_PROGRAM_FILEDEMO_BIN"
+    exit 1
+fi
+
+if [ ! -f "$USER_PROGRAM_EXCEPTION_TEST_BIN" ]; then
+    echo "Error: User program binary not found after build: $USER_PROGRAM_EXCEPTION_TEST_BIN"
     exit 1
 fi
 
@@ -120,6 +126,7 @@ echo "  -> Creating FAT32 test disk image..."
     mcopy -i kaos64_test.img user_programs/hello/hello.bin       ::/HELLO.BIN
     mcopy -i kaos64_test.img user_programs/readline/readline.bin ::/READLINE.BIN
     mcopy -i kaos64_test.img user_programs/filedemo/filedemo.bin ::/FILEDEMO.BIN
+    mcopy -i kaos64_test.img user_programs/exception_test/except.bin ::/EXCEPT.BIN
 
     # Early loaders at their fixed reserved LBAs.
     dd if=kaosldr_16/kldr16.bin of=kaos64_test.img bs=512 seek="$KLDR16_LBA" conv=notrunc 2>/dev/null

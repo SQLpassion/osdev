@@ -1,0 +1,16 @@
+[package]
+name = "exception_test_user_program"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+kernel = []
+
+[dependencies]
+lib_kaos = { path = "../../lib_kaos" }
+
+[[bin]]
+name = "except"
+path = "src/main.rs"
+test = false
+bench = false

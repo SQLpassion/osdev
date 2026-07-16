@@ -2,11 +2,11 @@ use core::arch::global_asm;
 
 use super::types::{
     EXCEPTION_DIVIDE_ERROR, EXCEPTION_DOUBLE_FAULT, EXCEPTION_GENERAL_PROTECTION,
-    EXCEPTION_INVALID_OPCODE, IRQ0_PIT_TIMER_VECTOR, IRQ10_FREE_VECTOR, IRQ11_FREE_VECTOR,
-    IRQ12_PS2_MOUSE_VECTOR, IRQ13_FPU_VECTOR, IRQ14_PRIMARY_ATA_VECTOR, IRQ15_SECONDARY_ATA_VECTOR,
-    IRQ1_KEYBOARD_VECTOR, IRQ2_PIC_CASCADE_VECTOR, IRQ3_COM2_VECTOR, IRQ4_COM1_VECTOR,
-    IRQ5_LPT2_OR_SOUND_VECTOR, IRQ6_FLOPPY_VECTOR, IRQ7_LPT1_OR_SPURIOUS_VECTOR,
-    IRQ8_CMOS_RTC_VECTOR, IRQ9_ACPI_OR_LEGACY_VECTOR,
+    IRQ0_PIT_TIMER_VECTOR, IRQ10_FREE_VECTOR, IRQ11_FREE_VECTOR, IRQ12_PS2_MOUSE_VECTOR,
+    IRQ13_FPU_VECTOR, IRQ14_PRIMARY_ATA_VECTOR, IRQ15_SECONDARY_ATA_VECTOR, IRQ1_KEYBOARD_VECTOR,
+    IRQ2_PIC_CASCADE_VECTOR, IRQ3_COM2_VECTOR, IRQ4_COM1_VECTOR, IRQ5_LPT2_OR_SOUND_VECTOR,
+    IRQ6_FLOPPY_VECTOR, IRQ7_LPT1_OR_SPURIOUS_VECTOR, IRQ8_CMOS_RTC_VECTOR,
+    IRQ9_ACPI_OR_LEGACY_VECTOR,
 };
 
 /// Number of general-purpose registers saved by IRQ/ISR stubs.
@@ -179,7 +179,57 @@ irq_stub_asm!(irq14_primary_ata_stub, IRQ14_PRIMARY_ATA_VECTOR);
 irq_stub_asm!(irq15_secondary_ata_stub, IRQ15_SECONDARY_ATA_VECTOR);
 
 isr_stub_without_error_code_asm!(isr0_divide_by_zero_stub, EXCEPTION_DIVIDE_ERROR);
-isr_stub_without_error_code_asm!(isr6_invalid_opcode_stub, EXCEPTION_INVALID_OPCODE);
+
+// Vector 6 (#UD — Invalid Opcode) has a returnable Ring-3 path. The Rust
+// handler returns either another task's saved frame or never returns for a
+// Ring-0 fault. #UD has no CPU-pushed error code, so a replacement scheduler
+// frame has exactly the same register + IRET layout expected below.
+global_asm!(
+    r#"
+    .section .text
+    .global isr6_invalid_opcode_stub
+    .type isr6_invalid_opcode_stub, @function
+isr6_invalid_opcode_stub:
+    cli
+    push rax
+    push rcx
+    push rdx
+    push rbx
+    push rbp
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+
+    mov rdi, rsp
+    and rsp, -16
+    call invalid_opcode_handler_rust
+    mov rsp, rax
+
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rbp
+    pop rbx
+    pop rdx
+    pop rcx
+    pop rax
+    iretq
+"#,
+);
 
 // Vector 7 (#NM — Device Not Available) is handled by the lazy FPU switcher.
 // Unlike other exception stubs this one must *return* (via iretq) so that

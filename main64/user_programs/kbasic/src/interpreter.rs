@@ -171,7 +171,8 @@ impl Interpreter {
                                         let _ = writeln!(self.output);
                                     }
                                 } else {
-                                    let _ = writeln!(self.output, "{}", self.numeric_variables[idx]);
+                                    let _ =
+                                        writeln!(self.output, "{}", self.numeric_variables[idx]);
                                 }
                             }
                         }

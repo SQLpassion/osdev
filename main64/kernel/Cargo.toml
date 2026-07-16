@@ -74,6 +74,9 @@ name = "page_fault_death_test"
 name = "user_mode_iretq_smoke_test"
 
 [[test]]
+name = "invalid_opcode_recovery_test"
+
+[[test]]
 name = "syscall_dispatch_test"
 
 [[test]]
@@ -102,5 +105,4 @@ name = "block_test"
 
 [[test]]
 name = "vfs_test"
-
 

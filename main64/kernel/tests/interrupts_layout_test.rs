@@ -147,6 +147,31 @@ fn test_exception_error_code_classification() {
     );
 }
 
+/// Contract: exception origin classification distinguishes Ring 3 from kernel privilege levels.
+/// Given: Code selectors whose RPL bits represent Ring 0, Ring 1, Ring 2, and Ring 3.
+/// When: The exception-origin helper inspects each selector.
+/// Then: Only the Ring-3 selector is classified as user mode.
+/// Failure Impact: Misclassification could either halt the kernel for a user fault or attempt to recover from a kernel fault.
+#[test_case]
+fn test_exception_origin_classification_uses_cs_rpl() {
+    assert!(
+        !interrupts::exception_originated_from_user_mode(0x08),
+        "Ring-0 code selector must remain kernel-fatal"
+    );
+    assert!(
+        !interrupts::exception_originated_from_user_mode(0x09),
+        "RPL 1 must not be classified as Ring 3"
+    );
+    assert!(
+        !interrupts::exception_originated_from_user_mode(0x0A),
+        "RPL 2 must not be classified as Ring 3"
+    );
+    assert!(
+        interrupts::exception_originated_from_user_mode(0x1B),
+        "Ring-3 code selector must be recoverable as a user fault"
+    );
+}
+
 /// Contract: double-fault IDT gate uses IST1 while page fault keeps default IST0.
 /// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
 /// When: The exact operation sequence in this function is executed against that state.

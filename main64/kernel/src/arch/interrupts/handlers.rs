@@ -40,6 +40,15 @@ pub const fn exception_has_error_code(vector: u8) -> bool {
     matches!(vector, 8 | 10 | 11 | 12 | 13 | 14 | 17 | 21 | 29 | 30)
 }
 
+/// Returns whether an exception return frame targets Ring 3.
+///
+/// The low two bits of `CS` contain the requested privilege level (RPL).
+/// Only RPL 3 is user mode; Ring 0 exceptions remain kernel-fatal.
+#[inline]
+pub const fn exception_originated_from_user_mode(cs: u64) -> bool {
+    cs & 0b11 == 0b11
+}
+
 #[inline]
 const fn hex_nibble_ascii(nibble: u8) -> u8 {
     if nibble < 10 {
@@ -153,6 +162,78 @@ pub extern "C" fn exception_handler_rust(
             asm!("cli", "hlt", options(nomem, nostack, preserves_flags));
         }
     }
+}
+
+/// Handles `#UD` (Invalid Opcode, vector 6) exceptions.
+///
+/// Ring-3 invalid opcodes terminate only the faulting task. The returned frame
+/// may belong to another task and is restored by `isr6_invalid_opcode_stub`.
+/// Ring-0 invalid opcodes remain fatal and are delegated to the common fatal
+/// exception sink.
+///
+/// # Safety
+///
+/// - Must only be entered from `isr6_invalid_opcode_stub` with interrupts disabled.
+/// - `frame` must point to the complete register-save area created by that stub.
+/// - A hardware IRET frame without an exception error code must immediately
+///   follow `SavedRegisters`.
+#[no_mangle]
+pub unsafe extern "C" fn invalid_opcode_handler_rust(
+    frame: *mut SavedRegisters,
+) -> *mut SavedRegisters {
+    // Step 1: Locate the CPU-pushed return frame. #UD does not carry an error
+    // code, so it starts immediately after the saved general-purpose registers.
+    let iret_ptr = (frame as usize) + size_of::<SavedRegisters>();
+    let iret_frame = unsafe {
+        // SAFETY:
+        // - `frame` is provided by the dedicated #UD assembly stub.
+        // - The stub saves exactly one `SavedRegisters` block before this call.
+        // - #UD does not push an exception error code, so `iret_ptr` points at
+        //   the CPU-pushed `InterruptStackFrame`.
+        &*(iret_ptr as *const InterruptStackFrame)
+    };
+
+    // Step 2: Preserve the existing fatal behavior for invalid opcodes raised
+    // while executing kernel code. Continuing could hide corrupted control flow.
+    if !exception_originated_from_user_mode(iret_frame.cs) {
+        exception_handler_rust(
+            crate::arch::interrupts::types::EXCEPTION_INVALID_OPCODE,
+            0,
+            frame,
+        );
+    }
+
+    // Step 3: Format one shared diagnostic for the serial and interactive
+    // consoles. Reusing the same formatting arguments keeps both displays in
+    // lockstep for the fault address and privilege-level diagnosis.
+    let diagnostic = format_args!(
+        "USER EXCEPTION #UD: terminating task at rip=0x{:016x} cs=0x{:04x}\n",
+        iret_frame.rip, iret_frame.cs
+    );
+    crate::drivers::serial::_debug_print(diagnostic);
+
+    // Step 4: Ring-3 execution means no kernel console operation is in progress:
+    // the system call that returned to user mode released its console lock.
+    // Emit the same diagnostic before scheduling another task.
+    crate::console::with_console(|console| {
+        let _ = console.write_fmt(diagnostic);
+    });
+
+    // Step 5: Discard decoded input that the faulting program may have consumed
+    // through ReadKey but left in the legacy character queue. This matches the
+    // Exit syscall contract and prevents the next shell/REPL task from receiving
+    // the exception program's menu selection as its own input.
+    crate::drivers::keyboard::clear_buffers();
+
+    // Step 6: Keep the task's stack and address space alive until execution has
+    // switched away. The scheduler's deferred zombie reaper performs cleanup on
+    // a later tick, when neither this handler nor the stub uses the old stack.
+    crate::scheduler::mark_current_as_zombie();
+
+    // Step 7: Select a runnable replacement while IF remains clear. The stub
+    // restores the returned frame and `iretq` restores that task's RFLAGS.
+    crate::arch::interrupts::disable();
+    crate::scheduler::on_timer_tick(frame)
 }
 
 /// Dispatch entry point called from the IRQ assembly trampoline.

@@ -42,8 +42,9 @@ pub use idt::{idt_ist_index, init_idt};
 
 #[allow(unused_imports)]
 pub use handlers::{
-    exception_handler_rust, exception_has_error_code, irq_rust_dispatch, nm_rust_handler,
-    page_fault_handler_rust, syscall_rust_dispatch,
+    exception_handler_rust, exception_has_error_code, exception_originated_from_user_mode,
+    invalid_opcode_handler_rust, irq_rust_dispatch, nm_rust_handler, page_fault_handler_rust,
+    syscall_rust_dispatch,
 };
 
 use types::{IDT_ENTRIES, IRQ_BASE, IRQ_LINES};

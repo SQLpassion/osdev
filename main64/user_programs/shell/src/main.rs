@@ -61,6 +61,7 @@ fn execute_command(line: &str) {
             println!("  cat <file>      - read and print the contents of a file");
             println!("  exec <file>     - run a program in the foreground");
             println!("  fputest         - run FPU/SSE smoke test (ring 3)");
+            println!("  except          - launch the Ring-3 exception exerciser");
             println!("  kbasic          - run the BASIC interpreter");
             println!("  date            - show the current calendar date");
             println!("  time            - show the current system time");
@@ -132,6 +133,9 @@ fn execute_command(line: &str) {
         }
         "fputest" => {
             run_fpu_smoke_test();
+        }
+        "except" => {
+            run_program("except.bin");
         }
         "exit" => {
             process::exit();

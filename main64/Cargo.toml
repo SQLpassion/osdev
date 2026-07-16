@@ -7,6 +7,7 @@ members = [
     "lib_kaos",
     "lib_tui",
     "user_programs/filedemo",
+    "user_programs/exception_test",
     "user_programs/hello",
     "user_programs/kbasic",
     "user_programs/readline",

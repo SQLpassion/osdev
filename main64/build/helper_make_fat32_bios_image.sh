@@ -60,6 +60,7 @@ mcopy -i "$IMG" "$KERNEL_BIN"                       ::/KERNEL.BIN
 mcopy -i "$IMG" user_programs/hello/hello.bin       ::/HELLO.BIN
 mcopy -i "$IMG" user_programs/readline/readline.bin ::/READLINE.BIN
 mcopy -i "$IMG" user_programs/filedemo/filedemo.bin ::/FILEDEMO.BIN
+mcopy -i "$IMG" user_programs/exception_test/except.bin ::/EXCEPT.BIN
 mcopy -i "$IMG" user_programs/shell/shell.bin       ::/SHELL.BIN
 mcopy -i "$IMG" user_programs/tui_app/tui.bin       ::/TUI.BIN
 mcopy -i "$IMG" user_programs/kbasic/kbasic.bin     ::/KBASIC.BIN
