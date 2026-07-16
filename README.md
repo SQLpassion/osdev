@@ -26,7 +26,7 @@ hardware.
 - **Heap allocator** — segregated free-list with 32 bins and an O(1) bitmap lookup.
 - **Preemptive round-robin scheduler** — PIT-driven context switching, lazy FPU/SSE state switching.
 - **System calls** via `int 0x80`, with safe Ring-3 user-space wrappers.
-- **Storage stack** — ATA PIO + AHCI/SATA block devices, GPT partitions, FAT12 & FAT32, and a single-mount VFS.
+- **Storage stack** — ATA PIO + AHCI/SATA block devices, GPT partitions, FAT32, and a single-mount VFS.
 - **Console subsystem** — runtime-polymorphic VGA text-mode *and* linear graphics framebuffer backends.
 - **PCI bus driver** with BAR sizing and device enumeration.
 - **Text User Interface (TUI)** framework with multi-tab windowing.
@@ -75,7 +75,7 @@ osdev/
 │   │       ├── sync/        # SpinLock & scheduler-aware wait queues
 │   │       ├── syscall/     # int 0x80 dispatch, ABI, user-pointer checks
 │   │       ├── drivers/     # PCI, AHCI, ATA, keyboard, serial, screen, timer
-│   │       ├── io/          # GPT, VFS, FAT12, FAT32
+│   │       ├── io/          # GPT, VFS, FAT32
 │   │       ├── console/     # VGA text-mode + framebuffer backends
 │   │       └── process/     # Process types and the user-program loader
 │   ├── kaosldr_16/          # Stage 1+2 BIOS loaders (assembly)
@@ -86,7 +86,6 @@ osdev/
 │   ├── user_programs/       # Ring-3 programs: shell, hello, readline, kbasic, filedemo, tui_app
 │   ├── docs/                # Subsystem documentation (see below)
 │   └── build*.sh            # Build & image-generation scripts
-├── docker-buildenv/         # Dev-container build environment
 ├── LICENSE                  # MIT
 └── README.md
 ```
@@ -104,17 +103,17 @@ The OS is a Cargo workspace under `main64/` and requires the **Rust nightly** to
 
 ```bash
 # macOS (host)
-./build_kaos_debug.sh   && qemu-system-x86_64 -drive format=raw,file=../kaos64.img --serial stdio
-./build_kaos_release.sh && qemu-system-x86_64 -drive format=raw,file=../kaos64.img --serial stdio
+./build_bios_debug.sh   && qemu-system-x86_64 -drive format=raw,file=../kaos64.img --serial stdio
+./build_bios_release.sh && qemu-system-x86_64 -drive format=raw,file=../kaos64.img --serial stdio
 
 # Inside the dev container
-./build.sh && qemu-system-x86_64 -drive format=raw,file=kaos64.img -display curses
+./build_bios_debug_devcontainer.sh && qemu-system-x86_64 -drive format=raw,file=kaos64.img -display curses
 ```
 
 ### UEFI image (QEMU + OVMF)
 
 ```bash
-./build_uefi.sh
+./build_uefi_debug.sh
 ```
 
 This produces a GPT disk image (`kaos64-uefi.img`) with a FAT32 EFI System Partition
@@ -133,7 +132,7 @@ signals pass/fail via the `isa-debug-exit` device. See [`testing.md`](main64/doc
 
 ### Running on real hardware
 
-Write the final FAT12 image to a physical disk, e.g. on macOS:
+Write the final FAT32 image to a physical disk, e.g. on macOS:
 
 ```bash
 sudo dd if=kaos64.img of=/dev/diskN   # where diskN is the target disk
@@ -151,7 +150,7 @@ Detailed, implementation-level documentation for each subsystem lives in
 |---|---|
 | [boot_bios.md](main64/docs/boot_bios.md) | Three-stage BIOS boot process (real → protected → long mode) |
 | [boot_uefi.md](main64/docs/boot_uefi.md) | UEFI loader, the PE/COFF format, and the boot pipeline |
-| [loader.md](main64/docs/loader.md) | Loading a Ring-3 user program from FAT12 into its own address space |
+| [loader.md](main64/docs/loader.md) | Loading a Ring-3 user program from FAT32 into its own address space |
 | [gdt.md](main64/docs/gdt.md) | GDT/TSS, privilege transitions, and why they matter in long mode |
 
 ### Memory
@@ -174,7 +173,7 @@ Detailed, implementation-level documentation for each subsystem lives in
 |---|---|
 | [pci.md](main64/docs/pci.md) | PCI bus driver, configuration space, BAR sizing |
 | [storage.md](main64/docs/storage.md) | Storage stack: ATA/AHCI → block device → GPT → FAT → VFS |
-| [fat12.md](main64/docs/fat12.md) | FAT12 file system design & usage |
+
 | [console.md](main64/docs/console.md) | Console subsystem: VGA text-mode and framebuffer backends |
 | [tui.md](main64/docs/tui.md) | Text User Interface framework architecture |
 

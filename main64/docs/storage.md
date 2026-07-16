@@ -2,7 +2,7 @@
 
 This document explains how KAOS reads and writes disks, end to end: from the raw
 hardware controllers (ATA PIO and AHCI/SATA), up through a block-device
-abstraction, partition discovery (GPT), the FAT12 and FAT32 filesystems, and the
+abstraction, partition discovery (GPT), the FAT32 filesystem, and the
 single-mount Virtual File System (VFS) facade that the syscall layer and program
 loader call. It covers both the Rust architecture and the hardware-level protocol
 details behind each driver.
@@ -25,7 +25,7 @@ KAOS boots two ways, and the two paths historically reached storage through
 completely different, hardcoded stacks:
 
 - **Legacy BIOS boot** has a legacy IDE/ATA disk. The boot floppy/disk image is
-  formatted **FAT12** and is read with the **ATA PIO** driver.
+  formatted **FAT32** and is read via the **VFS**.
 - **UEFI boot** has no legacy ATA controller. The disk is a GPT-partitioned SATA
   device reached through an **AHCI** controller, and the EFI System Partition is
   formatted **FAT32**.
@@ -34,7 +34,7 @@ That is two independent axes of variation:
 
 ```
             block transport            filesystem format
-   BIOS  →  ATA PIO  (port I/O)    →    FAT12  (floppy geometry)
+   BIOS  →  ATA PIO  (port I/O)    →    FAT32  (BPB geometry)
    UEFI  →  AHCI/SATA (DMA, MMIO)  →    FAT32  (BPB-derived geometry)
 ```
 
@@ -43,7 +43,7 @@ The subsystem therefore inserts **two facades**, each choosing a concrete backen
 **once at boot**:
 
 - `drivers::block` — a `BlockDevice` facade over ATA *or* AHCI.
-- `io::vfs` — a `FileSystem` facade over FAT12 *or* FAT32.
+- `io::vfs` — a `FileSystem` facade over FAT32.
 
 Filesystems never call a driver directly; they call `drivers::block`. The syscall
 layer and loader never call a filesystem directly; they call `io::vfs`. Once both
@@ -62,8 +62,8 @@ format-agnostic.
                                    |    global: MOUNTED_FS
                        +-----------+------------+
                        |                        |
-                Fat12Fs (rw)             Fat32Fs (read-only)
-              io/fat12/*                 io/fat32.rs
+                Fat32Fs (read-only)          (Legacy)
+                 io/fat32.rs                
                        |                        |
                        |   io::gpt (ESP discovery, UEFI only)
                        |                        |
@@ -387,65 +387,7 @@ Both filesystems are members of the **FAT** family. Shared concepts:
 
 The two differ in geometry and FAT-entry width.
 
-### 5.1 FAT12 (`io/fat12/`, the BIOS path — read/write)
-
-FAT12 here targets the fixed **1.44 MB floppy** geometry the BIOS bootloader uses,
-so the layout is hardcoded as constants (`types.rs`) rather than parsed from a boot
-sector:
-
-```
-LBA 0        boot sector
-LBA 1–9      FAT #1            (SECTORS_PER_FAT = 9)
-LBA 10–18    FAT #2 (mirror)
-LBA 19–32    root directory    (ROOT_DIRECTORY_LBA = 19, 14 sectors, 224 entries)
-LBA 33+      data area         (DATA_AREA_START_LBA; cluster 2 = first data sector)
-```
-
-The module is split by concern:
-
-| File | Responsibility |
-|------|----------------|
-| `types.rs` | Geometry constants, `Fat12Error`, raw/parsed directory-entry types, `FileMode`, `FileDescriptor`. |
-| `disk.rs` | Fixed-LBA sector I/O: read/write root dir & FAT, `cluster_to_lba`. |
-| `cluster.rs` | The 12-bit FAT-chain codec, free-cluster search, allocate/deallocate chains. |
-| `directory.rs` | 8.3 name normalization, entry scanning, create/update/delete entries, FAT timestamps. |
-| `fs.rs` | High-level whole-file read, `dir` listing, `delete_file`. |
-| `fd.rs` | The `FILE_DESCRIPTORS` table and `open/read/write/seek/eof/close`. |
-| `vfs_impl.rs` | `Fat12Fs` — the VFS adapter (§6). |
-
-**The 12-bit packing** is FAT12's signature quirk (`cluster.rs::fat12_next_cluster`).
-Two 12-bit entries share three bytes. For cluster `n`, the byte offset is
-`n + n/2`; an even `n` takes the low 12 bits of the little-endian `u16` there, an
-odd `n` takes the high 12 bits (`pair >> 4`). Writing an entry
-(`fat12_write_cluster_entry`) is the read-modify-write inverse, preserving the
-nibble that belongs to the neighbouring entry. End-of-chain is `>= 0x0FF8`; bad
-cluster is `0x0FF7`.
-
-**Reading a file** (`fs.rs::read_file`): normalize the name → read the 14-sector
-root directory → `find_file_in_root_directory` (scan active entries) → reject
-directories → read FAT #1 → `read_file_from_entry` walks the cluster chain.
-`read_file_from_entry` is hardened: it caps file size (`MAX_FILE_SIZE` = 2 MiB,
-larger than the whole floppy) to prevent `Vec::with_capacity` heap exhaustion, and
-detects FAT-chain cycles using a **512-byte stack bitset** (`[u64; 0x1000/64]`)
-rather than a 4 KiB bool array.
-
-**The FD layer** (`fd.rs`): `FILE_DESCRIPTORS` is a `SpinLock<Vec<FileDescriptor>>`.
-`open_file` scans the root directory and, depending on `FileMode`:
-- *Read* — requires an existing file, records its start cluster/size.
-- *Write* — truncates an existing file (deallocates its chain) or creates a new
-  directory entry, starting empty.
-- *Append* — opens at end-of-file.
-
-`read_file_fd`/`write_file_fd` translate the FD's byte offset into a
-(cluster, byte-in-sector) position, walk the chain via `fat12_next_cluster`,
-allocating new clusters on write (`allocate_new_cluster`, which also zero-fills the
-new sector to prevent stale-data leakage). Writes update the directory entry's size
-and **both** FAT copies (`write_fat_to_disk` writes FAT #1 *and* the FAT #2
-mirror). `delete_file` deallocates the chain and marks the entry `0xE5`.
-
-FAT12 is the **only writable filesystem** in KAOS today.
-
-### 5.2 FAT32 (`io/fat32.rs`, the UEFI path — read-only)
+### 5.1 FAT32 (`io/fat32.rs`, the UEFI path — read-only)
 
 FAT32 is a real, parsed filesystem: geometry comes from the **BIOS Parameter
 Block (BPB)** in the partition's first sector, not from constants.
@@ -453,7 +395,7 @@ Block (BPB)** in the partition's first sector, not from constants.
 
 1. Reads the BPB via `block::read_sectors`.
 2. Validates FAT32: bytes/sector must be 512; `RootEntCnt` and `FATSz16` must be 0
-   (those are FAT12/16 fields); boot signature `0xAA55` present.
+   (those are FAT12/FAT16 specific fields); boot signature `0xAA55` present.
 3. Computes the key LBAs:
    ```
    fat_start_lba  = part_lba + reserved_sectors
@@ -461,7 +403,7 @@ Block (BPB)** in the partition's first sector, not from constants.
    cluster_to_lba(n) = data_start_lba + (n - 2) * sectors_per_cluster
    ```
    and remembers `root_cluster` (FAT32's root directory is itself a cluster chain,
-   not a fixed region like FAT12).
+   not a fixed region).
 
 **`next_cluster`** reads the 4-byte FAT32 entry (`fat_start_lba + cluster*4/512`,
 offset `cluster*4 % 512`), masks the top 4 reserved bits (`& 0x0FFF_FFFF`), and
@@ -484,7 +426,7 @@ inside the cluster loops — correct but not maximally efficient; the chunking i
 
 ## 6. Layer 4 — The VFS Facade (`io/vfs.rs`)
 
-The VFS erases the FAT12-vs-FAT32 difference exactly as `drivers::block` erases
+The VFS erases the underlying filesystem details exactly as `drivers::block` erases
 the controller difference.
 
 ```rust
@@ -536,8 +478,6 @@ trait methods take `&self`). All the public facade functions
 
 #### The two adapters
 
-- **`Fat12Fs`** (`io/fat12/vfs_impl.rs`) — a ZST that forwards each trait method to
-  the existing `fat12::*` free functions and maps `Fat12Error → FsError`. It is a
   thin wrapper over the already-working FD layer, so the BIOS path keeps its full
   read/write/delete behaviour. The error map distinguishes `NotFound` as
   `FsError::NotFound` (file missing) vs `FsError::InvalidFd` (bad FD) using an
@@ -591,9 +531,8 @@ let shell_image = if uefi {
 } else {
     drivers::ata::init();                  // bring up ATA PIO
     drivers::block::init_ata();            // select ATA as the active block device
-    io::fat12::init();
-    io::vfs::mount(Box::new(io::fat12::Fat12Fs));             // mount FAT12
-    io::vfs::read_file("shell.bin").expect("load SHELL.BIN from FAT12")
+        io::vfs::mount(Box::new(io::fat32::Fat32Fs::new(volume)));             // mount FAT32
+    io::vfs::read_file("shell.bin").expect("load SHELL.BIN from FAT32")
 };
 ```
 
@@ -639,10 +578,10 @@ AtaError / AhciError
         │  (adapter .map_err)
         ▼
 BlockError {NotReady, BadBuffer, OutOfRange, Device, Unsupported}
-        │  (From<BlockError> for Fat12Error;  Fat32Error::Block(..))
+        │  (Fat32Error::Block(..))
         ▼
-Fat12Error / Fat32Error
-        │  (Fat12Fs/Fat32Fs map_err / map_fat32_err)
+Fat32Error
+        │  (Fat32Fs map_fat32_err)
         ▼
 FsError {NotMounted, NotFound, InvalidFd, Unsupported, Io, InvalidName}
         │  (syscall map_fs_error / loader map_fs_error)
@@ -661,7 +600,7 @@ instead of a panic or silent corruption.
 These are deliberate scope boundaries (see `docs/storage_abstraction.md` §10):
 
 - **AHCI is read-only.** `AhciBlockDevice::write_sectors` returns `Unsupported`;
-  FAT32 write methods do too. Writes work only on the BIOS/FAT12 path.
+  FAT32 write methods do too. The filesystem is currently read-only.
 - **AHCI transfers one sector per command** and uses a single fixed 512-byte DMA
   buffer and command slot 0. Multi-sector PRDTs / multiple slots are future work.
 - **AHCI uses 28→32-bit LBA in practice**; the block ceiling is `u32::MAX` until
@@ -671,7 +610,6 @@ These are deliberate scope boundaries (see `docs/storage_abstraction.md` §10):
 - **Single mount, no mount table.** One filesystem at a time.
 - **FAT32 reads sector-by-sector**; whole-cluster reads are an available
   optimization now that `drivers::block` chunks.
-- **FAT12 geometry is hardcoded** to the 1.44 MB floppy layout rather than parsed
   from its boot sector.
 
 The trait shapes (`BlockDevice`, `FileSystem`) were chosen to leave room for all of
@@ -687,13 +625,6 @@ the above without disturbing the upper layers.
 | `drivers/ahci.rs` | AHCI/SATA driver: PCI discovery, MMIO HBA/port registers, command list/FIS/PRDT, COMRESET bring-up, DMA reads. |
 | `drivers/block.rs` | `BlockDevice` trait, ATA/AHCI adapters, `chunked`, `ACTIVE_DEVICE` selection + facade. |
 | `io/gpt.rs` | Minimal GPT parsing to locate the EFI System Partition (UEFI path). |
-| `io/fat12/types.rs` | FAT12 geometry constants, errors, entry types, FD type. |
-| `io/fat12/disk.rs` | Fixed-LBA root-dir / FAT sector I/O, `cluster_to_lba`. |
-| `io/fat12/cluster.rs` | 12-bit FAT-chain codec, free-cluster search, chain alloc/free. |
-| `io/fat12/directory.rs` | 8.3 normalization, entry scan / create / update / delete, FAT timestamps. |
-| `io/fat12/fs.rs` | Whole-file read, `dir` listing, `delete_file`. |
-| `io/fat12/fd.rs` | `FILE_DESCRIPTORS` table; open/read/write/seek/eof/close. |
-| `io/fat12/vfs_impl.rs` | `Fat12Fs` VFS adapter (read/write). |
 | `io/fat32.rs` | `Fat32Volume` (BPB parse, chain walk, read-only) + `Fat32Fs` eager-cache VFS adapter. |
 | `io/vfs.rs` | `FileSystem` trait, `FsError`, `MOUNTED_FS`, `with()` facade. |
 | `syscall/dispatch/fs.rs` | Filesystem syscalls → `io::vfs`. |

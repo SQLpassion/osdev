@@ -37,7 +37,7 @@ The KAOS boot process is divided into three successive stages. Each stage has a 
 | STAGE 3: 64-Bit Loader (kaosldr_64 / Rust Loader)     |
 | - Mode: 64-Bit Long Mode (Ring 0)                          |
 | - Initializes stack at 0x400000                            |
-| - Reads FAT12 filesystem via direct ATA PIO ports          |
+| - Reads FAT32 filesystem via direct ATA PIO ports          |
 | - Loads KERNEL.BIN to 0x100000 (1 MB mark)                 |
 | - Jumps to Kernel Entry                                    |
 +------------------------------------------------------------+
@@ -61,7 +61,7 @@ Address           Size        Description
 +--------------+ ----------- +------------------------------------------+
 | 0x00000000   | 1 KB        | Real Mode Interrupt Vector Table (IVT)   |
 | 0x00000400   | 256 Bytes   | BIOS Data Area (BDA)                     |
-| 0x00000500   | 2.75 KB     | Buffer for FAT12 Root & FAT (Stage 1)    |
+| 0x00000500   | 2.75 KB     | Buffer for Disk I/O                      |
 | 0x00001000   | 512 Bytes   | BIOS Information Block (BIB)             |
 | 0x00001200   | 3.5 KB      | E820 Memory Map buffer                   |
 | 0x00002000   | 4 KB        | KLDR16.BIN (Stage 2 Code & GDT)          |
@@ -88,7 +88,7 @@ Address           Size        Description
 * **Processor State:** CS:IP = `0x0000:0x7C00`, registers are undefined, interrupts are enabled.
 * **Flow:**
   1. **Stack Initialization:** Sets up a temporary stack at `SS=0x7000`, `SP=0x8000`.
-  2. **Filesystem Parsing (FAT12):** Since the bootsector is formatted in FAT12, it parses the Root Directory Table to locate the two loader stages.
+  2. **Reserved Sector Reading:** The bootsector reads the two loader stages directly from fixed reserved LBAs (LBA 8 and LBA 16) without needing to parse the FAT32 filesystem structure in 16-bit real mode.
   3. **Loading:**
      * Reads `KLDR64.BIN` via BIOS interrupt `INT 0x13, AH=0x02` into memory at address `0x3000` (`KAOSLDR64_OFFSET`).
      * Reads `KLDR16.BIN` into memory at address `0x2000` (`KAOSLDR16_OFFSET`).
@@ -124,7 +124,7 @@ Address           Size        Description
   1. **Stack & VGA Initialization:** Establishes stack access and initializes the VGA text writer class for error printing.
   2. **ATA PIO Driver:** Since BIOS interrupts are no longer accessible in Long Mode, the loader accesses the disk controller directly using I/O port commands (`in` / `out` on ports `0x1F0`–`0x1F7`).
   3. **File Search & Load:**
-     * Parses the FAT12 structure on the boot drive.
+     * Parses the FAT32 structure on the boot drive.
      * Searches for the kernel (`KERNEL  BIN`).
      * Reads the kernel sectors chunk-by-chunk via the PIO data port `0x1F0` directly into the physical destination address `0x100000` (1 MB mark).
   4. **Execute Kernel:**
@@ -136,5 +136,5 @@ Address           Size        Description
 ## 4. Design Advantages
 
 1. **No Real-Mode Memory Hacks:** The kernel is loaded only after entering 64-bit Long Mode. This avoids dealing with "Unreal Mode" or paging memory fragments across segment boundaries in Real Mode.
-2. **Compact Filesystem Parsing in Rust:** The complex logic for FAT12 filesystem parsing and the ATA disk driver is written entirely in safe, modern Rust. Only the minimal necessary CPU transition code remains in assembly.
+2. **Compact Filesystem Parsing in Rust:** The complex logic for FAT32 filesystem parsing and the ATA disk driver is written entirely in safe, modern Rust. Only the minimal necessary CPU transition code remains in assembly, and the 512-byte boot sector only reads fixed LBAs without parsing FAT32.
 3. **Preservation of BIOS Data:** Critical system statistics (such as the E820 Memory Map), which can only be queried through 16-bit BIOS interrupts, are securely saved in RAM before the mode switch so they remain accessible to the kernel.

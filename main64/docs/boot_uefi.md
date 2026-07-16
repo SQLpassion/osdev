@@ -312,6 +312,13 @@ struct BootInfo {
     kernel_size: u64,           // bytes of KERNEL.BIN actually read
     pmm_metadata_base: u64,     // reserved PMM-metadata region (0 on BIOS path)
     pmm_metadata_size: u64,
+    boot_year: u16,
+    boot_month: u8,
+    boot_day: u8,
+    boot_hour: u8,
+    boot_minute: u8,
+    boot_second: u8,
+    boot_timezone: i16,
 }
 ```
 
@@ -383,7 +390,7 @@ it is the entry) runs this sequence:
    scan, timer.
 9. **End state:** on a **GOP/UEFI** boot the kernel currently stops here in a steady
    **black ↔ white framebuffer heartbeat** (a visible "I booted and I'm alive" signal). The
-   disk-dependent path below it — ATA PIO, the FAT12 file system, loading the user-space shell,
+   disk-dependent path below it — ATA PIO, the FAT32 file system, loading the user-space shell,
    the scheduler — is **skipped on UEFI**, because a USB/UEFI boot has no legacy ATA disk yet.
    The **legacy BIOS/VGA** boot (`video_type == VgaText`) instead continues into that disk +
    scheduler path unchanged.

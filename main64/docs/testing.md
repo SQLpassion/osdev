@@ -152,11 +152,15 @@ into memory at the physical load address (`0x100000`) and jumps to the first byt
 The script tries `llvm-objcopy` first, then falls back to `rust-objcopy` or `objcopy` if
 the LLVM version is not available.
 
-### Step 6: FAT12 Disk Image Creation
+### Step 6: FAT32 Disk Image Creation
 
-The script uses Docker with the `sqlpassion/kaos-buildenv` image to create a bootable
-floppy disk image:
+The script uses `mtools` (mformat/mcopy) and `dd` to create a bootable
+disk image directly:
 
+```bash
+mformat -i kaos64_test.img -F -R 64 ::
+mcopy -i kaos64_test.img test_kernel.bin ::/KERNEL.BIN
+dd if=boot/bootsector.bin of=kaos64_test.img bs=512 count=1 conv=notrunc
 ```bash
 docker run --rm -v "$MAIN64_DIR":/src sqlpassion/kaos-buildenv /bin/sh -c "
     fat_imgen -c -s boot/bootsector.bin -f kaos64_test.img
@@ -166,7 +170,7 @@ docker run --rm -v "$MAIN64_DIR":/src sqlpassion/kaos-buildenv /bin/sh -c "
 "
 ```
 
-This produces a FAT12 disk image containing:
+This produces a FAT32 Disk Image containing:
 
 | File on disk        | Purpose                                           |
 |---------------------|---------------------------------------------------|
@@ -489,7 +493,7 @@ cargo test --test basic_boot --no-run
 
 - **Rust nightly toolchain** — configured in `rust-toolchain.toml`; must include
   `rust-src` and `llvm-tools-preview` components
-- **Docker** — required by `test_runner.sh` to build FAT12 disk images using the
+- **Docker** — required by `test_runner.sh` to build FAT32 Disk Images using the
   `sqlpassion/kaos-buildenv` container
 - **QEMU** — `qemu-system-x86_64` must be in `$PATH`
 - **Bootloader binaries** — `boot/bootsector.bin`, `kaosldr_16/kldr16.bin`, and

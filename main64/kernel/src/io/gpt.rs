@@ -20,7 +20,7 @@ pub fn find_esp_start_lba() -> Option<u64> {
         return fallback_esp();
     }
 
-    // Parse the header to get partition array metadata.
+    // Step 2: Parse the header to get partition array metadata.
     let (entry_lba, num_entries, entry_size) = match parse_gpt_header(&header_sector) {
         Some(info) => info,
         None => return fallback_esp(),
@@ -35,7 +35,7 @@ pub fn find_esp_start_lba() -> Option<u64> {
 
     let mut entry_sector = [0u8; 512];
 
-    // Iterate through partition entries.
+    // Step 3: Iterate through partition entries.
     for sector_offset in 0..sectors_to_read {
         // Cast the physical LBA to u32, which is safe since the GPT is at the start of the disk.
         let lba = (entry_lba + sector_offset as u64) as u32;

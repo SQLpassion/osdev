@@ -9,7 +9,7 @@
 
 KAOS should be able to **load drivers from the file system at runtime**, without
 requiring them to be compiled into the kernel. A driver is just a normal Ring-3
-program (a flat binary on the FAT12 disk) that talks to "its" hardware through a
+program (a flat binary on the FAT32 disk) that talks to "its" hardware through a
 set of **privileged, capability-gated syscalls**.
 
 The end result:
@@ -56,7 +56,7 @@ A Ring-3 driver, by contrast:
   constant, not a symbol that needs resolving.
 
 → **Relocation and symbol linking disappear entirely.** The existing
-`exec_from_fat12()` pipeline (`process/loader.rs:86`) loads a driver unchanged.
+`exec_from_vfs()` pipeline (`process/loader.rs:86`) loads a driver unchanged.
 
 **2. Isolation as an architectural principle.**
 A faulty driver (null deref, off-by-one) causes a page fault in Ring 3 that
@@ -299,8 +299,8 @@ driver.
 ## 4. Current state: what exists, what is missing
 
 ### Already present (building blocks)
-- Reading a file from kernel context: `fat12::read_file() -> Vec<u8>` (`io/fat12/fs.rs:119`)
-- Loading + starting a program: `exec_from_fat12()` (`process/loader.rs:86`), syscall 17
+- Reading a file from kernel context: `vfs::read_file() -> Vec<u8>` (`io/vfs.rs`)
+- Loading + starting a program: `exec_from_vfs()` (`process/loader.rs:86`), syscall 17
 - A separate address space per task (CR3 clone, `process/loader.rs:109`)
 - NX-/W^X-capable page flags, EFER.NXE enabled (`memory/vmm/page_table.rs:15`)
 - Frame allocation + mapping (`alloc_frame_phys()`, `map_user_page()` `mapping.rs:677`)
@@ -542,7 +542,7 @@ Recommended sub-steps:
    gating + port I/O without IRQs.
 2. **RX with IRQ** (needs phase 4): an echo loop — proves the IRQ bridge.
 
-- **Test:** `SERIAL2.DRV` is loaded from FAT12 at runtime, spawned by the driver
+- **Test:** `SERIAL2.DRV` is loaded from FAT32 at runtime, spawned by the driver
   manager with the grants above, subscribes to IRQ3, blocks in `irq::wait`, is
   woken on incoming bytes, reads them via `inb(0x2F8)` and writes them back via
   `outb` — while the kernel and all other tasks keep running normally.
@@ -556,9 +556,9 @@ that exercises MMIO **and** DMA (and thus motivates the IOMMU work).
 
 ## 9. Build integration
 
-Drivers are built like user programs (`build/helper_build_user_programs.sh`):
+Drivers are built like user programs (`helper_build_user_programs.sh`):
 `cargo build --target x86_64-unknown-none` → `objcopy -O binary` → copy `*.DRV`
-to the FAT12 disk. Because of FAT12 8.3, driver files must live flat in the root
+to the FAT32 disk. Because of FAT32 8.3, driver files must live flat in the root
 and have short names (e.g. `RTL8139.DRV`).
 
 ---

@@ -471,7 +471,7 @@ The PCI subsystem scans the PCI bus during early kernel boot after the Heap Mana
 7. heap::init()           <- Initialize Kernel Heap allocator
 8. pci::init()            <- Perform silent PCI brute force bus scan (populate cache)
 9. drivers::ata::init()   <- Initialize primary ATA PIO driver
-10. io::fat12::init()     <- Read root directory from disk
+10. io::fat32::init()     <- Read root directory from disk
 11. scheduler::init()     <- Ready kernel tasks (worker, REPL)
 12. interrupts::enable()  <- Start multitasking timer tick
 ```

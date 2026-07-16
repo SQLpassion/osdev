@@ -1,13 +1,13 @@
-# FAT12 User-Program Loader: Deep Technical Walkthrough
+# VFS User-Program Loader: Deep Technical Walkthrough
 
-This document explains, in implementation-level detail, how the current Rust kernel loads a user-mode program from the FAT12 partition, maps it into a dedicated user address space, starts it as a schedulable ring-3 task, and reclaims all resources again when the task exits.
+This document explains, in implementation-level detail, how the current Rust kernel loads a user-mode program from the VFS (Virtual File System) backed by the FAT32 partition, maps it into a dedicated user address space, starts it as a schedulable ring-3 task, and reclaims all resources again when the task exits.
 
 The walkthrough is intentionally grounded in the current codebase and refers to these modules:
 
 - `src/repl.rs`
 - `src/process/types.rs`
 - `src/process/loader.rs`
-- `src/io/fat12.rs`
+- `src/io/vfs.rs`
 - `src/memory/vmm.rs`
 - `src/scheduler/roundrobin.rs`
 - `src/syscall/dispatch.rs`
@@ -19,9 +19,9 @@ The loader currently targets flat `.bin` payloads with a fixed virtual entry add
 
 ## 1) Architectural Context and Invariants
 
-The process-loading path is split across three subsystems that each enforce a different class of invariants. The FAT12 layer is responsible for producing a correct byte payload for a short 8.3 filename and for rejecting malformed directory/FAT chains. The process loader translates that payload into a concrete address-space materialization, including validation against the configured executable window and controlled mapping permissions. Finally, the scheduler owns runtime lifecycle and final teardown once a user task has been spawned.
+The process-loading path is split across three subsystems that each enforce a different class of invariants. The VFS/FAT32 layer is responsible for producing a correct byte payload for a filename and for rejecting malformed requests. The process loader translates that payload into a concrete address-space materialization, including validation against the configured executable window and controlled mapping permissions. Finally, the scheduler owns runtime lifecycle and final teardown once a user task has been spawned.
 
-What matters operationally is that these layers are intentionally decoupled. The FAT12 code does not know anything about page tables or task metadata. The VMM does not know where bytes came from. The scheduler does not parse file formats. This separation is what allows rollback logic to be explicit rather than implicit: every transition between stages is represented by small typed contracts (`ExecError`, `LoadedProgram`, explicit CR3 handoff), and each stage can reverse only what it owns.
+What matters operationally is that these layers are intentionally decoupled. The VFS layer does not know anything about page tables or task metadata. The VMM does not know where bytes came from. The scheduler does not parse file formats. This separation is what allows rollback logic to be explicit rather than implicit: every transition between stages is represented by small typed contracts (`ExecError`, `LoadedProgram`, explicit CR3 handoff), and each stage can reverse only what it owns.
 
 The implementation is currently built around a strict user virtual-memory contract. User code occupies a dedicated 2 MiB window, and user stack occupies a dedicated 1 MiB window near the top of canonical low-half user space, with a guard page below the stack. The loader never maps outside these windows. This constraint is enforced by `map_user_page` in `src/memory/vmm.rs`, so policy is centralized in one place.
 
@@ -29,7 +29,7 @@ The implementation is currently built around a strict user virtual-memory contra
 
 ## 2) End-to-End Runtime Story (`exec` in the REPL)
 
-At runtime, the entire flow starts in the shell command handler in `src/repl.rs`. When the user enters `exec <file>`, the REPL calls `process::exec_from_fat12(file_name)`. A successful return yields a scheduler task ID, and the REPL immediately enters foreground wait mode by calling `scheduler::wait_for_task_exit(task_id)`. This is important behaviorally: the shell does not continue immediately, but cooperatively yields until the spawned task has terminated.
+At runtime, the entire flow starts in the shell command handler in `src/repl.rs`. When the user enters `exec <file>`, the REPL calls `process::exec_from_vfs(file_name)`. A successful return yields a scheduler task ID, and the REPL immediately enters foreground wait mode by calling `scheduler::wait_for_task_exit(task_id)`. This is important behaviorally: the shell does not continue immediately, but cooperatively yields until the spawned task has terminated.
 
 In other words, execution is currently “foreground process execution” from the shell perspective, even though the scheduler itself remains round-robin and preemptive/cooperative as designed.
 
@@ -42,11 +42,11 @@ User
   v
 REPL (execute_command)
   |
-  | process::exec_from_fat12("HELLO.BIN")
+  | process::exec_from_vfs("HELLO.BIN")
   v
 Process loader
   |
-  | load_program_image -> FAT12 read + validation
+  | load_program_image -> VFS read + validation
   | map_program_image_into_user_address_space
   | spawn_loaded_program
   v
@@ -71,25 +71,17 @@ REPL wait loop ends, prompt is shown again
 
 ---
 
-## 3) FAT12 Stage: Turning `HELLO.BIN` into a Byte Vector
+## 3) VFS Stage: Turning `HELLO.BIN` into a Byte Vector
 
-The first concrete operation in the process loader is `load_program_image(file_name_8_3)` in `src/process/loader.rs`. This function delegates to `fat12::read_file` and then applies process-level image-size validation.
+The first concrete operation in the process loader is `load_program_image(file_name_8_3)` in `src/process/loader.rs`. This function delegates to `vfs::read_file` and then applies process-level image-size validation.
 
-The FAT12 side, implemented in `src/io/fat12.rs`, performs a full short-name lookup and cluster-chain traversal. The incoming shell token is normalized through `normalize_8_3_name` into canonical uppercased, space-padded 11-byte FAT short-name form. The root directory region is then scanned for a matching active entry. If the entry exists but has the directory attribute bit set, the loader receives `Fat12Error::IsDirectory`; if no entry matches, it receives `Fat12Error::NotFound`; malformed names fail earlier as `Fat12Error::InvalidFileName`.
+The FAT32 side, implemented in `src/io/fat32.rs` (and abstracted by the VFS), performs a full short-name lookup and cluster-chain traversal. The incoming shell token is normalized through `normalize_8_3_name` into canonical uppercased, space-padded 11-byte FAT short-name form. The directory region is then scanned for a matching active entry. If the entry exists but has the directory attribute bit set, or if it is missing or malformed, appropriate `FsError` codes are returned to the caller.
 
-Once a regular-file entry is found, FAT#1 is read and the file content is reconstructed by following the FAT12 12-bit cluster chain until exactly `file_size` bytes have been produced. Loop detection and invalid cluster values are treated as corruption (`CorruptFatChain`). This strictness is intentional because partially trusting a broken chain would create unpredictable copy behavior in the executable mapping stage.
+Once a regular-file entry is found, the file content is reconstructed by following the FAT32 cluster chain until exactly `file_size` bytes have been produced. Loop detection and invalid cluster values are treated as corruption (`CorruptFatChain`). This strictness is intentional because partially trusting a broken chain would create unpredictable copy behavior in the executable mapping stage.
 
-The on-disk geometry assumptions are the standard 1.44 MiB FAT12 layout used in this project:
+The on-disk geometry assumptions now follow standard FAT32 structures dynamically derived from the BIOS Parameter Block (BPB), which eliminates the need for hardcoded boundaries like the fixed 1.44 MiB FAT12 layout used in older versions.
 
-```text
-LBA 0        : Reserved sector (boot)
-LBA 1..9     : FAT #1
-LBA 10..18   : FAT #2
-LBA 19..32   : Root directory (224 entries -> 14 sectors)
-LBA 33..end  : Data area (clusters)
-```
-
-From the process loader perspective, FAT12-specific errors are intentionally translated into process-domain errors via `map_fat12_error`, so callers above the loader do not have to reason about filesystem internals.
+From the process loader perspective, filesystem-specific errors are intentionally translated into process-domain errors via `map_fs_error`, so callers above the loader do not have to reason about filesystem internals.
 
 ---
 
@@ -138,7 +130,7 @@ After a CR3 exists, the loader allocates all required code frames upfront and on
 
 The actual mapping and byte-copy work happens inside `vmm::with_address_space(user_cr3, || { ... })`, which temporarily switches CR3 to the target address space for the closure duration and restores the previous CR3 afterward. This is required because recursive page-table helper addresses in this VMM design always refer to the currently active hierarchy.
 
-Inside that closure, the loader follows a two-phase permission model. In phase one, code pages are mapped writable so zero-fill and copy are possible. The stack bootstrap page at `USER_STACK_TOP - PAGE_SIZE` is also mapped writable. Then the entire mapped code range is zeroed and the FAT12 image bytes are copied to `USER_PROGRAM_ENTRY_RIP`. In phase two, code pages are remapped read-only (`writable = false`). That final permission state is an explicit policy boundary: loading is a privileged write operation, execution is not.
+Inside that closure, the loader follows a two-phase permission model. In phase one, code pages are mapped writable so zero-fill and copy are possible. The stack bootstrap page at `USER_STACK_TOP - PAGE_SIZE` is also mapped writable. Then the entire mapped code range is zeroed and the FAT32 image bytes are copied to `USER_PROGRAM_ENTRY_RIP`. In phase two, code pages are remapped read-only (`writable = false`). That final permission state is an explicit policy boundary: loading is a privileged write operation, execution is not.
 
 A successful transaction returns `LoadedProgram { cr3, entry_rip, user_rsp, image_len }`, which is exactly the descriptor needed by scheduler spawn logic.
 
@@ -183,7 +175,7 @@ That combination is what keeps the transaction leak-resistant even when failures
 
 ## 7) Spawn Step and Ownership Transfer to Scheduler
 
-`exec_from_fat12` completes by calling `spawn_loaded_program`, which in turn calls `scheduler::spawn_user_task_owning_code(entry_rip, user_rsp, cr3)`. The `_owning_code` variant is important because it sets the task’s teardown policy to release code PFNs on destruction. This matches loader semantics: these code pages are private process-owned frames, not aliases of shared kernel pages.
+`exec_from_vfs` completes by calling `spawn_loaded_program`, which in turn calls `scheduler::spawn_user_task_owning_code(entry_rip, user_rsp, cr3)`. The `_owning_code` variant is important because it sets the task’s teardown policy to release code PFNs on destruction. This matches loader semantics: these code pages are private process-owned frames, not aliases of shared kernel pages.
 
 If spawn succeeds, ownership of CR3 and mapped leaves moves to scheduler/task lifecycle management. If spawn fails, the loader immediately destroys the address space with `destroy_user_address_space_with_options(..., true)` and returns `ExecError::SpawnFailed`.
 
@@ -209,7 +201,7 @@ Task type / mapping origin         release_user_code_pfns
 ---------------------------------  -----------------------
 Kernel task                        n/a (no user CR3 cleanup)
 User task with code aliases        false
-User task from FAT12 loader        true
+User task from VFS loader            true
 ```
 
 ---
@@ -232,9 +224,9 @@ Because the binary is linked at the same fixed virtual address as `USER_PROGRAM_
 
 ---
 
-## 11) Build and FAT12 Image Integration
+## 11) Build and FAT32 Image Integration
 
-The standard Rust-kernel build scripts currently invoke `main64/build/helper_build_user_programs.sh` to compile user payloads and produce `hello.bin`. During disk-image creation, the build/deploy scripts inject that payload into the disk image.
+The standard Rust-kernel build scripts currently invoke `main64/helper_build_user_programs.sh` to compile user payloads and produce `hello.bin`. During disk-image creation, the build/deploy scripts inject that payload into the disk image.
 
 That is why runtime invocation from REPL is simply:
 
@@ -242,7 +234,7 @@ That is why runtime invocation from REPL is simply:
 > exec HELLO.BIN
 ```
 
-The chain from source to runnable file is therefore: Rust user crate -> flat binary (`objcopy`) -> FAT12 image entry -> runtime FAT12 lookup -> user mapping -> scheduler task.
+The chain from source to runnable file is therefore: Rust user crate -> flat binary (`objcopy`) -> FAT32 image entry -> runtime VFS lookup -> user mapping -> scheduler task.
 
 ---
 
@@ -252,7 +244,7 @@ This path is instrumented enough to debug most failures from serial logs alone. 
 
 A practical triage order for failed `exec` attempts is:
 
-1. FAT12 lookup (`InvalidName`, `NotFound`, `IsDirectory`)
+1. VFS lookup (`InvalidName`, `NotFound`)
 2. image size validation (`FileTooLarge`)
 3. address-space creation (`AddressSpaceCreateFailed`)
 4. mapping/copy path (`MappingFailed`)
@@ -263,7 +255,7 @@ A practical triage order for failed `exec` attempts is:
 
 ## 13) Test Coverage and Confidence Model
 
-The current test suite validates the loader pipeline from several angles rather than with one monolithic test. `tests/fat12_test.rs` covers FAT12 parsing and file read behavior. `tests/process_contract_test.rs` validates process constants, image loading, and map/copy contracts. `tests/vmm_test.rs` exercises user mapping flags, clone/destroy behavior, and teardown policy edges. `tests/syscall_dispatch_test.rs` protects syscall IDs and dispatch behavior.
+The current test suite validates the loader pipeline from several angles rather than with one monolithic test. `tests/process_contract_test.rs` validates process constants, image loading, and map/copy contracts. `tests/vmm_test.rs` exercises user mapping flags, clone/destroy behavior, and teardown policy edges. `tests/syscall_dispatch_test.rs` protects syscall IDs and dispatch behavior.
 
 This layered coverage mirrors the layered architecture: storage, mapping, lifecycle, and syscall boundary each have dedicated assertions. For low-level kernel work, this is generally more maintainable than one giant end-to-end assertion because regressions are localized faster.
 
@@ -273,4 +265,4 @@ This layered coverage mirrors the layered architecture: storage, mapping, lifecy
 
 This phase intentionally stops before full executable-format support and advanced process semantics. The most natural next upgrades are ELF segment loading with per-segment permissions, richer user-stack bootstrap (argv/envp), lazy code paging, and parent/child wait semantics with exit status transport. Another important hardening path is stricter TLB/permission-transition auditing for idempotent remap paths.
 
-Even with those items pending, the existing implementation already provides a coherent and production-shaped pipeline: deterministic FAT12 load, explicit size and mapping contracts, controlled permission transitions, foreground shell semantics, and policy-aware teardown that distinguishes alias-safe from truly owned user code pages.
+Even with those items pending, the existing implementation already provides a coherent and production-shaped pipeline: deterministic FAT32 load, explicit size and mapping contracts, controlled permission transitions, foreground shell semantics, and policy-aware teardown that distinguishes alias-safe from truly owned user code pages.

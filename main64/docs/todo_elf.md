@@ -49,13 +49,13 @@ Anything an ELF loader needs to replace, modify, or interoperate with:
 
 | Concern | File | Notes |
 |---|---|---|
-| Loader entry points | `main64/kernel/src/process/loader.rs` | `load_program_image`, `map_program_image_into_user_address_space`, `exec_from_fat12` |
+| Loader entry points | `main64/kernel/src/process/loader.rs` | `load_program_image`, `map_program_image_into_user_address_space`, `exec_from_vfs` |
 | Process descriptor | `main64/kernel/src/process/types.rs` | `LoadedProgram`, `USER_PROGRAM_ENTRY_RIP`, `USER_PROGRAM_INITIAL_RSP`, `image_fits_user_code()` |
 | Address-space layout | `main64/kernel/src/memory/vmm/vmm_constants.rs` | `USER_CODE_BASE/SIZE`, `USER_STACK_BASE/TOP`, `USER_HEAP_BASE/END` |
 | Region classifier | `main64/kernel/src/memory/vmm/mod.rs` | `classify_user_region()` returns `UserRegion::{Code,Stack,Guard,Heap}` |
 | Demand-paging policy | `main64/kernel/src/memory/vmm/page_fault.rs` | derives `writable` and `no_execute` from `UserRegion` — coupled to today's "code-only" assumption |
 | Page-table primitives | `main64/kernel/src/memory/vmm/mapping.rs`, `page_table.rs` | `map_user_page(va, pfn, writable)`, `destroy_user_address_space_with_page_counts()` |
-| Build pipeline | `main64/build/helper_build_user_programs.sh` | `cargo build` → `objcopy -O binary` for every user program |
+| Build pipeline | `main64/helper_build_user_programs.sh` | `cargo build` → `objcopy -O binary` for every user program |
 | User-program linker scripts | `main64/user_programs/*/link.ld` | currently merge `.bss/.lbss/COMMON` into `.data` as a workaround |
 
 ---
@@ -140,12 +140,12 @@ single `code_page_count`-long range starting at `USER_CODE_BASE`.
 Public functions that need to keep working but with new internals:
 
 - `load_program_image(file_name) -> Vec<u8>` — unchanged; still reads the
-  raw ELF from FAT12.
+  raw ELF from FAT32.
 - `map_program_image_into_user_address_space(image: &[u8]) -> ExecResult<LoadedProgram>`
   — internally switches from flat-copy to ELF parse + per-segment map.
   Returned `LoadedProgram.entry_rip` becomes `header.e_entry` instead of the
   constant `USER_PROGRAM_ENTRY_RIP`.
-- `exec_from_fat12(file_name) -> ExecResult<usize>` — unchanged.
+- `exec_from_vfs(file_name) -> ExecResult<usize>` — unchanged.
 
 `LoadedProgram` itself needs to lose the `code_page_count` field (now a
 per-segment list) or generalize it to a list of `(va, page_count)` ranges
@@ -247,11 +247,11 @@ constraint, see project memory).
 
 ## 6. Build Pipeline
 
-`main64/build_user_programs.sh` invokes `cargo build` then
+`main64/helper_build_user_programs.sh` invokes `cargo build` then
 `llvm-objcopy -O binary` for every program. Once the kernel reads ELF
 directly, the objcopy step is removed entirely:
 
-- The output added to the FAT12 disk image is the ELF file itself (renamed
+- The output added to the FAT32 disk image is the ELF file itself (renamed
   to the 8.3 short name like `TUI.BIN` if needed — the extension does not
   matter to the loader, only the magic does).
 - Drop the per-program `.bin` filename and use the cargo target output
@@ -308,7 +308,7 @@ linker script. Verify with `llvm-readelf -l` after each script change.
    (write a test: a `static mut COUNTER: u64 = 0;` and assert it reads 0
    on first access).
 6. Process teardown does not leak PFNs across `exec → exit` cycles. Add a
-   PMM-free-page-count assertion before and after `exec_from_fat12()`.
+   PMM-free-page-count assertion before and after `exec_from_vfs()`.
 7. Demand-faulting an address inside `UserRegion::Code` (e.g. via a wild
    pointer write) terminates the task instead of silently allocating a page.
 8. All existing user programs (`hello`, `readline`, `filedemo`, `shell`,
@@ -325,7 +325,7 @@ main64/kernel/src/memory/vmm/page_fault.rs     (drop USER_CODE demand-paging)
 main64/kernel/src/memory/vmm/mapping.rs        (per-segment teardown API)
 main64/kernel/src/memory/vmm/mod.rs            (classify_user_region naming)
 main64/kernel/src/scheduler/roundrobin.rs      (TaskEntry segment list, if chosen)
-main64/build/helper_build_user_programs.sh                       (drop objcopy, ship ELF)
+main64/helper_build_user_programs.sh                       (drop objcopy, ship ELF)
 main64/build/build_bios_debug.sh                        (copy ELF instead of .bin)
 main64/build/build_bios_release.sh                      (copy ELF instead of .bin)
 main64/user_programs/*/link.ld                      (undo .bss-merge workaround,
@@ -351,7 +351,7 @@ deferred:
 - **GNU stack / `PT_GNU_STACK`** — the stack is created by the kernel; the
   segment can be ignored.
 - **Symbol tables / debug sections** — kernel does not need them; keep them
-  out of the FAT12 image to save space (strip with
+  out of the FAT32 image to save space (strip with
   `llvm-strip --strip-debug` before installing).
 
 These can each be added incrementally on top of the static-ET_EXEC loader

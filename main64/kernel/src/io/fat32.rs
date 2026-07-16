@@ -253,6 +253,8 @@ impl Fat32Volume {
 
         crate::console::with_console(|console| {
             let mut cluster_count = 0;
+
+            // Step 1: Walk the root directory cluster chain
             'dir_walk: while (2..0x0FFF_FFF8).contains(&current_cluster) {
                 cluster_count += 1;
                 if cluster_count > 1_000_000 {
@@ -269,6 +271,7 @@ impl Fat32Volume {
                         return;
                     }
 
+                    // Step 2: Read 32-byte directory entries in the sector
                     for entry_idx in 0..(512 / 32) {
                         let offset = entry_idx * 32;
                         let first_byte = sector[offset];
@@ -283,7 +286,7 @@ impl Fat32Volume {
                             continue;
                         }
 
-                        // Parse the name in standard 8.3 format
+                        // Step 3: Parse the name in standard 8.3 format
                         let mut name_buf = [0u8; 13];
                         let mut pos = 0;
 
@@ -312,6 +315,7 @@ impl Fat32Volume {
 
                         let name = core::str::from_utf8(&name_buf[..pos]).unwrap_or("???");
 
+                        // Step 4: Extract starting cluster and file size
                         let clus_hi = u16::from_le_bytes(
                             sector[offset + 0x14..offset + 0x16].try_into().unwrap(),
                         ) as u32;
@@ -323,7 +327,7 @@ impl Fat32Volume {
                             sector[offset + 0x1C..offset + 0x20].try_into().unwrap(),
                         );
 
-                        // Format and print each directory entry's size, start cluster, and name
+                        // Step 5: Format and print each directory entry's size, start cluster, and name
                         let _ = write!(console, "{} bytes", file_size);
                         let _ = write!(console, "\tStart Cluster: {}", first_cluster);
                         let _ = write!(console, "\t{}", name);
@@ -338,7 +342,7 @@ impl Fat32Volume {
                     }
                 }
 
-                // Look up the next cluster
+                // Step 6: Look up the next cluster
                 if let Ok(next) = self.next_cluster(current_cluster) {
                     current_cluster = next;
                 } else {
@@ -346,7 +350,7 @@ impl Fat32Volume {
                 }
             }
 
-            // Print footer
+            // Step 7: Print footer
             let _ = write!(console, "\t\t{} File(s)", file_count);
             let _ = write!(console, "\t{} bytes", total_size);
             console.print_char(b'\n');

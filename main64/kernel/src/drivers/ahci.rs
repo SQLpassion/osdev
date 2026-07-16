@@ -282,6 +282,8 @@ unsafe fn init_ports(hba: *mut HbaMem, phys_base: u64) -> bool {
     let sss = (cap & HBA_CAP_SSS) != 0;
 
     let pi = core::ptr::read_volatile(&(*hba).pi);
+
+    // Step 1: Iterate over implemented ports
     for i in 0..32 {
         if (pi & (1 << i)) == 0 {
             continue;
@@ -289,7 +291,7 @@ unsafe fn init_ports(hba: *mut HbaMem, phys_base: u64) -> bool {
 
         let port = &mut (*hba).ports[i];
 
-        // Cheap check first: a port with no device detected and no staggered
+        // Step 2: Cheap check to skip empty ports
         // spin-up to wake one is empty — skip it without allocating structures or
         // paying the COMRESET/link-training wait. This is every port on the empty
         // built-in ICH9 HBA, so without this the driver spends seconds per port
@@ -309,12 +311,12 @@ unsafe fn init_ports(hba: *mut HbaMem, phys_base: u64) -> bool {
         // is needless and risks a too-short retrain wait on real hardware. A port
         // handed over offline (DET=4) or without communication (DET=1) — common
         // on real hardware — gets a COMRESET / spin-up to bring the Phy online.
+        // Step 4: Bring up the port link if not already established
         if det != HBA_PORT_DET_PRESENT && !port_bring_up(port, sss) {
             continue;
         }
 
-        // Wait for the device to leave the busy state, then confirm it is an ATA
-        // disk before claiming it.
+        // Step 5: Confirm ATA disk signature after waiting for ready state
         if !port_wait_ready(port) {
             continue;
         }
@@ -322,7 +324,7 @@ unsafe fn init_ports(hba: *mut HbaMem, phys_base: u64) -> bool {
             continue;
         }
 
-        // Device is ready: start the command engine and remember the port.
+        // Step 6: Start command engine and mark port active
         port_start(port);
         ACTIVE_PORT = Some(port as *mut HbaPort);
         return true;
@@ -586,6 +588,7 @@ pub fn read_sectors(buffer: &mut [u8], lba: u32, sector_count: u8) -> Result<(),
         "Buffer too small for AHCI read"
     );
 
+    // Step 1: Read sectors sequentially
     for sec in 0..sector_count {
         let current_lba = lba + sec as u32;
 
@@ -594,6 +597,8 @@ pub fn read_sectors(buffer: &mut [u8], lba: u32, sector_count: u8) -> Result<(),
             p.is = 0xFFFF_FFFF; // Clear pending interrupt bits
 
             let slot = 0; // Use slot 0
+
+            // Step 2: Wait for command slot 0 to become free
             let mut timeout = 1_000_000;
             loop {
                 let ci = core::ptr::read_volatile(&p.ci);
@@ -612,6 +617,7 @@ pub fn read_sectors(buffer: &mut [u8], lba: u32, sector_count: u8) -> Result<(),
                 + (slot as u64 * core::mem::size_of::<HbaCmdHeader>() as u64))
                 as *mut HbaCmdHeader);
 
+            // Step 3: Set up Command Header (HbaCmdHeader)
             cmd_header.cfl = (core::mem::size_of::<FisRegH2D>() / 4) as u8; // 5 DWORDS
             cmd_header.flags = 0; // Read
             cmd_header.prdtl = 1;
@@ -624,12 +630,12 @@ pub fn read_sectors(buffer: &mut [u8], lba: u32, sector_count: u8) -> Result<(),
                 core::mem::size_of::<HbaCmdTbl>(),
             );
 
-            // Setup PRDT
+            // Step 4: Set up PRDT entry pointing to DMA buffer
             cmd_tbl.prdt_entry[0].dba = dma_buf as u32;
             cmd_tbl.prdt_entry[0].dbau = (dma_buf >> 32) as u32;
             cmd_tbl.prdt_entry[0].dbc = 512 - 1; // Byte count, 0-indexed (511)
 
-            // Setup Command FIS
+            // Step 5: Set up Command FIS (READ DMA EXT)
             let fis = &mut *(cmd_tbl.cfis.as_mut_ptr() as *mut FisRegH2D);
             fis.fis_type = 0x27; // Register H2D
             fis.pmport_c = 1 << 7; // Command
@@ -647,10 +653,10 @@ pub fn read_sectors(buffer: &mut [u8], lba: u32, sector_count: u8) -> Result<(),
             fis.countl = 1; // Read 1 sector
             fis.counth = 0;
 
-            // Issue command
+            // Step 6: Issue command via PxCI
             p.ci = 1 << slot;
 
-            // Wait for completion
+            // Step 7: Wait for completion and handle errors
             let mut timeout2 = 1_000_000;
             loop {
                 let ci = core::ptr::read_volatile(&p.ci);
@@ -668,7 +674,7 @@ pub fn read_sectors(buffer: &mut [u8], lba: u32, sector_count: u8) -> Result<(),
                 }
             }
 
-            // Copy from DMA buffer to caller's buffer
+            // Step 8: Copy from DMA buffer to caller's buffer
             let dest = buffer.as_mut_ptr().add(sec as usize * 512);
             core::ptr::copy_nonoverlapping(dma_buf as *const u8, dest, 512);
         }
