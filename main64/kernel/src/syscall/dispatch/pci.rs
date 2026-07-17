@@ -2,7 +2,7 @@
 
 use crate::drivers::pci;
 use crate::syscall::types::{
-    is_valid_user_buffer, SyscallError, SyscallResult, UserPciBar, UserPciDevice,
+    is_valid_user_buffer_writable, SyscallError, SyscallResult, UserPciBar, UserPciDevice,
 };
 
 /// Implements `GetPciDeviceCount()`.
@@ -27,7 +27,7 @@ pub fn syscall_get_pci_device_impl(index: u64, out_ptr: *mut UserPciDevice) -> S
     // Step 2: Verify that the user-space output pointer represents a valid,
     // writable memory range in the Ring-3 address space.
     let struct_size = core::mem::size_of::<UserPciDevice>();
-    if !is_valid_user_buffer(out_ptr as *const u8, struct_size) {
+    if !is_valid_user_buffer_writable(out_ptr as *const u8, struct_size) {
         return Err(SyscallError::InvalidArg);
     }
 
@@ -84,7 +84,8 @@ pub fn syscall_get_pci_device_impl(index: u64, out_ptr: *mut UserPciDevice) -> S
     };
 
     // SAFETY:
-    // - `out_ptr` has been validated to point entirely within user canonical space.
+    // - `out_ptr` has been validated to point entirely within present,
+    //   user-accessible, writable pages.
     // - The memory alignment is handled by `UserPciDevice` being `#[repr(C)]`.
     // - Memory safety is preserved since the caller owns the memory range in user space.
     unsafe {

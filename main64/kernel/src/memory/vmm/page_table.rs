@@ -568,6 +568,46 @@ pub fn is_leaf_present(virtual_address: u64) -> bool {
     table_entry(pt, pt_index(virtual_address)).present()
 }
 
+/// Returns whether one virtual page is present and effectively user-writable.
+///
+/// Every paging level contributes to x86_64 access permissions. A supervisor
+/// or read-only intermediate entry therefore makes the final mapping unusable
+/// for a user write even when the leaf PTE itself is writable.
+#[inline]
+pub fn is_user_page_writable(virtual_address: u64) -> bool {
+    // Step 1: Walk the PML4 and reject absent or supervisor/read-only paths.
+    let pml4 = table_at(PML4_TABLE_ADDR);
+    let pml4e = table_entry(pml4, pml4_index(virtual_address));
+    if !pml4e.present() || !pml4e.user() || !pml4e.writable() {
+        return false;
+    }
+
+    // Step 2: Apply the same effective-permission check at the PDPT level.
+    let pdp = table_at(pdp_table_addr(virtual_address));
+    let pdpe = table_entry(pdp, pdp_index(virtual_address));
+    if !pdpe.present() || !pdpe.user() || !pdpe.writable() {
+        return false;
+    }
+    if pdpe.huge() {
+        return true;
+    }
+
+    // Step 3: Check the page-directory level before descending to a 4 KiB PT.
+    let pd = table_at(pd_table_addr(virtual_address));
+    let pde = table_entry(pd, pd_index(virtual_address));
+    if !pde.present() || !pde.user() || !pde.writable() {
+        return false;
+    }
+    if pde.huge() {
+        return true;
+    }
+
+    // Step 4: Validate the final 4 KiB leaf entry.
+    let pt = table_at(pt_table_addr(virtual_address));
+    let pte = table_entry(pt, pt_index(virtual_address));
+    pte.present() && pte.user() && pte.writable()
+}
+
 /// Returns whether `virtual_address` is currently mapped at ANY page granularity —
 /// a 4 KiB leaf PTE, a 2 MiB PD huge page, or a 1 GiB PDPT huge page.
 ///

@@ -272,6 +272,39 @@ pub fn is_valid_user_buffer(ptr: *const u8, len: usize) -> bool {
     start < USER_CANONICAL_END && end <= USER_CANONICAL_END
 }
 
+/// Returns `true` when every page in `ptr..ptr+len` is present and user-writable.
+///
+/// This extends [`is_valid_user_buffer`] with a read-only page-table walk under
+/// the currently active address space. It does not fault in missing pages and
+/// therefore never changes the task's memory layout. A zero-length buffer is
+/// valid because no memory access will follow.
+#[cfg(feature = "kernel")]
+pub fn is_valid_user_buffer_writable(ptr: *const u8, len: usize) -> bool {
+    // Step 1: Preserve the canonical-range and overflow checks shared by all
+    // user buffers before inspecting page-table state.
+    if !is_valid_user_buffer(ptr, len) {
+        return false;
+    }
+    if len == 0 {
+        return true;
+    }
+
+    let start = ptr as u64;
+    let end = start + len as u64;
+    let mut page = start & !(crate::arch::constants::PAGE_SIZE_U64 - 1);
+
+    // Step 2: Check every page touched by the range, including partially used
+    // first and last pages. Missing pages are rejected rather than demand-mapped.
+    while page < end {
+        if !crate::memory::vmm::is_user_page_writable(page) {
+            return false;
+        }
+        page += crate::arch::constants::PAGE_SIZE_U64;
+    }
+
+    true
+}
+
 /// User-facing syscall error space.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SysError {

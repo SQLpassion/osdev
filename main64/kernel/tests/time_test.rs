@@ -95,18 +95,21 @@ fn test_datetime_add_seconds_rollover() {
 fn test_syscall_get_time() {
     use kaos_kernel::syscall::user::sys_get_time;
     use kaos_kernel::syscall::UserDateTime;
-    let mut udt = UserDateTime {
-        year: 0,
-        month: 0,
-        day: 0,
-        hour: 0,
-        minute: 0,
-        second: 0,
-        _padding: [0; 7],
-    };
+
+    // Step 1: Allocate a writable user page because the syscall contract
+    // requires output pointers to reference present user-accessible memory.
+    let user_va = vmm::USER_HEAP_BASE + 0x3000;
+    let phys = vmm::page_table::alloc_frame_phys().unwrap();
+    let pfn = vmm::page_table::phys_to_pfn(phys);
+    vmm::map_user_page(user_va, pfn, true).unwrap();
+
     // SAFETY:
-    // - We pass a valid pointer to a stack-allocated udt structure.
-    let res = unsafe { sys_get_time(&mut udt as *mut UserDateTime) };
+    // - `user_va` is backed by a present, writable user page mapped above.
+    let res = unsafe { sys_get_time(user_va as *mut UserDateTime) };
     assert!(res.is_ok(), "sys_get_time syscall should succeed");
+
+    // SAFETY:
+    // - The successful syscall initialized the UserDateTime at `user_va`.
+    let udt = unsafe { core::ptr::read(user_va as *const UserDateTime) };
     assert!(udt.year >= 2000, "Year should be reasonable");
 }

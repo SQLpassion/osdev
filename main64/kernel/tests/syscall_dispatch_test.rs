@@ -7,7 +7,9 @@
 #![reexport_test_harness_main = "test_main"]
 
 use core::panic::PanicInfo;
-use kaos_kernel::syscall::{self, is_valid_user_buffer, SysError, SyscallId};
+use kaos_kernel::syscall::{
+    self, is_valid_user_buffer, is_valid_user_buffer_writable, SysError, SyscallId,
+};
 
 #[no_mangle]
 #[link_section = ".text.boot"]
@@ -624,6 +626,63 @@ fn test_user_buffer_accepts_valid_user_pointer() {
     assert!(
         is_valid_user_buffer(ptr, 256),
         "valid user-space pointer must be accepted"
+    );
+}
+
+/// Contract: writable-buffer validation rejects present read-only user pages.
+#[test_case]
+fn test_writable_user_buffer_rejects_read_only_code_page() {
+    let user_va = kaos_kernel::memory::vmm::USER_CODE_BASE + 0x1A_000;
+    let phys = kaos_kernel::memory::vmm::page_table::alloc_frame_phys().unwrap();
+    let pfn = kaos_kernel::memory::vmm::page_table::phys_to_pfn(phys);
+
+    kaos_kernel::memory::vmm::map_user_page(user_va, pfn, false).unwrap();
+
+    assert!(
+        !is_valid_user_buffer_writable(user_va as *const u8, 1),
+        "read-only code page must fail writable user-buffer validation"
+    );
+
+    let ret = syscall::dispatch(SyscallId::GetTime as u64, user_va, 0, 0, 0);
+    assert_eq!(
+        ret,
+        syscall::SYSCALL_ERR_INVALID_ARG,
+        "GetTime must reject a read-only user output page"
+    );
+}
+
+/// Contract: writable-buffer validation checks every page touched by a range.
+#[test_case]
+fn test_writable_user_buffer_rejects_read_only_page_after_boundary() {
+    let first_va = kaos_kernel::memory::vmm::USER_CODE_BASE + 0x1B_000;
+    let second_va = first_va + 4096;
+    let first_phys = kaos_kernel::memory::vmm::page_table::alloc_frame_phys().unwrap();
+    let second_phys = kaos_kernel::memory::vmm::page_table::alloc_frame_phys().unwrap();
+
+    kaos_kernel::memory::vmm::map_user_page(
+        first_va,
+        kaos_kernel::memory::vmm::page_table::phys_to_pfn(first_phys),
+        true,
+    )
+    .unwrap();
+    kaos_kernel::memory::vmm::map_user_page(
+        second_va,
+        kaos_kernel::memory::vmm::page_table::phys_to_pfn(second_phys),
+        false,
+    )
+    .unwrap();
+
+    let crossing_ptr = (second_va - 32) as *const u8;
+    assert!(
+        !is_valid_user_buffer_writable(crossing_ptr, 64),
+        "a range crossing into a read-only page must be rejected"
+    );
+
+    let ret = syscall::dispatch(SyscallId::GetTime as u64, (first_va + 128) as u64, 0, 0, 0);
+    assert_eq!(
+        ret,
+        syscall::SYSCALL_OK,
+        "a fully writable output page must remain accepted"
     );
 }
 

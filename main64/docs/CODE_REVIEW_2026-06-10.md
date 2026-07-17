@@ -25,35 +25,6 @@ separate kernels in QEMU, see the `[[test]]` entries in `Cargo.toml`).
 
 ## Priority 2 — HIGH
 
-### R-02 `[ ]` Kernel writes to user pointers are not permission-checked — write to a read-only user page = kernel panic
-
-- **Severity:** HIGH · **Category:** Security (DoS from ring 3)
-- **Files:**
-  - `src/syscall/dispatch/fs.rs:62-71` (`ReadFile`, writes into `buf_ptr`)
-  - `src/syscall/dispatch/bios.rs:61-63` (`GetBiosMemoryMapEntry`), `bios.rs:98-100` (`GetTime`)
-  - `src/syscall/dispatch/pci.rs:84-86` (`GetPciDevice`)
-  - Sink: `src/memory/vmm/page_fault.rs:70-79` + `:217-239`
-
-**Problem:** `is_valid_user_buffer` (`src/syscall/types.rs:256`) only checks that the range lies in the
-lower canonical half (null, kernel half, and `ptr+len` overflow are correctly rejected) — but NOT whether
-the target is writable or even mapped. The user code region starting at
-`USER_CODE_BASE = 0x0000_7000_0000_0000` is mapped present + read-only (`map_user_page` sets
-`writable=false` for `UserRegion::Code`, `mapping.rs:688`). A ring-3 program calls e.g.
-`GetTime(out_ptr = USER_CODE_BASE)` or `ReadFile(fd, buf_ptr = USER_CODE_BASE, len)`: the pointer passes
-validation, the kernel writes from CPL 0 to a present, read-only page → `#PF` with the P bit set →
-`try_handle_page_fault` classifies it as `ProtectionFault` → `panic!` → full halt.
-There is no `copy_to_user`-style fault-tolerant accessor. (Non-present user pointers happen to be rescued
-by demand paging; only the present+read-only case is fatal — and the code region is trivially reachable.)
-
-**Fix (minimal):** Add a function `is_valid_user_buffer_writable(ptr, len)` that walks the page tables
-under the task CR3 and checks present + U + W per page; call it in `ReadFile`, `GetTime`, `GetPciDevice`,
-`GetBiosMemoryMapEntry` before the write and return `InvalidArg` on failure.
-**Fix (long-term, stronger):** Implement `copy_to_user`/`copy_from_user` with page-fault fixup (the fault
-handler recognizes a faulting RIP inside the copy routine and returns an error instead of panicking).
-
-**Verification:** Test in `syscall_dispatch_test`: `GetTime` with a pointer into the task's own code
-region → `InvalidArg`, kernel keeps running.
-
 ### R-03 `[ ]` `FILE_DESCRIPTORS` SpinLock held across blocking disk I/O → kernel deadlock
 
 - **Severity:** HIGH · **Category:** Bug (concurrency / DoS)

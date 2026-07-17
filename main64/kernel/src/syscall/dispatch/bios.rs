@@ -2,7 +2,7 @@
 
 use crate::memory::bios::{self, BiosInformationBlock, BiosMemoryRegion};
 use crate::syscall::types::{
-    is_valid_user_buffer, SyscallError, SyscallResult, UserBiosMemoryRegion,
+    is_valid_user_buffer_writable, SyscallError, SyscallResult, UserBiosMemoryRegion,
 };
 
 /// Implements `GetBiosMemoryMapEntryCount()`.
@@ -37,7 +37,7 @@ pub fn syscall_get_bios_memory_map_entry_impl(
     // Step 2: Verify that the user-space output pointer represents a valid,
     // writable memory range in the Ring-3 address space.
     let struct_size = core::mem::size_of::<UserBiosMemoryRegion>();
-    if !is_valid_user_buffer(out_ptr as *const u8, struct_size) {
+    if !is_valid_user_buffer_writable(out_ptr as *const u8, struct_size) {
         return Err(SyscallError::InvalidArg);
     }
 
@@ -57,7 +57,8 @@ pub fn syscall_get_bios_memory_map_entry_impl(
     };
 
     // SAFETY:
-    // - `out_ptr` has been validated to point entirely within user canonical space.
+    // - `out_ptr` has been validated to point entirely within present,
+    //   user-accessible, writable pages.
     // - The memory alignment is handled by `UserBiosMemoryRegion` being `#[repr(C)]`.
     // - Memory safety is preserved since the caller owns the memory range in user space.
     unsafe {
@@ -76,7 +77,7 @@ pub fn syscall_get_time_impl(
     // Step 1: Verify that the user-space output pointer represents a valid,
     // writable memory range in the Ring-3 address space.
     let struct_size = core::mem::size_of::<crate::syscall::types::UserDateTime>();
-    if !is_valid_user_buffer(out_ptr as *const u8, struct_size) {
+    if !is_valid_user_buffer_writable(out_ptr as *const u8, struct_size) {
         return Err(SyscallError::InvalidArg);
     }
 
@@ -94,7 +95,8 @@ pub fn syscall_get_time_impl(
     };
 
     // SAFETY:
-    // - `out_ptr` has been validated to point entirely within user canonical space.
+    // - `out_ptr` has been validated to point entirely within present,
+    //   user-accessible, writable pages.
     // - The memory alignment is handled by `UserDateTime` being `#[repr(C)]`.
     // - Memory safety is preserved since the caller owns the memory range in user space.
     unsafe {

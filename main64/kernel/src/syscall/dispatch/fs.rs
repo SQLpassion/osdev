@@ -1,6 +1,8 @@
 //! Filesystem-related system call implementations.
 
-use crate::syscall::types::{is_valid_user_buffer, SyscallError, SyscallResult};
+use crate::syscall::types::{
+    is_valid_user_buffer, is_valid_user_buffer_writable, SyscallError, SyscallResult,
+};
 
 /// Helper to read a null-terminated string from user space safely.
 pub fn read_user_string(
@@ -62,12 +64,12 @@ pub fn syscall_read_file_impl(fd: u64, buf_ptr: *mut u8, len: u64) -> SyscallRes
     if len == 0 {
         return Ok(0);
     }
-    if !is_valid_user_buffer(buf_ptr, len as usize) {
+    if !is_valid_user_buffer_writable(buf_ptr, len as usize) {
         return Err(SyscallError::InvalidArg);
     }
 
     // SAFETY:
-    // - We validated the buffer is a valid user memory range.
+    // - We validated every page in the buffer is present, user-accessible, and writable.
     let buffer = unsafe { core::slice::from_raw_parts_mut(buf_ptr, len as usize) };
     let bytes_read = crate::io::vfs::read(fd as usize, buffer).map_err(map_fs_error)?;
     Ok(bytes_read as u64)
