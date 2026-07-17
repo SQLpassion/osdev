@@ -135,7 +135,7 @@ impl Fat32Reader {
         let mut cluster = self.root_cluster;
         let mut guard = 0u32;
 
-        while cluster >= 2 && cluster < EOC {
+        while (2..EOC).contains(&cluster) {
             guard += 1;
             if guard > 100_000 {
                 return None;
@@ -167,8 +167,8 @@ impl Fat32Reader {
 
                     // Compare the raw 11-byte 8.3 name.
                     let mut matches = true;
-                    for i in 0..11 {
-                        if *SECTOR_BUF.add(off + i) != name[i] {
+                    for (i, expected) in name.iter().enumerate() {
+                        if *SECTOR_BUF.add(off + i) != *expected {
                             matches = false;
                             break;
                         }
@@ -210,7 +210,7 @@ pub unsafe fn load_kernel_into_memory(filename: &[u8; 11]) -> Result<i32, &'stat
     let mut guard = 0u32;
 
     // Walk the file's cluster chain, reading each whole cluster into memory.
-    while cluster >= 2 && cluster < EOC {
+    while (2..EOC).contains(&cluster) {
         guard += 1;
         if guard > 10_000_000 {
             return Err("Corrupted FAT chain");
