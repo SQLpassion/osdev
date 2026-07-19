@@ -34,7 +34,8 @@ pub use types::{
 
 #[allow(unused_imports)]
 pub use pic::{
-    end_of_interrupt, init_periodic_timer, io_wait, mask_pic, pit_divisor_for_hz, remap_pic,
+    end_of_interrupt, init_periodic_timer, io_wait, is_spurious_irq, mask_pic, pit_divisor_for_hz,
+    remap_pic,
 };
 
 #[allow(unused_imports)]
@@ -183,6 +184,15 @@ pub(crate) fn dispatch_irq(vector: u8, frame: &mut SavedRegisters) -> *mut Saved
     let Some(irq_idx) = irq_slot_index(vector) else {
         return frame as *mut SavedRegisters;
     };
+
+    if (irq_idx == 7 || irq_idx == 15) && is_spurious_irq(irq_idx as u8) {
+        if irq_idx == 15 {
+            // Spurious IRQ15: send EOI to master only (IRQ2).
+            end_of_interrupt(2);
+        }
+        // For IRQ7, no EOI is sent at all.
+        return frame as *mut SavedRegisters;
+    }
 
     // SAFETY:
     // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.

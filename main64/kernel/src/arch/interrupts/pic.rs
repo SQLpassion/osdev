@@ -7,6 +7,7 @@ const PIC1_DATA: u16 = 0x21;
 const PIC2_COMMAND: u16 = 0xA0;
 const PIC2_DATA: u16 = 0xA1;
 const PIC_EOI: u8 = 0x20;
+const PIC_ISR_READ: u8 = 0x0B;
 
 const PIC_ICW1_INIT: u8 = 0x10;
 const PIC_ICW1_ICW4: u8 = 0x01;
@@ -131,5 +132,32 @@ pub fn init_periodic_timer(hz: u32) {
         cmd.write(PIT_MODE_RATE_GENERATOR);
         data.write((divisor & 0xFF) as u8);
         data.write((divisor >> 8) as u8);
+    }
+}
+
+/// Checks if the given IRQ is a spurious interrupt from the PIC.
+/// Spurious interrupts occur when a device deasserts its IRQ line
+/// before the PIC can acknowledge it. The PIC defaults to reporting
+/// IRQ 7 (for master) or IRQ 15 (for slave).
+pub fn is_spurious_irq(irq: u8) -> bool {
+    if irq != 7 && irq != 15 {
+        return false;
+    }
+
+    // SAFETY:
+    // - This requires `unsafe` because hardware port I/O is inherently outside Rust's memory-safety guarantees.
+    // - Reading the PIC ISR (In-Service Register) is safe and doesn't mutate PIC state.
+    unsafe {
+        if irq == 7 {
+            let cmd = PortByte::new(PIC1_COMMAND);
+            cmd.write(PIC_ISR_READ);
+            let isr = cmd.read();
+            (isr & (1 << 7)) == 0
+        } else {
+            let cmd = PortByte::new(PIC2_COMMAND);
+            cmd.write(PIC_ISR_READ);
+            let isr = cmd.read();
+            (isr & (1 << 7)) == 0
+        }
     }
 }

@@ -25,49 +25,6 @@ separate kernels in QEMU, see the `[[test]]` entries in `Cargo.toml`).
 
 ## Priority 3 — MEDIUM
 
-### R-04 `[ ]` Page-fault stub lacks a defensive `cli`
-
-- **Severity:** MEDIUM · **Category:** Bug (latent)
-- **File:** `src/arch/interrupts/stubs.rs:249-296` (`isr14_page_fault_stub`)
-
-**Problem:** Every other stub begins with `cli`; the page-fault stub does not. Currently safe, because
-vector 14 is an interrupt gate (`IDT_INTERRUPT_GATE`, `idt.rs:18,136`) and the CPU clears IF itself. But
-correctness hinges entirely on the gate type: if vector 14 were ever switched to a trap gate (not unusual
-for #PF), the handler would run with IF=1 — a timer IRQ could fire in the middle of
-`populate_page_table_path` / `alloc_frame_phys` and invoke the scheduler or a nested #PF while VMM
-spinlocks are held by this frame → deadlock on the non-reentrant lock. Of all handlers, the fault handler
-doing the most work (allocations, page-table walks, `invlpg`) is the only one missing an explicit `cli`.
-
-**Fix:** Add `cli` as the first instruction of `isr14_page_fault_stub` (consistency + defense in depth):
-```asm
-isr14_page_fault_stub:
-    cli
-    push rax
-    ...
-```
-
-**Verification:** `cargo test --test page_fault_death_test` and `vmm_test` must remain green.
-
-### R-09 `[ ]` No spurious-IRQ handling for IRQ7/IRQ15 — unwarranted EOIs can drop real IRQs
-
-- **Severity:** MEDIUM · **Category:** Bug
-- **Files:** `src/arch/interrupts/mod.rs:200-202` (`dispatch_irq` sends EOI for all vectors), `src/arch/interrupts/pic.rs:86-97` (`end_of_interrupt`)
-
-**Problem:** The 8259 raises a spurious IRQ7 (master) or IRQ15 (slave) when an IRQ line deasserts before
-the CPU acknowledge. Correct handling: spurious IRQ7 → no EOI at all; spurious IRQ15 → EOI to the master
-only (for the cascade IRQ2), not to the slave. Detection via the In-Service Register (ISR) using OCW3.
-The current code unconditionally sends EOI for every IRQ vector. An unowed EOI can prematurely acknowledge
-a different, legitimately in-service interrupt → dropped IRQs (e.g. a lost ATA completion or keyboard
-event), manifesting as intermittent hangs in PIO wait loops.
-
-**Fix:** Before sending EOI for vectors 7 and 15, read the PIC ISR
-(`outb(PICx_COMMAND, 0x0B); v = inb(PICx_COMMAND)`) and check the top bit. If clear → spurious:
-for IRQ7 return without any EOI; for IRQ15 send EOI to the master only. Wire this into
-`dispatch_irq`/`end_of_interrupt`; do not invoke the registered handler for a detected spurious IRQ.
-
-**Verification:** Existing interrupt tests green; manual test in QEMU/Bochs (keyboard/ATA still
-functional).
-
 ### R-10 `[ ]` Fatal exception path takes the serial SpinLock — deadlock instead of panic banner
 
 - **Severity:** MEDIUM · **Category:** Bug
