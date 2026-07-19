@@ -472,10 +472,14 @@ impl crate::io::vfs::FileSystem for Fat32Fs {
             return Err(crate::io::vfs::FsError::Unsupported);
         }
 
-        // Step 3: Read whole file content without holding the lock (prevent deadlock/interrupt-disabling during block I/O).
+        // Step 3: Read whole file content without holding the descriptor lock.
+        // `read_file` performs blocking block-device I/O, which may yield.
+        // Taking `open_files.lock()` only after the I/O completes keeps the
+        // interrupt-masking spinlock scoped to the in-memory descriptor table
+        // and prevents deadlocks with concurrent file syscalls.
         let data = self.volume.read_file(name).map_err(map_fat32_err)?;
 
-        // Step 3: Lock the open file descriptors table and insert the newly opened file.
+        // Step 4: Lock the open file descriptors table and insert the newly opened file.
         let mut files = self.open_files.lock();
         let file = Fat32OpenFile {
             name: alloc::string::String::from(name),
@@ -504,6 +508,8 @@ impl crate::io::vfs::FileSystem for Fat32Fs {
 
     fn read(&self, fd: usize, buf: &mut [u8]) -> Result<usize, crate::io::vfs::FsError> {
         // Step 1: Lock files list and retrieve a mutable reference to the open file state.
+        // This lock only protects the in-memory descriptor table/caches.
+        // No disk I/O happens here, so holding the interrupt-masking spinlock is safe.
         let mut files = self.open_files.lock();
         if fd >= files.len() {
             return Err(crate::io::vfs::FsError::InvalidFd);
@@ -531,6 +537,7 @@ impl crate::io::vfs::FileSystem for Fat32Fs {
 
     fn seek(&self, fd: usize, offset: u32) -> Result<(), crate::io::vfs::FsError> {
         // Step 1: Lock files list and retrieve file state.
+        // Pure metadata mutation; no disk I/O under this lock.
         let mut files = self.open_files.lock();
         if fd >= files.len() {
             return Err(crate::io::vfs::FsError::InvalidFd);
@@ -549,6 +556,7 @@ impl crate::io::vfs::FileSystem for Fat32Fs {
 
     fn eof(&self, fd: usize) -> Result<bool, crate::io::vfs::FsError> {
         // Step 1: Lock files list and verify cursor offset is at or past size.
+        // Pure metadata read; no disk I/O under this lock.
         let files = self.open_files.lock();
         if fd >= files.len() {
             return Err(crate::io::vfs::FsError::InvalidFd);

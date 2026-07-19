@@ -71,8 +71,16 @@ pub fn mount(fs: Box<dyn FileSystem>) {
 ///
 /// Thread-safe: releases the spinlock before invoking the closure so the
 /// backend file operations can block/yield without disabling interrupts.
+///
+/// The mount lock (`MOUNTED_FS`) is never held across blocking
+/// disk I/O. The guard is dropped after copying a stable pointer to the
+/// filesystem backend; the backend itself uses interior mutability for its
+/// own descriptor tables and therefore does not rely on this outer lock.
 fn with<R>(f: impl FnOnce(&dyn FileSystem) -> Result<R, FsError>) -> Result<R, FsError> {
     // Step 1: Acquire the lock briefly to copy out the raw fat pointer to the trait object.
+    // Keep this critical section as short as possible; the backend call below
+    // may yield (ATA/AHCI waits), so holding the mount lock here would deadlock
+    // on single-core preemptive I/O.
     let ptr: *const dyn FileSystem = {
         let guard = MOUNTED_FS.lock();
         match guard.as_deref() {

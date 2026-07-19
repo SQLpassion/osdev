@@ -177,6 +177,11 @@ pub fn init_ahci() {
 }
 
 /// Read `count` sectors at `lba` into `buf` from the active device.
+///
+/// The active-device container lock is not held across the
+/// driver call. The device reference is copied out under the lock and the lock
+/// is dropped before invoking `read_sectors`, because ATA PIO waits may yield
+/// the current task and a spinlock must never be held across such a yield.
 pub fn read_sectors(lba: u64, count: u32, buf: &mut [u8]) -> Result<(), BlockError> {
     // Step 1: Lock the global active device container to copy the static reference.
     // The spinlock is released immediately afterwards to prevent holding it across
@@ -191,6 +196,10 @@ pub fn read_sectors(lba: u64, count: u32, buf: &mut [u8]) -> Result<(), BlockErr
 }
 
 /// Write `count` sectors at `lba`. Errors with `Unsupported` on read-only devices.
+///
+/// Same as `read_sectors` — the active-device lock is dropped
+/// before the backend write call so that yielding device drivers cannot deadlock
+/// with other tasks waiting on this lock.
 pub fn write_sectors(lba: u64, count: u32, buf: &[u8]) -> Result<(), BlockError> {
     // Step 1: Lock the global active device container to copy the static reference.
     // The spinlock is released immediately afterwards to prevent holding it across

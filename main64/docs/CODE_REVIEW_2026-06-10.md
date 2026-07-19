@@ -23,56 +23,6 @@ separate kernels in QEMU, see the `[[test]]` entries in `Cargo.toml`).
 
 ---
 
-## Priority 2 — HIGH
-
-### R-03 `[ ]` `FILE_DESCRIPTORS` SpinLock held across blocking disk I/O → kernel deadlock
-
-- **Severity:** HIGH · **Category:** Bug (concurrency / DoS)
-- **Files:**
-  - `src/io/fat12/fd.rs:164-215` (`read_file_fd`), `:218-288` (`write_file_fd`), `:23-126` (`open_file`)
-  - Lock semantics: `src/sync/spinlock.rs:68-93`; ATA blocking: `src/drivers/ata.rs:233,305`
-
-**Problem:** All fd operations take `FILE_DESCRIPTORS.lock()` (a SpinLock: disables interrupts,
-contenders busy-spin) and then perform blocking disk I/O while holding the guard:
-`read_file_fd` holds the lock from line 165 and calls `read_fat_from_disk()` (177) and
-`ata::read_sectors()` (195); `write_file_fd` and `open_file` (Write/Append branches) are analogous. The
-ATA paths block cooperatively via `scheduler::yield_now()` (context switch via `int IRQ0`), i.e. the lock
-stays held while the owning task waits for the disk.
-
-**Deadlock scenario (reachable from ring 3, since file syscalls are exposed):** Task A takes
-`FILE_DESCRIPTORS` and yields inside the ATA wait. Task B makes any file syscall →
-`FILE_DESCRIPTORS.lock()` → `interrupts::disable()` + endless CAS spin. Single core: with interrupts
-disabled in B's spin, the timer never fires again, A is never rescheduled, the lock is never released →
-permanent system hang.
-
-**Fix:** Never hold the lock across disk I/O. Pattern: copy the needed descriptor fields out under the
-lock, drop the guard, perform the I/O, re-take the lock and commit the updates:
-```rust
-let (start_cluster, cur_off, file_size) = {
-    let fds = FILE_DESCRIPTORS.lock();
-    let e = fds.iter().find(|e| e.fd == fd).ok_or(Fat12Error::NotFound)?;
-    (e.start_cluster, e.current_offset, e.file_size)
-};
-// ... read_fat_from_disk / read_sectors without the FD lock held ...
-{
-    let mut fds = FILE_DESCRIPTORS.lock();
-    if let Some(e) = fds.iter_mut().find(|e| e.fd == fd) {
-        e.current_offset = new_off;
-        e.current_cluster = current_cluster;
-    }
-}
-```
-Same pattern for `write_file_fd` and `open_file`. Additionally: introduce an FS-wide mutex that is NOT
-interrupt-masking and is safe to hold across `yield_now()` (e.g. based on the existing WaitQueue) to
-serialize FS operations — the interrupt-masking SpinLock is the wrong primitive for cooperative blocking.
-Mind the interaction with R-06/R-07 (fd coherence): the copy-out/commit split must account for races with
-`delete_file`/truncate.
-
-**Verification:** Test with two tasks doing file I/O in parallel (e.g. in `fat12_test` or a new test);
-without the fix the kernel hangs.
-
----
-
 ## Priority 3 — MEDIUM
 
 ### R-04 `[ ]` Page-fault stub lacks a defensive `cli`
