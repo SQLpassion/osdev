@@ -170,6 +170,20 @@ pub fn _debug_print(args: fmt::Arguments) {
     }
 }
 
+/// Write formatted debug output to the serial port, bypassing the spinlock.
+///
+/// This is intended strictly for fatal exception handlers (e.g. panic or unrecoverable faults)
+/// where taking a lock could lead to a deadlock if the fault occurred while the lock was held.
+#[doc(hidden)]
+pub fn force_unlocked_print(args: fmt::Arguments) {
+    use fmt::Write;
+    // Bypass the global spinlock by creating a temporary, lock-free instance.
+    // This is safe because COM1 I/O ports are stateless enough for single-byte writes
+    // and we are in an unrecoverable fault context where data interleaving is acceptable.
+    let mut serial = Serial::new();
+    let _ = serial.write_fmt(args);
+}
+
 /// Debug output macro - works like print! but outputs to serial port
 ///
 /// Usage:

@@ -61,7 +61,7 @@ pub unsafe extern "C" fn page_fault_handler_rust(
         "USER EXCEPTION #PF: terminating task at rip=0x{:016x} cr2=0x{:016x} err=0x{:016x} cs=0x{:04x}\n",
         iret_frame.rip, faulting_address, error_code, iret_frame.cs
     );
-    crate::drivers::serial::_debug_print(diagnostic);
+    crate::drivers::serial::force_unlocked_print(diagnostic);
     crate::console::with_console(|console| {
         let _ = console.write_fmt(diagnostic);
     });
@@ -198,7 +198,7 @@ pub extern "C" fn exception_handler_rust(
         //   (plus optional error code for vectors that carry one).
         &*(iret_ptr as *const InterruptStackFrame)
     };
-    crate::drivers::serial::_debug_print(format_args!(
+    crate::drivers::serial::force_unlocked_print(format_args!(
         "FATAL EXCEPTION vec=0x{:02x} has_err={} err=0x{:016x} frame=0x{:016x} rip=0x{:016x} cs=0x{:016x} rflags=0x{:016x}\n",
         vector,
         has_error_code,
@@ -360,7 +360,7 @@ fn terminate_user_exception(
         "USER EXCEPTION {}: terminating task at rip=0x{:016x} err=0x{:016x} cs=0x{:04x}\n",
         name, iret_frame.rip, error_code, iret_frame.cs
     );
-    crate::drivers::serial::_debug_print(diagnostic);
+    crate::drivers::serial::force_unlocked_print(diagnostic);
 
     // Step 2: The user task cannot hold the console lock while executing the
     // exception, so the same diagnostic can safely reach the visible console.

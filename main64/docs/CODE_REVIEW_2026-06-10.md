@@ -25,25 +25,6 @@ separate kernels in QEMU, see the `[[test]]` entries in `Cargo.toml`).
 
 ## Priority 3 — MEDIUM
 
-### R-10 `[ ]` Fatal exception path takes the serial SpinLock — deadlock instead of panic banner
-
-- **Severity:** MEDIUM · **Category:** Bug
-- **Files:** `src/arch/interrupts/handlers.rs:135-144` (`exception_handler_rust` → `serial::_debug_print`), `src/drivers/serial.rs:165-168` (`_debug_print` takes `DEBUG_SERIAL.serial.lock()`)
-
-**Problem:** If the fault occurred while the faulting context already held the serial lock (e.g. a
-#GP/#PF from inside a `debugln!`/logging call), the exception handler spins forever on a lock that will
-never be released — no banner, machine hangs with no output. This is exactly the re-entrancy trap the
-panic handler (`panic.rs`) already avoids with the lock-free `PanicScreenWriter`; the serial output of
-the exception sink doesn't get the same treatment. (The VGA banner via `write_vga_row` is correctly
-lock-free.)
-
-**Fix:** Bypass the serial SpinLock in the fatal path — write bytes directly to the COM-port registers
-with a lock-free helper (analogous to `PanicScreenWriter`), e.g. expose a `serial::force_unlocked_print`.
-Never take a `SpinLock` from an unrecoverable-exception sink.
-
-**Verification:** Visual inspection + existing tests; optionally a test provoking an exception while the
-serial lock is held.
-
 ### R-11 `[ ]` User code pages are mapped writable + executable (W^X violation)
 
 - **Severity:** MEDIUM · **Category:** Security (hardening)

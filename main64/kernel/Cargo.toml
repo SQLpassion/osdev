@@ -108,3 +108,6 @@ name = "vfs_test"
 
 [[test]]
 name = "fat32_concurrent_test"
+
+[[test]]
+name = "serial_deadlock_test"
