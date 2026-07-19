@@ -176,3 +176,72 @@ fn test_concurrent_file_reads_do_not_deadlock() {
         "concurrent reader tasks must both complete their file reads"
     );
 }
+
+#[test_case]
+fn test_monotonic_fd_allocation() {
+    use kaos_kernel::io::vfs::FileMode;
+    let fd1 = kaos_kernel::io::vfs::open("HELLO.BIN", FileMode::Read).expect("open 1");
+    kaos_kernel::io::vfs::close(fd1).expect("close 1");
+
+    let fd2 = kaos_kernel::io::vfs::open("HELLO.BIN", FileMode::Read).expect("open 2");
+    kaos_kernel::io::vfs::close(fd2).expect("close 2");
+
+    assert!(
+        fd2 > fd1,
+        "file descriptors must be monotonic, fd2 {} <= fd1 {}",
+        fd2,
+        fd1
+    );
+}
+
+#[test_case]
+fn test_fd_isolation_between_tasks() {
+    use kaos_kernel::io::vfs::{FileMode, FsError};
+
+    static ISOLATION_FD: AtomicU64 = AtomicU64::new(0);
+    static ISOLATION_TASK_DONE: AtomicU64 = AtomicU64::new(0);
+
+    // 1. Open a file in the orchestrator task.
+    let fd = kaos_kernel::io::vfs::open("HELLO.BIN", FileMode::Read).expect("open in orchestrator");
+    ISOLATION_FD.store(fd as u64, Ordering::Release);
+
+    // 2. Spawn a child task that tries to access this FD.
+    extern "C" fn evil_child_task() -> ! {
+        let target_fd = ISOLATION_FD.load(Ordering::Acquire) as usize;
+        let mut buf = [0u8; 10];
+
+        let res_read = kaos_kernel::io::vfs::read(target_fd, &mut buf);
+        assert!(
+            matches!(res_read, Err(FsError::InvalidFd)),
+            "child should be denied read access to parent's fd"
+        );
+
+        let res_close = kaos_kernel::io::vfs::close(target_fd);
+        assert!(
+            matches!(res_close, Err(FsError::InvalidFd)),
+            "child should be denied closing parent's fd"
+        );
+
+        ISOLATION_TASK_DONE.store(1, Ordering::Release);
+        sched::exit_current_task();
+    }
+
+    let child = sched::spawn_kernel_task(evil_child_task).expect("spawn evil child");
+    sched::wait_for_task_exit(child);
+
+    assert_eq!(
+        ISOLATION_TASK_DONE.load(Ordering::Acquire),
+        1,
+        "evil child must complete"
+    );
+
+    // 3. Orchestrator can still read and close its own FD.
+    let mut buf = [0u8; 10];
+    let res = kaos_kernel::io::vfs::read(fd, &mut buf);
+    assert!(
+        res.is_ok(),
+        "orchestrator must still be able to read its own fd"
+    );
+
+    kaos_kernel::io::vfs::close(fd).expect("orchestrator close");
+}

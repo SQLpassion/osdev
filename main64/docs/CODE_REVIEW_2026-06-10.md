@@ -48,81 +48,6 @@ isr14_page_fault_stub:
 
 **Verification:** `cargo test --test page_fault_death_test` and `vmm_test` must remain green.
 
-### R-05 `[ ]` FAT12 fd table is global and unowned — any task can use another task's fds
-
-- **Severity:** MEDIUM · **Category:** Security (process isolation)
-- **Files:** `src/io/fat12/fd.rs:20` (`static FILE_DESCRIPTORS`), consumers `src/syscall/dispatch/fs.rs:52/58/75/99/106`; fd allocation `fd.rs:53`
-
-**Problem:** With `Exec` (17) + `Wait` (18), multiple user tasks coexist. The fd table is
-process-agnostic: `read_file_fd`/`write_file_fd`/`close_file`/`seek_file` look up purely by the small,
-predictable integer fd (`max(fd)+1`, starting at 1). Task B can pass `fd = 1` to
-`WriteFile`/`SeekFile`/`CloseFile` and corrupt task A's open-file state (close A's fd out from under it,
-move its offset, write through A's write handle), or read file contents through A's descriptor.
-
-**Fix:** Store the owning task ID in `FileDescriptor` at `open_file` time (via
-`scheduler::current_task_id()`) and reject `entry.owner != current_task` with `NotFound`/`InvalidArg` in
-every fd operation. Additionally reap a task's fds on `Exit`/reap (leak avoidance). Note: if R-18
-(task generation IDs) is implemented, include the generation in the ownership check; otherwise the slot ID
-suffices for now.
-
-**Verification:** Test: task A opens a file, task B attempts `read/write/close` on A's fd → error.
-
-### R-06 `[ ]` `open_file` Write/Append accepts directory entries → directory gets destroyed
-
-- **Severity:** MEDIUM · **Category:** Bug / Security
-- **File:** `src/io/fat12/fd.rs:75-101` (Write), `:102-124` (Append)
-
-**Problem:** The `Read` branch checks `attr & ATTR_DIRECTORY` (lines 57-60, → `IsDirectory`). The
-`Write` branch ignores the attribute and unconditionally calls `deallocate_cluster_chain` +
-`update_file_entry(.., 0, 0)` — for a subdirectory this deletes the directory and its contents.
-`Append` likewise never checks. File names come from untrusted user input → filesystem corruption
-triggerable from user space.
-
-**Fix:** In both branches, reject directories after the lookup, before mutating:
-```rust
-if let Some((_, _, _, attr)) = entry_index {
-    if attr & ATTR_DIRECTORY != 0 { return Err(Fat12Error::IsDirectory); }
-}
-```
-
-**Verification:** Extend `fat12_test`: open a directory entry with `OpenMode::Write` → `IsDirectory`,
-directory intact.
-
-### R-07 `[ ]` No coherence between open fds and `delete_file`/truncate (cluster use-after-free)
-
-- **Severity:** MEDIUM · **Category:** Bug / Security (cross-file corruption, info disclosure)
-- **Files:** `src/io/fat12/fs.rs:206-247` (`delete_file`), `src/io/fat12/fd.rs:75-101` (`open_file` Write)
-
-**Problem:** `delete_file` frees and zeroes a file's cluster chain but never consults `FILE_DESCRIPTORS`.
-If the file is open, the fd afterwards points at free clusters
-(`start_cluster`/`current_cluster`/`file_size` are stale). A subsequent `read_file_fd`/`write_file_fd`
-reads zeroed/reallocated clusters or writes into clusters the allocator now considers free →
-cross-file data corruption or disclosure of another file's freshly allocated data. Same problem with
-`open(Write)` truncating an already-open file. Reachable from user space via the file syscalls.
-
-**Fix:** Add reference awareness: before `delete_file`/`open(Write)` truncation, scan `FILE_DESCRIPTORS`
-for `root_entry_index == idx` and either return a busy error or invalidate the affected fds (mark them
-closed). Minimal variant: busy error.
-
-**Verification:** Test: open file, then `delete_file` → expected busy error (or fd invalidated);
-a subsequent `read` on the fd must not return foreign data.
-
-### R-08 `[ ]` fd numbers are reused → silent wrong-file I/O after close
-
-- **Severity:** MEDIUM · **Category:** Bug
-- **File:** `src/io/fat12/fd.rs:53` (`next_fd = fds.iter().map(|fd| fd.fd).max().unwrap_or(0) + 1`)
-
-**Problem:** After the last fd is closed the table is empty and the next `open` returns `1` again; in
-general any close-then-open sequence can recycle numbers. A task that retains a numeric fd after
-`close_file` and then performs I/O may operate on a different file that received the same number —
-silent wrong-file read/write. No generation/validation beyond the numeric match.
-
-**Fix:** Use a monotonically increasing global counter for fd allocation (never reuse), e.g. an
-`AtomicUsize` incremented on each `open`. Alternatively a generation tag in `FileDescriptor`.
-
-**Verification:** Test: open → close → open (different file) → I/O on the old fd number fails
-and never hits the new file.
-
 ### R-09 `[ ]` No spurious-IRQ handling for IRQ7/IRQ15 — unwarranted EOIs can drop real IRQs
 
 - **Severity:** MEDIUM · **Category:** Bug
@@ -506,8 +431,6 @@ value) instead of just `== 0`.
 1. **R-01** (ring-3 exception → task kill) — biggest security gap, foundation for R-02/R-13 behavior.
 2. **R-02** (user-pointer write check) — trivially triggerable kernel panic.
 3. **R-03** (fd lock across disk I/O) — deadlock on multi-task file I/O.
-4. **R-05 → R-08** (fd layer: ownership, directory guard, coherence, fd reuse) — related, best done in
-   one pass.
-5. **R-04, R-09, R-10, R-11, R-12** (remaining MEDIUMs, independent of each other).
+4. **R-04, R-09, R-10, R-11, R-12** (remaining MEDIUMs, independent of each other).
 6. **R-13 … R-23** (LOWs, each independent).
 7. Record observations O-1…O-7 in docs/CLAUDE.md where relevant.

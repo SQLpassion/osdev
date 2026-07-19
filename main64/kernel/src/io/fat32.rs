@@ -432,10 +432,17 @@ pub fn normalize_name(name: &str) -> Option<[u8; 11]> {
 // ---- FAT32 Open File state cache --------------------------------------------
 
 struct Fat32OpenFile {
+    fd: usize,
+    owner: core::option::Option<usize>,
     #[allow(dead_code)]
     name: alloc::string::String,
     data: Vec<u8>,
     offset: usize,
+}
+
+struct Fat32FsState {
+    next_fd: usize,
+    open_files: alloc::vec::Vec<Fat32OpenFile>,
 }
 
 // ---- FAT32 VFS adapter ------------------------------------------------------
@@ -443,14 +450,17 @@ struct Fat32OpenFile {
 /// FileSystem adapter for the FAT32 volume implementation.
 pub struct Fat32Fs {
     volume: Fat32Volume,
-    open_files: crate::sync::spinlock::SpinLock<alloc::vec::Vec<Option<Fat32OpenFile>>>,
+    state: crate::sync::spinlock::SpinLock<Fat32FsState>,
 }
 
 impl Fat32Fs {
     pub fn new(volume: Fat32Volume) -> Self {
         Self {
             volume,
-            open_files: crate::sync::spinlock::SpinLock::new(alloc::vec::Vec::new()),
+            state: crate::sync::spinlock::SpinLock::new(Fat32FsState {
+                next_fd: 1,
+                open_files: alloc::vec::Vec::new(),
+            }),
         }
     }
 }
@@ -480,43 +490,53 @@ impl crate::io::vfs::FileSystem for Fat32Fs {
         let data = self.volume.read_file(name).map_err(map_fat32_err)?;
 
         // Step 4: Lock the open file descriptors table and insert the newly opened file.
-        let mut files = self.open_files.lock();
+        let mut state = self.state.lock();
+        let fd = state.next_fd;
+        state.next_fd = state
+            .next_fd
+            .checked_add(1)
+            .ok_or(crate::io::vfs::FsError::Io)?;
+
         let file = Fat32OpenFile {
+            fd,
+            owner: crate::scheduler::current_task_id(),
             name: alloc::string::String::from(name),
             data,
             offset: 0,
         };
 
-        if let Some(free_idx) = files.iter().position(|slot| slot.is_none()) {
-            files[free_idx] = Some(file);
-            Ok(free_idx)
-        } else {
-            files.push(Some(file));
-            Ok(files.len() - 1)
-        }
+        state.open_files.push(file);
+        Ok(fd)
     }
 
     fn close(&self, fd: usize) -> Result<(), crate::io::vfs::FsError> {
-        // Step 1: Lock files list and remove active descriptor at the index.
-        let mut files = self.open_files.lock();
-        if fd >= files.len() || files[fd].is_none() {
-            return Err(crate::io::vfs::FsError::InvalidFd);
+        let mut state = self.state.lock();
+        let current_task = crate::scheduler::current_task_id();
+
+        if let Some(idx) = state.open_files.iter().position(|f| f.fd == fd) {
+            if state.open_files[idx].owner != current_task {
+                return Err(crate::io::vfs::FsError::InvalidFd);
+            }
+            state.open_files.swap_remove(idx);
+            Ok(())
+        } else {
+            Err(crate::io::vfs::FsError::InvalidFd)
         }
-        files[fd] = None;
-        Ok(())
     }
 
     fn read(&self, fd: usize, buf: &mut [u8]) -> Result<usize, crate::io::vfs::FsError> {
-        // Step 1: Lock files list and retrieve a mutable reference to the open file state.
-        // This lock only protects the in-memory descriptor table/caches.
-        // No disk I/O happens here, so holding the interrupt-masking spinlock is safe.
-        let mut files = self.open_files.lock();
-        if fd >= files.len() {
+        let mut state = self.state.lock();
+        let current_task = crate::scheduler::current_task_id();
+
+        let file = state
+            .open_files
+            .iter_mut()
+            .find(|f| f.fd == fd)
+            .ok_or(crate::io::vfs::FsError::InvalidFd)?;
+
+        if file.owner != current_task {
             return Err(crate::io::vfs::FsError::InvalidFd);
         }
-        let file = files[fd]
-            .as_mut()
-            .ok_or(crate::io::vfs::FsError::InvalidFd)?;
 
         // Step 2: Return 0 immediately if the cursor is already at EOF.
         if file.offset >= file.data.len() {
@@ -536,15 +556,18 @@ impl crate::io::vfs::FileSystem for Fat32Fs {
     }
 
     fn seek(&self, fd: usize, offset: u32) -> Result<(), crate::io::vfs::FsError> {
-        // Step 1: Lock files list and retrieve file state.
-        // Pure metadata mutation; no disk I/O under this lock.
-        let mut files = self.open_files.lock();
-        if fd >= files.len() {
+        let mut state = self.state.lock();
+        let current_task = crate::scheduler::current_task_id();
+
+        let file = state
+            .open_files
+            .iter_mut()
+            .find(|f| f.fd == fd)
+            .ok_or(crate::io::vfs::FsError::InvalidFd)?;
+
+        if file.owner != current_task {
             return Err(crate::io::vfs::FsError::InvalidFd);
         }
-        let file = files[fd]
-            .as_mut()
-            .ok_or(crate::io::vfs::FsError::InvalidFd)?;
 
         // Step 2: Ensure offset doesn't exceed file size (seeking past EOF is an I/O error).
         if offset as usize > file.data.len() {
@@ -555,15 +578,18 @@ impl crate::io::vfs::FileSystem for Fat32Fs {
     }
 
     fn eof(&self, fd: usize) -> Result<bool, crate::io::vfs::FsError> {
-        // Step 1: Lock files list and verify cursor offset is at or past size.
-        // Pure metadata read; no disk I/O under this lock.
-        let files = self.open_files.lock();
-        if fd >= files.len() {
+        let state = self.state.lock();
+        let current_task = crate::scheduler::current_task_id();
+
+        let file = state
+            .open_files
+            .iter()
+            .find(|f| f.fd == fd)
+            .ok_or(crate::io::vfs::FsError::InvalidFd)?;
+
+        if file.owner != current_task {
             return Err(crate::io::vfs::FsError::InvalidFd);
         }
-        let file = files[fd]
-            .as_ref()
-            .ok_or(crate::io::vfs::FsError::InvalidFd)?;
         Ok(file.offset >= file.data.len())
     }
 
@@ -585,6 +611,11 @@ impl crate::io::vfs::FileSystem for Fat32Fs {
     fn print_root_directory(&self) {
         // Step 1: Directly forward to volume print_root_directory.
         self.volume.print_root_directory();
+    }
+
+    fn close_task_fds(&self, task_id: usize) {
+        let mut state = self.state.lock();
+        state.open_files.retain(|f| f.owner != Some(task_id));
     }
 }
 

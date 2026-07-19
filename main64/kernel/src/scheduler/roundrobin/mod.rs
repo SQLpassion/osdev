@@ -523,6 +523,9 @@ pub fn mark_current_as_zombie() {
 ///
 /// This function never returns.
 pub fn exit_current_task() -> ! {
+    if let Some(task_id) = current_task_id() {
+        crate::io::vfs::close_task_fds(task_id);
+    }
     mark_current_as_zombie();
     yield_now();
     loop {

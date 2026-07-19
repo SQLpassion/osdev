@@ -48,6 +48,8 @@ pub fn unblock_task(task_id: usize) {
 ///
 /// Returns `true` if the task existed and was removed.
 pub fn terminate_task(task_id: usize) -> bool {
+    crate::io::vfs::close_task_fds(task_id);
+
     // Snapshot callbacks before entering the scheduler lock to avoid
     // nested lock acquisition (`SCHED` -> `SCHED_ARCH_CALLBACKS`).
     let callbacks = arch_callbacks();

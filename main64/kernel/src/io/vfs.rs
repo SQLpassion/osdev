@@ -58,6 +58,9 @@ pub trait FileSystem: Send + Sync {
 
     /// Print the root directory listing to the active system console.
     fn print_root_directory(&self);
+
+    /// Closes all file descriptors owned by the specified task ID.
+    fn close_task_fds(&self, task_id: usize);
 }
 
 static MOUNTED_FS: SpinLock<Option<Box<dyn FileSystem>>> = SpinLock::new(None);
@@ -143,6 +146,14 @@ pub fn read_file(name: &str) -> Result<Vec<u8>, FsError> {
 pub fn print_root_directory() {
     let _ = with(|fs| {
         fs.print_root_directory();
+        Ok(())
+    });
+}
+
+/// Closes all file descriptors owned by the specified task ID.
+pub fn close_task_fds(task_id: usize) {
+    let _ = with(|fs| {
+        fs.close_task_fds(task_id);
         Ok(())
     });
 }
