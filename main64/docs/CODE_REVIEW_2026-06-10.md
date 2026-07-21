@@ -53,24 +53,6 @@ terminated after R-01). `process_contract_test`/`user_mode_iretq_smoke_test` gre
 
 ## Priority 4 — LOW
 
-### R-17 `[ ]` `reset_scheduler_state` does not clear `fpu_owner` (stale owner in the next scheduler epoch)
-
-- **Severity:** LOW (only reachable via the debug `TEST_STOP` path) · **Category:** Bug
-- **File:** `src/scheduler/roundrobin/manager.rs:330-339`
-
-**Problem:** `reset_scheduler_state` clears `slots`, `run_queue`, `running_slot`,
-`pending_free_stacks` — but not `meta.fpu_owner`. After a test stop, `fpu_owner == Some(k)` from the old
-epoch may remain (`initialized` is deliberately preserved, `start()` only requires
-`initialized && !run_queue.is_empty()`). If slot `k` is reused by a fresh task, the owner invariant
-breaks: `handle_fpu_trap` FXSAVEs the OLD epoch's live registers into the NEW task's clean FPU buffer,
-or the new task at slot `k` silently inherits stale FPU/SSE registers via the
-`owner == running_slot` early return.
-
-**Fix:** Add `meta.fpu_owner = None;` to `reset_scheduler_state`; for symmetry also execute
-`fpu::set_ts()` there so the next epoch starts from a defined lazy-switch state.
-
-**Verification:** `fpu_state_test` + `scheduler_rr_test` green.
-
 ### R-18 `[ ]` `wait_for_task_exit` is keyed on reusable slot indices (latent wrong-target wait)
 
 - **Severity:** LOW (not triggerable with the current single-spawner topology; becomes real as soon as two tasks can `Exec` concurrently) · **Category:** Bug

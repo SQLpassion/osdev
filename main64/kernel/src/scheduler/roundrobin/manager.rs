@@ -336,6 +336,24 @@ pub(crate) fn reset_scheduler_state(meta: &mut SchedulerMetadata) {
     meta.run_queue.clear();
     meta.slots.clear();
     meta.pending_free_stacks.clear();
+
+    // Reset lazy-FPU bookkeeping so the next scheduler epoch starts from a
+    // clean, defined state. Without this, a stale `fpu_owner` index could be
+    // reused by a fresh task in the next epoch, causing `handle_fpu_trap` to
+    // either FXSAVE the old epoch's live registers into the new task's buffer,
+    // or skip the save entirely because `owner == running_slot` and inherit
+    // stale FPU/SSE state.
+    meta.fpu_owner = None;
+
+    // Re-arm CR0.TS so the next task that touches the FPU traps into the lazy
+    // switch path and gets a clean FPU state rather than any leftover state.
+    //
+    // SAFETY:
+    // - This requires `unsafe` because it modifies a privileged control register.
+    // - The scheduler runs in ring 0, and `reset_scheduler_state` is only called
+    //   during a debug/test stop when no ring-3 task is live, so no task can
+    //   observe the TS bit change.
+    unsafe { fpu::set_ts() };
 }
 
 /// Selects the next runnable task in round-robin order and returns its frame.
