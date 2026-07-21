@@ -53,34 +53,6 @@ terminated after R-01). `process_contract_test`/`user_mode_iretq_smoke_test` gre
 
 ## Priority 4 — LOW
 
-### R-15 `[ ]` `RingBuffer::pop`: ABA race under multi-consumer preemption
-
-- **Severity:** LOW · **Category:** Bug
-- **File:** `src/sync/ringbuffer.rs:152-183`
-
-**Problem:** The CAS loop guards `tail_consumer` with wrapped indices (`% N`). The CAS only checks the
-index VALUE, not the slot generation: consumer A loads `tail = t` and speculatively reads `buf[t]`, gets
-preempted before the CAS; while A sleeps, other consumers pop / the IRQ producer pushes exactly `k·N`
-elements (N = 64 — 64 key events during a long preemption are feasible), `tail_consumer` wraps back to
-`t`; A's `compare_exchange_weak(t, t+1)` SUCCEEDS → A returns the stale byte and swallows the new byte
-in slot `t`. Duplicated old input + lost new input — exactly the duplicate-delivery bug the CAS was meant
-to prevent. The module explicitly declares SPMC with racing consumers (lines 13-23).
-
-**Fix:** Use free-running (non-wrapped) `usize` indices; reduce modulo `N` only when indexing the array —
-a wrapped-around tail then has a different counter value and the CAS fails:
-```rust
-// empty: tail == head ; full: head - tail == N
-let tail = self.tail_consumer.load(Acquire);
-let head = self.head_producer.load(Acquire);
-if tail == head { return None; }
-let value = unsafe { (*self.buf.get())[tail % N] };
-match self.tail_consumer.compare_exchange_weak(tail, tail.wrapping_add(1), AcqRel, Acquire) { ... }
-```
-Producer side analogous (`full` at `head.wrapping_sub(tail) == N`; this also recovers the previously
-wasted "one empty slot"). 64-bit counter wraparound is practically unreachable.
-
-**Verification:** `keyboard_e2e_test` green; add a unit test for wrap behavior.
-
 ### R-16 `[ ]` Debug stop path frees the currently-used kernel stack (use-after-free, test path only)
 
 - **Severity:** LOW (debug/test builds only) · **Category:** Bug

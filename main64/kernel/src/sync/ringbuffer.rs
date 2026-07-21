@@ -24,9 +24,10 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 ///
 /// ## Layout
 ///
-/// Both `head_producer` and `tail_consumer` advance with **modular
-/// arithmetic** (`% N`), wrapping from the last slot back to index 0.  This
-/// makes the fixed-size array reusable in a cycle — hence "ring" buffer:
+/// Both `head_producer` and `tail_consumer` are **free-running counters**
+/// (`usize`) that never wrap back to zero explicitly.  The fixed-size array is
+/// indexed with modulo `N`, which makes the storage reusable in a cycle —
+/// hence "ring" buffer:
 ///
 /// ```text
 ///    tail_consumer      head_producer
@@ -39,32 +40,25 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 ///    (consumers)      (producer)
 /// ```
 ///
-/// After enough push/pop operations both indices can wrap around so that
-/// `head_producer` is at a lower array index than `tail_consumer`:
+/// Using free-running counters prevents the ABA race that would otherwise be
+/// possible with wrapped indices: a consumer that is preempted between reading
+/// a slot and CAS-ing `tail_consumer` cannot succeed later if the counter has
+/// advanced by `N` or more in the meantime, even though the modulo index
+/// happens to be the same.
 ///
-/// ```text
-///          head_producer   tail_consumer
-///               ▼             ▼
-///   ┌───┬───┬───┬───┬───┬───┬───┬───┐
-///   │ X │ Y │   │   │   │   │ W │   │   N = 8
-///   └───┴───┴───┴───┴───┴───┴───┴───┘
-///   ← wrapped                  oldest
-/// ```
-///
-/// - `head_producer` — **write index** (producer side).  Points to the next
+/// - `head_producer` — **write counter** (producer side).  Points to the next
 ///   free slot where `push()` will store a byte.  Advanced by the single
 ///   producer after writing.
-/// - `tail_consumer` — **read index** (consumer side).  Points to the oldest
+/// - `tail_consumer` — **read counter** (consumer side).  Points to the oldest
 ///   unread byte that `pop()` will return.  Advanced atomically (CAS) by
 ///   whichever consumer successfully claims the slot.
 /// - The buffer is **empty** when `tail_consumer == head_producer` and **full**
-///   when `(head_producer + 1) % N == tail_consumer` (one slot is always left
-///   unused to distinguish full from empty).
+///   when `head_producer - tail_consumer == N`.
 pub struct RingBuffer<const N: usize> {
     buf: UnsafeCell<[u8; N]>,
-    /// Write index (producer side): points to the next free slot.
+    /// Write counter (producer side): points to the next free slot.
     head_producer: AtomicUsize,
-    /// Read index (consumer side): points to the oldest unread byte.
+    /// Read counter (consumer side): points to the oldest unread byte.
     tail_consumer: AtomicUsize,
 }
 
@@ -80,13 +74,13 @@ impl<const N: usize> RingBuffer<N> {
     }
 
     pub fn is_empty(&self) -> bool {
-        // Step 1: Perform acquire loads on both indices to check if they are equal.
+        // Step 1: Perform acquire loads on both counters to check if they are equal.
         // If tail equals head, there are no unread bytes in the buffer.
         self.tail_consumer.load(Ordering::Acquire) == self.head_producer.load(Ordering::Acquire)
     }
 
     pub fn clear(&self) {
-        // Step 1: Reset both indices to 0 using relaxed stores, since there are no ordering
+        // Step 1: Reset both counters to 0 using relaxed stores, since there are no ordering
         // constraints required for clearing/invalidating the buffer.
         self.head_producer.store(0, Ordering::Relaxed);
         self.tail_consumer.store(0, Ordering::Relaxed);
@@ -97,34 +91,37 @@ impl<const N: usize> RingBuffer<N> {
     ///
     /// Only safe for a **single producer** — no CAS is needed because exactly
     /// one writer ever advances `head_producer`.  The `Release` store on
-    /// `head_producer` ensures that the byte written to `buf[head_producer]` is
-    /// visible to any consumer that later observes the new `head_producer`
-    /// value via an `Acquire` load.
+    /// `head_producer` ensures that the byte written to `buf[head_producer]`
+    /// is visible to any consumer that later observes the new
+    /// `head_producer` value via an `Acquire` load.
     pub fn push(&self, value: u8) -> bool {
-        // Step 1: Load current head and calculate next prospective index using modulo N.
+        // Step 1: Load current head and tail counters.
+        // The counters are free-running; only the array index uses modulo N.
         let head = self.head_producer.load(Ordering::Relaxed);
-        let next = (head + 1) % N;
-
-        // Step 2: Load current tail with Acquire ordering to observe consumer updates.
         let tail = self.tail_consumer.load(Ordering::Acquire);
 
-        // Step 3: Check if the buffer is full. If the next index equals the tail,
-        // we cannot write because one slot is left empty to distinguish full vs empty.
-        if next == tail {
+        // Step 2: Check if the buffer is full.  Full when the producer has
+        // advanced N slots ahead of the consumer.  Wrapping arithmetic is
+        // required because the counters are monotonic and may wrap around
+        // after extremely long runtime (64-bit wraparound is not reachable
+        // in practice).
+        if head.wrapping_sub(tail) == N {
             return false;
         }
 
-        // Step 4: Write the byte *before* publishing the new head_producer.
+        // Step 3: Write the byte *before* publishing the new head_producer.
         // SAFETY:
-        // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
-        // - Single-producer contract guarantees exclusive writes to `head` slot.
-        // - `head` is in-bounds due to modulo arithmetic.
+        // - Single-producer contract guarantees exclusive writes to the `head` slot.
+        // - `head % N` is in-bounds because N equals the array length.
+        // - No mutable reference to `buf` exists during this write.
         unsafe {
-            (*self.buf.get())[head] = value;
+            (*self.buf.get())[head % N] = value;
         }
 
-        // Step 5: Publish the new head index using Release ordering so consumers can safely read the byte.
-        self.head_producer.store(next, Ordering::Release);
+        // Step 4: Publish the new head counter using Release ordering so
+        // consumers can safely read the byte.
+        self.head_producer
+            .store(head.wrapping_add(1), Ordering::Release);
         true
     }
 
@@ -132,10 +129,10 @@ impl<const N: usize> RingBuffer<N> {
     ///
     /// Uses a **CAS loop** to safely support multiple concurrent consumers:
     ///
-    /// 1. Load the current `tail_consumer` index.
+    /// 1. Load the current `tail_consumer` counter.
     /// 2. If `tail_consumer == head_producer` the buffer is empty → return
     ///    `None`.
-    /// 3. Speculatively read the byte at `buf[tail_consumer]`.
+    /// 3. Speculatively read the byte at `buf[tail_consumer % N]`.
     /// 4. Attempt to atomically advance `tail_consumer` via
     ///    `compare_exchange_weak`.
     ///    - **Success**: no other consumer changed `tail_consumer` between
@@ -145,13 +142,13 @@ impl<const N: usize> RingBuffer<N> {
     ///      the updated `tail_consumer` value.
     ///
     /// The speculative read in step 3 is safe because the producer only writes
-    /// to `buf[head_producer]` *before* advancing `head_producer` with
+    /// to `buf[head_producer % N]` *before* advancing `head_producer` with
     /// `Release` ordering, and we read `head_producer` with `Acquire` in
-    /// step 2.  A slot between `tail_consumer` and `head_producer` is therefore
-    /// always initialised and stable.
+    /// step 2.  A slot between `tail_consumer` and `head_producer` is
+    /// therefore always initialised and stable.
     pub fn pop(&self) -> Option<u8> {
         loop {
-            // Step 1: Load both indices with Acquire ordering.
+            // Step 1: Load both counters with Acquire ordering.
             let tail = self.tail_consumer.load(Ordering::Acquire);
             let head = self.head_producer.load(Ordering::Acquire);
 
@@ -162,14 +159,18 @@ impl<const N: usize> RingBuffer<N> {
 
             // Step 3: Speculatively read the byte from the slot.
             // SAFETY:
-            // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
-            // - `tail != head` guarantees slot is initialized by producer.
-            // - `tail` is in-bounds due to modulo arithmetic.
-            let value = unsafe { (*self.buf.get())[tail] };
-            let next = (tail + 1) % N;
+            // - `tail != head` guarantees the slot is initialized by the producer.
+            // - `tail % N` is in-bounds because N equals the array length.
+            // - No mutable reference to `buf` exists during this read.
+            let value = unsafe { (*self.buf.get())[tail % N] };
+            let next = tail.wrapping_add(1);
 
-            // Step 4: Attempt to transition tail_consumer from `tail` to `next` atomically.
-            // If another consumer changed tail_consumer in the meantime, CAS fails, and we loop back.
+            // Step 4: Attempt to transition tail_consumer from `tail` to `next`
+            // atomically.  If another consumer changed tail_consumer in the
+            // meantime, the CAS fails and we loop back.  Because the counters
+            // are free-running, a slot that has wrapped around the entire
+            // buffer has a different counter value and cannot be claimed
+            // twice.
             match self.tail_consumer.compare_exchange_weak(
                 tail,
                 next,
@@ -189,13 +190,11 @@ impl<const N: usize> Default for RingBuffer<N> {
     }
 }
 
-// SAFETY: All mutable access to `buf` is synchronized via atomic indices —
-// - This requires `unsafe` because the compiler cannot automatically verify the thread-safety invariants of this `unsafe impl`.
-// the producer writes only to `buf[head_producer]` before publishing, and
+// SAFETY: All mutable access to `buf` is synchronized via atomic counters —
+// the producer writes only to `buf[head_producer % N]` before publishing, and
 // consumers read only slots between `tail_consumer` and `head_producer`.
 unsafe impl<const N: usize> Sync for RingBuffer<N> {}
-// SAFETY:
-// - This requires `unsafe` because the compiler cannot automatically verify the thread-safety invariants of this `unsafe impl`.
-// - Sending the ring buffer transfers ownership of the atomic state and buffer.
-// - Thread safety invariants are upheld by SPMC protocol and atomic indices.
+// SAFETY: Sending the ring buffer transfers ownership of the atomic state and
+// buffer.  Thread safety invariants are upheld by the SPMC protocol and atomic
+// counters.
 unsafe impl<const N: usize> Send for RingBuffer<N> {}

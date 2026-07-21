@@ -111,3 +111,6 @@ name = "fat32_concurrent_test"
 
 [[test]]
 name = "serial_deadlock_test"
+
+[[test]]
+name = "ringbuffer_test"

@@ -101,7 +101,7 @@ To prevent this deadlock:
 
 The `RingBuffer<const N: usize>` implements a lock-free Single-Producer Multiple-Consumer (SPMC) circular buffer. It allows safe communication between an ISR (producer) and one or more kernel threads (consumers) without disabling interrupts or using spinlocks.
 
-### 3.1 Head and Tail Indices
+### 3.1 Head and Tail Counters
 
 ```rust
 pub struct RingBuffer<const N: usize> {
@@ -111,10 +111,10 @@ pub struct RingBuffer<const N: usize> {
 }
 ```
 
-* `head_producer` is the **write index** updated exclusively by the single producer.
-* `tail_consumer` is the **read index** updated atomically by consumers.
+* `head_producer` is the **write counter** updated exclusively by the single producer.
+* `tail_consumer` is the **read counter** updated atomically by consumers.
 * **Empty State**: `tail_consumer == head_producer`
-* **Full State**: `(head_producer + 1) % N == tail_consumer` (one slot is left empty to distinguish full from empty).
+* **Full State**: `head_producer.wrapping_sub(tail_consumer) == N` (utilizes the full capacity of `N` slots).
 
 ### 3.2 Single-Producer `push` (Lock-Free)
 
@@ -148,13 +148,13 @@ Because multiple consumers can call `pop()` concurrently, a CAS loop is required
                 ▼                                │
     ┌──────────────────────┐                     │
     │ Speculatively read   │                     │
-    │      buf[tail]       │                     │
+    │     buf[tail % N]    │                     │
     └──────────┬───────────┘                     │
                │                                 │
                ▼                                 │
     ┌──────────────────────┐                     │
-    │ Calculate next index │                     │
-    │   (tail + 1) % N     │                     │
+    │ Calculate next count │                     │
+    │       tail + 1       │                     │
     └──────────┬───────────┘                     │
                │                                 │
                ▼                                 │
@@ -167,7 +167,8 @@ Because multiple consumers can call `pop()` concurrently, a CAS loop is required
   Return Some(value)
 ```
 
-* The speculative read of `buf[tail]` is safe because the producer only writes to `buf[head]` and publishes it after a `Release` barrier. Thus, any slot between `tail` and `head` contains valid, initialized data.
+* The speculative read of `buf[tail % N]` is safe because the producer only writes to `buf[head % N]` and publishes it after a `Release` barrier. Thus, any slot between `tail` and `head` contains valid, initialized data.
+* **ABA Problem Prevention**: Because the indices are free-running monotonic counters rather than being bounded by `N`, a slot wrapped around the buffer has a completely different counter value. This inherently prevents the ABA problem in the CAS loop.
 * If the CAS fails, it means another consumer successfully claimed the slot, so we retry.
 
 ---
