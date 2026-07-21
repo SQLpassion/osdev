@@ -186,6 +186,71 @@ fn test_heap_alignment_for_small_allocs() {
     heap::free(ptr3);
 }
 
+/// Contract: small allocations round-trip through the free list.
+/// Given: A generic `Heap` with a capped 1 KiB arena and 1-byte allocation requests.
+/// When: Many small blocks are allocated, then every other block is freed (non-adjacent,
+///        so no coalescing can hide a dropped free block), and the same count is allocated again.
+/// Then: The second wave of allocations must succeed by reusing the freed blocks.
+/// Failure Impact: Freed blocks smaller than `MIN_FREE_BLOCK_SIZE` would leak, leaving the
+///        free list empty and forcing growth; with a capped arena the second wave fails.
+#[test_case]
+fn test_small_allocations_round_trip_through_free_list() {
+    let mut buffer = [0u8; 1024];
+    let start = buffer.as_mut_ptr() as usize;
+    let env = DummyHeapEnv { max_size: 1024 };
+    let mut test_heap = heap::Heap::new(env);
+    test_heap.init(start, 1024).expect("init should succeed");
+
+    const COUNT: usize = 16;
+    let mut ptrs: [*mut u8; COUNT] = [core::ptr::null_mut(); COUNT];
+    let layout = Layout::from_size_align(1, 8).unwrap();
+
+    // Step 1: Allocate many 1-byte payloads.
+    for i in 0..COUNT {
+        let p = test_heap.allocate(layout);
+        assert!(!p.is_null(), "allocation {} should succeed", i);
+        ptrs[i] = p;
+    }
+
+    // Step 2: Free every other block.  Because the retained blocks stay in use,
+    // no two freed blocks are physically adjacent, so coalescing cannot mask a
+    // sub-minimum block that was silently dropped from the free list.
+    for i in (0..COUNT).step_by(2) {
+        // SAFETY:
+        // - `ptrs[i]` was allocated above with `layout` and is freed exactly once.
+        unsafe { test_heap.deallocate(ptrs[i], layout) };
+    }
+
+    // Step 3: Re-allocate the same number of small blocks.  They must succeed
+    // because the freed blocks are linked back into the segregated free list.
+    let mut reused = [false; COUNT];
+    for _ in 0..(COUNT / 2) {
+        let p = test_heap.allocate(layout);
+        assert!(
+            !p.is_null(),
+            "re-allocation should succeed from reused free blocks"
+        );
+
+        let mut found = false;
+        for i in (0..COUNT).step_by(2) {
+            if ptrs[i] == p {
+                assert!(!reused[i], "each freed block should be reused at most once");
+                reused[i] = true;
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "re-allocation must reuse a previously freed block");
+    }
+
+    // Step 4: Clean up the remaining live blocks.
+    for i in (1..COUNT).step_by(2) {
+        // SAFETY:
+        // - `ptrs[i]` was allocated above with `layout` and never freed until now.
+        unsafe { test_heap.deallocate(ptrs[i], layout) };
+    }
+}
+
 /// Contract: heap large allocation requires growth.
 /// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
 /// When: The exact operation sequence in this function is executed against that state.

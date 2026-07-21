@@ -186,11 +186,17 @@ pub(crate) fn align_up_checked(value: usize, align: usize) -> Option<usize> {
 }
 
 /// Computes the full aligned block size for a payload request.
+///
+/// The returned size is clamped to [`MIN_FREE_BLOCK_SIZE`] so that every
+/// allocated block can later be inserted back into the segregated free list.
+/// Blocks smaller than that would silently leak on `free()` because
+/// `insert_free_block` / `remove_free_block` ignore sub-minimum sizes.
 #[inline]
 pub(crate) fn compute_aligned_heapblock_size(requested_size: usize) -> Option<usize> {
     requested_size
         .checked_add(HEADER_SIZE)
         .and_then(|v| align_up_checked(v, ALIGNMENT))
+        .map(|v| v.max(MIN_FREE_BLOCK_SIZE))
 }
 
 /// Reinterprets an address as a mutable block-header pointer.

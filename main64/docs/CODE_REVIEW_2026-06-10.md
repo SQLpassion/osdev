@@ -49,34 +49,6 @@ reference this review.
 **Verification:** After (a): a user program writing into its text region gets #PF (and is cleanly
 terminated after R-01). `process_contract_test`/`user_mode_iretq_smoke_test` green.
 
-### R-12 `[ ]` Heap: freed blocks < `MIN_FREE_BLOCK_SIZE` silently drop out of the free list (leak)
-
-- **Severity:** MEDIUM · **Category:** Bug
-- **File:** `src/memory/heap/types.rs:189-193` (`compute_aligned_heapblock_size`) vs. `:250-252` (`insert_free_block` guard; identical in `remove_free_block` `:283-285`)
-
-**Problem:** `HEADER_SIZE = 24`, `FREE_NODE_SIZE = 16` → `MIN_FREE_BLOCK_SIZE = 40`. But
-`compute_aligned_heapblock_size(req)` yields `align_up(req + 24, 8)`, i.e. only **32 bytes** for `req`
-in `1..=8`. `allocate_block` hands out such 32-byte blocks (the split path never creates sub-40
-remainders, but a full 32-byte allocation is legal). On a later `free()` without a free neighbor,
-the guard `if size < MIN_FREE_BLOCK_SIZE { return; }` in `insert_free_block` triggers — the block is
-silently not linked into any bin and is unfindable for `find_suitable_free_block`. Small allocations
-(`Box<u8>`, `Box<u32>`, 1-8-byte layouts via `heap::malloc`) thus leak usable heap over the kernel's
-lifetime; only coalescing with a coincidentally adjacent free block can recover the space.
-
-**Fix:** Clamp the allocated block size to the minimum free-block size so every live block can
-round-trip through the free list (consistent with `MIN_SPLIT_SIZE == MIN_FREE_BLOCK_SIZE`):
-```rust
-pub(crate) fn compute_aligned_heapblock_size(requested_size: usize) -> Option<usize> {
-    requested_size
-        .checked_add(HEADER_SIZE)
-        .and_then(|v| align_up_checked(v, ALIGNMENT))
-        .map(|v| v.max(MIN_FREE_BLOCK_SIZE))
-}
-```
-
-**Verification:** `cargo test --test heap_test`; add a new test case: many 1-byte allocs +
-non-adjacent frees → heap free bytes remain stable / re-allocation succeeds.
-
 ---
 
 ## Priority 4 — LOW
