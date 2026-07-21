@@ -783,9 +783,10 @@ fn test_slot_vec_shrinks_after_task_removal() {
 
     // After the Vec was trimmed to zero, spawn must still work correctly.
     // The first new task must land at slot index 0 (Vec is empty, so push at 0).
+    // Spawn now returns a packed task identifier, so compare the slot portion.
     let t4 = sched::spawn_kernel_task(dummy_task_e).expect("spawn after full shrink must succeed");
     assert!(
-        t4 == 0,
+        sched::task_id_slot(t4) == 0,
         "first spawn after full shrink must reuse slot index 0"
     );
     assert!(
@@ -1776,6 +1777,60 @@ fn test_wait_for_task_exit_immediate_return_keeps_running_task_state() {
     );
 }
 
+/// Contract: wait_for_task_exit detects slot reuse via generation mismatch.
+/// Given: A task that has exited and its slot has been reused by a new task.
+/// When: `wait_for_task_exit` is called with the original packed task identifier.
+/// Then: It returns immediately instead of waiting for the unrelated new task.
+/// Failure Impact: Without generation checking the waiter could block until the
+/// unrelated task exits, or potentially forever (R-18).
+#[test_case]
+fn test_wait_for_task_exit_detects_slot_reuse_by_generation() {
+    sched::init();
+
+    // Step 1: Spawn a task and capture its packed identifier.
+    let original_task = sched::spawn_kernel_task(dummy_task_a).expect("original task should spawn");
+    let original_slot = sched::task_id_slot(original_task);
+    let original_generation =
+        sched::task_generation(original_task).expect("generation should exist");
+
+    // Step 2: Remove the original task.  Its slot becomes free and, because it
+    // is the only slot, the Vec shrinks to zero.
+    assert!(
+        sched::terminate_task(original_task),
+        "original task should terminate"
+    );
+    assert!(
+        sched::slot_table_len() == 0,
+        "slot table should be empty after removing only task"
+    );
+
+    // Step 3: Spawn a new task into the same slot.  With an empty Vec the next
+    // spawn lands at slot index 0 again, but with a new generation counter.
+    let reused_task = sched::spawn_kernel_task(dummy_task_b).expect("reused task should spawn");
+    assert!(
+        sched::task_id_slot(reused_task) == original_slot,
+        "reused task must occupy the same slot as the original"
+    );
+    let reused_generation =
+        sched::task_generation(reused_task).expect("reused generation should exist");
+    assert!(
+        reused_generation != original_generation,
+        "reused task must have a different generation than the original"
+    );
+
+    // Step 4: Wait on the original identifier.  Because the generation encoded
+    // in `original_task` no longer matches the generation stored in the slot,
+    // the wait must return immediately rather than block on `reused_task`.
+    sched::wait_for_task_exit(original_task);
+
+    // Step 5: Confirm the reused task is untouched — if the waiter had matched
+    // the wrong task, it would still be spinning on `dummy_task_b`.
+    assert!(
+        sched::task_state(reused_task) == Some(TaskState::Ready),
+        "wait on stale identifier must not alter the unrelated reused task"
+    );
+}
+
 // ── Exit syscall integration test ───────────────────────────────────
 
 /// Contract: Exit syscall marks running task as zombie and returns SYSCALL_OK.
@@ -1868,7 +1923,7 @@ fn test_user_task_mmap_syscall() {
     // Step 2: Tick the scheduler to make the user task the active running task.
     current = sched::on_timer_tick(current);
     assert!(
-        sched::current_task_id() == Some(user_task),
+        sched::current_task_id() == Some(sched::task_id_slot(user_task)),
         "scheduler must make user_task active"
     );
 

@@ -78,6 +78,40 @@ pub enum TaskState {
     Zombie,
 }
 
+/// Number of bits reserved for the slot index in a packed task identifier.
+///
+/// A packed task ID combines the slot index and a monotonic generation counter
+/// into a single `usize`.  The low 32 bits store the slot index; the high
+/// 32 bits store the generation.  This layout gives a 4-billion-slot address
+/// space and a 4-billion-spawn generation space, which is ample for this
+/// kernel and eliminates the ABA problem described in R-18.
+pub const TASK_ID_SLOT_BITS: u32 = 32;
+
+/// Mask for the slot-index portion of a packed task identifier.
+pub const TASK_ID_SLOT_MASK: usize = (1usize << TASK_ID_SLOT_BITS) - 1;
+
+/// Number of bits to shift a generation value to place it in the high portion
+/// of a packed task identifier.
+pub const TASK_ID_GENERATION_SHIFT: u32 = TASK_ID_SLOT_BITS;
+
+/// Extracts the slot index from a packed task identifier.
+#[inline]
+pub const fn task_id_slot(id: usize) -> usize {
+    id & TASK_ID_SLOT_MASK
+}
+
+/// Extracts the generation counter from a packed task identifier.
+#[inline]
+pub const fn task_id_generation(id: usize) -> u64 {
+    (id >> TASK_ID_GENERATION_SHIFT) as u64
+}
+
+/// Packs a slot index and generation counter into a single task identifier.
+#[inline]
+pub const fn pack_task_id(slot: usize, generation: u64) -> usize {
+    ((generation as usize) << TASK_ID_GENERATION_SHIFT) | (slot & TASK_ID_SLOT_MASK)
+}
+
 /// One slot in the task table.
 #[derive(Clone, Copy)]
 pub struct TaskEntry {
@@ -88,6 +122,14 @@ pub struct TaskEntry {
     /// Scheduler lifecycle state used by round-robin selection.
     /// Blocked tasks are skipped until explicitly unblocked.
     pub state: TaskState,
+
+    /// Monotonically increasing generation counter assigned at spawn time.
+    ///
+    /// This value distinguishes task identities across slot reuse: a waiter
+    /// that holds a `(slot, generation)` pair will never accidentally wait for
+    /// an unrelated task that was spawned into the same slot after the original
+    /// task exited.  Generation `0` means "no task / invalidated".
+    pub generation: u64,
 
     /// Pointer to the currently saved register frame for this task.
     /// This is the resume target returned to the IRQ trampoline.
@@ -148,6 +190,7 @@ impl TaskEntry {
         Self {
             used: false,
             state: TaskState::Ready,
+            generation: 0,
             frame_ptr: ptr::null_mut(),
             cr3: 0,
             user_rsp: 0,

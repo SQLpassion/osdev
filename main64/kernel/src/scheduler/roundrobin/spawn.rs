@@ -4,10 +4,11 @@ use super::context::{
     allocate_task_stack, build_initial_kernel_task_frame, build_initial_user_task_frame,
     free_task_stack,
 };
-use super::types::{SpawnError, SpawnKind, TaskEntry, TaskState};
+use super::types::{pack_task_id, SpawnError, SpawnKind, TaskEntry, TaskState};
 use super::{with_scheduler, TASK_STACK_SIZE};
 use crate::arch::fpu;
 use crate::memory::vmm;
+use core::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 /// Creates a new kernel task and appends it to the run queue.
 ///
@@ -46,10 +47,23 @@ pub fn spawn_user_task_owning_code(
     })
 }
 
+/// Global monotonic generation counter for task identity.
+///
+/// Generation `0` is reserved for "empty / invalidated" slots, so the first
+/// spawned task receives generation `1`.  Each successful spawn atomically
+/// increments this counter and stores the fetched value into the new
+/// `TaskEntry`.  Together with the slot index this forms a unique task
+/// identifier that survives slot reuse (R-18).
+static NEXT_TASK_GENERATION: AtomicU64 = AtomicU64::new(1);
+
 /// Shared task creation path used by both public spawn wrappers.
 ///
 /// The stack is heap-allocated *before* acquiring the scheduler lock to
 /// avoid nested spinlock acquisition (scheduler lock + heap lock).
+///
+/// On success, returns a packed task identifier encoding both the slot index
+/// and the task's generation.  Callers should treat this value as opaque and
+/// pass it unchanged to scheduler APIs such as `wait_for_task_exit`.
 fn spawn_internal(kind: SpawnKind) -> Result<usize, SpawnError> {
     // Pre-check: reject early if scheduler is not initialized,
     // before performing the (expensive) heap allocation.
@@ -130,9 +144,16 @@ fn spawn_internal(kind: SpawnKind) -> Result<usize, SpawnError> {
             }
         };
 
+        // Step 1: Acquire a fresh generation for this task under the scheduler
+        // lock.  Fetching here (rather than before the lock) keeps the atomic
+        // counter tightly coupled with slot allocation and avoids burning a
+        // generation if the later frame construction fails.
+        let generation = NEXT_TASK_GENERATION.fetch_add(1, AtomicOrdering::Relaxed);
+
         let entry = TaskEntry {
             used: true,
             state: TaskState::Ready,
+            generation,
             frame_ptr,
             cr3,
             user_rsp,
@@ -153,7 +174,9 @@ fn spawn_internal(kind: SpawnKind) -> Result<usize, SpawnError> {
 
         meta.run_queue.push(slot_idx); // capacity guaranteed by try_reserve above
 
-        Ok(slot_idx)
+        // Step 2: Return the opaque packed identifier.  The generation encoded
+        // here is what waiters will use to detect slot reuse (R-18).
+        Ok(pack_task_id(slot_idx, generation))
     });
 
     // If spawn failed after we already allocated the stack and FPU buffer, free them.

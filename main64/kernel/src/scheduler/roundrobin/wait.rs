@@ -1,9 +1,9 @@
 //! Task blocking, unblocking, and exit waiting queues.
 
 use super::manager::remove_task;
-use super::types::TaskState;
+use super::types::{task_id_generation, task_id_slot, TaskState};
 use super::{
-    arch_callbacks, current_task_id, is_running, task_frame_ptr, with_scheduler, yield_now,
+    arch_callbacks, current_task_id, is_running, task_generation, with_scheduler, yield_now,
 };
 use crate::sync::waitqueue::WaitQueue;
 use crate::sync::waitqueue_adapter;
@@ -13,47 +13,59 @@ pub(crate) static TASK_EXIT_WAITQUEUE: WaitQueue = WaitQueue::new();
 
 /// Marks the task in `task_id` as `TaskState::Blocked`.
 ///
+/// `task_id` is a packed task identifier (slot + generation) as returned by
+/// the spawn functions; the generation portion is ignored by this mutation.
 /// A blocked task is skipped by the round-robin selector until it is
 /// unblocked via `unblock_task`.
 pub fn block_task(task_id: usize) {
+    let slot = task_id_slot(task_id);
     with_scheduler(|meta| {
-        if task_id < meta.slots.len()
-            && meta.slots[task_id].used
-            && meta.slots[task_id].state != TaskState::Blocked
+        if slot < meta.slots.len()
+            && meta.slots[slot].used
+            && meta.slots[slot].state != TaskState::Blocked
         {
-            meta.slots[task_id].state = TaskState::Blocked;
+            meta.slots[slot].state = TaskState::Blocked;
         }
     });
 }
 
 /// Marks a previously blocked task as `TaskState::Ready`.
 ///
+/// `task_id` is a packed task identifier (slot + generation) as returned by
+/// the spawn functions; the generation portion is ignored by this mutation.
+///
 /// Safe to call from IRQ context (the scheduler spinlock handles
 /// interrupt masking internally).
 pub fn unblock_task(task_id: usize) {
+    let slot = task_id_slot(task_id);
     with_scheduler(|meta| {
-        if task_id < meta.slots.len()
-            && meta.slots[task_id].used
-            && meta.slots[task_id].state == TaskState::Blocked
+        if slot < meta.slots.len()
+            && meta.slots[slot].used
+            && meta.slots[slot].state == TaskState::Blocked
         {
-            meta.slots[task_id].state = TaskState::Ready;
+            meta.slots[slot].state = TaskState::Ready;
         }
     });
 }
 
 /// Terminates `task_id`, removing it from the run queue and freeing its slot.
 ///
+/// `task_id` is a packed task identifier (slot + generation) as returned by
+/// the spawn functions; the generation portion is ignored for locating the
+/// slot, but the slot's stored generation is invalidated by `remove_task`.
+///
 /// The task's stack is deferred for freeing on the next timer tick so that
 /// stale frame pointers can still be detected by the scheduler.
 ///
 /// Returns `true` if the task existed and was removed.
 pub fn terminate_task(task_id: usize) -> bool {
-    crate::io::vfs::close_task_fds(task_id);
+    let slot = task_id_slot(task_id);
+    crate::io::vfs::close_task_fds(slot);
 
     // Snapshot callbacks before entering the scheduler lock to avoid
     // nested lock acquisition (`SCHED` -> `SCHED_ARCH_CALLBACKS`).
     let callbacks = arch_callbacks();
-    let removed = with_scheduler(|meta| remove_task(meta, task_id, callbacks));
+    let removed = with_scheduler(|meta| remove_task(meta, slot, callbacks));
 
     // Step 1: Wake tasks that are blocked in `wait_for_task_exit`.
     // Wake-all is safe: each waiter re-checks its own task-id predicate and
@@ -67,50 +79,67 @@ pub fn terminate_task(task_id: usize) -> bool {
 
 /// Waits cooperatively until `task_id` is no longer present in the scheduler.
 ///
+/// `task_id` is a packed task identifier (slot + generation) as returned by
+/// the spawn functions.  The generation encoded in the identifier is compared
+/// against the generation currently stored in the slot, so a waiter that
+/// targets a task which has already exited will not accidentally block on an
+/// unrelated task that was later spawned into the same slot (R-18).
+///
 /// This is intended for foreground command flows (for example REPL `exec`)
 /// that need to block the caller until a spawned task has terminated.
 ///
 /// Behavior:
-/// - if `task_id` is already absent, this returns immediately,
+/// - if `task_id` is already absent or its generation no longer matches, this
+///   returns immediately,
 /// - otherwise this repeatedly yields so normal scheduler ticks can progress.
 pub fn wait_for_task_exit(task_id: usize) {
-    // Step 1: Fast path for already-absent targets.
-    if task_frame_ptr(task_id).is_none() {
+    let slot = task_id_slot(task_id);
+    let expected_generation = task_id_generation(task_id);
+
+    // Step 1: Fast path for already-absent or generation-mismatched targets.
+    // A mismatched generation means the original task has exited and the slot
+    // has been reused (or is free), so there is nothing to wait for.
+    if task_generation(task_id) != Some(expected_generation) {
         return;
     }
 
-    // Step 2: In scheduled task context, use wait-queue blocking instead of
+    // Step 2: Build a liveness predicate that checks both slot occupancy and
+    // generation identity.  Slot reuse by an unrelated task changes the stored
+    // generation, causing the predicate to flip false and the waiter to wake.
+    let is_target_alive = || task_generation(task_id) == Some(expected_generation);
+
+    // Step 3: In scheduled task context, use wait-queue blocking instead of
     // spin-yield polling to avoid burning CPU while waiting.
     if is_running() {
         if let Some(waiter_task_id) = current_task_id() {
             // Self-wait cannot make progress through blocking because the target
             // would be the currently blocked task itself. Keep the historical
             // cooperative poll behavior for this edge case.
-            if waiter_task_id == task_id {
-                wait_for_task_exit_with(task_id, |id| task_frame_ptr(id).is_some(), yield_now);
+            if waiter_task_id == slot {
+                wait_for_task_exit_with(slot, |_| is_target_alive(), yield_now);
                 return;
             }
 
             loop {
-                // Step 3: Atomically recheck liveness, register on queue, and block.
+                // Step 4: Atomically recheck liveness, register on queue, and block.
                 let outcome =
                     waitqueue_adapter::sleep_if_multi(&TASK_EXIT_WAITQUEUE, waiter_task_id, || {
-                        task_frame_ptr(task_id).is_some()
+                        is_target_alive()
                     });
 
-                // Step 4: Predicate false means target already exited; return.
+                // Step 5: Predicate false means target already exited; return.
                 if !outcome.should_yield() {
                     return;
                 }
 
-                // Step 5: Blocked (or queue OOM degradation) path yields once.
+                // Step 6: Blocked (or queue OOM degradation) path yields once.
                 yield_now();
             }
         }
     }
 
-    // Step 6: Fallback for non-scheduler contexts (boot/tests).
-    wait_for_task_exit_with(task_id, |id| task_frame_ptr(id).is_some(), yield_now);
+    // Step 7: Fallback for non-scheduler contexts (boot/tests).
+    wait_for_task_exit_with(slot, |_| is_target_alive(), yield_now);
 }
 
 /// Generic wait helper behind `wait_for_task_exit`.

@@ -1041,3 +1041,31 @@ This is a deliberate simplicity trade-off:
   complexity in scheduler hot paths.
 - Cons: metadata capacity can remain above live-task count until tail slots are
   released.
+
+---
+
+## 24. Task Identifiers and the ABA Problem (Generation Counters)
+
+### The Problem: Slot Reuse (ABA Problem)
+Because the scheduler uses an array of slots (as described in Section 23), it reuses free interior slots for new tasks when older tasks terminate. If a `task_id` were nothing more than a direct index into this `slots` array, a severe logic error known as the **ABA Problem** could occur.
+
+Imagine the following sequence:
+1. **Task A** is spawned and assigned slot `5`.
+2. Another task (e.g., the REPL) wants to wait for Task A to finish, so it calls `wait_for_task_exit(5)`.
+3. Task A terminates. Slot `5` becomes free.
+4. Before the waiting task gets a chance to wake up and notice, **Task B** is spawned and reuses slot `5`.
+5. The waiting task checks slot `5`, sees that it is occupied, and continues to block. It is now accidentally waiting on Task B instead of Task A!
+
+### The Solution: The Generation Counter Pattern
+To solve this, the scheduler uses the **Generation Counter Pattern**. Instead of just storing an index, the system keeps track of how many times each slot has been used. 
+
+When a slot is allocated to a new task, its generation counter is incremented. The `task_id` returned to the caller is no longer just the `slot_index`. Instead, it is a **Packed Task Identifier**: a single integer that encodes *both* the `slot_index` and the current `generation` of that slot.
+
+For example, a packed 64-bit identifier might encode:
+- Upper bits: `generation` (e.g., this slot is on its 4th task)
+- Lower bits: `slot_index` (e.g., slot 5)
+
+### How `wait_for_task_exit` Uses It
+When `wait_for_task_exit(task_id)` is called, it extracts both the `expected_generation` and the `slot_index` from the provided `task_id`. 
+
+It then checks the slot at `slot_index`. If the slot is empty, or if the slot is occupied but its current generation **does not match** the `expected_generation`, the function knows that the original task has terminated and the slot has either been freed or reused. The function can then return immediately, successfully avoiding the ABA problem.

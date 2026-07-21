@@ -48,7 +48,7 @@ mod wait;
 pub use api::{
     current_task_id, current_user_heap_top, is_user_task, reset_initialization_for_test,
     set_current_user_heap_top, set_task_user_context, slot_table_len, task_context, task_frame_ptr,
-    task_iret_frame, task_state,
+    task_generation, task_iret_frame, task_state,
 };
 #[allow(unused_imports)]
 pub use spawn::{spawn_kernel_task, spawn_user_task, spawn_user_task_owning_code};

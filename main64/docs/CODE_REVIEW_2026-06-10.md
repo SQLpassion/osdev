@@ -53,7 +53,7 @@ terminated after R-01). `process_contract_test`/`user_mode_iretq_smoke_test` gre
 
 ## Priority 4 — LOW
 
-### R-18 `[ ]` `wait_for_task_exit` is keyed on reusable slot indices (latent wrong-target wait)
+### R-18 `[x]` `wait_for_task_exit` is keyed on reusable slot indices (latent wrong-target wait)
 
 - **Severity:** LOW (not triggerable with the current single-spawner topology; becomes real as soon as two tasks can `Exec` concurrently) · **Category:** Bug
 - **Files:** `src/scheduler/roundrobin/wait.rs:74-112` (waiter), `src/scheduler/roundrobin/spawn.rs:90-93` (first-fit slot reuse); also poll path `src/main.rs:159`
