@@ -132,16 +132,20 @@ pub fn try_handle_page_fault(virtual_address: u64, error_code: u64) -> Result<()
 
     let user_access = matches!(
         user_region,
-        Some(UserRegion::Code) | Some(UserRegion::Stack)
+        Some(UserRegion::Code) | Some(UserRegion::Stack) | Some(UserRegion::Heap)
     );
 
     // Derive final permissions from the region:
     //   USER_CODE  → read-only  (writable=false), executable  (no_execute=false)
     //   USER_STACK → writable   (writable=true),  non-executable (no_execute=true)
+    //   USER_HEAP  → writable   (writable=true),  non-executable (no_execute=true)
     //   kernel     → writable   (writable=true),  no NX applied (kernel code/data mixed)
     // EFER.NXE is activated in kaosldr_16/longmode.asm; without it no_execute is ignored.
     let writable = !matches!(user_region, Some(UserRegion::Code));
-    let no_execute = matches!(user_region, Some(UserRegion::Stack));
+    let no_execute = matches!(
+        user_region,
+        Some(UserRegion::Stack) | Some(UserRegion::Heap)
+    );
 
     // Step 1: user-stack faults grow downward stack pages on demand.
     if matches!(user_region, Some(UserRegion::Stack)) {

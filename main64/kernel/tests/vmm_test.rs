@@ -124,6 +124,38 @@ fn test_user_fault_mapping_sets_user_bits_and_code_readonly_leaf() {
     vmm::unmap_virtual_address(stack_va);
 }
 
+/// Contract: heap demand fault maps user writable non-executable page.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "heap demand fault maps user writable non-executable page".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_heap_demand_fault_maps_user_writable_non_executable_page() {
+    let heap_va = vmm::USER_HEAP_BASE + 0x0234_5000;
+    vmm::unmap_virtual_address(heap_va);
+
+    // Simulate a non-present user-mode heap fault (U=1, P=0 -> error code 0x4).
+    vmm::try_handle_page_fault(heap_va, 0x4)
+        .expect("user heap non-present fault should be demand-mapped");
+
+    let heap_flags = vmm::debug_mapping_flags_for_va(heap_va)
+        .expect("heap VA should have present mapping flags");
+    assert!(
+        heap_flags == (true, true, true, true, true),
+        "heap VA must have user path bits set and writable leaf, got {:?}",
+        heap_flags
+    );
+
+    let heap_nx = vmm::debug_no_execute_flag_for_va(heap_va)
+        .expect("demand-mapped heap VA must have a present leaf PTE");
+    assert!(
+        heap_nx,
+        "demand-mapped heap leaf PTE must have No-Execute bit set"
+    );
+
+    vmm::unmap_virtual_address(heap_va);
+}
+
 /// Contract: faulted page is zero initialized.
 /// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
 /// When: The exact operation sequence in this function is executed against that state.

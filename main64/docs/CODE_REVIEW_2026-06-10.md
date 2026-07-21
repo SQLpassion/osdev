@@ -53,32 +53,6 @@ terminated after R-01). `process_contract_test`/`user_mode_iretq_smoke_test` gre
 
 ## Priority 4 — LOW
 
-### R-13 `[ ]` Demand fault in the user heap window maps a supervisor+executable page
-
-- **Severity:** LOW · **Category:** Bug / Security (latent)
-- **File:** `src/memory/vmm/page_fault.rs:90-101`
-
-**Problem:** `classify_user_region` returns `Heap` for the user heap window, but the fault handler
-derives `user_access` only from `Code | Stack` (Heap is missing) and `no_execute` only from `Stack`. A
-demand fault in `[USER_HEAP_BASE, USER_HEAP_END)` would map a page with `user=false` (supervisor) and
-`no_execute=false` (executable) — the opposite of the heap policy in `map_user_page`. Normal operation
-is unaffected because the `mmap`/`brk` syscall pre-maps heap pages (`process.rs:179-205`); but if a
-ring-3 task touches an unmapped heap address, the handler installs the supervisor page, the retry faults
-with P=1 → `handle_page_fault` panics the kernel (user DoS; after the R-01 fix "only" a task kill with
-an inconsistent leftover mapping).
-
-**Fix:**
-```rust
-let user_access = matches!(user_region, Some(UserRegion::Code | UserRegion::Stack | UserRegion::Heap));
-let writable    = !matches!(user_region, Some(UserRegion::Code));
-let no_execute  = matches!(user_region, Some(UserRegion::Stack | UserRegion::Heap));
-```
-If heap demand paging is deliberately unsupported: instead return `ProtectionFault` for
-`Some(UserRegion::Heap)` so the inconsistent mapping is never created.
-
-**Verification:** `vmm_test`/`page_fault_death_test` green; optionally a test case for a heap demand
-fault.
-
 ### R-14 `[ ]` PMM metadata must reside in the identity-mapped first 4 MiB — no check enforces it
 
 - **Severity:** LOW · **Category:** Bug (latent scaling hazard)
