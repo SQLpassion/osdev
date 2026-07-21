@@ -53,28 +53,6 @@ terminated after R-01). `process_contract_test`/`user_mode_iretq_smoke_test` gre
 
 ## Priority 4 — LOW
 
-### R-21 `[ ]` `cluster_to_lba` lacks an upper-bound check (corrupt FAT → phantom sectors + timeout spins)
-
-- **Severity:** LOW · **Category:** Bug (robustness / minor DoS)
-- **File:** `src/io/fat12/disk.rs:56-62`; consumers in `cluster.rs`, `fs.rs`, `fd.rs`
-
-**Problem:** `cluster_to_lba` only rejects `cluster < 2`; the read-path validation (`fs.rs:94-103`,
-`fd.rs:185,207`) accepts `2..0x0FF0` as valid. But on the 1.44 MB floppy only clusters `2..=2847` exist
-(LBA < 2880). A corrupt on-disk FAT can chain to e.g. cluster 3000 → LBA 3031 beyond the disk → ATA
-polls a nonexistent sector and burns the full `ATA_POLL_TIMEOUT_ITERATIONS` (10,000) per bad cluster
-before returning `Timeout`. No memory unsafety (buffers are fixed 512 bytes).
-
-**Fix:**
-```rust
-const MAX_DATA_CLUSTER: u16 = 2847; // (2880 - DATA_AREA_START_LBA) + 2
-if cluster < FAT12_MIN_DATA_CLUSTER || cluster > MAX_DATA_CLUSTER {
-    return Err(Fat12Error::CorruptFatChain);
-}
-```
-
-**Verification:** `fat12_test` case with an out-of-range cluster in the FAT → immediate
-`CorruptFatChain`.
-
 ### R-22 `[ ]` ATA: `sector_count == 0` unguarded (hardware interprets it as 256 sectors)
 
 - **Severity:** LOW · **Category:** Bug (latent)

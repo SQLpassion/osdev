@@ -400,10 +400,12 @@ Block (BPB)** in the partition's first sector, not from constants.
    ```
    fat_start_lba  = part_lba + reserved_sectors
    data_start_lba = fat_start_lba + num_fats * fat_size_32
+   max_data_cluster = (derived from remaining data sectors)
    cluster_to_lba(n) = data_start_lba + (n - 2) * sectors_per_cluster
    ```
    and remembers `root_cluster` (FAT32's root directory is itself a cluster chain,
-   not a fixed region).
+   not a fixed region). `cluster_to_lba(n)` actively guards against malformed FATs by
+   rejecting `n > max_data_cluster` (or `n < 2`), preventing out-of-bounds reads.
 
 **`next_cluster`** reads the 4-byte FAT32 entry (`fat_start_lba + cluster*4/512`,
 offset `cluster*4 % 512`), masks the top 4 reserved bits (`& 0x0FFF_FFFF`), and

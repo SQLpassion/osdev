@@ -24,6 +24,12 @@ pub struct Fat32Volume {
 
     /// The first cluster index of the root directory.
     root_cluster: u32,
+
+    /// The highest valid data cluster index on this volume.
+    ///
+    /// This bound is computed from the BPB at mount time so that a corrupt FAT chain
+    /// pointing beyond the data area is rejected before it can be translated to an LBA.
+    max_data_cluster: u32,
 }
 
 /// Errors that can occur during FAT32 operations.
@@ -73,10 +79,10 @@ impl Fat32Volume {
         let rsvd_sec_cnt = u16::from_le_bytes(sector[0x0E..0x10].try_into().unwrap()) as u32;
         let num_fats = sector[0x10] as u32;
         let root_ent_cnt = u16::from_le_bytes(sector[0x11..0x13].try_into().unwrap());
-        let fat_sz_16 = u16::from_le_bytes(sector[0x16..0x18].try_into().unwrap());
+        let fat_sz_16 = u16::from_le_bytes(sector[0x16..0x18].try_into().unwrap()) as u32;
         let fat_sz_32 = u32::from_le_bytes(sector[0x24..0x28].try_into().unwrap());
         let root_cluster = u32::from_le_bytes(sector[0x2C..0x30].try_into().unwrap());
-        let signature = u16::from_le_bytes(sector[0x1FE..0x200].try_into().unwrap());
+        let signature = u16::from_le_bytes(sector[0x1FE..0x200].try_into().unwrap()) as u32;
 
         // Ensure this is actually a FAT32 volume by checking that RootEntCnt and FATSz16 are 0,
         // which are FAT12/FAT16 specific, and that the boot sector signature is present.
@@ -90,12 +96,38 @@ impl Fat32Volume {
         let fat_start_lba = part_lba + rsvd_sec_cnt as u64;
         let data_start_lba = fat_start_lba + (num_fats * fat_sz_32) as u64;
 
+        // Step 3b: Compute the highest valid data cluster index.
+        // The 16-bit total-sectors field is only valid for FAT12/FAT16; for FAT32 the 32-bit
+        // field at offset 0x20 must be used. A zero total or a zero sectors-per-cluster value
+        // means the BPB is malformed.
+        let total_sectors_16 = u16::from_le_bytes(sector[0x13..0x15].try_into().unwrap()) as u32;
+        let total_sectors_32 = u32::from_le_bytes(sector[0x20..0x24].try_into().unwrap());
+        let total_sectors = if total_sectors_16 != 0 {
+            total_sectors_16
+        } else {
+            total_sectors_32
+        };
+        if total_sectors == 0 || sec_per_clus == 0 {
+            return Err(Fat32Error::NotFat32);
+        }
+
+        // The data region starts after the reserved sectors and all FAT copies.
+        // From the remaining sectors we derive how many clusters exist, then map that to
+        // the maximum valid cluster number (cluster numbering starts at 2).
+        let reserved_sectors = data_start_lba - part_lba;
+        let total_data_sectors = (total_sectors as u64).saturating_sub(reserved_sectors);
+        let cluster_count = total_data_sectors / sec_per_clus as u64;
+        // FAT32 end-of-chain markers begin at 0x0FFF_FFF8; keep the bound below that.
+        const FAT32_EOC_START: u64 = 0x0FFF_FFF8;
+        let max_data_cluster = (cluster_count + 1).min(FAT32_EOC_START - 1) as u32;
+
         crate::debugln!(
-            "FAT32 mounted: part_lba={}, fat_start={}, data_start={}, sec_per_clus={}",
+            "FAT32 mounted: part_lba={}, fat_start={}, data_start={}, sec_per_clus={}, max_cluster={}",
             part_lba,
             fat_start_lba,
             data_start_lba,
-            sec_per_clus
+            sec_per_clus,
+            max_data_cluster
         );
 
         Ok(Self {
@@ -105,6 +137,7 @@ impl Fat32Volume {
             fat_start_lba,
             data_start_lba,
             root_cluster,
+            max_data_cluster,
         })
     }
 
@@ -136,7 +169,8 @@ impl Fat32Volume {
             }
 
             // For each cluster, we read all its sectors sequentially.
-            let cluster_lba = self.cluster_to_lba(current_cluster);
+            // Reject clusters outside the volume bounds before translating them to LBAs.
+            let cluster_lba = self.cluster_to_lba(current_cluster)?;
             for i in 0..self.sec_per_clus {
                 let mut sector = [0u8; 512];
                 crate::drivers::block::read_sectors(cluster_lba + i as u64, 1, &mut sector)
@@ -216,7 +250,8 @@ impl Fat32Volume {
             }
 
             // For each cluster, read its sectors and append their bytes to our buffer.
-            let cluster_lba = self.cluster_to_lba(current_cluster);
+            // Reject clusters outside the volume bounds before translating them to LBAs.
+            let cluster_lba = self.cluster_to_lba(current_cluster)?;
             for i in 0..self.sec_per_clus {
                 let mut sector = [0u8; 512];
                 crate::drivers::block::read_sectors(cluster_lba + i as u64, 1, &mut sector)
@@ -261,7 +296,13 @@ impl Fat32Volume {
                     break;
                 }
 
-                let cluster_lba = self.cluster_to_lba(current_cluster);
+                // Reject out-of-range clusters before translating them to LBAs.
+                // A corrupt FAT should terminate the walk cleanly instead of reading phantom sectors.
+                let cluster_lba = match self.cluster_to_lba(current_cluster) {
+                    Ok(lba) => lba,
+                    Err(_) => break,
+                };
+
                 for i in 0..self.sec_per_clus {
                     let mut sector = [0u8; 512];
                     if crate::drivers::block::read_sectors(cluster_lba + i as u64, 1, &mut sector)
@@ -358,8 +399,15 @@ impl Fat32Volume {
     }
 
     /// Helper to translate a cluster number to its first LBA.
-    fn cluster_to_lba(&self, cluster: u32) -> u64 {
-        self.data_start_lba + (cluster as u64 - 2) * self.sec_per_clus as u64
+    ///
+    /// Returns `BadChain` if the cluster is outside the valid data-cluster range
+    /// (cluster < 2 or cluster > max_data_cluster). This prevents a corrupt FAT
+    /// from sending reads beyond the volume's data area (R-21 equivalent for FAT32).
+    fn cluster_to_lba(&self, cluster: u32) -> Result<u64, Fat32Error> {
+        if cluster < 2 || cluster > self.max_data_cluster {
+            return Err(Fat32Error::BadChain);
+        }
+        Ok(self.data_start_lba + (cluster as u64 - 2) * self.sec_per_clus as u64)
     }
 
     /// Helper to look up the next cluster in the FAT chain.
@@ -396,6 +444,37 @@ impl Fat32Volume {
         }
 
         Ok(value)
+    }
+
+    /// Test-only constructor that builds a volume from raw geometry.
+    ///
+    /// Hidden from public docs; used by integration tests to exercise cluster_to_lba
+    /// without a real block device.
+    #[doc(hidden)]
+    pub fn for_test(
+        part_lba: u64,
+        bytes_per_sec: u32,
+        sec_per_clus: u32,
+        fat_start_lba: u64,
+        data_start_lba: u64,
+        root_cluster: u32,
+        max_data_cluster: u32,
+    ) -> Self {
+        Self {
+            part_lba,
+            bytes_per_sec,
+            sec_per_clus,
+            fat_start_lba,
+            data_start_lba,
+            root_cluster,
+            max_data_cluster,
+        }
+    }
+
+    /// Test-only wrapper around `cluster_to_lba`.
+    #[doc(hidden)]
+    pub fn cluster_to_lba_for_test(&self, cluster: u32) -> Result<u64, Fat32Error> {
+        self.cluster_to_lba(cluster)
     }
 }
 

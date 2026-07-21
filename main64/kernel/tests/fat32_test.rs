@@ -52,3 +52,23 @@ fn test_normalize_name_invalid() {
     // Multiple dots
     assert_eq!(fat32::normalize_name("a.b.c"), None);
 }
+
+/// Verifies that cluster_to_lba rejects clusters outside the valid data-cluster range.
+/// This is the FAT32 equivalent of the R-21 upper-bound check.
+#[test_case]
+fn test_cluster_to_lba_rejects_out_of_range_clusters() {
+    // Construct a minimal volume with 4 valid data clusters (2..=5).
+    // data_start_lba=100, sec_per_clus=1 means cluster 2 -> LBA 100, cluster 5 -> LBA 103.
+    let volume = fat32::Fat32Volume::for_test(0, 512, 1, 0, 100, 2, 5);
+
+    // Valid boundary clusters must translate correctly.
+    assert_eq!(volume.cluster_to_lba_for_test(2).unwrap(), 100);
+    assert_eq!(volume.cluster_to_lba_for_test(5).unwrap(), 103);
+
+    // Cluster 0 and 1 are reserved and must be rejected.
+    assert!(volume.cluster_to_lba_for_test(0).is_err());
+    assert!(volume.cluster_to_lba_for_test(1).is_err());
+
+    // Cluster 6 is beyond max_data_cluster and must be rejected immediately.
+    assert!(volume.cluster_to_lba_for_test(6).is_err());
+}
