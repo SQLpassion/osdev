@@ -24,14 +24,21 @@ pub fn syscall_get_pci_device_impl(index: u64, out_ptr: *mut UserPciDevice) -> S
         None => return Err(SyscallError::InvalidArg),
     };
 
-    // Step 2: Verify that the user-space output pointer represents a valid,
+    // Step 2: Validate alignment of the user-space output pointer.
+    // `UserPciDevice` contains u16 fields and requires 2-byte alignment;
+    // `core::ptr::write` to a misaligned address is undefined behavior.
+    if !(out_ptr as u64).is_multiple_of(core::mem::align_of::<UserPciDevice>() as u64) {
+        return Err(SyscallError::InvalidArg);
+    }
+
+    // Step 3: Verify that the user-space output pointer represents a valid,
     // writable memory range in the Ring-3 address space.
     let struct_size = core::mem::size_of::<UserPciDevice>();
     if !is_valid_user_buffer_writable(out_ptr as *const u8, struct_size) {
         return Err(SyscallError::InvalidArg);
     }
 
-    // Step 3: Map and construct the user-compatible BAR structures.
+    // Step 4: Map and construct the user-compatible BAR structures.
     let mut bars = [UserPciBar {
         bar_type: 0,
         flags: 0,
@@ -86,7 +93,7 @@ pub fn syscall_get_pci_device_impl(index: u64, out_ptr: *mut UserPciDevice) -> S
     // SAFETY:
     // - `out_ptr` has been validated to point entirely within present,
     //   user-accessible, writable pages.
-    // - The memory alignment is handled by `UserPciDevice` being `#[repr(C)]`.
+    // - `out_ptr` is 2-byte aligned as verified above.
     // - Memory safety is preserved since the caller owns the memory range in user space.
     unsafe {
         out_ptr.write(user_dev);

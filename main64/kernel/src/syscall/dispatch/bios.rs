@@ -34,7 +34,14 @@ pub fn syscall_get_bios_memory_map_entry_impl(
         return Err(SyscallError::InvalidArg);
     }
 
-    // Step 2: Verify that the user-space output pointer represents a valid,
+    // Step 2: Validate alignment of the user-space output pointer.
+    // `UserBiosMemoryRegion` contains u64 fields and therefore requires 8-byte alignment;
+    // `core::ptr::write` to a misaligned address is undefined behavior.
+    if !(out_ptr as u64).is_multiple_of(core::mem::align_of::<UserBiosMemoryRegion>() as u64) {
+        return Err(SyscallError::InvalidArg);
+    }
+
+    // Step 3: Verify that the user-space output pointer represents a valid,
     // writable memory range in the Ring-3 address space.
     let struct_size = core::mem::size_of::<UserBiosMemoryRegion>();
     if !is_valid_user_buffer_writable(out_ptr as *const u8, struct_size) {
@@ -59,7 +66,7 @@ pub fn syscall_get_bios_memory_map_entry_impl(
     // SAFETY:
     // - `out_ptr` has been validated to point entirely within present,
     //   user-accessible, writable pages.
-    // - The memory alignment is handled by `UserBiosMemoryRegion` being `#[repr(C)]`.
+    // - `out_ptr` is 8-byte aligned as verified above.
     // - Memory safety is preserved since the caller owns the memory range in user space.
     unsafe {
         out_ptr.write(user_region);
@@ -74,14 +81,23 @@ pub fn syscall_get_bios_memory_map_entry_impl(
 pub fn syscall_get_time_impl(
     out_ptr: *mut crate::syscall::types::UserDateTime,
 ) -> SyscallResult<u64> {
-    // Step 1: Verify that the user-space output pointer represents a valid,
+    // Step 1: Validate alignment of the user-space output pointer.
+    // `UserDateTime` contains u32 fields and requires 4-byte alignment;
+    // `core::ptr::write` to a misaligned address is undefined behavior.
+    if !(out_ptr as u64)
+        .is_multiple_of(core::mem::align_of::<crate::syscall::types::UserDateTime>() as u64)
+    {
+        return Err(SyscallError::InvalidArg);
+    }
+
+    // Step 2: Verify that the user-space output pointer represents a valid,
     // writable memory range in the Ring-3 address space.
     let struct_size = core::mem::size_of::<crate::syscall::types::UserDateTime>();
     if !is_valid_user_buffer_writable(out_ptr as *const u8, struct_size) {
         return Err(SyscallError::InvalidArg);
     }
 
-    // Step 2: Query the high-precision system time from the time driver.
+    // Step 3: Query the high-precision system time from the time driver.
     let current = crate::drivers::time::get_time();
 
     let user_dt = crate::syscall::types::UserDateTime {
@@ -97,7 +113,7 @@ pub fn syscall_get_time_impl(
     // SAFETY:
     // - `out_ptr` has been validated to point entirely within present,
     //   user-accessible, writable pages.
-    // - The memory alignment is handled by `UserDateTime` being `#[repr(C)]`.
+    // - `out_ptr` is 4-byte aligned as verified above.
     // - Memory safety is preserved since the caller owns the memory range in user space.
     unsafe {
         out_ptr.write(user_dt);

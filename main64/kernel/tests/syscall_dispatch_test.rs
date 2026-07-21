@@ -1157,3 +1157,42 @@ fn test_bios_memory_map_query_syscalls() {
         );
     }
 }
+
+/// Contract: get_time rejects misaligned output pointers.
+///
+/// `UserDateTime` requires 4-byte alignment; a misaligned `out_ptr` would
+/// make `core::ptr::write` undefined behavior.
+#[test_case]
+fn test_get_time_rejects_misaligned_pointer() {
+    let ret = syscall::dispatch(SyscallId::GetTime as u64, 0x1001, 0, 0, 0);
+    assert!(
+        ret == syscall::SYSCALL_ERR_INVALID_ARG,
+        "get_time with misaligned ptr must return EINVAL"
+    );
+}
+
+/// Contract: get_pci_device rejects misaligned output pointers.
+///
+/// `UserPciDevice` requires 2-byte alignment; a misaligned `out_ptr` would
+/// make `core::ptr::write` undefined behavior.
+#[test_case]
+fn test_get_pci_device_rejects_misaligned_pointer() {
+    let ret = syscall::dispatch(SyscallId::GetPciDevice as u64, 0, 0x1001, 0, 0);
+    assert!(
+        ret == syscall::SYSCALL_ERR_INVALID_ARG,
+        "get_pci_device with misaligned ptr must return EINVAL"
+    );
+}
+
+/// Contract: get_bios_memory_map_entry rejects misaligned output pointers.
+///
+/// `UserBiosMemoryRegion` requires 8-byte alignment; a misaligned `out_ptr` would
+/// make `core::ptr::write` undefined behavior.
+#[test_case]
+fn test_get_bios_memory_map_entry_rejects_misaligned_pointer() {
+    let ret = syscall::dispatch(SyscallId::GetBiosMemoryMapEntry as u64, 0, 0x1001, 0, 0);
+    assert!(
+        ret == syscall::SYSCALL_ERR_INVALID_ARG,
+        "get_bios_memory_map_entry with misaligned ptr must return EINVAL"
+    );
+}
