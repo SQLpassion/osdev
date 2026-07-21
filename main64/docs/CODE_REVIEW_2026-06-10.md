@@ -53,27 +53,6 @@ terminated after R-01). `process_contract_test`/`user_mode_iretq_smoke_test` gre
 
 ## Priority 4 — LOW
 
-### R-14 `[ ]` PMM metadata must reside in the identity-mapped first 4 MiB — no check enforces it
-
-- **Severity:** LOW · **Category:** Bug (latent scaling hazard)
-- **Files:** `src/memory/pmm/manager.rs:54-141` (metadata at `align_up(kernel_end_phys, PAGE_SIZE)`, accessed via raw physical addresses) + `src/memory/vmm/mod.rs:282-348` (`init` identity-maps only 4 MiB)
-
-**Problem:** PMM header, region array, and bitmaps are placed physically after `__bss_end` and
-dereferenced via their physical addresses as pointers. After the CR3 switch, low memory only exists as
-the identity map of the first 4 MiB. Nothing guarantees `metadata_end <= 4 MiB`. If kernel image +
-metadata ever grow past ~4 MiB, every bitmap access after `vmm::init` dereferences an unmapped address →
-#PF in PMM code (under the PMM lock) → fatal. Silent today only because the kernel is small.
-
-**Fix:** Either (a) extend the identity map in `vmm::init` up to `reserved_end` instead of the hard
-4-MiB limit, or (b) add an assertion at the end of `PhysicalMemoryManager::new()`:
-```rust
-assert!(bitmap_base <= STACK_TOP /* == 4-MiB identity limit */,
-        "PMM metadata {:#x} exceeds identity-mapped region", bitmap_base);
-```
-
-**Verification:** `pmm_test`/`vmm_test` green; the assertion variant fails loudly at boot instead of
-corrupting at runtime.
-
 ### R-15 `[ ]` `RingBuffer::pop`: ABA race under multi-consumer preemption
 
 - **Severity:** LOW · **Category:** Bug

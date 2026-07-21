@@ -242,6 +242,16 @@ impl PhysicalMemoryManager {
             // kernel image, so a single span from the kernel base through the end of
             // the metadata (and at least the bootstrap stack) wastes nothing. We take
             // the max with STACK_TOP to also cover the bootloader stack, then align up.
+            //
+            // After the CR3 switch only the first 4 MiB are identity-mapped; if the
+            // kernel image plus PMM bitmaps ever grow past that line, every subsequent
+            // bitmap access would page-fault inside the PMM. Fail loudly here instead.
+            assert!(
+                metadata_end <= STACK_TOP,
+                "PMM metadata {:#x} exceeds identity-mapped region (limit {:#x})",
+                metadata_end,
+                STACK_TOP
+            );
             let reserved_end = align_up(metadata_end.max(STACK_TOP), PAGE_SIZE);
             pmm.mark_range_used(KERNEL_OFFSET, reserved_end);
         } else {
