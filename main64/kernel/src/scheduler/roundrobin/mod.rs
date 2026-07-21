@@ -353,8 +353,14 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
         if TEST_STOP_REQUESTED.swap(false, Ordering::AcqRel) {
             // Collect stacks from all active slots and append to stacks_to_free.
             // pending_free_stacks was already taken above, so only active slots remain.
+            // Skip the slot whose stack still hosts `current_frame`; freeing the
+            // stack the CPU is currently executing on would be a use-after-free
+            // (the same invariant protected by `take_pending_stacks_for_free`).
             for slot in meta.slots.iter() {
-                if slot.used && !slot.stack_base.is_null() && stacks_to_free.try_reserve(1).is_ok()
+                if slot.used
+                    && !slot.stack_base.is_null()
+                    && !slot.is_frame_within_stack(current_frame)
+                    && stacks_to_free.try_reserve(1).is_ok()
                 {
                     stacks_to_free.push((slot.stack_base, slot.stack_size));
                 }

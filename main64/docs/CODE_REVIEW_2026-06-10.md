@@ -53,32 +53,6 @@ terminated after R-01). `process_contract_test`/`user_mode_iretq_smoke_test` gre
 
 ## Priority 4 — LOW
 
-### R-16 `[ ]` Debug stop path frees the currently-used kernel stack (use-after-free, test path only)
-
-- **Severity:** LOW (debug/test builds only) · **Category:** Bug
-- **File:** `src/scheduler/roundrobin/mod.rs:351-372` (`TEST_STOP_REQUESTED` branch in `on_timer_tick`)
-
-**Problem:** The stop branch collects the stacks of ALL active slots into `stacks_to_free`
-(lines 355-360) and frees them via `free_pending_stacks` (365) — without the re-queue check from
-`take_pending_stacks_for_free` that protects every other path. If the stop tick interrupts a running
-task (the common case in tests), `current_frame`, the GPRs saved by the IRQ stub, and the live RSP all
-sit inside one of those stacks; the heap writes free-list metadata into it (and may coalesce with
-neighbors) while the CPU is still executing on it — the same UAF class that c3fcca3 fixed for
-`terminate_task`, re-introduced on this path.
-
-**Fix:** Apply the same exclusion — skip the slot whose stack range contains `current_frame`:
-```rust
-for slot in meta.slots.iter() {
-    if slot.used && !slot.stack_base.is_null()
-        && !slot.is_frame_within_stack(current_frame)        // <- new
-        && stacks_to_free.try_reserve(1).is_ok()
-    { stacks_to_free.push((slot.stack_base, slot.stack_size)); }
-}
-```
-(Leak the skipped stack, or park it in a debug-only deferred list.)
-
-**Verification:** `scheduler_rr_test` (uses the stop mechanism) green and stable across multiple runs.
-
 ### R-17 `[ ]` `reset_scheduler_state` does not clear `fpu_owner` (stale owner in the next scheduler epoch)
 
 - **Severity:** LOW (only reachable via the debug `TEST_STOP` path) · **Category:** Bug
