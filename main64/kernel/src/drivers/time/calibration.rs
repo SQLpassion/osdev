@@ -21,6 +21,19 @@ pub fn rdtsc() -> u64 {
     ((high as u64) << 32) | (low as u64)
 }
 
+/// Maximum number of PIT polling iterations before TSC calibration times out.
+///
+/// If Channel 2 never counts (gate misbehavior or a broken PIT), the loop
+/// aborts and returns the default frequency instead of hanging forever.
+const TSC_CALIBRATION_TIMEOUT_ITERATIONS: u32 = 1_000_000;
+
+/// Minimum plausible TSC delta for a 10 ms calibration window.
+///
+/// Corresponds to 1 cycle per microsecond (1 MHz TSC). Anything smaller
+/// indicates the PIT count was sampled before the counter loaded or the
+/// calibration window was otherwise invalid.
+const TSC_CALIBRATION_MIN_DIFF: u64 = 10_000;
+
 /// Calibrates the TSC against PIT Channel 2 over a ~10 millisecond window.
 ///
 /// Returns the number of TSC cycles per microsecond.
@@ -64,6 +77,7 @@ pub fn calibrate_tsc() -> u64 {
     let start_tsc = rdtsc();
 
     // Loop until PIT Channel 2 count reaches 0 or wraps.
+    let mut timeout = TSC_CALIBRATION_TIMEOUT_ITERATIONS;
     loop {
         // Latch Channel 2 count: write 0b10000000 (0x80) to command port 0x43.
         // SAFETY:
@@ -79,6 +93,19 @@ pub fn calibrate_tsc() -> u64 {
         if count == 0 || count > 11931 {
             break;
         }
+
+        // Abort if the PIT counter never progresses, avoiding an infinite
+        // boot hang on misbehaving hardware or emulators.
+        if timeout == 0 {
+            // Restore original gate settings before returning the fallback.
+            // SAFETY:
+            // - Restoring original gate state on port 0x61 is safe.
+            unsafe {
+                gate.write(gate_orig);
+            }
+            return 2000;
+        }
+        timeout -= 1;
     }
 
     let end_tsc = rdtsc();
@@ -92,12 +119,12 @@ pub fn calibrate_tsc() -> u64 {
 
     let diff = end_tsc.saturating_sub(start_tsc);
 
-    // 10 milliseconds = 10,000 microseconds.
-    let cycles_per_us = diff / 10000;
-    if cycles_per_us == 0 {
-        // Fallback value (e.g. 2.0 GHz) if calibration failed or emulator behaves unexpectedly.
-        2000
-    } else {
-        cycles_per_us
+    // Reject implausibly small deltas (e.g. the first latch happened before
+    // the counter loaded) and fall back to a safe default.
+    if diff < TSC_CALIBRATION_MIN_DIFF {
+        return 2000;
     }
+
+    // 10 milliseconds = 10,000 microseconds.
+    diff / 10000
 }

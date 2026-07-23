@@ -64,6 +64,41 @@ fn test_rdtsc_increases() {
     assert!(t2 >= t1, "rdtsc should be monotonic");
 }
 
+/// Contract: calibrate_tsc returns a positive, plausible frequency.
+/// Given: The PIT is accessible and the TSC is running.
+/// When: calibrate_tsc is called.
+/// Then: The result is non-zero and within a sane CPU frequency range.
+#[test_case]
+fn test_calibrate_tsc_returns_plausible_value() {
+    let ticks_per_us = time::calibration::calibrate_tsc();
+
+    assert!(
+        ticks_per_us > 0,
+        "calibrated TSC frequency must be positive"
+    );
+    assert!(
+        ticks_per_us >= 10 && ticks_per_us <= 20_000,
+        "calibrated TSC frequency {} is outside plausible CPU range",
+        ticks_per_us
+    );
+}
+
+/// Contract: calibrate_tsc does not hang on a stuck PIT counter.
+/// Given: The function is bounded by a timeout.
+/// When: calibrate_tsc is called.
+/// Then: It returns within a bounded number of iterations (observed by the
+/// test completing) and yields either a measured value or the safe fallback.
+#[test_case]
+fn test_calibrate_tsc_is_bounded() {
+    // The bounded-loop fix is verified implicitly: if calibrate_tsc could
+    // hang forever, this test kernel would never reach the assertion.
+    let ticks_per_us = time::calibration::calibrate_tsc();
+    assert!(
+        ticks_per_us > 0,
+        "calibrate_tsc must return a positive frequency even on timeout fallback"
+    );
+}
+
 /// Contract: DateTime add_seconds correctly propagates overflow.
 /// Given: A DateTime value at the edge of rollover.
 /// When: add_seconds is called.

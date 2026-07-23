@@ -51,28 +51,6 @@ terminated after R-01). `process_contract_test`/`user_mode_iretq_smoke_test` gre
 
 ---
 
-## Priority 4 — LOW
-
-### R-23 `[ ]` `calibrate_tsc`: polling loop without a timeout (boot hang on a broken PIT)
-
-- **Severity:** LOW · **Category:** Bug (robustness)
-- **File:** `src/drivers/time/calibration.rs:61-74`
-
-**Problem:** The calibration loop spins until PIT channel 2 reaches 0 or exceeds 11931. If channel 2
-never counts (gate misbehavior on hardware/emulator), the loop never terminates → boot hang. Also: if
-the first latched read returns a tiny count (before the counter loads), the loop breaks too early and
-`diff` is too small; only `cycles_per_us == 0` falls back to the default — a small-but-nonzero bad value
-silently yields wrong time scaling. (Division by zero itself is correctly guarded here and in
-`manager.rs:72`.)
-
-**Fix:** Bounded iteration counter in the loop (analogous to `ATA_POLL_TIMEOUT_ITERATIONS`); on timeout
-fall back to the default of 2000 cycles/µs. Additionally a plausibility window for `diff` (e.g. a minimum
-value) instead of just `== 0`.
-
-**Verification:** Boot in QEMU + Bochs still succeeds; time measurement plausible.
-
----
-
 ## Design observations (no immediate fixes required, document them)
 
 | # | Topic | Detail |
