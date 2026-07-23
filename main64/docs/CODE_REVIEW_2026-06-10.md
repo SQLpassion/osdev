@@ -53,24 +53,6 @@ terminated after R-01). `process_contract_test`/`user_mode_iretq_smoke_test` gre
 
 ## Priority 4 — LOW
 
-### R-22 `[ ]` ATA: `sector_count == 0` unguarded (hardware interprets it as 256 sectors)
-
-- **Severity:** LOW · **Category:** Bug (latent)
-- **File:** `src/drivers/ata.rs:359-412` (`read_sectors`), `:420-473` (`write_sectors`)
-
-**Problem:** Per the ATA spec, the value `0` in the sector-count register means 256 sectors. With
-`sector_count = 0`, the buffer assert passes (`total_bytes = 0`), `setup_command` programs count 0, the
-transfer loop `for sector in 0..0` does nothing, and the function returns `Ok(())` — leaving the device
-armed with 256 pending transfers and pending DRQ, corrupting the next command's state. No current caller
-passes 0 (FAT12 uses 1/9/14) → latent.
-
-**Fix:** Early return before touching the controller:
-```rust
-if sector_count == 0 { return Ok(()); }
-```
-
-**Verification:** `ata_test` green; optionally a test case for 0.
-
 ### R-23 `[ ]` `calibrate_tsc`: polling loop without a timeout (boot hang on a broken PIT)
 
 - **Severity:** LOW · **Category:** Bug (robustness)

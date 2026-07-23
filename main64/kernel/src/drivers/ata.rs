@@ -383,6 +383,12 @@ pub fn read_sectors(buffer: &mut [u8], lba: u32, sector_count: u8) -> Result<(),
         return Err(AtaError::LbaOutOfRange);
     }
 
+    // ATA interprets sector-count 0 as 256 sectors. Reject the ambiguous
+    // value early so the controller is never programmed with it.
+    if sector_count == 0 {
+        return Ok(());
+    }
+
     let total_bytes = sector_count as usize * SECTOR_SIZE;
     assert!(
         buffer.len() >= total_bytes,
@@ -442,6 +448,12 @@ pub fn write_sectors(buffer: &[u8], lba: u32, sector_count: u8) -> Result<(), At
     // Step 1: validate caller-provided addressing and buffer size.
     if lba > 0x0FFF_FFFF {
         return Err(AtaError::LbaOutOfRange);
+    }
+
+    // ATA interprets sector-count 0 as 256 sectors. Reject the ambiguous
+    // value early so the controller is never programmed with it.
+    if sector_count == 0 {
+        return Ok(());
     }
 
     let total_bytes = sector_count as usize * SECTOR_SIZE;

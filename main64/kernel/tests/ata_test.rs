@@ -77,6 +77,40 @@ fn test_ata_init_is_idempotent() {
     );
 }
 
+/// Contract: ATA read with sector_count == 0 is a no-op and returns Ok.
+/// Given: ATA subsystem was initialized.
+/// When: read_sectors is called with sector_count == 0.
+/// Then: The function returns Ok without programming the controller for 256 sectors.
+#[test_case]
+fn test_ata_read_zero_sectors_is_no_op() {
+    ata::init();
+
+    let mut buffer = [0u8; 512];
+    let result = ata::read_sectors(&mut buffer, 0, 0);
+
+    assert!(
+        result.is_ok(),
+        "read_sectors with sector_count == 0 must return Ok without touching hardware"
+    );
+}
+
+/// Contract: ATA write with sector_count == 0 is a no-op and returns Ok.
+/// Given: ATA subsystem was initialized.
+/// When: write_sectors is called with sector_count == 0.
+/// Then: The function returns Ok without programming the controller for 256 sectors.
+#[test_case]
+fn test_ata_write_zero_sectors_is_no_op() {
+    ata::init();
+
+    let buffer = [0xA5u8; 512];
+    let result = ata::write_sectors(&buffer, 0, 0);
+
+    assert!(
+        result.is_ok(),
+        "write_sectors with sector_count == 0 must return Ok without touching hardware"
+    );
+}
+
 /// Contract: ATA timeout error variant remains distinct in the public API.
 /// Given: The ATA error enum exposes individual failure causes.
 /// When: Timeout is compared against other ATA error variants.
