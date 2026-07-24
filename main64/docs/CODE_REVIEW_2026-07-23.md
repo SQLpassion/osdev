@@ -86,7 +86,6 @@ carefully.
 
 | ID | Sev | Area | One-liner |
 |----|-----|------|-----------|
-| C1 | CRITICAL | syscall | Read-path user-pointer validation lets ring-3 panic the kernel / demand-map supervisor pages |
 | C2 | CRITICAL | scheduler | `#NM` (FPU trap) can fire inside the `SCHED` critical section → re-enter non-reentrant lock → hard hang |
 | H1 | HIGH | drivers/ahci | AHCI data path: no serialization + non-volatile MMIO + WB-cacheable ABAR + 1-sector-per-command |
 | H2 | HIGH | drivers/serial | Unbounded TX busy-wait, also on the panic path |
@@ -108,75 +107,6 @@ carefully.
 ---
 
 ## 4. CRITICAL findings
-
-### C1 — Read-path user-pointer validation lets ring-3 crash the kernel
-
-**Severity:** CRITICAL (security / DoS). **Area:** `syscall/`.
-
-**Affected code**
-- Read-path validator: `kernel/src/syscall/types.rs:260` `is_valid_user_buffer` (arithmetic
-  range check only; explicitly delegates presence/permission "to the MMU at access time",
-  `types.rs:256`).
-- Write-path validator (the correct model to mirror): `kernel/src/syscall/types.rs:281`
-  `is_valid_user_buffer_writable` → walks every page via `is_user_page_writable`
-  (`kernel/src/memory/vmm/page_table.rs:577`, checks present+user+writable at *every* paging
-  level).
-- Consumers that trust the read path: `syscall/dispatch/console.rs:21` (`WriteSerial`),
-  `:65` (`WriteConsole`), `:143` (`WriteFramebuffer`); `syscall/dispatch/fs.rs:8`
-  (`read_user_string`, used by `OpenFile`/`DeleteFile`/`Exec`), `:79` (`WriteFile`).
-- Fatal fault routing: `kernel/src/arch/interrupts/handlers.rs:45` routes **kernel-origin**
-  `#PF` to `handle_page_fault`; `kernel/src/memory/vmm/page_fault.rs:264` panics on
-  `ProtectionFault`/`OutOfMemory`; `page_fault.rs:113`+`:124` demand-maps otherwise.
-
-**Symptom / impact.** A ring-3 task passes a pointer that is canonical and non-null but not
-actually mapped (or maps to a guard/supervisor region). The kernel reads it in ring 0,
-takes a **kernel-origin** `#PF`, and:
-- panics the whole kernel (guard page → `ProtectionFault`; or PMM exhaustion → `OutOfMemory`
-  after a loop of distinct addresses), **or**
-- silently demand-maps a page the user never allocated — a *user* page inside a user region,
-  or a **supervisor** page for any of the many canonical addresses `is_valid_user_buffer`
-  accepts that are not in a real user window (e.g. `0x1000`, or the gap between
-  `USER_CODE_END` and `USER_HEAP_BASE`).
-
-The write path already rejects all of this; only the read path is exposed.
-
-**Root cause.** Reads rely on faulting for safety, but the kernel fault handler is not
-fault-tolerant for kernel-origin accesses to user pointers: there is no copy-in with a
-fixup/exception-table, and no per-CPU "accessing user memory" flag, so a fault is fatal or
-demand-mapping instead of `EFAULT`.
-
-**Reproduction (write this test first).** New integration test `user_ptr_validation_test`
-(model it on `tests/user_exception_recovery_test.rs` / `tests/syscall_dispatch_test.rs`):
-1. Spawn a ring-3 task that issues `WriteConsole(ptr = USER_STACK_GUARD_BASE, len = 1)`
-   (guard constant from `memory/vmm/vmm_constants.rs`).
-2. Expected-after-fix: the syscall returns `SYSCALL_ERR_INVALID_ARG`; the task keeps
-   running. Before the fix: kernel panic (test would trip the death path).
-3. Add a second case: a loop writing 1 byte at 4 KiB-spaced unmapped canonical addresses;
-   after the fix each returns `InvalidArg` and the PMM free-frame count is unchanged.
-
-**Fix plan**
-1. Add `pub fn is_valid_user_buffer_readable(ptr, len) -> bool` in `syscall/types.rs`,
-   mirroring `is_valid_user_buffer_writable` but requiring only present+user at every level
-   (ignore the writable bit). Add a matching `is_user_page_readable` walker in
-   `memory/vmm/page_table.rs` (or generalize `is_user_page_writable` with a "require
-   writable" bool).
-2. Confine **both** validators to the real user windows. Add a helper backed by
-   `classify_user_region` (`memory/vmm/mod.rs:200`) that returns `false` for `None`
-   (unclassified) addresses instead of accepting the entire 128 TiB lower half
-   (`USER_CANONICAL_END`, `types.rs:238`).
-3. Point every read-path consumer (`console.rs`, `fs.rs` list above) at
-   `is_valid_user_buffer_readable`, returning `SYSCALL_ERR_INVALID_ARG` on failure — matching
-   how the write path already behaves.
-4. (Structural, do in H-tier if time-boxed) introduce `copy_from_user`/`copy_to_user`
-   helpers with an exception-table fixup so a genuinely-racing unmap yields `EFAULT` rather
-   than a fault. This is the durable fix and the prerequisite for SMAP (see M6/roadmap #4).
-
-**Acceptance criteria.** `user_ptr_validation_test` green; no read-path syscall can panic
-the kernel or change the PMM free-frame count via an unmapped/guard pointer;
-`is_valid_user_buffer_readable` rejects any address `classify_user_region` returns `None`
-for.
-
----
 
 ### C2 — `#NM` FPU trap can re-enter the `SCHED` spinlock (latent hard hang)
 

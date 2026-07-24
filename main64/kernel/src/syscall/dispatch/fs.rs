@@ -1,7 +1,7 @@
 //! Filesystem-related system call implementations.
 
 use crate::syscall::types::{
-    is_valid_user_buffer, is_valid_user_buffer_writable, SyscallError, SyscallResult,
+    is_valid_user_buffer_readable, is_valid_user_buffer_writable, SyscallError, SyscallResult,
 };
 
 /// Helper to read a null-terminated string from user space safely.
@@ -19,7 +19,7 @@ pub fn read_user_string(
             return Err(SyscallError::InvalidArg);
         }
 
-        if !is_valid_user_buffer(unsafe { ptr.add(len) }, 1) {
+        if !is_valid_user_buffer_readable(unsafe { ptr.add(len) }, 1) {
             return Err(SyscallError::InvalidArg);
         }
 
@@ -80,7 +80,7 @@ pub fn syscall_write_file_impl(fd: u64, buf_ptr: *const u8, len: u64) -> Syscall
     if len == 0 {
         return Ok(0);
     }
-    if !is_valid_user_buffer(buf_ptr, len as usize) {
+    if !is_valid_user_buffer_readable(buf_ptr, len as usize) {
         return Err(SyscallError::InvalidArg);
     }
 

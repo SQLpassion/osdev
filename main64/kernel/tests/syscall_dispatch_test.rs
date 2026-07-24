@@ -1196,3 +1196,41 @@ fn test_get_bios_memory_map_entry_rejects_misaligned_pointer() {
         "get_bios_memory_map_entry with misaligned ptr must return EINVAL"
     );
 }
+
+/// Contract: read path validators reject unmapped guard page without panicking.
+#[test_case]
+fn test_read_path_rejects_unmapped_guard_page() {
+    let ret = syscall::dispatch(
+        SyscallId::WriteConsole as u64,
+        kaos_kernel::memory::vmm::USER_STACK_GUARD_BASE,
+        1,
+        0,
+        0,
+    );
+    assert!(
+        ret == syscall::SYSCALL_ERR_INVALID_ARG,
+        "WriteConsole with guard page must return EINVAL without panicking"
+    );
+}
+
+/// Contract: read path validators reject arbitrary unmapped canonical addresses without memory leak.
+#[test_case]
+fn test_read_path_rejects_unmapped_user_pages_in_loop() {
+    let start_frames = kaos_kernel::memory::pmm::with_pmm(|mgr| mgr.total_free_frames());
+
+    for i in 0..10 {
+        let addr = 0x0000_1234_0000_0000 + i * 4096;
+        let ret = syscall::dispatch(SyscallId::WriteConsole as u64, addr, 1, 0, 0);
+        assert!(
+            ret == syscall::SYSCALL_ERR_INVALID_ARG,
+            "WriteConsole with unmapped user address must return EINVAL"
+        );
+    }
+
+    let end_frames = kaos_kernel::memory::pmm::with_pmm(|mgr| mgr.total_free_frames());
+    assert_eq!(
+        start_frames,
+        end_frames,
+        "PMM free frames must not change; demand mapping must not occur for invalid read-path buffers"
+    );
+}

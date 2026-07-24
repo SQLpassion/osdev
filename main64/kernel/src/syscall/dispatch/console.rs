@@ -2,7 +2,9 @@
 
 use crate::console::with_console;
 use crate::drivers::serial::Serial;
-use crate::syscall::types::{is_valid_user_buffer, SyscallError, SyscallResult, SYSCALL_OK};
+use crate::syscall::types::{
+    is_valid_user_buffer_readable, SyscallError, SyscallResult, SYSCALL_OK,
+};
 use core::slice;
 
 /// Maximum number of bytes that can be written in a single WriteSerial syscall.
@@ -27,7 +29,7 @@ pub fn syscall_write_serial_impl(ptr: *const u8, len: usize) -> SyscallResult<u6
     // A caller whose (ptr, len) overflows, crosses the canonical boundary,
     // is null, or reaches into kernel space receives EINVAL — even though
     // we will subsequently write fewer than `len` bytes due to the DoS cap.
-    if !is_valid_user_buffer(ptr, len) {
+    if !is_valid_user_buffer_readable(ptr, len) {
         return Err(SyscallError::InvalidArg);
     }
 
@@ -38,8 +40,8 @@ pub fn syscall_write_serial_impl(ptr: *const u8, len: usize) -> SyscallResult<u6
     let bytes = unsafe {
         // SAFETY:
         // - This requires `unsafe` because it builds a slice from a raw userspace pointer.
-        // - `is_valid_user_buffer` above verified that `ptr..ptr+len` lies
-        //   entirely within user canonical space.
+        // - `is_valid_user_buffer_readable` above verified that `ptr..ptr+len` lies
+        //   entirely within user canonical space and is readable.
         // - `actual_len <= len`, so `ptr..ptr+actual_len` is a valid sub-range.
         // - `actual_len` is bounded by `MAX_SERIAL_WRITE_LEN`.
         slice::from_raw_parts(ptr, actual_len)
@@ -68,7 +70,7 @@ pub fn syscall_write_console_impl(ptr: *const u8, len: usize) -> SyscallResult<u
     }
 
     // Step 1: Validate the full claimed range before clamping.
-    if !is_valid_user_buffer(ptr, len) {
+    if !is_valid_user_buffer_readable(ptr, len) {
         return Err(SyscallError::InvalidArg);
     }
 
@@ -78,8 +80,8 @@ pub fn syscall_write_console_impl(ptr: *const u8, len: usize) -> SyscallResult<u
     let bytes = unsafe {
         // SAFETY:
         // - This requires `unsafe` because it builds a slice from a raw userspace pointer.
-        // - `is_valid_user_buffer` above verified that `ptr..ptr+len` lies
-        //   entirely within user canonical space.
+        // - `is_valid_user_buffer_readable` above verified that `ptr..ptr+len` lies
+        //   entirely within user canonical space and is readable.
         // - `actual_len <= len`, so `ptr..ptr+actual_len` is a valid sub-range.
         // - `actual_len` is bounded by `MAX_CONSOLE_WRITE_LEN`.
         slice::from_raw_parts(ptr, actual_len)
@@ -156,13 +158,13 @@ pub fn syscall_write_framebuffer_impl(ptr: *const u16, len: usize) -> SyscallRes
     }
 
     // Validate the full byte range lies within user canonical space.
-    if !is_valid_user_buffer(ptr as *const u8, len * 2) {
+    if !is_valid_user_buffer_readable(ptr as *const u8, len * 2) {
         return Err(SyscallError::InvalidArg);
     }
 
     let cells = unsafe {
         // SAFETY:
-        // - `is_valid_user_buffer` verified the byte range is within user canonical space.
+        // - `is_valid_user_buffer_readable` verified the byte range is within user space and is readable.
         // - Alignment was verified above (ptr is 2-byte aligned).
         // - `ptr..ptr + len` covers exactly `len * 2` bytes of valid user memory.
         core::slice::from_raw_parts(ptr, len)

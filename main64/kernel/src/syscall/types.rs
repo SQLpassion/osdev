@@ -269,7 +269,53 @@ pub fn is_valid_user_buffer(ptr: *const u8, len: usize) -> bool {
         Some(e) => e,
         None => return false,
     };
-    start < USER_CANONICAL_END && end <= USER_CANONICAL_END
+    if start >= USER_CANONICAL_END || end > USER_CANONICAL_END {
+        return false;
+    }
+
+    #[cfg(feature = "kernel")]
+    {
+        let start_region = crate::memory::vmm::classify_user_region(start);
+        let end_region = crate::memory::vmm::classify_user_region(end - 1);
+        if start_region.is_none() || start_region != end_region {
+            return false;
+        }
+    }
+
+    true
+}
+
+/// Returns `true` when every page in `ptr..ptr+len` is present and user-readable.
+///
+/// This extends [`is_valid_user_buffer`] with a read-only page-table walk under
+/// the currently active address space. It does not fault in missing pages and
+/// therefore never changes the task's memory layout. A zero-length buffer is
+/// valid because no memory access will follow.
+#[cfg(feature = "kernel")]
+pub fn is_valid_user_buffer_readable(ptr: *const u8, len: usize) -> bool {
+    // Step 1: Preserve the canonical-range and overflow checks shared by all
+    // user buffers before inspecting page-table state.
+    if !is_valid_user_buffer(ptr, len) {
+        return false;
+    }
+    if len == 0 {
+        return true;
+    }
+
+    let start = ptr as u64;
+    let end = start + len as u64;
+    let mut page = start & !(crate::arch::constants::PAGE_SIZE_U64 - 1);
+
+    // Step 2: Check every page touched by the range, including partially used
+    // first and last pages. Missing pages are rejected rather than demand-mapped.
+    while page < end {
+        if !crate::memory::vmm::page_table::is_user_page_readable(page) {
+            return false;
+        }
+        page += crate::arch::constants::PAGE_SIZE_U64;
+    }
+
+    true
 }
 
 /// Returns `true` when every page in `ptr..ptr+len` is present and user-writable.

@@ -56,8 +56,8 @@ pub use page_fault::{
 };
 #[allow(unused_imports)]
 pub use page_table::{
-    invlpg, is_user_page_writable, is_va_mapped, read_cr3, reserve_firmware_page_tables, write_cr3,
-    PAGE_MASK, PML4_TABLE_ADDR,
+    invlpg, is_user_page_readable, is_user_page_writable, is_va_mapped, read_cr3,
+    reserve_firmware_page_tables, write_cr3, PAGE_MASK, PML4_TABLE_ADDR,
 };
 
 /// Temporary kernel virtual address used as a one-page scratch mapping when
