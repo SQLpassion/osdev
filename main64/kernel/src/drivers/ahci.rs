@@ -574,10 +574,37 @@ pub enum AhciError {
 }
 
 fn virt_to_phys(va: u64) -> Option<u64> {
-    use crate::memory::vmm::page_table::{pt_for_if_present, pt_index, table_entry};
-    let pt = pt_for_if_present(va)?;
-    let idx = pt_index(va);
-    let pte = table_entry(pt, idx);
+    use crate::memory::vmm::page_table::{
+        pd_index, pd_table_addr, pdp_index, pdp_table_addr, pml4_index, pt_index, pt_table_addr,
+        table_at, table_entry, PML4_TABLE_ADDR,
+    };
+
+    let pml4 = table_at(PML4_TABLE_ADDR);
+    let pml4e = table_entry(pml4, pml4_index(va));
+    if !pml4e.present() {
+        return None;
+    }
+
+    let pdp = table_at(pdp_table_addr(va));
+    let pdpe = table_entry(pdp, pdp_index(va));
+    if !pdpe.present() {
+        return None;
+    }
+    if pdpe.huge() {
+        return Some((pdpe.frame() * 4096) + (va & ((1 << 30) - 1))); // 1 GiB huge page
+    }
+
+    let pd = table_at(pd_table_addr(va));
+    let pde = table_entry(pd, pd_index(va));
+    if !pde.present() {
+        return None;
+    }
+    if pde.huge() {
+        return Some((pde.frame() * 4096) + (va & ((1 << 21) - 1))); // 2 MiB huge page
+    }
+
+    let pt = table_at(pt_table_addr(va));
+    let pte = table_entry(pt, pt_index(va));
     if pte.present() {
         Some((pte.frame() * 4096) + (va & 0xFFF))
     } else {
