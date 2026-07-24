@@ -276,6 +276,13 @@ pub struct SchedulerMetadata {
     /// Drained via `core::mem::take` inside the scheduler lock.
     pub pending_free_stacks: Vec<(*mut u8, usize)>,
 
+    /// Address spaces from terminated user tasks awaiting deallocation.
+    ///
+    /// Destroying an address space is a slow operation that traverses page
+    /// tables and modifies PMM structures. It must happen outside the scheduler
+    /// spinlock to keep interrupt latency low.
+    pub pending_free_address_spaces: Vec<(u64, bool)>,
+
     /// Slot index of the task whose FPU/SSE state is currently live in the
     /// CPU's XMM/x87 registers.
     ///
@@ -304,6 +311,7 @@ impl SchedulerMetadata {
             slots: Vec::new(),
             tick_count: 0,
             pending_free_stacks: Vec::new(),
+            pending_free_address_spaces: Vec::new(),
             fpu_owner: None,
         }
     }

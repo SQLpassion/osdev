@@ -223,9 +223,14 @@ pub(crate) fn remove_task(
     let live_end = meta.slots.iter().rposition(|s| s.used).map_or(0, |i| i + 1);
     meta.slots.truncate(live_end);
 
-    // Final step: release user address-space resources if cleanup is safe.
+    // Final step: push user address-space for deferred cleanup.
+    // Releasing the address space is a slow operation that must happen outside
+    // the scheduler lock.
     if let Some((cr3, release_user_code_pfns)) = cleanup {
-        vmm::destroy_user_address_space_with_options(cr3, release_user_code_pfns);
+        if meta.pending_free_address_spaces.try_reserve(1).is_ok() {
+            meta.pending_free_address_spaces
+                .push((cr3, release_user_code_pfns));
+        }
     }
 
     true
@@ -336,6 +341,7 @@ pub(crate) fn reset_scheduler_state(meta: &mut SchedulerMetadata) {
     meta.run_queue.clear();
     meta.slots.clear();
     meta.pending_free_stacks.clear();
+    meta.pending_free_address_spaces.clear();
 
     // Reset lazy-FPU bookkeeping so the next scheduler epoch starts from a
     // clean, defined state. Without this, a stale `fpu_owner` index could be
@@ -535,5 +541,19 @@ pub(crate) fn free_pending_stacks(stacks: &[(*mut u8, usize)]) {
         unsafe {
             free_task_stack(ptr);
         }
+    }
+}
+
+/// Drains `pending_free_address_spaces` for deallocation.
+pub(crate) fn take_pending_address_spaces_for_free(
+    meta: &mut SchedulerMetadata,
+) -> Vec<(u64, bool)> {
+    core::mem::take(&mut meta.pending_free_address_spaces)
+}
+
+/// Frees pending address spaces outside the scheduler lock.
+pub(crate) fn free_pending_address_spaces(address_spaces: &[(u64, bool)]) {
+    for &(cr3, release_user_code_pfns) in address_spaces {
+        vmm::destroy_user_address_space_with_options(cr3, release_user_code_pfns);
     }
 }

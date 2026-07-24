@@ -1,6 +1,8 @@
 //! Task blocking, unblocking, and exit waiting queues.
 
-use super::manager::remove_task;
+use super::manager::{
+    free_pending_address_spaces, remove_task, take_pending_address_spaces_for_free,
+};
 use super::types::{task_id_generation, task_id_slot, TaskState};
 use super::{
     arch_callbacks, current_task_id, is_running, task_generation, with_scheduler, yield_now,
@@ -65,7 +67,13 @@ pub fn terminate_task(task_id: usize) -> bool {
     // Snapshot callbacks before entering the scheduler lock to avoid
     // nested lock acquisition (`SCHED` -> `SCHED_ARCH_CALLBACKS`).
     let callbacks = arch_callbacks();
-    let removed = with_scheduler(|meta| remove_task(meta, slot, callbacks));
+    let (removed, address_spaces_to_free) = with_scheduler(|meta| {
+        let r = remove_task(meta, slot, callbacks);
+        let spaces = take_pending_address_spaces_for_free(meta);
+        (r, spaces)
+    });
+
+    free_pending_address_spaces(&address_spaces_to_free);
 
     // Step 1: Wake tasks that are blocked in `wait_for_task_exit`.
     // Wake-all is safe: each waiter re-checks its own task-id predicate and
