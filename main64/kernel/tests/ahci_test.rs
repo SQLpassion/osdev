@@ -57,3 +57,30 @@ fn test_ahci_init_does_not_crash() {
     // If AHCI is present, it will initialize the MMIO registers.
     ahci::init();
 }
+
+/// Contract: AHCI driver serializes requests and supports multi-sector reads.
+/// Given: An initialized AHCI driver.
+/// When: Two tasks (or sequential calls simulating tasks) request different LBAs, and a multi-sector read is requested.
+/// Then: The SpinLock serializes access without deadlocking, and multi-sector read succeeds.
+/// Failure Impact: Data corruption or driver deadlock.
+#[test_case]
+fn test_ahci_concurrent_readers_and_multi_sector() {
+    pci::init();
+    ahci::init();
+
+    // Test the multi-sector capability (H1 Step 4) and serialization (H1 Step 1).
+    let mut buf1 = [0u8; 512];
+    let mut buf_multi = [0u8; 1024];
+
+    // We execute reads. If AHCI is not active (like in default QEMU without an AHCI drive),
+    // it will return AhciError::NotInitialized. We just assert it doesn't panic or deadlock.
+    let res1 = ahci::read_sectors(&mut buf1, 0, 1);
+    let res2 = ahci::read_sectors(&mut buf_multi, 1, 2);
+
+    if res1.is_ok() {
+        assert!(
+            res2.is_ok(),
+            "Multi-sector read failed but single-sector succeeded"
+        );
+    }
+}

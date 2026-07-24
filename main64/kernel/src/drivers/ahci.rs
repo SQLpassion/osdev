@@ -5,6 +5,8 @@
 use crate::debugln;
 use crate::drivers::pci;
 use crate::memory::{pmm, vmm};
+use crate::sync::spinlock::SpinLock;
+use core::sync::atomic;
 
 /// AHCI Command bits (PxCMD)
 const AHCI_PORT_CMD_ST: u32 = 1 << 0;
@@ -55,7 +57,7 @@ pub struct HbaCmdTbl {
     pub cfis: [u8; 64], // Command FIS
     pub acmd: [u8; 16], // ATAPI command
     pub rsv: [u8; 48],
-    pub prdt_entry: [HbaPrdtEntry; 1],
+    pub prdt_entry: [HbaPrdtEntry; 44],
 }
 
 #[repr(C)]
@@ -169,8 +171,7 @@ pub struct HbaPort {
 /// Global pointer to the active AHCI port (for later use in read/write)
 static mut ACTIVE_PORT: Option<*mut HbaPort> = None;
 
-/// Physical address of the DMA buffer used for sector reads
-static mut DMA_BUFFER_PHYS: u64 = 0;
+static AHCI_LOCK: SpinLock<()> = SpinLock::new(());
 
 /// Initializes the first AHCI controller that exposes an active SATA port.
 ///
@@ -253,7 +254,7 @@ fn try_init_controller(dev: &pci::PciDevice) -> bool {
     for i in 0..2 {
         let page_addr = virt_base + (i * 4096);
         if !vmm::is_va_mapped(page_addr) {
-            vmm::map_virtual_to_physical(page_addr, page_addr);
+            vmm::map_virtual_to_physical_uc(page_addr, page_addr);
         }
     }
 
@@ -398,7 +399,7 @@ unsafe fn port_rebase(port: *mut HbaPort) {
 
     // Identity map the allocated frame so we can zero it and access it via virtual address
     if !vmm::is_va_mapped(frame_phys) {
-        vmm::map_virtual_to_physical(frame_phys, frame_phys);
+        vmm::map_virtual_to_physical_uc(frame_phys, frame_phys);
     }
 
     // Zero the frame
@@ -415,9 +416,6 @@ unsafe fn port_rebase(port: *mut HbaPort) {
 
     // Offset 1280: Command Table for slot 0
     let ct_phys = frame_phys + 1280;
-
-    // Offset 1536: DMA Buffer (1 sector = 512 bytes)
-    DMA_BUFFER_PHYS = frame_phys + 1536;
 
     // We must link the Command Table base address into the first slot of the Command List
     let cmd_header = &mut *(frame_phys as *mut HbaCmdHeader);
@@ -575,108 +573,160 @@ pub enum AhciError {
     Timeout,
 }
 
-pub fn read_sectors(buffer: &mut [u8], lba: u32, sector_count: u8) -> Result<(), AhciError> {
-    let port = unsafe { ACTIVE_PORT.ok_or(AhciError::NotInitialized)? };
-    let dma_buf = unsafe { DMA_BUFFER_PHYS };
-    if dma_buf == 0 {
-        return Err(AhciError::NotInitialized);
+fn virt_to_phys(va: u64) -> Option<u64> {
+    use crate::memory::vmm::page_table::{pt_for_if_present, pt_index, table_entry};
+    let pt = pt_for_if_present(va)?;
+    let idx = pt_index(va);
+    let pte = table_entry(pt, idx);
+    if pte.present() {
+        Some((pte.frame() * 4096) + (va & 0xFFF))
+    } else {
+        None
     }
+}
+
+pub fn read_sectors(buffer: &mut [u8], lba: u64, sector_count: u32) -> Result<(), AhciError> {
+    do_transfer(buffer.as_mut_ptr(), buffer.len(), lba, sector_count, false)
+}
+
+pub fn write_sectors(buffer: &[u8], lba: u64, sector_count: u32) -> Result<(), AhciError> {
+    do_transfer(
+        buffer.as_ptr() as *mut u8,
+        buffer.len(),
+        lba,
+        sector_count,
+        true,
+    )
+}
+
+fn do_transfer(
+    buffer_ptr: *mut u8,
+    buffer_len: usize,
+    lba: u64,
+    sector_count: u32,
+    is_write: bool,
+) -> Result<(), AhciError> {
+    let _guard = AHCI_LOCK.lock();
+    let port = unsafe { ACTIVE_PORT.ok_or(AhciError::NotInitialized)? };
 
     let total_bytes = sector_count as usize * 512;
     assert!(
-        buffer.len() >= total_bytes,
-        "Buffer too small for AHCI read"
+        buffer_len >= total_bytes,
+        "Buffer too small for AHCI transfer"
     );
 
-    // Step 1: Read sectors sequentially
-    for sec in 0..sector_count {
-        let current_lba = lba + sec as u32;
+    unsafe {
+        let p = &mut *port;
+        core::ptr::write_volatile(&mut p.is, 0xFFFF_FFFF); // Clear pending interrupt bits
 
-        unsafe {
-            let p = &mut *port;
-            p.is = 0xFFFF_FFFF; // Clear pending interrupt bits
+        let slot = 0; // Use slot 0
 
-            let slot = 0; // Use slot 0
-
-            // Step 2: Wait for command slot 0 to become free
-            let mut timeout = 1_000_000;
-            loop {
-                let ci = core::ptr::read_volatile(&p.ci);
-                let sact = core::ptr::read_volatile(&p.sact);
-                if (ci & (1 << slot)) == 0 && (sact & (1 << slot)) == 0 {
-                    break;
-                }
-                timeout -= 1;
-                if timeout == 0 {
-                    return Err(AhciError::Timeout);
-                }
+        // Wait for command slot 0 to become free
+        let mut timeout = 1_000_000;
+        loop {
+            let ci = core::ptr::read_volatile(&p.ci);
+            let sact = core::ptr::read_volatile(&p.sact);
+            if (ci & (1 << slot)) == 0 && (sact & (1 << slot)) == 0 {
+                break;
             }
+            timeout -= 1;
+            if timeout == 0 {
+                return Err(AhciError::Timeout);
+            }
+        }
 
-            let clb_phys = (p.clb as u64) | ((p.clbu as u64) << 32);
-            let cmd_header = &mut *((clb_phys
-                + (slot as u64 * core::mem::size_of::<HbaCmdHeader>() as u64))
-                as *mut HbaCmdHeader);
+        let clb_phys = (core::ptr::read_volatile(&p.clb) as u64)
+            | ((core::ptr::read_volatile(&p.clbu) as u64) << 32);
+        let cmd_header = &mut *((clb_phys
+            + (slot as u64 * core::mem::size_of::<HbaCmdHeader>() as u64))
+            as *mut HbaCmdHeader);
 
-            // Step 3: Set up Command Header (HbaCmdHeader)
-            cmd_header.cfl = (core::mem::size_of::<FisRegH2D>() / 4) as u8; // 5 DWORDS
-            cmd_header.flags = 0; // Read
-            cmd_header.prdtl = 1;
+        let mut cfl = (core::mem::size_of::<FisRegH2D>() / 4) as u8;
+        if is_write {
+            cfl |= 1 << 6;
+        }
+        core::ptr::write_volatile(&mut cmd_header.cfl, cfl);
+        core::ptr::write_volatile(&mut cmd_header.flags, 0);
 
-            let ctba_phys = (cmd_header.ctba as u64) | ((cmd_header.ctbau as u64) << 32);
-            let cmd_tbl = &mut *(ctba_phys as *mut HbaCmdTbl);
-            core::ptr::write_bytes(
-                cmd_tbl as *mut HbaCmdTbl as *mut u8,
-                0,
-                core::mem::size_of::<HbaCmdTbl>(),
+        let ctba_phys = (core::ptr::read_volatile(&cmd_header.ctba) as u64)
+            | ((core::ptr::read_volatile(&cmd_header.ctbau) as u64) << 32);
+        let cmd_tbl = &mut *(ctba_phys as *mut HbaCmdTbl);
+        core::ptr::write_bytes(
+            cmd_tbl as *mut HbaCmdTbl as *mut u8,
+            0,
+            core::mem::size_of::<HbaCmdTbl>(),
+        );
+
+        let mut prdtl = 0;
+        let mut remaining_bytes = total_bytes;
+        let mut current_va = buffer_ptr as u64;
+
+        while remaining_bytes > 0 {
+            assert!(
+                prdtl < 44,
+                "AHCI transfer fragmented into too many PRDT entries"
             );
+            let phys_addr = virt_to_phys(current_va).expect("AHCI: Unmapped buffer VA");
+            let bytes_in_page = 4096 - (phys_addr & 0xFFF);
+            let chunk_size = remaining_bytes.min(bytes_in_page as usize);
 
-            // Step 4: Set up PRDT entry pointing to DMA buffer
-            cmd_tbl.prdt_entry[0].dba = dma_buf as u32;
-            cmd_tbl.prdt_entry[0].dbau = (dma_buf >> 32) as u32;
-            cmd_tbl.prdt_entry[0].dbc = 512 - 1; // Byte count, 0-indexed (511)
+            core::ptr::write_volatile(&mut cmd_tbl.prdt_entry[prdtl].dba, phys_addr as u32);
+            core::ptr::write_volatile(
+                &mut cmd_tbl.prdt_entry[prdtl].dbau,
+                (phys_addr >> 32) as u32,
+            );
+            core::ptr::write_volatile(&mut cmd_tbl.prdt_entry[prdtl].dbc, (chunk_size as u32) - 1); // 0-indexed count
 
-            // Step 5: Set up Command FIS (READ DMA EXT)
-            let fis = &mut *(cmd_tbl.cfis.as_mut_ptr() as *mut FisRegH2D);
-            fis.fis_type = 0x27; // Register H2D
-            fis.pmport_c = 1 << 7; // Command
-            fis.command = 0x25; // READ DMA EXT
+            prdtl += 1;
+            remaining_bytes -= chunk_size;
+            current_va += chunk_size as u64;
+        }
+        core::ptr::write_volatile(&mut cmd_header.prdtl, prdtl as u16);
 
-            fis.lba0 = current_lba as u8;
-            fis.lba1 = (current_lba >> 8) as u8;
-            fis.lba2 = (current_lba >> 16) as u8;
-            fis.device = 1 << 6; // LBA mode
+        let fis = &mut *(cmd_tbl.cfis.as_mut_ptr() as *mut FisRegH2D);
+        core::ptr::write_bytes(
+            fis as *mut FisRegH2D as *mut u8,
+            0,
+            core::mem::size_of::<FisRegH2D>(),
+        );
 
-            fis.lba3 = (current_lba >> 24) as u8;
-            fis.lba4 = 0;
-            fis.lba5 = 0;
+        core::ptr::write_volatile(&mut fis.fis_type, 0x27);
+        core::ptr::write_volatile(&mut fis.pmport_c, 1 << 7);
+        if is_write {
+            core::ptr::write_volatile(&mut fis.command, 0x35);
+        } else {
+            core::ptr::write_volatile(&mut fis.command, 0x25);
+        }
 
-            fis.countl = 1; // Read 1 sector
-            fis.counth = 0;
+        core::ptr::write_volatile(&mut fis.lba0, lba as u8);
+        core::ptr::write_volatile(&mut fis.lba1, (lba >> 8) as u8);
+        core::ptr::write_volatile(&mut fis.lba2, (lba >> 16) as u8);
+        core::ptr::write_volatile(&mut fis.device, 1 << 6);
 
-            // Step 6: Issue command via PxCI
-            p.ci = 1 << slot;
+        core::ptr::write_volatile(&mut fis.lba3, (lba >> 24) as u8);
+        core::ptr::write_volatile(&mut fis.lba4, (lba >> 32) as u8);
+        core::ptr::write_volatile(&mut fis.lba5, (lba >> 40) as u8);
 
-            // Step 7: Wait for completion and handle errors
-            let mut timeout2 = 1_000_000;
-            loop {
-                let ci = core::ptr::read_volatile(&p.ci);
-                if (ci & (1 << slot)) == 0 {
-                    break; // Completed
-                }
-                let is = core::ptr::read_volatile(&p.is);
-                if (is & (1 << 30)) != 0 {
-                    // Task File Error
-                    return Err(AhciError::PortError);
-                }
-                timeout2 -= 1;
-                if timeout2 == 0 {
-                    return Err(AhciError::Timeout);
-                }
+        core::ptr::write_volatile(&mut fis.countl, sector_count as u8);
+        core::ptr::write_volatile(&mut fis.counth, (sector_count >> 8) as u8);
+
+        atomic::compiler_fence(atomic::Ordering::SeqCst);
+        core::ptr::write_volatile(&mut p.ci, 1 << slot);
+
+        let mut timeout2 = 5_000_000;
+        loop {
+            let ci = core::ptr::read_volatile(&p.ci);
+            if (ci & (1 << slot)) == 0 {
+                break;
             }
-
-            // Step 8: Copy from DMA buffer to caller's buffer
-            let dest = buffer.as_mut_ptr().add(sec as usize * 512);
-            core::ptr::copy_nonoverlapping(dma_buf as *const u8, dest, 512);
+            let is = core::ptr::read_volatile(&p.is);
+            if (is & (1 << 30)) != 0 {
+                return Err(AhciError::PortError);
+            }
+            timeout2 -= 1;
+            if timeout2 == 0 {
+                return Err(AhciError::Timeout);
+            }
         }
     }
     Ok(())

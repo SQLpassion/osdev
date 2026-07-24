@@ -46,9 +46,9 @@ pub use diagnostics::{
 pub use mapping::{
     clone_kernel_pml4_for_user, configure_wc_mapping, destroy_user_address_space,
     destroy_user_address_space_with_options, destroy_user_address_space_with_page_counts,
-    map_user_page, map_virtual_to_physical, map_virtual_to_physical_wc, populate_page_table_path,
-    switch_page_directory, try_map_virtual_to_physical, unmap_user_heap_region,
-    unmap_virtual_address, with_address_space, MapError,
+    map_user_page, map_virtual_to_physical, map_virtual_to_physical_uc, map_virtual_to_physical_wc,
+    populate_page_table_path, switch_page_directory, try_map_virtual_to_physical,
+    unmap_user_heap_region, unmap_virtual_address, with_address_space, MapError,
 };
 #[allow(unused_imports)]
 pub use page_fault::{

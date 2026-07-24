@@ -85,19 +85,19 @@ fn test_block_lba_bounds_checking() {
 }
 
 /// Contract: AHCI block device write policy.
-/// Given: AHCI block device is selected as active.
+/// Given: AHCI block device is selected as active but hardware is not initialized.
 /// When: write_sectors is invoked.
-/// Then: The function must return BlockError::Unsupported.
+/// Then: The function must attempt to write and return BlockError::Device (rather than Unsupported).
 #[test_case]
-fn test_ahci_device_rejects_writes() {
+fn test_ahci_device_accepts_writes() {
     // Step 1: Initialize AHCI device registration in block facade.
     block::init_ahci();
 
-    // Step 2: Attempt a write operation on the read-only AHCI device.
+    // Step 2: Attempt a write operation on the AHCI device.
     let buf = [0u8; 512];
     let result = block::write_sectors(0, 1, &buf);
     assert!(
-        matches!(result, Err(BlockError::Unsupported)),
-        "AHCI block device must reject write attempts with Unsupported"
+        matches!(result, Err(BlockError::Device)),
+        "AHCI block device must accept write attempts and return Device error if uninitialized"
     );
 }

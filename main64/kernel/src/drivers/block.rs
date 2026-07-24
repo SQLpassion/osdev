@@ -93,22 +93,23 @@ impl BlockDevice for AhciBlockDevice {
         check_buf(buf.len(), count)?;
 
         // Step 2: Chunk the request and forward to the AHCI driver.
-        // AHCI read_sectors currently takes lba: u32. Keep the u32 ceiling until
-        // 48-bit LBA is wired in the driver.
-        chunked(lba, count, u32::MAX as u64, |chunk_lba, chunk_cnt, off| {
+        chunked(lba, count, u64::MAX, |chunk_lba, chunk_cnt, off| {
             let bytes = chunk_cnt as usize * SECTOR_SIZE;
-            ahci::read_sectors(
-                &mut buf[off..off + bytes],
-                chunk_lba as u32,
-                chunk_cnt as u8,
-            )
-            .map_err(|_| BlockError::Device)
+            ahci::read_sectors(&mut buf[off..off + bytes], chunk_lba, chunk_cnt)
+                .map_err(|_| BlockError::Device)
         })
     }
 
-    fn write_sectors(&self, _lba: u64, _count: u32, _buf: &[u8]) -> Result<(), BlockError> {
-        // Out of scope: AHCI is read-only in this iteration.
-        Err(BlockError::Unsupported)
+    fn write_sectors(&self, lba: u64, count: u32, buf: &[u8]) -> Result<(), BlockError> {
+        // Step 1: Validate buffer size before requesting I/O.
+        check_buf(buf.len(), count)?;
+
+        // Step 2: Chunk the request and forward to the AHCI driver.
+        chunked(lba, count, u64::MAX, |chunk_lba, chunk_cnt, off| {
+            let bytes = chunk_cnt as usize * SECTOR_SIZE;
+            ahci::write_sectors(&buf[off..off + bytes], chunk_lba, chunk_cnt)
+                .map_err(|_| BlockError::Device)
+        })
     }
 }
 

@@ -86,7 +86,6 @@ carefully.
 
 | ID | Sev | Area | One-liner |
 |----|-----|------|-----------|
-| H1 | HIGH | drivers/ahci | AHCI data path: no serialization + non-volatile MMIO + WB-cacheable ABAR + 1-sector-per-command |
 | H2 | HIGH | drivers/serial | Unbounded TX busy-wait, also on the panic path |
 | H3 | HIGH | scheduler | Address-space teardown runs under `SCHED` lock with IF=0 (`SCHED→PMM` lock order) |
 | H4 | HIGH | io/vfs | `vfs::with()` derefs a pointer after dropping the lock; `mount`/`reset_mounted_fs` un-gated (UAF by convention) |
@@ -106,52 +105,6 @@ carefully.
 ---
 
 ## 5. HIGH findings
-
-### H1 — AHCI data path: races, non-volatile MMIO, cacheable ABAR, 1-sector I/O
-
-**Severity:** HIGH (data corruption / non-portable). **Area:** `drivers/ahci.rs`, `drivers/block.rs`.
-
-**Affected code**
-- No serialization: `block::read_sectors` deliberately drops `ACTIVE_DEVICE`'s lock before
-  calling the backend (`kernel/src/drivers/block.rs:189`), and `ahci::read_sectors` then
-  takes **no lock** (unlike ATA, which re-serializes via `acquire_request_slot`). Shared
-  state raced: single command slot 0, `DMA_BUFFER_PHYS` bounce buffer
-  (`ahci.rs:173`/`:420`), port registers, `static mut ACTIVE_PORT` (`ahci.rs:170`).
-- Non-volatile MMIO stores: `p.is = 0xFFFF_FFFF` (`ahci.rs:597`), the command-issue doorbell
-  `p.ci = 1 << slot` (`ahci.rs:657`), and non-volatile read of `p.clb` (`ahci.rs:615`). No
-  fence between building the command table/FIS/PRDT (`ahci.rs:620`–`654`) and ringing the
-  doorbell.
-- ABAR mapped write-back cacheable: `vmm::map_virtual_to_physical` (`ahci.rs:253`) → never
-  sets PCD/PWT (`memory/vmm/page_table.rs:178`). Device registers must be UC.
-- One sector per command: loop at `ahci.rs:592`, `fis.countl = 1` (`ahci.rs:653`), 512-byte
-  bounce buffer then `memcpy` to caller (`ahci.rs:678`). `lba4/lba5` pinned to 0
-  (`ahci.rs:650`) so `READ DMA EXT` (0x25) only addresses 32-bit LBAs.
-- `AhciBlockDevice::write_sectors` → `Unsupported` (`block.rs:109`).
-
-**Fix plan (in this order)**
-1. **Serialize.** Give AHCI the same treatment as ATA: wrap the port/slot/DMA-buffer access
-   in a `SpinLock` (or reuse the block-layer request-slot pattern). This is the correctness
-   priority — it prevents silent data corruption under concurrent readers.
-2. **Volatile + fence.** Convert every ABAR register access to `read_volatile`/
-   `write_volatile` (introduce a small `Mmio<T>` wrapper or `addr_of_mut!` + volatile). Add
-   a `core::sync::atomic::fence(Ordering::SeqCst)` (or `sfence`) after writing the command
-   table/FIS/PRDT and before writing `p.ci`.
-3. **Map ABAR uncacheable.** Add/`use` a `map_virtual_to_physical_uc` that sets PCD (and
-   ideally PWT) in the leaf PTE; map the ABAR (and, if you want strict correctness, the
-   command-list/FIS/PRDT region) UC. Do not rely on firmware MTRRs covering the PCI hole.
-4. **Real DMA.** Program the PRDT to scatter-gather directly into the caller buffer
-   (physically contiguous or a per-request PRDT with multiple entries), set `countl/counth`
-   for multi-sector transfers, and populate `lba4/lba5` for full 48-bit addressing. Removes
-   the bounce buffer and the per-sector round-trip.
-5. **Write support** (later): implement `WRITE DMA EXT` (0x35) once reads are solid; note the
-   `HbaCmdHeader` Write bit is bit 6 of the `cfl` byte, **not** the `flags` byte
-   (`ahci.rs:41`) — a future writer setting `flags` would silently issue a read.
-
-**Acceptance criteria.** `tests/ahci_test.rs` extended with a concurrent-reader case (two
-tasks reading different LBAs) that returns correct data; register access is volatile with a
-fence before the doorbell; ABAR PTE has PCD set; a multi-sector read issues one command.
-
----
 
 ### H2 — Unbounded serial TX busy-wait (also on panic path)
 

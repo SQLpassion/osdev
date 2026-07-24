@@ -300,6 +300,25 @@ pub fn map_virtual_to_physical_wc(virtual_address: u64, physical_address: u64) {
     super::page_table::invlpg(virtual_address);
 }
 
+/// Maps `virtual_address` to `physical_address` with present + writable flags,
+/// and configures the cache to Uncacheable (UC) via PWT=1, PCD=1.
+pub fn map_virtual_to_physical_uc(virtual_address: u64, physical_address: u64) {
+    match try_map_virtual_to_physical(virtual_address, physical_address) {
+        Ok(()) => {}
+        Err(e) => panic!("VMM: UC mapping failed: {:?}", e),
+    }
+
+    let pt = table_at(super::page_table::pt_table_addr(virtual_address));
+    let pt_idx = super::page_table::pt_index(virtual_address);
+    // SAFETY: We just successfully mapped it, so it is present.
+    unsafe {
+        let e = super::page_table::entry_ptr(pt, pt_idx);
+        (*e).set_pcd(true);
+        (*e).set_pwt(true);
+    }
+    super::page_table::invlpg(virtual_address);
+}
+
 /// Maps `virtual_address` to `physical_address` with present + writable flags.
 ///
 /// Panics if the VA is already mapped to another frame.
