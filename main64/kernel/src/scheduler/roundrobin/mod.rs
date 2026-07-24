@@ -60,8 +60,9 @@ pub use wait::{
 #[cfg(debug_assertions)]
 use manager::reset_scheduler_state;
 use manager::{
-    bootstrap_or_current, find_entry_by_frame, frame_within_any_task_stack, free_pending_stacks,
-    reap_zombies, select_next_task, take_pending_stacks_for_free,
+    bootstrap_or_current, find_entry_by_frame, frame_within_any_task_stack,
+    free_pending_address_spaces, free_pending_stacks, reap_zombies, select_next_task,
+    take_pending_address_spaces_for_free, take_pending_stacks_for_free,
 };
 
 /// Returns whether the scheduler is currently active.
@@ -327,6 +328,7 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
     // (`!meta.started`) returns before this binding is ever used or dropped.
     #[cfg_attr(not(debug_assertions), allow(unused_mut))]
     let mut stacks_to_free: Vec<(*mut u8, usize)>;
+    let address_spaces_to_free: Vec<(u64, bool)>;
     let removed_zombie_tasks: bool;
 
     let result = {
@@ -363,9 +365,11 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
         if meta.run_queue.is_empty() {
             meta.running_slot = None;
             stacks_to_free = take_pending_stacks_for_free(meta, current_frame);
+            address_spaces_to_free = take_pending_address_spaces_for_free(meta);
             let frame = bootstrap_or_current(meta, current_frame);
             drop(sched);
             free_pending_stacks(&stacks_to_free);
+            free_pending_address_spaces(&address_spaces_to_free);
 
             if removed_zombie_tasks {
                 waitqueue_adapter::wake_all_multi(&wait::TASK_EXIT_WAITQUEUE);
@@ -391,6 +395,7 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
         // hosts `current_frame` (self-termination via `terminate_task`) is
         // re-queued for the next tick instead of being freed under the CPU.
         stacks_to_free = take_pending_stacks_for_free(meta, current_frame);
+        address_spaces_to_free = take_pending_address_spaces_for_free(meta);
 
         #[cfg(debug_assertions)]
         if TEST_STOP_REQUESTED.swap(false, Ordering::AcqRel) {
@@ -413,6 +418,7 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
             reset_scheduler_state(meta);
             drop(sched);
             free_pending_stacks(&stacks_to_free);
+            free_pending_address_spaces(&address_spaces_to_free);
 
             if removed_zombie_tasks {
                 waitqueue_adapter::wake_all_multi(&wait::TASK_EXIT_WAITQUEUE);
@@ -430,6 +436,7 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
             let frame = meta.slots[running_slot].frame_ptr;
             drop(sched);
             free_pending_stacks(&stacks_to_free);
+            free_pending_address_spaces(&address_spaces_to_free);
 
             if removed_zombie_tasks {
                 waitqueue_adapter::wake_all_multi(&wait::TASK_EXIT_WAITQUEUE);
@@ -443,6 +450,7 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
 
     // Free stacks from previous tick after releasing the scheduler lock.
     free_pending_stacks(&stacks_to_free);
+    free_pending_address_spaces(&address_spaces_to_free);
 
     if removed_zombie_tasks {
         waitqueue_adapter::wake_all_multi(&wait::TASK_EXIT_WAITQUEUE);
