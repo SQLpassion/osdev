@@ -94,8 +94,16 @@ impl Serial {
 
     /// Write a single byte to the serial port
     pub fn write_byte(&self, byte: u8) {
-        // Wait for transmit buffer to be empty
+        // Wait for transmit buffer to be empty with an iteration cap.
+        // Step 1: Prevent an unbounded busy-wait by limiting spins.
+        // If the UART hardware hangs and never reports THRE (transmit-empty),
+        // we abort the write to avoid deadlocking the kernel.
+        let mut retries = 100_000;
         while !self.is_transmit_empty() {
+            if retries == 0 {
+                return;
+            }
+            retries -= 1;
             core::hint::spin_loop();
         }
 
