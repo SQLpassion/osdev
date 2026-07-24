@@ -23,7 +23,15 @@
 //!   │ (Deadlock! Thread never resumes to release the lock)
 //! ```
 //!
-//! To prevent this deadlock, `SpinLock::lock()` implements local interrupt masking:
+//! `SpinLock::lock()` disables **maskable** interrupts via `cli`, but it does *not*
+//! mask CPU exceptions (faults).  In particular, `#NM` (Device Not Available, vector
+//! 7) can fire even while interrupts are disabled.  The scheduler mitigates this by
+//! clearing `CR0.TS` before entering any critical section protected by `SCHED`, so
+//! compiler-emitted SSE instructions cannot raise `#NM` while the non-reentrant
+//! scheduler lock is held.
+//!
+//! To prevent the standard interrupt-deadlock scenario, `SpinLock::lock()` implements
+//! local interrupt masking:
 //! 1. Disables interrupts on the local CPU before spinning on the lock.
 //! 2. Uses atomic compare-and-swap (CAS) to acquire the lock.
 //! 3. Returns a `SpinLockGuard` which, when dropped, releases the lock and restores

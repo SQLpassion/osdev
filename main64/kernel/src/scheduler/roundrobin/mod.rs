@@ -133,6 +133,15 @@ static SCHED_ACTIVE_CR3: AtomicU64 = AtomicU64::new(0);
 #[cfg(debug_assertions)]
 pub(crate) static TEST_STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 
+/// Test-only hook: when set, assert `CR0.TS = 0` immediately after the
+/// scheduler lock is acquired in `on_timer_tick`.
+///
+/// This verifies the C2 invariant: the scheduler critical section must never
+/// run with the Task Switched bit set, because `cli` masks IRQs but not the
+/// `#NM` exception, and `handle_fpu_trap` would try to re-acquire `SCHED`.
+#[cfg(debug_assertions)]
+pub static TEST_SCHEDULER_ENTER_ASSERT_TS_CLEAR: AtomicBool = AtomicBool::new(false);
+
 /// Executes `f` while holding the scheduler spinlock.
 pub(super) fn with_scheduler<R>(f: impl FnOnce(&mut SchedulerMetadata) -> R) -> R {
     let mut sched = SCHED.lock();
@@ -289,6 +298,23 @@ fn timer_irq_handler(_vector: u8, frame: &mut SavedRegisters) -> *mut SavedRegis
 /// The function saves current context (when known), selects the next runnable
 /// task in round-robin order, and returns the frame pointer to resume.
 pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters {
+    // The scheduler critical section must execute with CR0.TS = 0.
+    // `select_next_task` re-arms TS = 1 at the end of every context switch so the
+    // next task pays the lazy-FPU fault.  The next timer tick, however, enters
+    // this function and acquires the non-reentrant `SCHED` spinlock.  `cli`
+    // masks maskable interrupts but *not* the `#NM` (Device Not Available)
+    // exception.  If TS stayed set while SCHED was held, any compiler-lowered
+    // SSE instruction inside the critical section (reap/teardown/memcpy) would
+    // raise #NM, whose handler (`handle_fpu_trap`) tries to re-acquire SCHED
+    // and deadlocks on a single core.  Clearing TS *before* taking the lock
+    // makes the entire scheduler critical section provably #NM-free.
+    //
+    // SAFETY:
+    // - `CLTS` is a ring-0 instruction; the scheduler always runs in ring 0.
+    // - Clearing TS here is safe because we are about to save/restore FPU state
+    //   explicitly in `select_next_task` and the TS bit is re-armed on exit.
+    unsafe { fpu::clear_ts() };
+
     // Snapshot architecture callbacks before taking `SCHED` so the timer path
     // does not nest `SCHED_ARCH_CALLBACKS` under the scheduler lock.
     let callbacks = arch_callbacks();
@@ -305,6 +331,23 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
 
     let result = {
         let mut sched = SCHED.lock();
+
+        // When the test hook is enabled, verify that the
+        // scheduler critical section entered with CR0.TS = 0.  With the fix
+        // above this is guaranteed; without it TS would still be 1 from the
+        // previous context switch and this assertion would fire.
+        #[cfg(debug_assertions)]
+        if TEST_SCHEDULER_ENTER_ASSERT_TS_CLEAR.load(Ordering::Acquire) {
+            // SAFETY:
+            // - `read_ts` reads CR0, which is safe in ring 0.
+            // - The scheduler lock is held, so no other path can concurrently
+            //   modify CR0.TS.
+            assert!(
+                !unsafe { fpu::read_ts() },
+                "CR0.TS must be clear while the SCHED spinlock is held (C2)"
+            );
+        }
+
         let meta = &mut *sched;
 
         if !meta.started {

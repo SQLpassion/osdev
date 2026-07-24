@@ -86,7 +86,6 @@ carefully.
 
 | ID | Sev | Area | One-liner |
 |----|-----|------|-----------|
-| C2 | CRITICAL | scheduler | `#NM` (FPU trap) can fire inside the `SCHED` critical section → re-enter non-reentrant lock → hard hang |
 | H1 | HIGH | drivers/ahci | AHCI data path: no serialization + non-volatile MMIO + WB-cacheable ABAR + 1-sector-per-command |
 | H2 | HIGH | drivers/serial | Unbounded TX busy-wait, also on the panic path |
 | H3 | HIGH | scheduler | Address-space teardown runs under `SCHED` lock with IF=0 (`SCHED→PMM` lock order) |
@@ -103,61 +102,6 @@ carefully.
 | M8 | MEDIUM | syscall | `user.rs` decode boilerplate duplicated ~40×; `sys_yield` threshold misclassifies Io/OOM as success |
 | M9 | MEDIUM | memory/heap | Freed kernel-heap blocks not scrubbed; no reuse-zeroing (info-leak surface) |
 | L1..L8 | LOW | various | See §7 |
-
----
-
-## 4. CRITICAL findings
-
-### C2 — `#NM` FPU trap can re-enter the `SCHED` spinlock (latent hard hang)
-
-**Severity:** CRITICAL (latent deadlock, codegen-dependent). **Area:** `scheduler/`.
-
-**Affected code**
-- `CR0.TS` set at end of every task selection: `kernel/src/scheduler/roundrobin/manager.rs:461`.
-- Scheduler critical section under `SCHED.lock()`: `kernel/src/scheduler/roundrobin/mod.rs`
-  (`on_timer_tick` path) and the FPU-trap handler that re-locks: `mod.rs:429`
-  (`handle_fpu_trap` acquires `SCHED.lock()`).
-- Reap/teardown work inside the section (most likely SSE emission site):
-  `manager.rs:318` → `remove_task` → `manager.rs:228`
-  `vmm::destroy_user_address_space_with_options`.
-- Spinlock (non-reentrant TAS, masks maskable ints only): `kernel/src/sync/spinlock.rs:68`.
-- Target has SSE2 baseline, no soft-float: `main64/.cargo/config` (`x86_64-unknown-none`).
-
-**Mechanism.** After a selection, `CR0.TS = 1` and stays set for the whole quantum if the
-task never touches the FPU. The next timer tick enters `on_timer_tick` and runs the entire
-critical section under `SCHED.lock()` **with `TS = 1`**. `cli` (done by the spinlock) masks
-maskable interrupts but **not** the `#NM` exception. If any x87/MMX/SSE instruction executes
-between lock acquire and release — plausibly a compiler-lowered `memset`/`memcpy`/struct-copy
-inside `reap_zombies` → address-space teardown, or inside the `switch_cr3`/`set_kernel_rsp0`
-callbacks — the CPU raises `#NM`, whose handler (`handle_fpu_trap`) tries to acquire the
-already-held non-reentrant `SCHED.lock()` on a single core → spins forever.
-
-Survives today only because those specific paths happen to lower to scalar/`rep` sequences.
-It is **not** guaranteed by the target (SSE2 is in-baseline; LLVM may emit `movaps`/`movups`
-for a struct copy at any time).
-
-**Reproduction.** Harder to force deterministically; two options:
-- Static: build with `-C target-feature=+sse2` explicit and inspect
-  `reap_zombies`/`destroy_user_address_space` disassembly in `kernel.map` / `objdump` for
-  any `xmm`/`movaps`/`movups`. If present with `TS=1` reachable, it's live.
-- Dynamic: a stress test that spawns+exits many ring-3 tasks (forcing frequent
-  `reap_zombies` under load) on a build nudged toward SSE codegen (e.g. a `#[inline(never)]`
-  helper doing a wide `[u8; N]` copy in the teardown path). Hang ⇒ confirmed.
-
-**Fix plan (pick one; #1 is simplest and robust)**
-1. **`clts` at scheduler entry, restore on exit.** At the top of the timer/yield critical
-   section (before or right after taking `SCHED.lock()`), execute `clts` so `TS=0` for the
-   whole section; the existing `set_ts()` at `manager.rs:461` re-arms lazy switching for the
-   *next* task on the way out. This makes the section provably `#NM`-free regardless of
-   codegen. Add a `SAFETY:`/rationale comment referencing this finding.
-2. **Prove/enforce the section is FPU-free.** Compile the teardown/reap path with
-   `#[target_feature]`-free constraints or mark those functions to forbid SSE, and add a
-   build assertion. More brittle than #1.
-
-**Acceptance criteria.** No `#NM`-reachable code path executes SSE/x87 with `TS=1` while
-`SCHED` is held. Add a comment at `spinlock.rs` (or the scheduler entry) documenting that
-`#NM` is the one interrupt `cli` does *not* mask and how it is handled. Stress test (spawn/
-exit loop) runs indefinitely without hang.
 
 ---
 

@@ -242,3 +242,26 @@ pub unsafe fn clear_ts() {
     // - `CLTS` is valid only in ring 0 and clears CR0.TS atomically.
     asm!("clts", options(nomem, nostack, preserves_flags));
 }
+
+/// Returns the current value of the `CR0.TS` (Task Switched) bit.
+///
+/// Used by scheduler tests to verify that the scheduler critical section
+/// enters with `CR0.TS = 0` so that compiler-emitted SSE instructions cannot
+/// raise `#NM` while the non-reentrant `SCHED` spinlock is held.
+///
+/// # Safety
+///
+/// Must be called from ring 0 (kernel mode).
+#[inline]
+pub unsafe fn read_ts() -> bool {
+    // SAFETY:
+    // - This requires `unsafe` because it reads a privileged control register.
+    // - `CR0` is readable in ring 0; bit 3 is the Task Switched flag.
+    let cr0: u64;
+    asm!(
+        "mov {r}, cr0",
+        r = out(reg) cr0,
+        options(nomem, nostack, preserves_flags),
+    );
+    (cr0 & (1u64 << 3)) != 0
+}

@@ -47,6 +47,9 @@ name = "gdt_layout_test"
 name = "scheduler_rr_test"
 
 [[test]]
+name = "scheduler_nm_deadlock_test"
+
+[[test]]
 name = "fpu_state_test"
 
 [[test]]
