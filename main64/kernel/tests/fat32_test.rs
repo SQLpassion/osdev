@@ -9,6 +9,7 @@
 #![reexport_test_harness_main = "test_main"]
 
 use core::panic::PanicInfo;
+use kaos_kernel::drivers::block;
 use kaos_kernel::io::fat32;
 
 /// Entry point for the integration test kernel.
@@ -71,4 +72,71 @@ fn test_cluster_to_lba_rejects_out_of_range_clusters() {
 
     // Cluster 6 is beyond max_data_cluster and must be rejected immediately.
     assert!(volume.cluster_to_lba_for_test(6).is_err());
+}
+
+/// Contract (H5, Closes #11): chain-follow loops must bound chain length by the volume's
+/// actual cluster count (`max_data_cluster`), not by a hardcoded 1,000,000-iteration cap.
+/// A chain longer than the volume's cluster count is necessarily cyclic, since a valid,
+/// acyclic chain can visit each existing data cluster at most once.
+/// Given: A synthetic FAT32 volume with `max_data_cluster = 4`, whose on-disk FAT contains
+/// a crafted 2-cluster cycle: cluster 2's entry points to cluster 3, and cluster 3's entry
+/// points back to cluster 2. Every individual FAT entry involved is structurally valid (in
+/// range, not an EOC marker, not the bad-cluster marker), so a per-entry check alone
+/// (`next_cluster`) cannot detect the loop -- only bounding the total clusters visited can.
+/// When: The chain starting at cluster 2 is followed via `walk_chain_for_test`, which reuses
+/// the same `check_chain_bound`/`next_cluster` logic as the production `read_file` and
+/// `print_root_directory` loops.
+/// Then: The walk returns `Err(Fat32Error::BadChain)` after visiting at most
+/// `max_data_cluster` (4) clusters -- i.e. within `cluster_count` iterations, never anywhere
+/// near the old 1,000,000-iteration / real-disk-read cap.
+#[test_case]
+fn test_cyclic_fat_chain_returns_bad_chain_within_cluster_count() {
+    // Step 1: Initialize the ATA block device so `next_cluster`'s real FAT sector reads
+    // (and our own crafted write below) actually reach the QEMU disk image.
+    kaos_kernel::drivers::ata::init();
+    block::init_ata();
+
+    // Step 2: Pick a scratch LBA far past anything the test disk image's real FAT32
+    // filesystem (built by tests/test_runner.sh from a 64 MiB image) ever writes to, so we
+    // can freely overwrite it with a synthetic, deliberately cyclic FAT without disturbing
+    // the real mounted filesystem/files used by other integration tests.
+    const SCRATCH_FAT_LBA: u64 = 125_000;
+
+    // Step 3: Craft a single FAT sector where cluster 2's 4-byte entry (byte offset 8) points
+    // to cluster 3, and cluster 3's entry (byte offset 12) points back to cluster 2 -- a
+    // 2-cluster cycle (A -> B -> A) that passes every per-entry validity check forever.
+    let mut fat_sector = [0u8; 512];
+    fat_sector[8..12].copy_from_slice(&3u32.to_le_bytes());
+    fat_sector[12..16].copy_from_slice(&2u32.to_le_bytes());
+    block::write_sectors(SCRATCH_FAT_LBA, 1, &fat_sector)
+        .expect("writing the synthetic cyclic FAT sector must succeed");
+
+    // Step 4: Build a synthetic volume whose FAT starts at our scratch sector, with a
+    // deliberately tiny max_data_cluster (4). The data region is never touched by this test
+    // (chain-following only reads FAT sectors), so data_start_lba/sec_per_clus/root_cluster
+    // are placeholders.
+    let volume = fat32::Fat32Volume::for_test(
+        0,                   // part_lba (unused: not read by next_cluster/for_test)
+        512,                 // bytes_per_sec
+        1,                   // sec_per_clus (unused: data region is never read here)
+        SCRATCH_FAT_LBA,     // fat_start_lba
+        SCRATCH_FAT_LBA + 1, // data_start_lba (unused placeholder)
+        2,                   // root_cluster (unused: we start the walk explicitly)
+        4,                   // max_data_cluster
+    );
+
+    // Step 5: Confirm cluster 2 and cluster 3 both individually pass as valid, distinct FAT
+    // entries -- demonstrating exactly why a per-entry check alone cannot detect this cycle.
+    assert_eq!(volume.next_cluster_for_test(2).unwrap(), 3);
+    assert_eq!(volume.next_cluster_for_test(3).unwrap(), 2);
+
+    // Step 6: Follow the cycle through the same bound-checked path used by production code.
+    // With max_data_cluster = 4, a correct fix must report BadChain after visiting at most
+    // 4 clusters (5 next_cluster calls), not after up to 1,000,000 real disk reads.
+    let result = volume.walk_chain_for_test(2);
+    assert!(
+        matches!(result, Err(fat32::Fat32Error::BadChain)),
+        "a cyclic FAT chain must be reported as BadChain instead of looping forever, got {:?}",
+        result
+    );
 }

@@ -160,13 +160,16 @@ impl Fat32Volume {
 
         // Step 2: Walk the root-directory cluster chain
         // We traverse the directory clusters to find our target file. We use a safety
-        // counter `cluster_count` to prevent infinite loops in case the FAT chain is corrupted.
+        // counter `cluster_count` bounded by the volume's actual cluster count
+        // (`max_data_cluster`) to detect infinite loops in case the FAT chain is corrupted.
+        // A valid, acyclic chain can visit at most `max_data_cluster` distinct clusters, so
+        // exceeding that count proves the chain is cyclic (e.g. a crafted A->B->A loop) and
+        // we abort immediately instead of following it for up to a huge hardcoded iteration
+        // cap, each iteration of which performs real disk reads.
         let mut cluster_count = 0;
         'dir_walk: while (2..0x0FFF_FFF8).contains(&current_cluster) {
             cluster_count += 1;
-            if cluster_count > 1_000_000 {
-                return Err(Fat32Error::BadChain);
-            }
+            self.check_chain_bound(cluster_count)?;
 
             // For each cluster, we read all its sectors sequentially.
             // Reject clusters outside the volume bounds before translating them to LBAs.
@@ -238,16 +241,16 @@ impl Fat32Volume {
 
         // Step 4: Walk the file's cluster chain
         // We follow the file's cluster chain, copying data into our `Vec` until we have
-        // read exactly `target_file_size` bytes. The loop is similarly guarded against corruption.
+        // read exactly `target_file_size` bytes. The loop is similarly guarded against
+        // corruption by `check_chain_bound`, which rejects chains longer than the volume's
+        // actual cluster count as necessarily cyclic.
         let mut content = Vec::with_capacity(target_file_size as usize);
         let mut current_cluster = target_first_cluster;
         let mut cluster_count = 0;
 
         while (2..0x0FFF_FFF8).contains(&current_cluster) {
             cluster_count += 1;
-            if cluster_count > 1_000_000 {
-                return Err(Fat32Error::BadChain);
-            }
+            self.check_chain_bound(cluster_count)?;
 
             // For each cluster, read its sectors and append their bytes to our buffer.
             // Reject clusters outside the volume bounds before translating them to LBAs.
@@ -290,9 +293,12 @@ impl Fat32Volume {
             let mut cluster_count = 0;
 
             // Step 1: Walk the root directory cluster chain
+            // Bounded by `check_chain_bound`, which rejects chains longer than the volume's
+            // actual cluster count (`max_data_cluster`) as necessarily cyclic. This is a
+            // best-effort listing, so we simply stop instead of returning an error.
             'dir_walk: while (2..0x0FFF_FFF8).contains(&current_cluster) {
                 cluster_count += 1;
-                if cluster_count > 1_000_000 {
+                if self.check_chain_bound(cluster_count).is_err() {
                     break;
                 }
 
@@ -410,6 +416,25 @@ impl Fat32Volume {
         Ok(self.data_start_lba + (cluster as u64 - 2) * self.sec_per_clus as u64)
     }
 
+    /// Bounds the number of clusters a chain-follow loop may visit.
+    ///
+    /// `next_cluster` only validates a single FAT entry in isolation (range, EOC, bad-cluster
+    /// marker) — it cannot detect a cycle, since every individual entry in a cyclic chain
+    /// (e.g. a crafted `A -> B -> A` loop) is perfectly well-formed on its own. Instead, every
+    /// chain-follow loop counts the clusters it has visited and calls this helper on each
+    /// iteration. Since a structurally valid, acyclic chain can visit each of the volume's
+    /// `max_data_cluster` data clusters at most once, a chain that visits more clusters than
+    /// exist in the volume is necessarily cyclic, and we return `BadChain` immediately instead
+    /// of continuing to follow it — previously this was only bounded by a hardcoded
+    /// 1,000,000-iteration cap, allowing a crafted 2-cluster cycle to force up to ~1e6 real
+    /// sector reads before failing.
+    fn check_chain_bound(&self, cluster_count: u32) -> Result<(), Fat32Error> {
+        if cluster_count > self.max_data_cluster {
+            return Err(Fat32Error::BadChain);
+        }
+        Ok(())
+    }
+
     /// Helper to look up the next cluster in the FAT chain.
     // SAFETY:
     // - computes the FAT sector and offset correctly for FAT32
@@ -475,6 +500,34 @@ impl Fat32Volume {
     #[doc(hidden)]
     pub fn cluster_to_lba_for_test(&self, cluster: u32) -> Result<u64, Fat32Error> {
         self.cluster_to_lba(cluster)
+    }
+
+    /// Test-only wrapper around `next_cluster`.
+    #[doc(hidden)]
+    pub fn next_cluster_for_test(&self, cluster: u32) -> Result<u32, Fat32Error> {
+        self.next_cluster(cluster)
+    }
+
+    /// Test-only chain-follow helper that reuses the exact same production bound check
+    /// (`check_chain_bound`) and cluster lookup (`next_cluster`) used by `read_file` and
+    /// `print_root_directory`, without requiring a full directory/file setup.
+    ///
+    /// Returns the number of clusters visited once the chain terminates (hits an EOC
+    /// marker), or propagates `Err(Fat32Error::BadChain)` if the bound derived from
+    /// `max_data_cluster` is exceeded (i.e. the chain is cyclic) or a FAT entry is otherwise
+    /// invalid.
+    #[doc(hidden)]
+    pub fn walk_chain_for_test(&self, start_cluster: u32) -> Result<u32, Fat32Error> {
+        let mut current_cluster = start_cluster;
+        let mut cluster_count = 0;
+
+        while (2..0x0FFF_FFF8).contains(&current_cluster) {
+            cluster_count += 1;
+            self.check_chain_bound(cluster_count)?;
+            current_cluster = self.next_cluster(current_cluster)?;
+        }
+
+        Ok(cluster_count)
     }
 }
 
