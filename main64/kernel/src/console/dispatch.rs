@@ -3,6 +3,7 @@
 //! Provides the `ConsoleImpl` enum wrapper that delegates all `KernelConsole`
 //! operations to the currently active backend.
 
+use super::interface::PendingFlush;
 use super::{FramebufferConsole, KernelConsole, VgaConsole};
 use crate::drivers::screen::Color;
 
@@ -169,6 +170,17 @@ impl KernelConsole for ConsoleImpl {
         match self {
             ConsoleImpl::Vga(inner) => inner.enable_blink_mode(),
             ConsoleImpl::Framebuffer(inner) => inner.enable_blink_mode(),
+        }
+    }
+
+    fn take_pending_flush(&mut self) -> Option<PendingFlush> {
+        // Extract any deferred VRAM upload queued by the active variant. `Vga`
+        // has no backbuffer/dirty-tracking concept and relies on the trait's
+        // default (`None`); `Framebuffer` overrides it to snapshot its dirty
+        // region (see issue #16).
+        match self {
+            ConsoleImpl::Vga(inner) => inner.take_pending_flush(),
+            ConsoleImpl::Framebuffer(inner) => inner.take_pending_flush(),
         }
     }
 }

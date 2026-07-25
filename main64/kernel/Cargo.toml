@@ -59,6 +59,9 @@ name = "scheduler_not_initialized_test"
 name = "screen_test"
 
 [[test]]
+name = "console_flush_lock_test"
+
+[[test]]
 name = "keyboard_e2e_test"
 
 [[test]]

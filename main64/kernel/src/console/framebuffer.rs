@@ -3,6 +3,7 @@
 //! Implements a console backend that renders text into the graphics
 //! framebuffer using a static 8x16 bitmap font.
 
+use super::interface::PendingFlush;
 use super::KernelConsole;
 use crate::boot_info::PixelFormat;
 use crate::drivers::screen::Color;
@@ -34,6 +35,12 @@ pub struct FramebufferConsole {
 
     /// RAM Backbuffer for pixel data to avoid slow VRAM reads and partial writes.
     backbuffer: alloc::vec::Vec<u32>,
+    /// Scratch buffer used to snapshot the dirty region out of `backbuffer`
+    /// while `GLOBAL_CONSOLE`'s lock is held (see `take_flush_job`). Allocated
+    /// once, sized identically to `backbuffer`, and never reallocated
+    /// afterward, so pointers into it stay valid for a `PendingFlush` that
+    /// outlives the lock that produced it (issue #16).
+    flush_scratch: alloc::vec::Vec<u32>,
     /// Minimum y-coordinate (scanline) that has been modified since last VRAM flush.
     dirty_y_min: u32,
     /// Maximum y-coordinate (scanline) that has been modified since last VRAM flush.
@@ -78,8 +85,10 @@ impl FramebufferConsole {
         let cells = alloc::vec![0x0720; cols * rows];
 
         let mut backbuffer = alloc::vec::Vec::new();
+        let mut flush_scratch = alloc::vec::Vec::new();
         if bb_size > 0 {
             backbuffer.resize(bb_size, 0);
+            flush_scratch.resize(bb_size, 0);
         }
 
         Self {
@@ -93,6 +102,7 @@ impl FramebufferConsole {
             cursor_enabled: true,
             fb_info,
             backbuffer,
+            flush_scratch,
             dirty_y_min: u32::MAX,
             dirty_y_max: 0,
             deferred_redraw: false,
@@ -275,43 +285,81 @@ impl FramebufferConsole {
         }
     }
 
-    /// Flushes dirty scanlines from the backbuffer to the physical VRAM.
-    fn flush_to_vram(&mut self) {
-        if self.dirty_y_min <= self.dirty_y_max {
-            if let Some(fb) = self.fb_info {
-                let fb_ptr = fb.base_address as *mut u32;
-                let min_y = self.dirty_y_min;
-                let max_y = self.dirty_y_max.min(fb.height.saturating_sub(1));
-
-                if min_y <= max_y {
-                    let start_offset = (min_y * fb.pixels_per_scanline) as usize;
-                    let lines_to_copy = max_y - min_y + 1;
-                    let pixels_to_copy = (lines_to_copy * fb.pixels_per_scanline) as usize;
-
-                    // SAFETY:
-                    // - `backbuffer` is large enough for all scanlines.
-                    // - `fb_ptr` is the physical identity-mapped framebuffer memory.
-                    // - The copy is bounded by height.
-                    unsafe {
-                        core::ptr::copy_nonoverlapping(
-                            self.backbuffer.as_ptr().add(start_offset),
-                            fb_ptr.add(start_offset),
-                            pixels_to_copy,
-                        );
-                    }
-                }
-            }
-            self.dirty_y_min = u32::MAX;
-            self.dirty_y_max = 0;
+    /// Snapshots the dirty scanline range from the RAM backbuffer into the
+    /// (never-reallocated) `flush_scratch` buffer and resets dirty tracking.
+    ///
+    /// This is a fast RAM-to-RAM `memcpy`, cheap enough to run while still
+    /// holding `GLOBAL_CONSOLE`'s lock. The returned [`PendingFlush`]
+    /// describes the actual (slow, MMIO-bound) VRAM upload, which
+    /// `with_console` performs only after releasing the lock — see issue #16
+    /// ("Console holds an interrupt-disabling lock across full-screen VRAM
+    /// flush").
+    fn take_flush_job(&mut self) -> Option<PendingFlush> {
+        if self.dirty_y_min > self.dirty_y_max {
+            return None;
         }
+
+        let fb = self.fb_info?;
+        let min_y = self.dirty_y_min;
+        let max_y = self.dirty_y_max.min(fb.height.saturating_sub(1));
+
+        // Reset dirty tracking now: any writes that happen after this point
+        // (e.g. from a nested interrupt handler) must mark a fresh dirty
+        // range for the *next* flush job rather than being silently dropped.
+        self.dirty_y_min = u32::MAX;
+        self.dirty_y_max = 0;
+
+        if min_y > max_y {
+            return None;
+        }
+
+        let start_offset = (min_y * fb.pixels_per_scanline) as usize;
+        let lines_to_copy = max_y - min_y + 1;
+        let pixels_to_copy = (lines_to_copy * fb.pixels_per_scanline) as usize;
+
+        // SAFETY:
+        // - `backbuffer` and `flush_scratch` are both sized to
+        //   `pixels_per_scanline * height` (see `new`) and never reallocated
+        //   afterward.
+        // - `min_y`/`max_y` are bounded by `fb.height`, so `start_offset +
+        //   pixels_to_copy` stays within both buffers.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                self.backbuffer.as_ptr().add(start_offset),
+                self.flush_scratch.as_mut_ptr().add(start_offset),
+                pixels_to_copy,
+            );
+        }
+
+        let fb_ptr = fb.base_address as *mut u32;
+
+        // SAFETY:
+        // - `src` points into `flush_scratch`, which is heap-allocated once in
+        //   `new()` and never reallocated/moved for the lifetime of this
+        //   console, so the pointer stays valid after this function returns
+        //   (i.e. after `GLOBAL_CONSOLE`'s lock has been released).
+        // - `dst` points into the physical linear framebuffer at an offset
+        //   bounded by `fb.height`/`fb.pixels_per_scanline`, matching the
+        //   same bounds check used for the snapshot copy above.
+        let flush = unsafe {
+            PendingFlush::new(
+                self.flush_scratch.as_ptr().add(start_offset),
+                fb_ptr.add(start_offset),
+                pixels_to_copy,
+            )
+        };
+
+        Some(flush)
     }
 
-    /// Handles deferred or explicit redraw synchronization.
+    /// Resets the deferred-redraw marker.
+    ///
+    /// Note: this no longer performs the VRAM upload itself — see
+    /// `take_flush_job`/`KernelConsole::take_pending_flush`, which let
+    /// `with_console` apply the (potentially large) upload only after
+    /// releasing the console lock (issue #16).
     fn flush_redraw(&mut self) {
-        if self.deferred_redraw {
-            self.deferred_redraw = false;
-        }
-        self.flush_to_vram();
+        self.deferred_redraw = false;
     }
 
     /// Shifts character cells upward when the cursor advances past the last visible row.
@@ -600,6 +648,10 @@ impl KernelConsole for FramebufferConsole {
 
     fn enable_blink_mode(&mut self) {
         // No-op for framebuffer.
+    }
+
+    fn take_pending_flush(&mut self) -> Option<PendingFlush> {
+        self.take_flush_job()
     }
 }
 
