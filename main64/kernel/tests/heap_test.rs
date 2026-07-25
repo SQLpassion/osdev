@@ -155,6 +155,64 @@ fn test_heap_free_scrubs_payload_before_reuse() {
     heap::free(ptr3);
 }
 
+/// Contract: coalescing two adjacent freed blocks must not leave the absorbed
+/// neighbor's old block header (size_and_flags/prev_size/magic) sitting
+/// unscrubbed inside the merged block's payload.
+/// Given: two adjacent 64-byte allocations, each filled with a distinct
+///        non-zero pattern, freed in a way that forces them to coalesce.
+/// When: a large-enough allocation is made afterward to span the old
+///       boundary between the two original blocks.
+/// Then: every byte of the new allocation's payload reads back as zero,
+///       including the byte range that used to be the second block's header
+///       — not just the two original blocks' own declared payload ranges.
+/// Failure Impact: without scrubbing the *coalesced* block's full payload,
+///       an earlier version of this fix (which scrubbed only each block's
+///       own pre-merge payload before coalescing) left the absorbed
+///       neighbor's header bytes — internal heap bookkeeping, but still
+///       non-zero stale data — surviving into the next allocation that
+///       reused the merged region.
+#[test_case]
+fn test_heap_free_scrubs_seam_after_coalesce() {
+    heap::init(false);
+    let a = heap::malloc(64);
+    let b = heap::malloc(64);
+    assert!(!a.is_null() && !b.is_null(), "allocations should succeed");
+
+    // SAFETY: `a`/`b` are valid, non-overlapping 64-byte allocations.
+    unsafe {
+        core::ptr::write_bytes(a, 0xAA, 64);
+        core::ptr::write_bytes(b, 0xBB, 64);
+    }
+
+    heap::free(a);
+    heap::free(b);
+
+    // Large enough to span across the old a/b boundary if they coalesced.
+    let big = heap::malloc(140);
+    assert!(!big.is_null(), "reallocation should succeed");
+    assert!(
+        big == a,
+        "allocator should reuse the coalesced a+b region for this test to be meaningful"
+    );
+
+    // SAFETY:
+    // - `big` is a fresh 140-byte allocation; read before any application
+    //   write to observe exactly what `free()` left behind at the seam.
+    unsafe {
+        for i in 0..140 {
+            let byte = core::ptr::read_volatile(big.add(i));
+            assert!(
+                byte == 0,
+                "coalesced block payload must be fully scrubbed at offset {} (got {:#x})",
+                i,
+                byte
+            );
+        }
+    }
+
+    heap::free(big);
+}
+
 /// Contract: heap merge allows large alloc.
 /// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
 /// When: The exact operation sequence in this function is executed against that state.
