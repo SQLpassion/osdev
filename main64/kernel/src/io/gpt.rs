@@ -7,23 +7,28 @@ const ESP_TYPE_GUID: [u8; 16] = [
     0x28, 0x73, 0x2A, 0xC1, 0x1F, 0xF8, 0xD2, 0x11, 0xBA, 0x4B, 0x00, 0xA0, 0xC9, 0x3E, 0xC9, 0x3B,
 ];
 
-/// Returns the starting LBA of the EFI System Partition, or None if not found.
+/// Returns the starting LBA of the EFI System Partition, or None if the GPT is unreadable or absent.
 ///
 /// Reads the GPT header at LBA 1, then iterates through partition entries looking
-/// for the ESP type GUID.
+/// for the ESP type GUID. If a valid GPT header and partition entries are present but contain
+/// no ESP entry, falls back to LBA 2048 with a log message.
 pub fn find_esp_start_lba() -> Option<u64> {
     let mut header_sector = [0u8; 512];
 
     // Step 1: Read LBA 1 to find the GPT header.
-    // We expect the AHCI driver to succeed in reading this sector.
+    // We expect the block device driver to succeed in reading this sector.
     if block::read_sectors(1, 1, &mut header_sector).is_err() {
-        return fallback_esp();
+        crate::debugln!("GPT: failed to read header sector at LBA 1");
+        return None;
     }
 
     // Step 2: Parse the header to get partition array metadata.
     let (entry_lba, num_entries, entry_size) = match parse_gpt_header(&header_sector) {
         Some(info) => info,
-        None => return fallback_esp(),
+        None => {
+            crate::debugln!("GPT: invalid signature or header at LBA 1");
+            return None;
+        }
     };
 
     // Determine how many entries fit in one sector.
@@ -41,7 +46,8 @@ pub fn find_esp_start_lba() -> Option<u64> {
         let lba = (entry_lba + sector_offset as u64) as u32;
 
         if block::read_sectors(lba as u64, 1, &mut entry_sector).is_err() {
-            return fallback_esp();
+            crate::debugln!("GPT: failed to read partition entry sector at LBA {}", lba);
+            return None;
         }
 
         let entries_in_this_sector = core::cmp::min(
@@ -56,7 +62,7 @@ pub fn find_esp_start_lba() -> Option<u64> {
         }
     }
 
-    // None matched.
+    // Valid GPT header present and entries checked, but no ESP entry matched.
     fallback_esp()
 }
 
@@ -101,9 +107,9 @@ pub fn parse_gpt_entries_sector(
     None
 }
 
-/// Fallback if parsing fails or ESP is not found.
+/// Fallback when a valid GPT is present but no ESP entry was found.
 /// TODO: remove fallback once the primary GPT parsing path is fully stabilized.
 fn fallback_esp() -> Option<u64> {
-    crate::debugln!("ESP not found in GPT, falling back to LBA 2048");
+    crate::debugln!("GPT: valid GPT found but no ESP entry present, falling back to LBA 2048");
     Some(2048)
 }

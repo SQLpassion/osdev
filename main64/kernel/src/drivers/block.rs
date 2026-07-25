@@ -218,3 +218,8 @@ pub fn write_sectors(lba: u64, count: u32, buf: &[u8]) -> Result<(), BlockError>
 pub fn reset_active_device() {
     *ACTIVE_DEVICE.lock() = None;
 }
+
+/// Set a custom active block device (used for testing).
+pub fn set_active_device(device: &'static dyn BlockDevice) {
+    *ACTIVE_DEVICE.lock() = Some(device);
+}

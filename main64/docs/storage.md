@@ -366,9 +366,9 @@ Only the UEFI path needs this. A GPT disk has a header at **LBA 1** (signature
 3. On a match, returns the partition's starting LBA (entry offset `0x20`), which
    becomes the FAT32 mount's `part_lba`.
 
-If parsing fails or no ESP is found, `fallback_esp()` returns **LBA 2048** (the
-conventional first-partition offset) — a pragmatic fallback flagged with a TODO to
-remove once GPT parsing is fully trusted.
+If a valid GPT header and partition table are present but contain no ESP entry, `fallback_esp()`
+returns **LBA 2048** (the conventional first-partition offset) with a log message. If the GPT is
+unreadable or absent, `find_esp_start_lba()` returns `None`.
 
 ---
 
