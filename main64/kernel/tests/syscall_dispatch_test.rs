@@ -465,6 +465,97 @@ fn test_echo_input_normalization_preserves_regular_bytes() {
     );
 }
 
+/// Contract: `syscall::user::decode` maps every raw ABI error sentinel to its
+/// corresponding `SysError` variant.
+/// Given: The four `SYSCALL_ERR_*` sentinel values defined by the ABI.
+/// When: Each sentinel is passed to `syscall::user::decode`.
+/// Then: Each must decode to its dedicated `SysError` variant, not `Unknown`.
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_user_decode_maps_known_error_sentinels() {
+    assert!(
+        syscall::user::decode(syscall::SYSCALL_ERR_UNSUPPORTED)
+            == Err(SysError::UnsupportedSyscall),
+        "SYSCALL_ERR_UNSUPPORTED must decode to SysError::UnsupportedSyscall"
+    );
+    assert!(
+        syscall::user::decode(syscall::SYSCALL_ERR_INVALID_ARG) == Err(SysError::InvalidArgument),
+        "SYSCALL_ERR_INVALID_ARG must decode to SysError::InvalidArgument"
+    );
+    assert!(
+        syscall::user::decode(syscall::SYSCALL_ERR_IO) == Err(SysError::IoError),
+        "SYSCALL_ERR_IO must decode to SysError::IoError"
+    );
+    assert!(
+        syscall::user::decode(syscall::SYSCALL_ERR_OUT_OF_MEMORY) == Err(SysError::OutOfMemory),
+        "SYSCALL_ERR_OUT_OF_MEMORY must decode to SysError::OutOfMemory"
+    );
+}
+
+/// Contract: `syscall::user::decode` never misclassifies an IO or
+/// OutOfMemory sentinel as success.
+///
+/// This is the exact regression the M8 fix (issue #20) targets: the old
+/// `sys_yield` decoder used the threshold `x if x >= SYSCALL_ERR_INVALID_ARG`,
+/// which is numerically *higher* than `SYSCALL_ERR_IO` and
+/// `SYSCALL_ERR_OUT_OF_MEMORY`. Both sentinels therefore fell through to the
+/// wrapper's default `_ => Ok(())` arm and were silently treated as success.
+/// Given: The `SYSCALL_ERR_IO` and `SYSCALL_ERR_OUT_OF_MEMORY` sentinels.
+/// When: Each is passed to `syscall::user::decode`.
+/// Then: Both must decode to `Err(...)`, never `Ok(...)`.
+/// Failure Impact: A regression here means a real IO or allocator failure at
+/// the syscall boundary is silently swallowed and treated as success by
+/// every wrapper in `syscall::user`.
+#[test_case]
+fn test_user_decode_does_not_misclassify_io_or_oom_as_success() {
+    assert!(
+        syscall::user::decode(syscall::SYSCALL_ERR_IO).is_err(),
+        "SYSCALL_ERR_IO must never decode to Ok(_) (old sys_yield threshold bug)"
+    );
+    assert!(
+        syscall::user::decode(syscall::SYSCALL_ERR_OUT_OF_MEMORY).is_err(),
+        "SYSCALL_ERR_OUT_OF_MEMORY must never decode to Ok(_) (old sys_yield threshold bug)"
+    );
+}
+
+/// Contract: `syscall::user::decode` keeps values below the error sentinel
+/// range as success, including the boundary value directly adjacent to the
+/// lowest sentinel (`SYSCALL_ERR_OUT_OF_MEMORY`).
+/// Given: The value immediately below `SYSCALL_ERR_OUT_OF_MEMORY`.
+/// When: It is passed to `syscall::user::decode`.
+/// Then: It must decode to `Ok` with the value unchanged.
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_user_decode_accepts_value_just_below_error_sentinels() {
+    let raw = syscall::SYSCALL_ERR_OUT_OF_MEMORY - 1;
+    assert!(
+        syscall::user::decode(raw) == Ok(raw),
+        "value directly below the lowest error sentinel must remain a successful return"
+    );
+}
+
+/// Contract: `syscall::user::decode` passes through ordinary successful
+/// return values unchanged, including zero and small positive values.
+/// Given: A representative set of non-sentinel `u64` values.
+/// When: Each is passed to `syscall::user::decode`.
+/// Then: Each must decode to `Ok` with the value unchanged.
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_user_decode_passes_success_values_unchanged() {
+    assert!(
+        syscall::user::decode(0) == Ok(0),
+        "zero must remain a successful return"
+    );
+    assert!(
+        syscall::user::decode(17) == Ok(17),
+        "positive result must remain unchanged"
+    );
+    assert!(
+        syscall::user::decode(u64::MAX / 2) == Ok(u64::MAX / 2),
+        "large but non-sentinel values must remain a successful return"
+    );
+}
+
 /// Contract: write_serial rejects null pointer when len > 0.
 /// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
 /// When: The exact operation sequence in this function is executed against that state.
