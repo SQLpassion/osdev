@@ -306,25 +306,32 @@ pub fn free(ptr: *mut u8) {
             };
         }
 
-        // Step 2: Scrub the payload so freed data doesn't linger for the next
-        // allocation or an unrelated use-after-free read.
-        // SAFETY:
-        // - `block` was validated above and `block_size - HEADER_SIZE` is exactly
-        //   this block's payload length, so the write stays inside the payload
-        //   and never touches the header bytes the allocator still needs.
-        unsafe {
-            core::ptr::write_bytes(payload_ptr(block), 0, block_size - HEADER_SIZE);
-        }
-
-        // Step 3: Mark block free, coalesce with free neighbors, and enqueue once.
+        // Step 2: Mark block free and coalesce with free neighbors *before*
+        // scrubbing. Coalescing can absorb an adjacent free block's header
+        // (size_and_flags/prev_size/magic) into the middle of the merged
+        // block's payload range; scrubbing only this block's own pre-merge
+        // payload (as an earlier version of this fix did) would leave those
+        // absorbed header bytes unscrubbed for the next allocation to see.
         header.set_in_use(false);
         let coalesced = coalesce_free_block(state, block);
-        insert_free_block(state, coalesced);
 
         // SAFETY:
         // - This requires `unsafe` because it dereferences raw pointers.
         // - `coalesced` points to a valid heap header after coalescing.
         let final_size = unsafe { (&*coalesced).size() };
+
+        // Step 3: Scrub the merged block's full payload so freed data doesn't
+        // linger for the next allocation or an unrelated use-after-free read.
+        // SAFETY:
+        // - `coalesced` was just returned by `coalesce_free_block` and
+        //   `final_size - HEADER_SIZE` is exactly its payload length, so the
+        //   write stays inside the payload and never touches the header bytes
+        //   the allocator still needs.
+        unsafe {
+            core::ptr::write_bytes(payload_ptr(coalesced), 0, final_size - HEADER_SIZE);
+        }
+
+        insert_free_block(state, coalesced);
 
         // Step 3: If the coalesced block ends at `heap_end`, it is now the last physical block.
         if coalesced as usize + final_size == state.heap_end {
