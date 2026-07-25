@@ -322,10 +322,10 @@ fn test_small_allocations_round_trip_through_free_list() {
     let layout = Layout::from_size_align(1, 8).unwrap();
 
     // Step 1: Allocate many 1-byte payloads.
-    for i in 0..COUNT {
+    for (i, slot) in ptrs.iter_mut().enumerate() {
         let p = test_heap.allocate(layout);
         assert!(!p.is_null(), "allocation {} should succeed", i);
-        ptrs[i] = p;
+        *slot = p;
     }
 
     // Step 2: Free every other block.  Because the retained blocks stay in use,

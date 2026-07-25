@@ -470,13 +470,18 @@ fn test_destroy_user_address_space_releases_user_leaf_and_table_frames() {
     });
 }
 
-/// Contract: destroy user address space does not release code leaf frame.
+/// Contract: destroy user address space releases a single-owner code leaf frame.
+///
+/// Refcounting replaced the old `release_user_code_pfns` boolean policy: a
+/// code frame with exactly one owner (the common case — a loader-owned
+/// binary's private code frame) is now always released by
+/// `destroy_user_address_space`, regardless of which region it is mapped in.
 /// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
 /// When: The exact operation sequence in this function is executed against that state.
-/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "destroy user address space does not release code leaf frame".
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "destroy user address space releases a single-owner code leaf frame".
 /// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
-fn test_destroy_user_address_space_does_not_release_code_leaf_frame() {
+fn test_destroy_user_address_space_releases_single_owner_code_leaf_frame() {
     const TEST_CODE_VA: u64 = vmm::USER_CODE_BASE;
 
     let user_cr3 = vmm::clone_kernel_pml4_for_user();
@@ -491,43 +496,71 @@ fn test_destroy_user_address_space_does_not_release_code_leaf_frame() {
 
     pmm::with_pmm(|mgr| {
         assert!(
-            mgr.release_pfn(code_leaf.pfn),
-            "code-leaf PFN should remain allocated after destroy and require explicit release"
+            !mgr.release_pfn(code_leaf.pfn),
+            "single-owner code-leaf PFN should already be free after address-space destroy"
         );
     });
 }
 
-/// Contract: destroy user address space with owned-code policy releases code leaf frame.
+/// Contract: destroy user address space keeps a shared (refcounted) code leaf frame
+/// allocated until its other owner also releases it.
+///
+/// This is the core new behavior this refactor introduces: instead of a
+/// caller-chosen boolean policy, a frame that is deliberately aliased into a
+/// second mapping (via `inc_refcount`, mirroring e.g. a user-code window
+/// pointing at a frame another mapping still references) survives address
+/// -space teardown and is only actually freed once every owner has released
+/// it.
 /// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
 /// When: The exact operation sequence in this function is executed against that state.
-/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "destroy user address space with owned-code policy releases code leaf frame".
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "destroy user address space keeps a shared code leaf frame allocated until its other owner also releases it".
 /// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
-fn test_destroy_user_address_space_with_options_releases_code_leaf_frame() {
+fn test_destroy_user_address_space_keeps_shared_code_leaf_frame_until_last_release() {
     const TEST_CODE_VA: u64 = vmm::USER_CODE_BASE;
+    const OUTER_ALIAS_VA: u64 = 0xFFFF_8098_789A_B000;
 
     let user_cr3 = vmm::clone_kernel_pml4_for_user();
     let code_leaf = pmm::with_pmm(|mgr| mgr.alloc_frame().expect("code frame allocation failed"));
+
+    // Create a second, independent owner of the same physical frame: map it
+    // into the currently active (kernel) address space at a scratch VA, and
+    // record the extra ownership in PMM via `inc_refcount`.
+    vmm::unmap_virtual_address(OUTER_ALIAS_VA);
+    vmm::map_virtual_to_physical(OUTER_ALIAS_VA, code_leaf.physical_address());
+    assert!(
+        pmm::with_pmm(|mgr| mgr.inc_refcount(code_leaf.pfn)),
+        "inc_refcount must succeed on an allocated frame"
+    );
 
     vmm::with_address_space(user_cr3, || {
         vmm::map_user_page(TEST_CODE_VA, code_leaf.pfn, false)
             .expect("test code VA should map in cloned address space");
     });
 
-    vmm::destroy_user_address_space_with_options(user_cr3, true);
+    // Destroying the user address space releases only the user-side mapping's
+    // ownership; the outer alias still owns the frame, so it must survive.
+    vmm::destroy_user_address_space(user_cr3);
 
     pmm::with_pmm(|mgr| {
         assert!(
-            !mgr.release_pfn(code_leaf.pfn),
-            "owned-code policy must release code-leaf PFN during address-space destroy"
+            mgr.release_pfn(code_leaf.pfn),
+            "shared code-leaf PFN must still be allocated (and thus releasable) \
+             immediately after destroy, because the outer alias still owns it"
         );
     });
+
+    // The explicit `release_pfn` above just consumed the outer alias's
+    // ownership (the last one), so the frame is now actually free.
+    // Clean up the outer alias's page-table mapping too (best effort; the PFN
+    // itself is already released).
+    vmm::unmap_without_release(OUTER_ALIAS_VA);
 }
 
-/// Contract: destroy user address space with page counts tears down only mapped code/stack pages.
+/// Contract: destroy user address space with page counts releases mapped code/stack pages.
 /// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
 /// When: The exact operation sequence in this function is executed against that state.
-/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "destroy user address space with page counts tears down only mapped code/stack pages".
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "destroy user address space with page counts releases mapped code/stack pages".
 /// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_destroy_user_address_space_with_page_counts_releases_mapped_code_and_stack_leaf_frames() {
@@ -547,7 +580,7 @@ fn test_destroy_user_address_space_with_page_counts_releases_mapped_code_and_sta
 
     // Exactly one mapped code page at USER_CODE_BASE and one mapped stack page
     // at USER_STACK_TOP-4KiB should be torn down.
-    vmm::destroy_user_address_space_with_page_counts(user_cr3, true, 1, 1);
+    vmm::destroy_user_address_space_with_page_counts(user_cr3, 1, 1);
 
     pmm::with_pmm(|mgr| {
         assert!(
@@ -561,6 +594,50 @@ fn test_destroy_user_address_space_with_page_counts_releases_mapped_code_and_sta
         assert!(
             !mgr.release_pfn(user_cr3 / pmm::PAGE_SIZE),
             "count-based destroy must release user CR3 root PFN"
+        );
+    });
+}
+
+/// Contract: destroy user address space reclaims mappings outside the fixed
+/// Code/Stack/Heap windows (e.g. a future `mmap`-created region).
+///
+/// This exercises the generic catch-all reclaim pass `destroy_user_address_space`
+/// runs after tearing down the three named windows: any VA still present in
+/// the user PML4 slot range gets unmapped and its leaf frame released too, so
+/// a region outside those three windows cannot be silently leaked at teardown.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "destroy user address space reclaims mappings outside the fixed Code/Stack/Heap windows".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_destroy_user_address_space_reclaims_mapping_outside_known_regions() {
+    // Just above the heap window, well below the stack guard page: not Code,
+    // not Stack/Guard, not Heap — i.e. classify_user_region returns None.
+    const OTHER_REGION_VA: u64 = vmm::USER_HEAP_END + 0x0010_0000;
+    assert!(
+        vmm::classify_user_region(OTHER_REGION_VA).is_none(),
+        "test VA must not fall inside any of the three known user regions"
+    );
+
+    let user_cr3 = vmm::clone_kernel_pml4_for_user();
+    let leaf = pmm::with_pmm(|mgr| mgr.alloc_frame().expect("leaf frame allocation failed"));
+
+    let mapped_pfn = vmm::with_address_space(user_cr3, || {
+        vmm::try_map_virtual_to_physical(OTHER_REGION_VA, leaf.physical_address())
+            .expect("mapping an out-of-window VA should still succeed at the page-table level");
+        vmm::debug_mapped_pfn_for_va(OTHER_REGION_VA).expect("mapped leaf must resolve")
+    });
+    assert_eq!(
+        mapped_pfn, leaf.pfn,
+        "mapped leaf PFN must match the allocated frame"
+    );
+
+    vmm::destroy_user_address_space(user_cr3);
+
+    pmm::with_pmm(|mgr| {
+        assert!(
+            !mgr.release_pfn(leaf.pfn),
+            "teardown's catch-all pass must have already reclaimed the out-of-window mapping"
         );
     });
 }

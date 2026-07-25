@@ -9,8 +9,9 @@ use super::page_table::{
     PML4_TABLE_ADDR,
 };
 use super::{
-    classify_user_region, debug_alloc, vmm_logln, UserRegion, TEMP_CLONE_PML4_VA, USER_CODE_BASE,
-    USER_CODE_SIZE, USER_HEAP_BASE, USER_HEAP_END, USER_STACK_SIZE, USER_STACK_TOP,
+    classify_user_region, debug_alloc, vmm_logln, UserRegion, TEMP_CLONE_PML4_VA,
+    USER_ADDRESS_SPACE_SCAN_END, USER_CODE_BASE, USER_CODE_SIZE, USER_HEAP_BASE, USER_HEAP_END,
+    USER_STACK_SIZE, USER_STACK_TOP,
 };
 
 /// Error returned by checked mapping operations.
@@ -587,49 +588,20 @@ pub fn clone_kernel_pml4_for_user() -> u64 {
 /// Destroys a user address space rooted at `pml4_phys`.
 ///
 /// Teardown semantics:
-/// - unmaps user-code and user-stack ranges,
-/// - releases mapped PMM-managed leaf frames in stack range,
-/// - keeps code-range leaf PFNs reserved (alias-safe default),
+/// - unmaps user-code, user-stack, and user-heap ranges,
+/// - reclaims any other present user mapping outside those three windows
+///   (e.g. a future `mmap`-created region) via a generic catch-all scan,
+/// - releases every mapped PMM-managed leaf frame it unmaps through the
+///   refcounted `PhysicalMemoryManager::release_pfn`, which only actually
+///   frees a frame once its last owner releases it — so frames shared with
+///   another mapping (via `inc_refcount` at the site that created the alias)
+///   safely survive this call and are freed later, when their other owner
+///   releases them,
 /// - prunes and releases now-empty PT/PD/PDP pages,
 /// - releases the root PML4 frame itself.
 pub fn destroy_user_address_space(pml4_phys: u64) {
-    // Keep legacy default: do not release USER_CODE PFNs (alias-safe mode).
-    destroy_user_address_space_with_options(pml4_phys, false);
-}
-
-/// Destroys a user address space rooted at `pml4_phys` with explicit code-page policy.
-///
-/// ## What this function does
-/// 1. Temporarily activates `pml4_phys` as the current CR3 (via [`with_address_space`])
-///    so that recursive page-table walk addresses resolve against the correct hierarchy.
-/// 2. Unmaps every page in `[USER_CODE_BASE, USER_CODE_END)` and
-///    `[USER_STACK_BASE, USER_STACK_TOP)`, pruning now-empty PT/PD/PDP frames as it
-///    goes.
-/// 3. Releases the root PML4 frame back to the PMM.
-/// 4. Restores the previous CR3 before returning.
-///
-/// ## What this function does NOT do
-/// - It does not touch any kernel-half mappings (PML4 entries 256 and above). Those
-///   are shared with every other address space and must remain intact.
-/// - It does not handle regions outside `USER_CODE` and `USER_STACK`; any other
-///   user mappings that exist would be silently leaked.
-///
-/// ## Caller constraints
-/// - Must NOT be called with `pml4_phys` equal to the kernel CR3 that has no
-///   corresponding user address space — doing so would unmap the user windows
-///   inside the kernel page tables, corrupting all future user tasks.
-/// - Interrupts are disabled for the duration of the CR3 switch (handled internally
-///   by [`with_address_space`]).
-///
-/// ## `release_user_code_pfns` policy
-/// - `false`: clear user-code mappings but keep mapped code PFNs reserved
-///   (safe for temporary user aliases of kernel text pages).
-/// - `true`: release user-code PFNs back to PMM (required for loader-owned images).
-pub fn destroy_user_address_space_with_options(pml4_phys: u64, release_user_code_pfns: bool) {
-    // Default behavior: tear down full configured user code + stack windows.
     destroy_user_address_space_with_page_counts(
         pml4_phys,
-        release_user_code_pfns,
         (USER_CODE_SIZE / PAGE_SIZE_U64) as usize,
         (USER_STACK_SIZE / PAGE_SIZE_U64) as usize,
     );
@@ -637,16 +609,45 @@ pub fn destroy_user_address_space_with_options(pml4_phys: u64, release_user_code
 
 /// Destroys a user address space with explicit mapped-page counts.
 ///
-/// This variant is intended for callers that know exactly how many pages were
-/// mapped and can therefore avoid scanning full user regions.
+/// ## What this function does
+/// 1. Temporarily activates `pml4_phys` as the current CR3 (via [`with_address_space`])
+///    so that recursive page-table walk addresses resolve against the correct hierarchy.
+/// 2. Unmaps every mapped page in the known `USER_CODE`, `USER_STACK`, and
+///    `USER_HEAP` windows, pruning now-empty PT/PD/PDP frames as it goes.
+/// 3. Scans the remainder of the user PML4 slot range
+///    (`[USER_CODE_BASE, USER_ADDRESS_SPACE_SCAN_END)`) for any other present
+///    mapping and reclaims it too, so a region outside those three fixed
+///    windows (e.g. a future per-process `mmap` allocation) cannot be
+///    silently leaked.
+/// 4. Releases the root PML4 frame back to the PMM.
+/// 5. Restores the previous CR3 before returning.
+///
+/// Every leaf frame unmapped along the way goes through
+/// `PhysicalMemoryManager::release_pfn`, which is refcounted: a frame with
+/// more than one owner (bumped via `inc_refcount` at the site that created
+/// the extra mapping — e.g. a code page deliberately aliased over another
+/// mapping) merely has its count decremented here and stays allocated until
+/// its other owner(s) release it too. This is what replaced the old
+/// `release_user_code_pfns` boolean policy: callers no longer choose whether
+/// to release a window's frames — the refcount always decides.
 ///
 /// `stack_page_count_from_top` is interpreted as a contiguous window growing
 /// downward from [`USER_STACK_TOP`], matching how user stacks are allocated.
-///
 /// Count values are clamped to configured region capacities.
+///
+/// ## What this function does NOT do
+/// - It does not touch any kernel-half mappings (PML4 entries 256 and above), nor
+///   PML4 slot 0 (the low-memory identity map). Those are shared with every other
+///   address space and must remain intact; see [`USER_ADDRESS_SPACE_SCAN_END`].
+///
+/// ## Caller constraints
+/// - Must NOT be called with `pml4_phys` equal to the kernel CR3 that has no
+///   corresponding user address space — doing so would unmap the user windows
+///   inside the kernel page tables, corrupting all future user tasks.
+/// - Interrupts are disabled for the duration of the CR3 switch (handled internally
+///   by [`with_address_space`]).
 pub fn destroy_user_address_space_with_page_counts(
     pml4_phys: u64,
-    release_user_code_pfns: bool,
     code_page_count: usize,
     stack_page_count_from_top: usize,
 ) {
@@ -667,16 +668,16 @@ pub fn destroy_user_address_space_with_page_counts(
     // Teardown must run while the target CR3 is active so recursive-table
     // helper addresses resolve to the correct hierarchy.
     with_address_space(pml4_phys, || {
-        // Step 1: Drop user-code mappings for the known mapped prefix.
-        // Caller controls whether mapped code PFNs are returned to PMM.
+        // Step 1: Drop user-code mappings for the known mapped prefix. The refcounted
+        // `release_pfn` decides whether a code frame is actually freed here or merely
+        // has its count decremented (when another mapping still owns it).
         let mut va = USER_CODE_BASE;
         for _ in 0..code_pages {
-            unmap_page_and_prune_pagetable_hierarchy(va, release_user_code_pfns);
+            unmap_page_and_prune_pagetable_hierarchy(va, true);
             va += PAGE_SIZE_U64;
         }
 
         // Step 2: Drop mapped user-stack pages in the top-down stack window.
-        // Stack pages are always process-owned, so leaf PFNs are always released.
         let mut stack_va = USER_STACK_TOP - (stack_pages as u64 * PAGE_SIZE_U64);
         while stack_va < USER_STACK_TOP {
             unmap_page_and_prune_pagetable_hierarchy(stack_va, true);
@@ -685,6 +686,13 @@ pub fn destroy_user_address_space_with_page_counts(
 
         // Step 3: Clear and release all mapped pages in the user-mode heap region.
         unmap_user_heap_region();
+
+        // Step 4: Catch-all — reclaim any other present user mapping outside the
+        // three windows above (e.g. a future mmap-created region). Code/Stack/Heap
+        // were already cleared, so in the common case this scan finds nothing left
+        // and is a cheap no-op; it exists so nothing in the user PML4 slot range can
+        // be silently leaked at teardown.
+        reclaim_user_range(USER_CODE_BASE, USER_ADDRESS_SPACE_SCAN_END);
     });
 
     // Finally release the root PML4 frame itself after its hierarchy has been pruned.
@@ -705,8 +713,26 @@ pub fn destroy_user_address_space_with_page_counts(
 /// This traverses intermediate page table directories to efficiently skip
 /// unmapped sub-regions and prunes hierarchy frames as they become empty.
 pub fn unmap_user_heap_region() {
-    let mut va = USER_HEAP_BASE;
-    while va < USER_HEAP_END {
+    reclaim_user_range(USER_HEAP_BASE, USER_HEAP_END);
+}
+
+/// Reclaims every present user leaf mapping in `[scan_start, scan_end)`.
+///
+/// Walks the 4-level page-table hierarchy, skipping non-present sub-trees at
+/// the largest granularity possible (512 GiB / 1 GiB / 2 MiB jumps) so large
+/// unmapped gaps are cheap to pass over, and releases each present leaf frame
+/// via the refcounted `PhysicalMemoryManager::release_pfn` while pruning
+/// now-empty PT/PD/PDP levels — the same technique `unmap_user_heap_region`
+/// has always used for the heap window, generalized to arbitrary bounds.
+///
+/// Callers must ensure the target address space is already active (e.g. via
+/// [`with_address_space`]) so recursive-mapping helper addresses resolve
+/// correctly, and must only pass bounds known not to overlap
+/// address-space-shared infrastructure (PML4 slot 0's identity map, or the
+/// higher-half kernel slots) — see [`USER_ADDRESS_SPACE_SCAN_END`].
+fn reclaim_user_range(scan_start: u64, scan_end: u64) {
+    let mut va = scan_start;
+    while va < scan_end {
         // Step 1: Resolve PML4 level and skip if non-present.
         let pml4 = table_at(PML4_TABLE_ADDR);
         let pml4_idx = pml4_index(va);

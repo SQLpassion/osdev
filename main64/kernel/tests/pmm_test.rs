@@ -287,3 +287,138 @@ fn test_pmm_physical_address_calculation() {
         assert!(pmm.release_pfn(frame.pfn));
     });
 }
+
+/// Test that a single-owner (refcount == 1) frame is freed on exactly one
+/// `release_pfn` call — the pre-existing allocator behavior must be
+/// unaffected by the addition of per-frame refcounting.
+/// Contract: pmm single owner frame freed after one release.
+/// Given: A freshly allocated frame with no additional owners (refcount == 1).
+/// When: `release_pfn` is called exactly once.
+/// Then: The frame is returned to the free pool immediately, and a second
+///       `release_pfn` call on the same PFN fails (already free).
+/// Failure Impact: Regressing single-owner semantics would either leak every
+///        frame in the kernel (never actually freed) or double-free on the
+///        very first release call. Release-blocking.
+#[test_case]
+fn test_pmm_single_owner_frame_freed_after_one_release() {
+    pmm::with_pmm(|mgr| {
+        let free_before = mgr.total_free_frames();
+
+        let frame = mgr.alloc_frame().expect("allocation should succeed");
+        assert_eq!(
+            mgr.total_free_frames(),
+            free_before - 1,
+            "allocating a frame must reduce the free count by exactly one"
+        );
+
+        assert!(
+            mgr.release_pfn(frame.pfn),
+            "releasing a single-owner frame must succeed"
+        );
+        assert_eq!(
+            mgr.total_free_frames(),
+            free_before,
+            "a single-owner frame must be fully freed after exactly one release_pfn call"
+        );
+
+        assert!(
+            !mgr.release_pfn(frame.pfn),
+            "releasing an already-free frame a second time must fail"
+        );
+    });
+}
+
+/// Test that a frame with an extra owner (refcount == 2, via `inc_refcount`)
+/// survives one `release_pfn` call and is only actually freed — and therefore
+/// only re-allocatable — after the second `release_pfn` call.
+///
+/// This is the core new behavior the PMM frame-refcounting mechanism
+/// introduces: it replaces the old manual boolean "does this caller own the
+/// frame" policy with an accurate reference count, so a frame shared between
+/// two owners (e.g. user-code aliased over another mapping) is never freed
+/// while any owner still holds it, and is freed exactly once when the last
+/// owner releases it.
+/// Contract: pmm refcounted frame survives until last release.
+/// Given: A frame allocated normally (refcount == 1), then shared with a
+///        second owner via `inc_refcount` (refcount == 2).
+/// When: `release_pfn` is called twice.
+/// Then: The first call succeeds but leaves the frame allocated (free count
+///       unchanged); the second call actually frees it (free count restored).
+/// Failure Impact: A regression here would either free a still-shared frame
+///        too early (double-use-after-free of physical memory across two
+///        live mappings) or leak a frame forever once shared. Release-blocking.
+#[test_case]
+fn test_pmm_refcounted_frame_survives_until_last_release() {
+    pmm::with_pmm(|mgr| {
+        let free_before = mgr.total_free_frames();
+
+        let frame = mgr.alloc_frame().expect("allocation should succeed");
+        assert_eq!(mgr.total_free_frames(), free_before - 1);
+
+        // Simulate a second owner aliasing this already-allocated frame.
+        assert!(
+            mgr.inc_refcount(frame.pfn),
+            "inc_refcount must succeed on an allocated frame"
+        );
+
+        // First release: one owner (the second one) remains, so the frame
+        // must stay allocated — the free count must not change.
+        assert!(
+            mgr.release_pfn(frame.pfn),
+            "first release of a shared frame must succeed"
+        );
+        assert_eq!(
+            mgr.total_free_frames(),
+            free_before - 1,
+            "a frame with a remaining owner must stay allocated after one release"
+        );
+
+        // Second release: last owner releases it, so the frame is now
+        // actually freed and the free count is restored.
+        assert!(
+            mgr.release_pfn(frame.pfn),
+            "second (final) release of a shared frame must succeed"
+        );
+        assert_eq!(
+            mgr.total_free_frames(),
+            free_before,
+            "a shared frame must be freed once its last owner releases it"
+        );
+
+        // A third release on the now-free frame must fail.
+        assert!(
+            !mgr.release_pfn(frame.pfn),
+            "releasing an already-free frame must fail"
+        );
+    });
+}
+
+/// Test that `inc_refcount` rejects a PFN that is not currently allocated,
+/// both for a genuinely free frame and for a PFN outside every known region.
+/// Contract: pmm inc refcount rejects unallocated or out of range pfn.
+/// Given: A frame that was allocated and then fully released (free again),
+///        and a PFN far outside any configured PMM region.
+/// When: `inc_refcount` is called on each.
+/// Then: Both calls return `false` — incrementing the refcount of a frame the
+///       allocator does not consider allocated must never silently succeed
+///       (it would create a phantom extra owner that can never be balanced).
+/// Failure Impact: Silently accepting this would let a caller create a
+///        reference to memory that isn't actually reserved by the allocator,
+///        an invisible corruption/double-allocation hazard. Release-blocking.
+#[test_case]
+fn test_pmm_inc_refcount_rejects_unallocated_or_out_of_range_pfn() {
+    pmm::with_pmm(|mgr| {
+        let frame = mgr.alloc_frame().expect("allocation should succeed");
+        assert!(mgr.release_pfn(frame.pfn), "initial release must succeed");
+
+        assert!(
+            !mgr.inc_refcount(frame.pfn),
+            "inc_refcount must reject a PFN that is currently free"
+        );
+
+        assert!(
+            !mgr.inc_refcount(u64::MAX / 2),
+            "inc_refcount must reject a PFN outside every known region"
+        );
+    });
+}

@@ -149,12 +149,16 @@ impl PhysicalMemoryManager {
                         let frames = entry.size / PAGE_SIZE;
                         let bitmap_bytes = align_up(frames.div_ceil(8), 8);
 
+                        let refcount_bytes = align_up(frames, 8);
+
                         regions[idx] = PmmRegion {
                             start: entry.start,
                             frames_total: frames,
                             frames_free: frames,
                             bitmap_start: 0,
                             bitmap_bytes,
+                            refcount_start: 0,
+                            refcount_bytes,
                         };
                         idx += 1;
                     }
@@ -202,6 +206,7 @@ impl PhysicalMemoryManager {
                 if r.region_type == 1 && r.start >= KERNEL_OFFSET {
                     let frames = r.size / PAGE_SIZE;
                     let bitmap_bytes = align_up(frames.div_ceil(8), 8);
+                    let refcount_bytes = align_up(frames, 8);
 
                     regions[idx] = PmmRegion {
                         start: r.start,
@@ -209,6 +214,8 @@ impl PhysicalMemoryManager {
                         frames_free: frames,
                         bitmap_start: 0,
                         bitmap_bytes,
+                        refcount_start: 0,
+                        refcount_bytes,
                     };
                     idx += 1;
                 }
@@ -232,10 +239,27 @@ impl PhysicalMemoryManager {
             bitmap_base += r.bitmap_bytes;
         }
 
+        // Per-frame refcount arrays follow immediately after all bitmaps, one byte
+        // per frame per region, in the same region order. A zeroed refcount means
+        // "not currently PMM-tracked as allocated"; `alloc_frame` sets a fresh
+        // frame's byte to 1, and `release_pfn`/`inc_refcount` maintain it from there.
+        let mut refcount_base = bitmap_base;
+
+        for r in regions.iter_mut() {
+            r.refcount_start = refcount_base;
+            // SAFETY:
+            // - `refcount_start..refcount_start+refcount_bytes` is PMM-owned metadata memory.
+            // - We clear each refcount array once before allocator use.
+            unsafe {
+                core::ptr::write_bytes(r.refcount_start as *mut u8, 0, r.refcount_bytes as usize)
+            };
+            refcount_base += r.refcount_bytes;
+        }
+
         // Mark the kernel, stack, and PMM metadata as used.
-        // `bitmap_base` already points past the last bitmap, so it is the
+        // `refcount_base` already points past the last refcount array, so it is the
         // true end of all PMM metadata.
-        let metadata_end = bitmap_base;
+        let metadata_end = refcount_base;
 
         if metadata_base == kernel_end_phys {
             // BIOS / fallback path: the metadata sits contiguously right after the
@@ -382,6 +406,16 @@ impl PhysicalMemoryManager {
                         unsafe { set_bit(bit_idx, bitmap) };
                         r.frames_free -= 1;
 
+                        // A freshly allocated frame starts with exactly one owner.
+                        // `inc_refcount`/`release_pfn` maintain this from here on.
+                        // SAFETY:
+                        // - `bit_idx < frames_total` ensures the offset is within the
+                        //   refcount array (sized `frames_total` bytes, aligned up).
+                        // - `refcount_start` points to writable PMM-owned metadata memory.
+                        unsafe {
+                            *(r.refcount_start as *mut u8).add(bit_idx as usize) = 1;
+                        }
+
                         // Log the allocation
                         let pfn = r.start / PAGE_SIZE + bit_idx;
                         let region_index = idx as u32;
@@ -396,10 +430,81 @@ impl PhysicalMemoryManager {
         None
     }
 
+    /// Increments the reference count of an already-allocated frame.
+    ///
+    /// Call this whenever an additional owner starts referencing a physical
+    /// frame that PMM already considers allocated — e.g. a physical frame
+    /// aliased into a second virtual mapping (a user address space's code
+    /// window pointing at a frame another mapping already owns). Each
+    /// `inc_refcount` must be balanced by exactly one extra `release_pfn`
+    /// call before the frame is actually freed.
+    ///
+    /// Returns `true` when the PFN belongs to a known region and is currently
+    /// allocated (bitmap bit set). Returns `false` when the PFN is outside all
+    /// regions, or is not currently allocated — incrementing the refcount of a
+    /// free frame would be a logic error in the caller, so this is rejected
+    /// rather than silently creating a phantom reference.
+    pub fn inc_refcount(&mut self, pfn: u64) -> bool {
+        let regions = self.regions();
+
+        for r in regions.iter_mut() {
+            let region_start_pfn = r.start / PAGE_SIZE;
+            let region_end_pfn = region_start_pfn + r.frames_total;
+            if pfn < region_start_pfn || pfn >= region_end_pfn {
+                continue;
+            }
+
+            let bit_idx = pfn - region_start_pfn;
+            let bitmap = r.bitmap_start as *mut u64;
+            let word_idx = (bit_idx / 64) as usize;
+            let bit_mask = 1u64 << (bit_idx % 64);
+
+            // SAFETY:
+            // - `bit_idx` is derived from a PFN proven to be inside this region.
+            // - Therefore `word_idx` addresses a valid bitmap word.
+            let word_val = unsafe { *bitmap.add(word_idx) };
+
+            if (word_val & bit_mask) == 0 {
+                // Not currently allocated: refusing avoids creating a refcount
+                // for a frame the allocator considers free.
+                return false;
+            }
+
+            // SAFETY:
+            // - `bit_idx < frames_total` ensures the offset is within the
+            //   refcount array for this region.
+            // - `refcount_start` points to writable PMM-owned metadata memory.
+            let refcount_ptr = unsafe { (r.refcount_start as *mut u8).add(bit_idx as usize) };
+            // SAFETY: `refcount_ptr` is valid per the computation above.
+            let count = unsafe { *refcount_ptr };
+
+            // A `u8` comfortably covers realistic sharing counts (kernel +
+            // every process aliasing one frame would need >255 processes).
+            // Saturate instead of wrapping so a pathological caller cannot
+            // wrap the count back down to a small number and cause an early
+            // free while owners still exist.
+            let new_count = count.saturating_add(1);
+            // SAFETY: `refcount_ptr` is valid per the computation above.
+            unsafe { *refcount_ptr = new_count };
+
+            return true;
+        }
+
+        false
+    }
+
     /// Releases a page frame identified by PFN.
     ///
-    /// Returns `true` when the PFN belongs to a known region and was marked used.
-    /// Returns `false` when the PFN is outside all regions or already free.
+    /// Decrements the frame's refcount. If other owners remain (refcount is
+    /// still greater than zero after the decrement), the frame stays
+    /// allocated and this call is a bookkeeping no-op beyond the decrement —
+    /// it still returns `true` because the release itself was valid. Only
+    /// when the last owner releases the frame (refcount reaches zero) is the
+    /// bitmap bit actually cleared and the frame returned to the free pool.
+    ///
+    /// Returns `true` when the PFN belongs to a known region and was marked
+    /// used. Returns `false` when the PFN is outside all regions or already
+    /// free.
     pub fn release_pfn(&mut self, pfn: u64) -> bool {
         let regions = self.regions();
 
@@ -426,6 +531,28 @@ impl PhysicalMemoryManager {
             if (word_val & bit_mask) == 0 {
                 return false;
             }
+
+            // SAFETY:
+            // - `bit_idx < frames_total` ensures the offset is within the
+            //   refcount array for this region.
+            // - `refcount_start` points to writable PMM-owned metadata memory.
+            let refcount_ptr = unsafe { (r.refcount_start as *mut u8).add(bit_idx as usize) };
+            // SAFETY: `refcount_ptr` is valid per the computation above.
+            let count = unsafe { *refcount_ptr };
+
+            if count > 1 {
+                // Other owners remain: only decrement, keep the frame allocated.
+                // SAFETY: `refcount_ptr` is valid per the computation above.
+                unsafe { *refcount_ptr = count - 1 };
+                return true;
+            }
+
+            // Last owner (count == 1) — or a defensive fallback for count == 0,
+            // which should not happen for a frame whose bitmap bit is set, but
+            // is handled the same way (actually free) rather than leaking the
+            // frame forever.
+            // SAFETY: `refcount_ptr` is valid per the computation above.
+            unsafe { *refcount_ptr = 0 };
 
             // SAFETY:
             // - `bit_idx` belongs to this region and currently marks an allocated frame.

@@ -328,7 +328,7 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
     // (`!meta.started`) returns before this binding is ever used or dropped.
     #[cfg_attr(not(debug_assertions), allow(unused_mut))]
     let mut stacks_to_free: Vec<(*mut u8, usize)>;
-    let address_spaces_to_free: Vec<(u64, bool)>;
+    let address_spaces_to_free: Vec<u64>;
     let removed_zombie_tasks: bool;
 
     let result = {

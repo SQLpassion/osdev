@@ -26,14 +26,24 @@ pub fn spawn_user_task(entry_rip: u64, user_rsp: u64, cr3: u64) -> Result<usize,
         entry_rip,
         user_rsp,
         cr3,
-        release_user_code_pfns: false,
     })
 }
 
 /// Creates a new user task that owns dedicated user-code pages.
 ///
 /// Use this for loader-backed binaries that were copied into private PMM
-/// frames. On task teardown these code PFNs are released.
+/// frames.
+///
+/// Historically this differed from [`spawn_user_task`] in whether task
+/// teardown released the mapped user-code PFNs back to PMM (a manual
+/// `release_user_code_pfns` boolean policy). That policy was replaced by
+/// PMM-level frame refcounting (see `memory::pmm::manager::inc_refcount` /
+/// `release_pfn`): teardown now always calls the refcounted `release_pfn` for
+/// every mapped code leaf, and a frame that is genuinely shared with another
+/// mapping (bumped via `inc_refcount` at the site that created the alias)
+/// simply survives until its other owner releases it too. Both spawn
+/// functions are therefore equivalent today; both are kept as named entry
+/// points for call-site clarity (loader-owned vs. ad-hoc/test task images).
 pub fn spawn_user_task_owning_code(
     entry_rip: u64,
     user_rsp: u64,
@@ -43,7 +53,6 @@ pub fn spawn_user_task_owning_code(
         entry_rip,
         user_rsp,
         cr3,
-        release_user_code_pfns: true,
     })
 }
 
@@ -118,29 +127,20 @@ fn spawn_internal(kind: SpawnKind) -> Result<usize, SpawnError> {
             .try_reserve(1)
             .map_err(|_| SpawnError::StackAllocationFailed)?;
 
-        let (frame_ptr, cr3, user_rsp, kernel_rsp_top, is_user, release_user_code_pfns) = match kind
-        {
+        let (frame_ptr, cr3, user_rsp, kernel_rsp_top, is_user) = match kind {
             SpawnKind::Kernel { entry } => {
                 let (frame_ptr, kernel_rsp_top) =
                     build_initial_kernel_task_frame(stack_ptr, TASK_STACK_SIZE, entry);
-                (frame_ptr, 0, 0, kernel_rsp_top, false, false)
+                (frame_ptr, 0, 0, kernel_rsp_top, false)
             }
             SpawnKind::User {
                 entry_rip,
                 user_rsp,
                 cr3,
-                release_user_code_pfns,
             } => {
                 let (frame_ptr, kernel_rsp_top) =
                     build_initial_user_task_frame(stack_ptr, TASK_STACK_SIZE, entry_rip, user_rsp);
-                (
-                    frame_ptr,
-                    cr3,
-                    user_rsp,
-                    kernel_rsp_top,
-                    true,
-                    release_user_code_pfns,
-                )
+                (frame_ptr, cr3, user_rsp, kernel_rsp_top, true)
             }
         };
 
@@ -160,7 +160,6 @@ fn spawn_internal(kind: SpawnKind) -> Result<usize, SpawnError> {
             user_heap_top: if is_user { vmm::USER_HEAP_BASE } else { 0 },
             kernel_rsp_top,
             is_user,
-            release_user_code_pfns,
             stack_base: stack_ptr,
             stack_size: TASK_STACK_SIZE,
             fpu_state: fpu_ptr,

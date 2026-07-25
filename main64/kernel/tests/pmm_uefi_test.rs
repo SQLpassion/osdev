@@ -158,6 +158,43 @@ const META_REGION_FRAMES: u64 = META_REGION_SIZE / PAGE_SIZE; // 64
 /// Frames the low `[KERNEL_OFFSET, STACK_TOP)` reservation occupies inside the main region.
 const LOW_RESERVED_FRAMES: u64 = (STACK_TOP - KERNEL_OFFSET) / PAGE_SIZE; // 768
 
+/// Rounds `x` up to the next multiple of 8 — mirrors `pmm::align_up(x, 8)`,
+/// reimplemented here as a `const fn` so it can be used in `const` contexts.
+const fn align_up8(x: u64) -> u64 {
+    (x + 7) & !7
+}
+
+/// Bitmap size for a region with `frames` frames: 1 bit/frame, aligned to 8
+/// bytes — mirrors the `bitmap_bytes` computation in
+/// `PhysicalMemoryManager::new()`.
+const fn bitmap_bytes_for(frames: u64) -> u64 {
+    align_up8(frames.div_ceil(8))
+}
+
+/// Refcount-array size for a region with `frames` frames: 1 byte/frame,
+/// aligned to 8 bytes — mirrors the `refcount_bytes` computation in
+/// `PhysicalMemoryManager::new()`.
+const fn refcount_bytes_for(frames: u64) -> u64 {
+    align_up8(frames)
+}
+
+/// Total PMM metadata size for this synthetic 2-region layout: header +
+/// region array + both regions' bitmaps + both regions' refcount arrays, in
+/// the same order `PhysicalMemoryManager::new()` lays them out. Computed from
+/// the real struct sizes so this test does not drift if either struct's
+/// layout changes.
+const METADATA_TOTAL_BYTES: u64 = core::mem::size_of::<pmm::PmmLayoutHeader>() as u64
+    + 2 * core::mem::size_of::<pmm::PmmRegion>() as u64
+    + bitmap_bytes_for(MAIN_REGION_FRAMES)
+    + bitmap_bytes_for(META_REGION_FRAMES)
+    + refcount_bytes_for(MAIN_REGION_FRAMES)
+    + refcount_bytes_for(META_REGION_FRAMES);
+
+/// Number of 4 KiB pages the metadata occupies inside region 1 (the
+/// metadata-backing region). `regions[1].frames_free` is reduced by exactly
+/// this many frames after `pmm::init`.
+const METADATA_RESERVED_PAGES: u64 = METADATA_TOTAL_BYTES.div_ceil(PAGE_SIZE);
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -206,7 +243,8 @@ fn test_synthetic_uefi_regions_parsed() {
 /// Given: the parsed synthetic map.
 /// When: inspecting `frames_free` right after init.
 /// Then: region 0 has exactly `LOW_RESERVED_FRAMES` used (the `[KERNEL_OFFSET, STACK_TOP)`
-///       block) and everything else free; region 1 has exactly one page used (the metadata).
+///       block) and everything else free; region 1 has exactly `METADATA_RESERVED_PAGES` used
+///       (the metadata: header + region array + both bitmaps + both refcount arrays).
 ///       This proves the bitmaps were zeroed (no stray used bits) AND that the reservation is
 ///       two separate ranges, not one giant span swallowing the gap between them.
 /// Failure Impact: a single-span reservation (the pre-rework bug) would mark almost all RAM
@@ -225,12 +263,13 @@ fn test_synthetic_uefi_two_reserved_ranges() {
             "region 0: only [KERNEL_OFFSET, STACK_TOP) reserved, gap above stays free"
         );
 
-        // Region 1: only the metadata itself (header + regions + bitmaps, < 4 KiB here)
-        // is reserved — exactly one page — leaving the rest of the region free.
+        // Region 1: only the metadata itself (header + regions + bitmaps + refcount
+        // arrays) is reserved — exactly `METADATA_RESERVED_PAGES` pages — leaving the
+        // rest of the region free.
         assert_eq!(
             regions[1].frames_free,
-            META_REGION_FRAMES - 1,
-            "region 1: only the one metadata page is reserved"
+            META_REGION_FRAMES - METADATA_RESERVED_PAGES,
+            "region 1: only the metadata pages are reserved"
         );
     });
 }
@@ -268,8 +307,8 @@ fn test_synthetic_uefi_first_alloc_skips_reserved() {
             "allocated frame must not be in the low reserved block"
         );
         assert!(
-            !(meta_addr..meta_addr + PAGE_SIZE).contains(&addr),
-            "allocated frame must not be in the reserved metadata page"
+            !(meta_addr..meta_addr + METADATA_RESERVED_PAGES * PAGE_SIZE).contains(&addr),
+            "allocated frame must not be in the reserved metadata pages"
         );
 
         // Do NOT dereference: the synthetic frame address is not backed by real RAM.

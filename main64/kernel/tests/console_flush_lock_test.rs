@@ -173,7 +173,7 @@ fn test_scroll_triggered_flush_runs_with_interrupts_enabled() {
              has interrupts disabled"
         );
         assert!(
-            vram.iter().any(|&pixel| pixel == WHITE_RGB),
+            vram.contains(&WHITE_RGB),
             "the flush must have actually copied rendered glyph pixels into \
              the (fake) physical framebuffer, not merely been recorded as a \
              no-op"
@@ -223,7 +223,7 @@ fn test_flush_does_not_force_enable_interrupts_when_caller_had_them_disabled() {
              deferred flush when the caller already had them disabled"
         );
         assert!(
-            vram.iter().any(|&pixel| pixel == WHITE_RGB),
+            vram.contains(&WHITE_RGB),
             "the flush must still have applied even though interrupts were \
              disabled throughout"
         );

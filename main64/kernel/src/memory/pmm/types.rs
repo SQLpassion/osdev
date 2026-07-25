@@ -78,6 +78,22 @@ pub struct PmmRegion {
 
     /// Size of the bitmap in bytes (aligned to 8)
     pub bitmap_bytes: u64,
+
+    /// Physical address of the per-frame refcount array for this region.
+    ///
+    /// One `u8` per frame, indexed the same way as the bitmap (`bit_idx` /
+    /// frame offset from `start`). A freshly allocated frame (via
+    /// [`alloc_frame`](super::manager::PhysicalMemoryManager::alloc_frame))
+    /// starts at refcount `1`. Additional owners (e.g. a physical frame
+    /// aliased into more than one virtual mapping) call
+    /// [`inc_refcount`](super::manager::PhysicalMemoryManager::inc_refcount)
+    /// to bump it. [`release_pfn`](super::manager::PhysicalMemoryManager::release_pfn)
+    /// only actually frees the frame (clears the bitmap bit) once the count
+    /// reaches zero.
+    pub refcount_start: u64,
+
+    /// Size of the refcount array in bytes (aligned to 8; one byte per frame).
+    pub refcount_bytes: u64,
 }
 
 #[inline]

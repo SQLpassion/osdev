@@ -296,13 +296,25 @@ Contains metadata for a single physical memory block.
 ```rust
 #[repr(C)]
 pub struct PmmRegion {
-    pub start: u64,         // Physical start address of the region
-    pub frames_total: u64,  // Total frames in the region
-    pub frames_free: u64,   // Free frames remaining
-    pub bitmap_start: u64,  // Physical start address of the region's bitmap
-    pub bitmap_bytes: u64,  // Size of the bitmap in bytes (aligned to 8 bytes)
+    pub start: u64,           // Physical start address of the region
+    pub frames_total: u64,    // Total frames in the region
+    pub frames_free: u64,     // Free frames remaining
+    pub bitmap_start: u64,    // Physical start address of the region's bitmap
+    pub bitmap_bytes: u64,    // Size of the bitmap in bytes (aligned to 8 bytes)
+    pub refcount_start: u64,  // Physical start address of the region's per-frame refcount array
+    pub refcount_bytes: u64,  // Size of the refcount array in bytes (1 byte/frame, aligned to 8)
 }
 ```
+
+Each region also carries a per-frame refcount array (one `u8` per frame, indexed
+identically to the bitmap), placed right after all bitmaps in the metadata layout.
+`alloc_frame()` initializes a fresh frame's byte to `1`. Code that deliberately aliases
+an already-allocated frame into an additional mapping calls `inc_refcount(pfn)` once per
+extra owner. `release_pfn(pfn)` always decrements the count; it only clears the bitmap
+bit (actually freeing the frame) once the count reaches zero, so a shared frame survives
+exactly as many `release_pfn` calls as it has owners. This replaces the old
+`release_user_code_pfns` boolean policy that used to guard user-code/kernel-text aliasing
+by hand (see `memory/vmm/mapping.rs`).
 
 ### `PageFrame`
 A logical handle returned upon successful allocation.
@@ -341,7 +353,8 @@ When the kernel initializes the PMM during `init()`, the following steps are per
    - *UEFI*: the `PmmLayoutHeader` starts at `BootInfo.pmm_metadata_base` (page-aligned). The
      loader sized this region to the machine's RAM and allocated it via
      `AllocatePages(AllocateAnyPages, …)` while boot services were alive, precisely because the
-     bitmap is far too large to fit in low memory on big-RAM systems (~32 KiB per GiB → ~4 MiB at
+     bitmap + refcount array are far too large to fit in low memory on big-RAM systems
+     (bitmap: ~32 KiB per GiB; refcount array: ~256 KiB per GiB → combined ~4 MiB + ~32 MiB at
      128 GiB).
    - *BIOS / fallback*: the end of the kernel virtual address space (`__bss_end`) is converted to
      a physical address via `virt_to_phys()` and aligned up to 4 KiB; that defines the start of

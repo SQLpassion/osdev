@@ -34,11 +34,6 @@ pub enum SpawnKind {
         user_rsp: u64,
         /// Address-space root (CR3 physical address) associated with task.
         cr3: u64,
-        /// Whether user-code PFNs should be released on task teardown.
-        ///
-        /// `false` is used for temporary user aliases of kernel code pages.
-        /// `true` is used for loader-owned binaries with dedicated code PFNs.
-        release_user_code_pfns: bool,
     },
 }
 
@@ -160,12 +155,6 @@ pub struct TaskEntry {
     /// When set, scheduler updates `TSS.RSP0` from `kernel_rsp_top`.
     pub is_user: bool,
 
-    /// Code-page teardown policy for user tasks.
-    ///
-    /// `true` means user-code leaf PFNs are returned to PMM when the task CR3
-    /// is destroyed. `false` keeps code PFNs reserved (alias-safe).
-    pub release_user_code_pfns: bool,
-
     /// Base address of this task's heap-allocated kernel stack.
     pub stack_base: *mut u8,
 
@@ -197,7 +186,6 @@ impl TaskEntry {
             user_heap_top: 0,
             kernel_rsp_top: 0,
             is_user: false,
-            release_user_code_pfns: false,
             stack_base: ptr::null_mut(),
             stack_size: 0,
             fpu_state: ptr::null_mut(),
@@ -276,12 +264,13 @@ pub struct SchedulerMetadata {
     /// Drained via `core::mem::take` inside the scheduler lock.
     pub pending_free_stacks: Vec<(*mut u8, usize)>,
 
-    /// Address spaces from terminated user tasks awaiting deallocation.
+    /// Address spaces (CR3 roots) from terminated user tasks awaiting
+    /// deallocation.
     ///
     /// Destroying an address space is a slow operation that traverses page
     /// tables and modifies PMM structures. It must happen outside the scheduler
     /// spinlock to keep interrupt latency low.
-    pub pending_free_address_spaces: Vec<(u64, bool)>,
+    pub pending_free_address_spaces: Vec<u64>,
 
     /// Slot index of the task whose FPU/SSE state is currently live in the
     /// CPU's XMM/x87 registers.

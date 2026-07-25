@@ -32,3 +32,17 @@ pub const USER_HEAP_SIZE: u64 = 0x0000_0000_1000_0000;
 
 /// User heap end address (exclusive).
 pub const USER_HEAP_END: u64 = USER_HEAP_BASE + USER_HEAP_SIZE;
+
+/// Exclusive upper bound of the canonical "low half" of the virtual address
+/// space that per-task user mappings (Code/Stack/Heap and any future
+/// mmap-created regions) live in.
+///
+/// `USER_CODE_BASE` through this bound covers exactly the PML4 slots used for
+/// user mappings (currently slots 224-255) and deliberately excludes PML4
+/// slot 0 (the low-memory identity map, shared by every address space) and
+/// the higher-half kernel slots (256 and above, also shared). A full-range
+/// scan bounded by `[USER_CODE_BASE, USER_ADDRESS_SPACE_SCAN_END)` can
+/// therefore safely reclaim *any* present user leaf mapping — including ones
+/// outside the fixed Code/Stack/Heap windows — without risking a scan into
+/// address-space-shared infrastructure.
+pub const USER_ADDRESS_SPACE_SCAN_END: u64 = 0x0000_8000_0000_0000;

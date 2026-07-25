@@ -789,8 +789,11 @@ pub unsafe extern "efiapi" fn efi_main(
                     region_count += 1;
                 }
             }
-            // header + region array + 1 bit per frame, plus generous slack.
-            let meta_bytes = 0x4000 + region_count * 0x40 + (total_frames / 8) + 0x4000;
+            // header + region array + 1 bit per frame (allocation bitmap) +
+            // 1 byte per frame (per-frame PMM refcount array, see
+            // `kernel/src/memory/pmm/manager.rs`), plus generous slack.
+            let meta_bytes =
+                0x4000 + region_count * 0x40 + (total_frames / 8) + total_frames + 0x4000;
 
             // Step 5b: Calculate how many pages we need to hold the PMM metadata,
             // rounding up the byte size to the nearest page boundary.

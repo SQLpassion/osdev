@@ -769,7 +769,7 @@ fn test_writable_user_buffer_rejects_read_only_page_after_boundary() {
         "a range crossing into a read-only page must be rejected"
     );
 
-    let ret = syscall::dispatch(SyscallId::GetTime as u64, (first_va + 128) as u64, 0, 0, 0);
+    let ret = syscall::dispatch(SyscallId::GetTime as u64, first_va + 128, 0, 0, 0);
     assert_eq!(
         ret,
         syscall::SYSCALL_OK,

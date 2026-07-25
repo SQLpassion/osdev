@@ -368,17 +368,17 @@ fn release_allocated_code_pfns(mgr: &mut pmm::PhysicalMemoryManager, code_pfns: 
 
 /// Best-effort rollback for partially created user mappings.
 ///
-/// Uses the same explicit owned-code teardown policy as normal process exit and
-/// then releases only frames that were allocated but never mapped.
+/// Uses the same teardown path as normal process exit (which always releases
+/// mapped leaf frames back to PMM via the refcounted `release_pfn`) and then
+/// releases only frames that were allocated but never mapped.
 fn cleanup_failed_program_mapping(user_cr3: u64, state: &MapState) {
-    // Teardown only the mapped ranges with owned-code policy:
+    // Teardown only the mapped ranges:
     // - `mapped_code_pages` tracks successful code-leaf mappings,
     // - stack teardown only runs when bootstrap page mapping succeeded,
     // - page-table hierarchy + CR3 root are released afterwards by VMM.
     let stack_pages_mapped = if state.stack_mapped { 1 } else { 0 };
     vmm::destroy_user_address_space_with_page_counts(
         user_cr3,
-        true,
         state.mapped_code_pages,
         stack_pages_mapped,
     );
@@ -422,12 +422,7 @@ fn spawn_loaded_program(loaded: LoadedProgram) -> ExecResult<usize> {
             );
             // Spawn failed before task activation, so only loader-mapped pages
             // exist (code prefix + single bootstrap stack page).
-            vmm::destroy_user_address_space_with_page_counts(
-                loaded.cr3,
-                true,
-                loaded.code_page_count,
-                1,
-            );
+            vmm::destroy_user_address_space_with_page_counts(loaded.cr3, loaded.code_page_count, 1);
             Err(ExecError::SpawnFailed)
         }
     }

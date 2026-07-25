@@ -87,15 +87,12 @@ pub(crate) fn remove_task(
     // Step 3: precompute address-space teardown intent.
     // Kernel tasks carry no user CR3, so no address-space cleanup is needed.
     let mut cleanup = if meta.slots[task_id].is_user {
-        Some((
-            meta.slots[task_id].cr3,
-            meta.slots[task_id].release_user_code_pfns,
-        ))
+        Some(meta.slots[task_id].cr3)
     } else {
         None
     };
 
-    if let Some((cr3, _)) = cleanup {
+    if let Some(cr3) = cleanup {
         if active_cr3_value() == cr3 {
             let kernel_cr3 = kernel_cr3_value();
 
@@ -226,10 +223,9 @@ pub(crate) fn remove_task(
     // Final step: push user address-space for deferred cleanup.
     // Releasing the address space is a slow operation that must happen outside
     // the scheduler lock.
-    if let Some((cr3, release_user_code_pfns)) = cleanup {
+    if let Some(cr3) = cleanup {
         if meta.pending_free_address_spaces.try_reserve(1).is_ok() {
-            meta.pending_free_address_spaces
-                .push((cr3, release_user_code_pfns));
+            meta.pending_free_address_spaces.push(cr3);
         }
     }
 
@@ -545,15 +541,13 @@ pub(crate) fn free_pending_stacks(stacks: &[(*mut u8, usize)]) {
 }
 
 /// Drains `pending_free_address_spaces` for deallocation.
-pub(crate) fn take_pending_address_spaces_for_free(
-    meta: &mut SchedulerMetadata,
-) -> Vec<(u64, bool)> {
+pub(crate) fn take_pending_address_spaces_for_free(meta: &mut SchedulerMetadata) -> Vec<u64> {
     core::mem::take(&mut meta.pending_free_address_spaces)
 }
 
 /// Frees pending address spaces outside the scheduler lock.
-pub(crate) fn free_pending_address_spaces(address_spaces: &[(u64, bool)]) {
-    for &(cr3, release_user_code_pfns) in address_spaces {
-        vmm::destroy_user_address_space_with_options(cr3, release_user_code_pfns);
+pub(crate) fn free_pending_address_spaces(address_spaces: &[u64]) {
+    for &cr3 in address_spaces {
+        vmm::destroy_user_address_space(cr3);
     }
 }
