@@ -97,6 +97,64 @@ fn test_heap_reuse_after_free() {
     heap::free(ptr3);
 }
 
+/// Contract: heap free scrubs the payload before the block is handed back out.
+/// Given: A live allocation whose payload is filled with a distinctive non-zero pattern.
+/// When: The block is freed and then reallocated with the *same* requested size, so the
+///        allocator reuses the exact same block (address and full payload length) instead
+///        of splitting off a smaller sub-block.
+/// Then: Every byte of the reused payload must read back as zero before any application
+///        write, i.e. `free()` scrubbed the old contents rather than leaving them to linger.
+///        The check spans the whole original 32-byte payload — not just the first 16 bytes,
+///        which the free-list bookkeeping (`FreeListNode.{prev,next}`) can incidentally
+///        zero on its own and would otherwise mask a missing payload scrub.
+/// Failure Impact: Stale payload bytes surviving `free()` can leak previous allocation
+///        contents (e.g. crypto material, user input, kernel pointers) into an unrelated
+///        allocation, and make use-after-free bugs harder to detect.
+#[test_case]
+fn test_heap_free_scrubs_payload_before_reuse() {
+    heap::init(false);
+    let ptr1 = heap::malloc(32);
+    let ptr2 = heap::malloc(32);
+    assert!(
+        !ptr1.is_null() && !ptr2.is_null(),
+        "allocations should succeed"
+    );
+
+    // SAFETY:
+    // - `ptr1` is returned by `heap::malloc(32)`, so 32 bytes are valid and writable.
+    unsafe {
+        core::ptr::write_bytes(ptr1, 0xEE, 32);
+    }
+
+    heap::free(ptr1);
+
+    // Request the same size as the freed block so the allocator consumes it whole
+    // (no split), guaranteeing both the same address and the same 32-byte payload span.
+    let ptr3 = heap::malloc(32);
+    assert!(!ptr3.is_null(), "reallocation should succeed");
+    assert!(
+        ptr3 == ptr1,
+        "first-fit allocator should reuse the freed block for this test to be meaningful"
+    );
+
+    // SAFETY:
+    // - `ptr3` (== `ptr1`) is a fresh allocation of 32 bytes; read before any
+    //   application write to observe exactly what `free()` left behind.
+    unsafe {
+        for i in 0..32 {
+            let byte = core::ptr::read_volatile(ptr3.add(i));
+            assert!(
+                byte == 0,
+                "freed block payload must be scrubbed before reuse at offset {}",
+                i
+            );
+        }
+    }
+
+    heap::free(ptr2);
+    heap::free(ptr3);
+}
+
 /// Contract: heap merge allows large alloc.
 /// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
 /// When: The exact operation sequence in this function is executed against that state.

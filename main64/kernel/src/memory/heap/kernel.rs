@@ -20,7 +20,7 @@ use super::generic::HeapEnvironment;
 use super::types::{
     align_up_checked, allocate_block, coalesce_free_block, compute_aligned_heapblock_size,
     compute_heap_growth_for_request, find_block_by_payload_ptr, find_suitable_free_block,
-    grow_heap, header_at, insert_free_block, HeapState, HEADER_SIZE, HEAP_GROWTH,
+    grow_heap, header_at, insert_free_block, payload_ptr, HeapState, HEADER_SIZE, HEAP_GROWTH,
     HEAP_START_OFFSET, INITIAL_HEAP_SIZE, SYSTEM_HEAP_RESERVE_MIN_BYTES,
 };
 
@@ -306,7 +306,17 @@ pub fn free(ptr: *mut u8) {
             };
         }
 
-        // Step 2: Mark block free, coalesce with free neighbors, and enqueue once.
+        // Step 2: Scrub the payload so freed data doesn't linger for the next
+        // allocation or an unrelated use-after-free read.
+        // SAFETY:
+        // - `block` was validated above and `block_size - HEADER_SIZE` is exactly
+        //   this block's payload length, so the write stays inside the payload
+        //   and never touches the header bytes the allocator still needs.
+        unsafe {
+            core::ptr::write_bytes(payload_ptr(block), 0, block_size - HEADER_SIZE);
+        }
+
+        // Step 3: Mark block free, coalesce with free neighbors, and enqueue once.
         header.set_in_use(false);
         let coalesced = coalesce_free_block(state, block);
         insert_free_block(state, coalesced);
