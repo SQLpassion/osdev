@@ -218,3 +218,11 @@ pub fn write_sectors(lba: u64, count: u32, buf: &[u8]) -> Result<(), BlockError>
 pub fn reset_active_device() {
     *ACTIVE_DEVICE.lock() = None;
 }
+
+/// Install a mock/custom block device as the active device (used for testing
+/// error paths that are impractical to trigger via real hardware, e.g. a
+/// disk-read failure or an absent GPT). Not part of the normal boot path.
+#[doc(hidden)]
+pub fn set_active_device(device: &'static dyn BlockDevice) {
+    *ACTIVE_DEVICE.lock() = Some(device);
+}
