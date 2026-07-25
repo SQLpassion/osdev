@@ -34,8 +34,8 @@ pub use types::{
 
 #[allow(unused_imports)]
 pub use pic::{
-    end_of_interrupt, init_periodic_timer, io_wait, is_spurious_irq, mask_pic, pit_divisor_for_hz,
-    remap_pic,
+    end_of_interrupt, init_periodic_timer, io_wait, is_in_service, is_spurious_irq, mask_pic,
+    pit_divisor_for_hz, remap_pic,
 };
 
 #[allow(unused_imports)]
@@ -179,6 +179,20 @@ fn clear_irq_handlers() {
     }
 }
 
+/// Dispatches a hardware IRQ (or an equivalent software `int` on the same
+/// vector) to its registered handler and, as an epilogue, sends the PIC an
+/// End-Of-Interrupt (EOI) — but only when the PIC itself reports the IRQ
+/// line as genuinely in-service.
+///
+/// The EOI is conditional on [`is_in_service`] rather than unconditional on
+/// `vector` alone: a genuine hardware IRQ0..15 assertion latches the
+/// corresponding PIC ISR bit, but a software-triggered `int` on the same
+/// vector (e.g. `scheduler::yield_now`'s `int IRQ0_PIT_TIMER_VECTOR`, used to
+/// reuse the timer's context-switch path without a real PIT edge) never
+/// does. Without this check, dispatching such a software entry would ring a
+/// spurious EOI — acknowledging a service the PIC never recorded — which can
+/// desynchronize the PIC's in-service tracking (e.g. mis-acking a genuinely
+/// in-service interrupt on a later, unrelated EOI). See issue #19.
 pub(crate) fn dispatch_irq(vector: u8, frame: &mut SavedRegisters) -> *mut SavedRegisters {
     // Step 1: map vector to direct IRQ slot (irq0..irq15 => 0..15).
     let Some(irq_idx) = irq_slot_index(vector) else {
@@ -209,7 +223,11 @@ pub(crate) fn dispatch_irq(vector: u8, frame: &mut SavedRegisters) -> *mut Saved
         next_frame = handler(vector, frame);
     }
 
-    if (IRQ_BASE..IRQ_BASE + 16).contains(&vector) {
+    // Step 3: EOI epilogue — only for a vector that genuinely has its PIC
+    // ISR bit set (see doc comment above and `is_in_service`). A software
+    // `int` on this vector never sets that bit, so it naturally skips EOI
+    // here instead of requiring the caller to bypass this dispatch path.
+    if (IRQ_BASE..IRQ_BASE + 16).contains(&vector) && is_in_service(vector - IRQ_BASE) {
         end_of_interrupt(vector - IRQ_BASE);
     }
 

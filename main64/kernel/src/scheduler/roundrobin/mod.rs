@@ -592,12 +592,20 @@ pub fn exit_current_task() -> ! {
 
 /// Triggers a software timer interrupt to force an immediate reschedule.
 ///
-/// EOI semantics:
-/// - `int IRQ0_PIT_TIMER_VECTOR` is a software interrupt, not a physical PIT edge.
-/// - The shared IRQ dispatcher currently sends PIC EOI for this vector as part
-///   of its normal IRQ epilogue.
-/// - Therefore `timer_irq_handler` must never emit its own EOI; doing so would
-///   duplicate EOI on real hardware IRQ0 entries and obscure this software path.
+/// EOI semantics (issue #19):
+/// - `int IRQ0_PIT_TIMER_VECTOR` is a software interrupt, not a physical PIT edge,
+///   so the 8259 PIC never latches an in-service bit for this entry.
+/// - The shared IRQ dispatcher (`interrupts::dispatch_irq`) only sends a PIC EOI
+///   for a vector when `interrupts::is_in_service` reports the corresponding IRQ
+///   line as genuinely in-service — i.e. the PIC's own ISR register has the bit
+///   set. For this software-triggered entry that bit is never set, so no EOI
+///   reaches the PIC; the previous unconditional-EOI epilogue used to ring a
+///   spurious EOI here, which could desynchronize the PIC's in-service tracking.
+/// - A real hardware IRQ0 tick *does* set the ISR bit before the CPU vectors into
+///   the handler, so `dispatch_irq`'s EOI epilogue still fires exactly as before
+///   for genuine ticks — this fix changes nothing about that path.
+/// - `timer_irq_handler` (the handler registered for this vector) never emits its
+///   own EOI either way; EOI handling stays centralized in `dispatch_irq`.
 pub fn yield_now() {
     // SAFETY:
     // - This requires `unsafe` because inline assembly and privileged CPU instructions are outside Rust's static safety model.
