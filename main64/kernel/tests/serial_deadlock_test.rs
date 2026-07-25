@@ -41,7 +41,7 @@ impl fmt::Display for FaultingFormatter {
         // Trigger a #PF by reading from a non-present address.
         // We use address 0x0 which is not mapped in the kernel.
         unsafe {
-            let _ = core::ptr::read_volatile(0x0 as *const u8);
+            let _ = core::ptr::read_volatile(core::ptr::null::<u8>());
         }
         Ok(())
     }

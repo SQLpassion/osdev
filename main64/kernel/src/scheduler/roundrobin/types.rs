@@ -39,6 +39,14 @@ pub enum SpawnKind {
         /// `false` is used for temporary user aliases of kernel code pages.
         /// `true` is used for loader-owned binaries with dedicated code PFNs.
         release_user_code_pfns: bool,
+        /// Whether this task is granted privileged-syscall capability.
+        ///
+        /// This is the seed of a capability model (see M6 in
+        /// `docs/CODE_REVIEW_2026-07-23.md`): today it gates only the
+        /// `Shutdown` syscall. `true` is reserved for the initial boot shell;
+        /// every other user task (in particular anything spawned via `Exec`)
+        /// must default to `false`.
+        privileged: bool,
     },
 }
 
@@ -166,6 +174,15 @@ pub struct TaskEntry {
     /// is destroyed. `false` keeps code PFNs reserved (alias-safe).
     pub release_user_code_pfns: bool,
 
+    /// Whether this task holds the privileged-syscall capability.
+    ///
+    /// Seed of a capability model (M6, `docs/CODE_REVIEW_2026-07-23.md`):
+    /// currently only the `Shutdown` syscall implementation consults this
+    /// flag. Kernel tasks never reach the syscall boundary (they call kernel
+    /// functions directly), so this flag is only meaningful for `is_user`
+    /// tasks and defaults to `false` for everyone except the boot shell.
+    pub privileged: bool,
+
     /// Base address of this task's heap-allocated kernel stack.
     pub stack_base: *mut u8,
 
@@ -198,6 +215,7 @@ impl TaskEntry {
             kernel_rsp_top: 0,
             is_user: false,
             release_user_code_pfns: false,
+            privileged: false,
             stack_base: ptr::null_mut(),
             stack_size: 0,
             fpu_state: ptr::null_mut(),

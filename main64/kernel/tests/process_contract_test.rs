@@ -11,10 +11,12 @@ extern crate alloc;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::panic::PanicInfo;
+use kaos_kernel::arch::interrupts::SavedRegisters;
 use kaos_kernel::arch::{gdt, interrupts};
 use kaos_kernel::memory::{heap, pmm, vmm};
 use kaos_kernel::process;
-use kaos_kernel::scheduler;
+use kaos_kernel::scheduler::{self, TaskState};
+use kaos_kernel::syscall::{self, SyscallId};
 
 #[no_mangle]
 #[link_section = ".text.boot"]
@@ -521,6 +523,142 @@ fn test_exec_from_vfs_maps_invalid_name_error() {
     assert!(
         matches!(result, Err(process::ExecError::InvalidName)),
         "invalid 8.3 input must fail early with ExecError::InvalidName"
+    );
+}
+
+// ── M6: per-syscall authorization (Shutdown capability gate, issue #18) ──
+
+/// Contract: `exec_from_vfs` (the `Exec` syscall path) always spawns an
+/// unprivileged task.
+///
+/// Only the boot shell (spawned via `exec_from_image` with `privileged: true`
+/// in `main.rs`) is granted the privileged-syscall capability. Every task
+/// launched later through `Exec` — including recursively by the shell itself —
+/// must default to unprivileged so it cannot call `Shutdown`.
+#[test_case]
+fn test_exec_from_vfs_spawns_unprivileged_task() {
+    scheduler::init();
+    scheduler::set_kernel_address_space_cr3(vmm::get_pml4_address());
+
+    let task_id =
+        process::exec_from_vfs("hello.bin").expect("hello.bin exec path must spawn user task");
+
+    assert!(
+        !scheduler::is_task_privileged(task_id),
+        "exec_from_vfs must never grant the privileged-syscall capability"
+    );
+
+    assert!(
+        scheduler::terminate_task(task_id),
+        "spawned user task must be terminatable for test cleanup"
+    );
+}
+
+/// Contract: `Shutdown` is denied for an unprivileged running task, and the
+/// machine does not shut down.
+///
+/// This is the concrete fix for issue #18 (M6 — no per-syscall
+/// authorization): previously any ring-3 task could call `Shutdown` and power
+/// off the machine. A task spawned through the `Exec` syscall path is never
+/// privileged, so dispatching `Shutdown` while it is the running task must be
+/// rejected with `SYSCALL_ERR_PERMISSION_DENIED` before
+/// `arch::power::shutdown()` is ever reached.
+#[test_case]
+fn test_shutdown_denied_for_unprivileged_running_task() {
+    scheduler::init();
+    scheduler::set_kernel_address_space_cr3(vmm::get_pml4_address());
+
+    let task_id =
+        process::exec_from_vfs("hello.bin").expect("hello.bin exec path must spawn user task");
+    assert!(
+        !scheduler::is_task_privileged(task_id),
+        "precondition: exec-spawned task must be unprivileged"
+    );
+
+    // Step 1: Select the freshly spawned task so it becomes the scheduler's
+    // current task — the same state `syscall_shutdown_impl` inspects via
+    // `scheduler::current_task_id()`.
+    scheduler::start();
+    let mut bootstrap = SavedRegisters::default();
+    let selected = scheduler::on_timer_tick(&mut bootstrap as *mut SavedRegisters);
+    assert_eq!(
+        selected,
+        scheduler::task_frame_ptr(task_id).expect("spawned task must expose a frame pointer"),
+        "first tick must select the freshly spawned unprivileged task"
+    );
+
+    // Step 2: Dispatching Shutdown while this unprivileged task is current
+    // must be denied, never reaching `arch::power::shutdown()`.
+    let ret = syscall::dispatch(SyscallId::Shutdown as u64, 0, 0, 0, 0);
+    assert_eq!(
+        ret,
+        syscall::SYSCALL_ERR_PERMISSION_DENIED,
+        "unprivileged task must not be authorized to shut down the machine"
+    );
+
+    // Step 3: Prove the machine did not shut down: the task's lifecycle state
+    // is untouched and the scheduler is still tracking it normally.
+    assert_eq!(
+        scheduler::task_state(task_id),
+        Some(TaskState::Running),
+        "a denied Shutdown call must not alter the calling task's lifecycle state"
+    );
+
+    assert!(
+        scheduler::terminate_task(task_id),
+        "spawned user task must be terminatable for test cleanup"
+    );
+}
+
+/// Contract: a task spawned with the privileged capability satisfies the
+/// `Shutdown` syscall's authorization check.
+///
+/// This test intentionally stops short of invoking the `Shutdown` syscall
+/// itself: for an authorized caller, `syscall_shutdown_impl` calls
+/// `arch::power::shutdown()`, which never returns and would tear down the
+/// test QEMU instance before it could report a pass/fail result via
+/// `isa-debug-exit`. Instead this verifies the exact state
+/// `syscall_shutdown_impl` consults — `current_task_id()` combined with
+/// `is_task_privileged()` — proving a privileged task reaches (and passes)
+/// the same authorization gate that the previous test proves denies an
+/// unprivileged one.
+#[test_case]
+fn test_privileged_running_task_passes_shutdown_authorization_check() {
+    scheduler::init();
+    scheduler::set_kernel_address_space_cr3(vmm::get_pml4_address());
+
+    let user_cr3 = vmm::clone_kernel_pml4_for_user();
+    let task_id = scheduler::spawn_user_task(
+        vmm::USER_CODE_BASE,
+        vmm::USER_STACK_TOP - 16,
+        user_cr3,
+        true,
+    )
+    .expect("privileged user task should spawn");
+    assert!(
+        scheduler::is_task_privileged(task_id),
+        "precondition: spawn_user_task(.., privileged=true) must grant the capability"
+    );
+
+    scheduler::start();
+    let mut bootstrap = SavedRegisters::default();
+    let selected = scheduler::on_timer_tick(&mut bootstrap as *mut SavedRegisters);
+    assert_eq!(
+        selected,
+        scheduler::task_frame_ptr(task_id).expect("spawned task must expose a frame pointer"),
+        "first tick must select the freshly spawned privileged task"
+    );
+
+    let current = scheduler::current_task_id().expect("a task must be current after selection");
+    assert!(
+        scheduler::is_task_privileged(current),
+        "the currently running task must report privileged, matching the state \
+         syscall_shutdown_impl's authorization check consults"
+    );
+
+    assert!(
+        scheduler::terminate_task(task_id),
+        "spawned user task must be terminatable for test cleanup"
     );
 }
 

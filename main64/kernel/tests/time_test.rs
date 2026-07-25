@@ -77,7 +77,7 @@ fn test_calibrate_tsc_returns_plausible_value() {
         "calibrated TSC frequency must be positive"
     );
     assert!(
-        ticks_per_us >= 10 && ticks_per_us <= 20_000,
+        (10..=20_000).contains(&ticks_per_us),
         "calibrated TSC frequency {} is outside plausible CPU range",
         ticks_per_us
     );

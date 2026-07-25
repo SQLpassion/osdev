@@ -82,9 +82,13 @@ pub fn load_program_into_user_address_space(file_name_8_3: &str) -> ExecResult<L
 ///
 /// On spawn failure, any newly created user address space is destroyed to avoid
 /// leaking process-owned mappings and frames.
+///
+/// Tasks spawned through this path (i.e. via the `Exec` syscall) are always
+/// unprivileged: only the boot shell spawned by [`exec_from_image`] is granted
+/// the privileged-syscall capability (see M6, `docs/CODE_REVIEW_2026-07-23.md`).
 pub fn exec_from_vfs(file_name_8_3: &str) -> ExecResult<usize> {
     let loaded = load_program_into_user_address_space(file_name_8_3)?;
-    spawn_loaded_program(loaded)
+    spawn_loaded_program(loaded, false)
 }
 
 /// End-to-end process exec path for an already-loaded flat user binary.
@@ -100,9 +104,14 @@ pub fn exec_from_vfs(file_name_8_3: &str) -> ExecResult<usize> {
 ///
 /// On spawn failure, the newly created user address space is destroyed to avoid
 /// leaking process-owned mappings and frames.
-pub fn exec_from_image(image: &[u8]) -> ExecResult<usize> {
+///
+/// `privileged` is forwarded unchanged to the scheduler spawn call (see M6,
+/// `docs/CODE_REVIEW_2026-07-23.md`). The boot path passes `true` here for the
+/// initial shell task; callers that load additional images through this
+/// function for any other purpose should pass `false`.
+pub fn exec_from_image(image: &[u8], privileged: bool) -> ExecResult<usize> {
     let loaded = map_program_image_into_user_address_space(image)?;
-    spawn_loaded_program(loaded)
+    spawn_loaded_program(loaded, privileged)
 }
 
 /// Maps a validated flat image into a fresh user address space and copies bytes.
@@ -409,8 +418,16 @@ fn cleanup_failed_program_mapping(user_cr3: u64, state: &MapState) {
 /// Ownership contract:
 /// - on success, scheduler owns `loaded.cr3` lifecycle via task teardown
 /// - on failure, this function destroys `loaded.cr3` immediately
-fn spawn_loaded_program(loaded: LoadedProgram) -> ExecResult<usize> {
-    match scheduler::spawn_user_task_owning_code(loaded.entry_rip, loaded.user_rsp, loaded.cr3) {
+///
+/// `privileged` is forwarded to [`scheduler::spawn_user_task_owning_code`]; see
+/// M6 in `docs/CODE_REVIEW_2026-07-23.md` for what this capability gates.
+fn spawn_loaded_program(loaded: LoadedProgram, privileged: bool) -> ExecResult<usize> {
+    match scheduler::spawn_user_task_owning_code(
+        loaded.entry_rip,
+        loaded.user_rsp,
+        loaded.cr3,
+        privileged,
+    ) {
         Ok(task_id) => Ok(task_id),
         Err(e) => {
             crate::logging::logln(

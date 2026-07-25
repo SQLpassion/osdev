@@ -159,6 +159,9 @@ pub const SYSCALL_ERR_IO: u64 = u64::MAX - 2;
 /// Out-of-memory error during syscall execution.
 pub const SYSCALL_ERR_OUT_OF_MEMORY: u64 = u64::MAX - 3;
 
+/// Caller lacks the capability required for this syscall.
+pub const SYSCALL_ERR_PERMISSION_DENIED: u64 = u64::MAX - 4;
+
 /// Successful syscall return code for void-like operations.
 pub const SYSCALL_OK: u64 = 0;
 
@@ -179,6 +182,13 @@ pub enum SyscallError {
 
     /// Out-of-memory error (e.g., physical frame allocator exhausted).
     OutOfMemory,
+
+    /// Caller lacks the capability required for this syscall.
+    ///
+    /// Seed of a capability model (M6, `docs/CODE_REVIEW_2026-07-23.md`):
+    /// currently returned only by the `Shutdown` syscall when the calling
+    /// task is not marked privileged.
+    PermissionDenied,
 }
 
 /// Kernel-internal syscall result type.
@@ -192,6 +202,7 @@ pub const fn syscall_error_to_raw(err: SyscallError) -> u64 {
         SyscallError::InvalidArg => SYSCALL_ERR_INVALID_ARG,
         SyscallError::Io => SYSCALL_ERR_IO,
         SyscallError::OutOfMemory => SYSCALL_ERR_OUT_OF_MEMORY,
+        SyscallError::PermissionDenied => SYSCALL_ERR_PERMISSION_DENIED,
     }
 }
 
@@ -362,6 +373,8 @@ pub enum SysError {
     IoError,
     /// Out-of-memory error (e.g., physical frame allocator exhausted).
     OutOfMemory,
+    /// Caller lacks the capability required for this syscall.
+    PermissionDenied,
     /// Any unclassified kernel return value in the error range.
     Unknown(u64),
 }
@@ -374,6 +387,7 @@ impl core::fmt::Display for SysError {
             SysError::InvalidArgument => write!(f, "InvalidArgument"),
             SysError::IoError => write!(f, "IoError"),
             SysError::OutOfMemory => write!(f, "OutOfMemory"),
+            SysError::PermissionDenied => write!(f, "PermissionDenied"),
             SysError::Unknown(raw) => write!(f, "UnknownError(0x{:x})", raw),
         }
     }
@@ -387,6 +401,7 @@ impl core::fmt::LowerHex for SysError {
             SysError::InvalidArgument => SYSCALL_ERR_INVALID_ARG,
             SysError::IoError => SYSCALL_ERR_IO,
             SysError::OutOfMemory => SYSCALL_ERR_OUT_OF_MEMORY,
+            SysError::PermissionDenied => SYSCALL_ERR_PERMISSION_DENIED,
             SysError::Unknown(raw) => *raw,
         };
         core::fmt::LowerHex::fmt(&val, f)
@@ -402,7 +417,8 @@ pub fn decode_result(raw: u64) -> Result<u64, SysError> {
         SYSCALL_ERR_INVALID_ARG => Err(SysError::InvalidArgument),
         SYSCALL_ERR_IO => Err(SysError::IoError),
         SYSCALL_ERR_OUT_OF_MEMORY => Err(SysError::OutOfMemory),
-        x if x >= SYSCALL_ERR_OUT_OF_MEMORY => Err(SysError::Unknown(x)),
+        SYSCALL_ERR_PERMISSION_DENIED => Err(SysError::PermissionDenied),
+        x if x >= SYSCALL_ERR_PERMISSION_DENIED => Err(SysError::Unknown(x)),
         value => Ok(value),
     }
 }

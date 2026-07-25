@@ -312,8 +312,13 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
 
     // Spawn the user-space shell task from the image loaded above (FAT32 on both
     // paths: ESP via AHCI on UEFI, superfloppy at LBA 0 via ATA on legacy BIOS).
-    let shell_pid =
-        process::exec_from_image(&shell_image).expect("failed to spawn SHELL.BIN user-mode task");
+    //
+    // The shell is the only task granted the privileged-syscall capability at
+    // spawn time (M6, `docs/CODE_REVIEW_2026-07-23.md`): it is the sole
+    // legitimate caller of the `Shutdown` syscall. Every task spawned later
+    // via `Exec` defaults to unprivileged (see `process::exec_from_vfs`).
+    let shell_pid = process::exec_from_image(&shell_image, true)
+        .expect("failed to spawn SHELL.BIN user-mode task");
 
     // On the UEFI path there is no serial console on real hardware, so leave a
     // visible breadcrumb on the framebuffer. If boot stalls after "Starting...",

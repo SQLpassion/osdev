@@ -16,16 +16,16 @@ use core::arch::asm;
 
 use super::{
     abi, SysError, SyscallId, SYSCALL_ERR_INVALID_ARG, SYSCALL_ERR_IO, SYSCALL_ERR_OUT_OF_MEMORY,
-    SYSCALL_ERR_UNSUPPORTED,
+    SYSCALL_ERR_PERMISSION_DENIED, SYSCALL_ERR_UNSUPPORTED,
 };
 
 /// Decodes a raw `int 0x80` return value into `Result<u64, SysError>`.
 ///
 /// This is the single authoritative mapping from the raw ABI sentinel values
 /// (`SYSCALL_ERR_*`) to [`SysError`] variants, shared by every wrapper in this
-/// module. The four sentinels occupy the contiguous range
-/// `[SYSCALL_ERR_OUT_OF_MEMORY, SYSCALL_ERR_UNSUPPORTED]` (i.e.
-/// `u64::MAX - 3 ..= u64::MAX`) with no gaps, so matching all four explicitly
+/// module. The five sentinels occupy the contiguous range
+/// `[SYSCALL_ERR_PERMISSION_DENIED, SYSCALL_ERR_UNSUPPORTED]` (i.e.
+/// `u64::MAX - 4 ..= u64::MAX`) with no gaps, so matching all five explicitly
 /// is exhaustive over the entire error range — no additional `x if x >= ...`
 /// catch-all arm is reachable, and any such arm would be dead code.
 ///
@@ -43,6 +43,7 @@ pub const fn decode(raw: u64) -> Result<u64, SysError> {
         SYSCALL_ERR_INVALID_ARG => Err(SysError::InvalidArgument),
         SYSCALL_ERR_IO => Err(SysError::IoError),
         SYSCALL_ERR_OUT_OF_MEMORY => Err(SysError::OutOfMemory),
+        SYSCALL_ERR_PERMISSION_DENIED => Err(SysError::PermissionDenied),
         value => Ok(value),
     }
 }
@@ -381,7 +382,7 @@ pub unsafe fn sys_mmap(addr: u64, length: usize) -> Result<*mut u8, SysError> {
     };
 
     // Valid user heap addresses (0x0000_7000_1000_0000...) are safely below the
-    // error sentinel range (u64::MAX - 3 .. u64::MAX) so there is no ambiguity
+    // error sentinel range (u64::MAX - 4 .. u64::MAX) so there is no ambiguity
     // between a successful pointer return and an error code.
     decode(raw_value).map(|ptr| ptr as *mut u8)
 }

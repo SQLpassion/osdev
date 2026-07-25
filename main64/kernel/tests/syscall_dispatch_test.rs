@@ -411,7 +411,7 @@ fn test_decode_result_maps_known_errors() {
 /// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_decode_result_accepts_value_below_error_sentinels() {
-    let raw = syscall::SYSCALL_ERR_OUT_OF_MEMORY - 1;
+    let raw = syscall::SYSCALL_ERR_PERMISSION_DENIED - 1;
     assert!(
         syscall::decode_result(raw) == Ok(raw),
         "value below reserved error sentinels must remain a successful return"
@@ -520,14 +520,14 @@ fn test_user_decode_does_not_misclassify_io_or_oom_as_success() {
 
 /// Contract: `syscall::user::decode` keeps values below the error sentinel
 /// range as success, including the boundary value directly adjacent to the
-/// lowest sentinel (`SYSCALL_ERR_OUT_OF_MEMORY`).
-/// Given: The value immediately below `SYSCALL_ERR_OUT_OF_MEMORY`.
+/// lowest sentinel (`SYSCALL_ERR_PERMISSION_DENIED`).
+/// Given: The value immediately below `SYSCALL_ERR_PERMISSION_DENIED`.
 /// When: It is passed to `syscall::user::decode`.
 /// Then: It must decode to `Ok` with the value unchanged.
 /// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_user_decode_accepts_value_just_below_error_sentinels() {
-    let raw = syscall::SYSCALL_ERR_OUT_OF_MEMORY - 1;
+    let raw = syscall::SYSCALL_ERR_PERMISSION_DENIED - 1;
     assert!(
         syscall::user::decode(raw) == Ok(raw),
         "value directly below the lowest error sentinel must remain a successful return"
@@ -769,7 +769,7 @@ fn test_writable_user_buffer_rejects_read_only_page_after_boundary() {
         "a range crossing into a read-only page must be rejected"
     );
 
-    let ret = syscall::dispatch(SyscallId::GetTime as u64, (first_va + 128) as u64, 0, 0, 0);
+    let ret = syscall::dispatch(SyscallId::GetTime as u64, first_va + 128, 0, 0, 0);
     assert_eq!(
         ret,
         syscall::SYSCALL_OK,

@@ -21,12 +21,23 @@ pub fn spawn_kernel_task(entry: extern "C" fn() -> !) -> Result<usize, SpawnErro
 ///
 /// `entry_rip` and `user_rsp` are user-space virtual addresses in the task's
 /// address space identified by `cr3`.
-pub fn spawn_user_task(entry_rip: u64, user_rsp: u64, cr3: u64) -> Result<usize, SpawnError> {
+///
+/// `privileged` grants the privileged-syscall capability (currently gating
+/// `Shutdown`, see M6 in `docs/CODE_REVIEW_2026-07-23.md`). Callers should
+/// pass `false` unless spawning a task that legitimately needs that
+/// capability (today, only the boot shell).
+pub fn spawn_user_task(
+    entry_rip: u64,
+    user_rsp: u64,
+    cr3: u64,
+    privileged: bool,
+) -> Result<usize, SpawnError> {
     spawn_internal(SpawnKind::User {
         entry_rip,
         user_rsp,
         cr3,
         release_user_code_pfns: false,
+        privileged,
     })
 }
 
@@ -34,16 +45,23 @@ pub fn spawn_user_task(entry_rip: u64, user_rsp: u64, cr3: u64) -> Result<usize,
 ///
 /// Use this for loader-backed binaries that were copied into private PMM
 /// frames. On task teardown these code PFNs are released.
+///
+/// `privileged` grants the privileged-syscall capability (currently gating
+/// `Shutdown`, see M6 in `docs/CODE_REVIEW_2026-07-23.md`). Callers should
+/// pass `false` unless spawning a task that legitimately needs that
+/// capability (today, only the boot shell).
 pub fn spawn_user_task_owning_code(
     entry_rip: u64,
     user_rsp: u64,
     cr3: u64,
+    privileged: bool,
 ) -> Result<usize, SpawnError> {
     spawn_internal(SpawnKind::User {
         entry_rip,
         user_rsp,
         cr3,
         release_user_code_pfns: true,
+        privileged,
     })
 }
 
@@ -118,31 +136,39 @@ fn spawn_internal(kind: SpawnKind) -> Result<usize, SpawnError> {
             .try_reserve(1)
             .map_err(|_| SpawnError::StackAllocationFailed)?;
 
-        let (frame_ptr, cr3, user_rsp, kernel_rsp_top, is_user, release_user_code_pfns) = match kind
-        {
-            SpawnKind::Kernel { entry } => {
-                let (frame_ptr, kernel_rsp_top) =
-                    build_initial_kernel_task_frame(stack_ptr, TASK_STACK_SIZE, entry);
-                (frame_ptr, 0, 0, kernel_rsp_top, false, false)
-            }
-            SpawnKind::User {
-                entry_rip,
-                user_rsp,
-                cr3,
-                release_user_code_pfns,
-            } => {
-                let (frame_ptr, kernel_rsp_top) =
-                    build_initial_user_task_frame(stack_ptr, TASK_STACK_SIZE, entry_rip, user_rsp);
-                (
-                    frame_ptr,
-                    cr3,
+        let (frame_ptr, cr3, user_rsp, kernel_rsp_top, is_user, release_user_code_pfns, privileged) =
+            match kind {
+                SpawnKind::Kernel { entry } => {
+                    let (frame_ptr, kernel_rsp_top) =
+                        build_initial_kernel_task_frame(stack_ptr, TASK_STACK_SIZE, entry);
+                    // Kernel tasks never cross the syscall boundary (they call kernel
+                    // functions directly), so the privileged flag is inert for them.
+                    (frame_ptr, 0, 0, kernel_rsp_top, false, false, false)
+                }
+                SpawnKind::User {
+                    entry_rip,
                     user_rsp,
-                    kernel_rsp_top,
-                    true,
+                    cr3,
                     release_user_code_pfns,
-                )
-            }
-        };
+                    privileged,
+                } => {
+                    let (frame_ptr, kernel_rsp_top) = build_initial_user_task_frame(
+                        stack_ptr,
+                        TASK_STACK_SIZE,
+                        entry_rip,
+                        user_rsp,
+                    );
+                    (
+                        frame_ptr,
+                        cr3,
+                        user_rsp,
+                        kernel_rsp_top,
+                        true,
+                        release_user_code_pfns,
+                        privileged,
+                    )
+                }
+            };
 
         // Step 1: Acquire a fresh generation for this task under the scheduler
         // lock.  Fetching here (rather than before the lock) keeps the atomic
@@ -161,6 +187,7 @@ fn spawn_internal(kind: SpawnKind) -> Result<usize, SpawnError> {
             kernel_rsp_top,
             is_user,
             release_user_code_pfns,
+            privileged,
             stack_base: stack_ptr,
             stack_size: TASK_STACK_SIZE,
             fpu_state: fpu_ptr,
