@@ -9,7 +9,7 @@
 //!
 //! Design goals:
 //! - keep call sites simple (`Result`-based API where possible),
-//! - keep syscall return decoding explicit at wrapper boundaries,
+//! - keep syscall return decoding centralized in a single [`decode`] helper,
 //! - keep unsafe and ABI details local to wrapper implementations.
 
 use core::arch::asm;
@@ -18,6 +18,34 @@ use super::{
     abi, SysError, SyscallId, SYSCALL_ERR_INVALID_ARG, SYSCALL_ERR_IO, SYSCALL_ERR_OUT_OF_MEMORY,
     SYSCALL_ERR_UNSUPPORTED,
 };
+
+/// Decodes a raw `int 0x80` return value into `Result<u64, SysError>`.
+///
+/// This is the single authoritative mapping from the raw ABI sentinel values
+/// (`SYSCALL_ERR_*`) to [`SysError`] variants, shared by every wrapper in this
+/// module. The four sentinels occupy the contiguous range
+/// `[SYSCALL_ERR_OUT_OF_MEMORY, SYSCALL_ERR_UNSUPPORTED]` (i.e.
+/// `u64::MAX - 3 ..= u64::MAX`) with no gaps, so matching all four explicitly
+/// is exhaustive over the entire error range — no additional `x if x >= ...`
+/// catch-all arm is reachable, and any such arm would be dead code.
+///
+/// # Why this lives here instead of calling `super::decode_result`
+/// User wrappers in this module may execute in ring-3 via aliased code
+/// pages. Calling an external decode helper defined elsewhere in the crate
+/// can jump outside the aliased window and fault in user mode. Marking this
+/// `#[inline(always)]` guarantees the decode logic is compiled directly into
+/// each wrapper's own machine code rather than emitted as a real call.
+#[inline(always)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub const fn decode(raw: u64) -> Result<u64, SysError> {
+    match raw {
+        SYSCALL_ERR_UNSUPPORTED => Err(SysError::UnsupportedSyscall),
+        SYSCALL_ERR_INVALID_ARG => Err(SysError::InvalidArgument),
+        SYSCALL_ERR_IO => Err(SysError::IoError),
+        SYSCALL_ERR_OUT_OF_MEMORY => Err(SysError::OutOfMemory),
+        value => Ok(value),
+    }
+}
 
 /// Normalizes a raw input byte for one-shot console echo.
 ///
@@ -49,17 +77,7 @@ pub fn sys_yield() -> Result<(), SysError> {
         abi::syscall0(SyscallId::Yield as u64)
     };
 
-    // Keep decoding local in this module:
-    // - User wrappers may execute in ring-3 via aliased code pages.
-    // - Calling an external decode helper can jump to an unmapped
-    //   higher-half kernel text page and fault in user mode.
-    // - This explicit match keeps the wrapper path self-contained.
-    match raw_value {
-        SYSCALL_ERR_UNSUPPORTED => Err(SysError::UnsupportedSyscall),
-        SYSCALL_ERR_INVALID_ARG => Err(SysError::InvalidArgument),
-        x if x >= SYSCALL_ERR_INVALID_ARG => Err(SysError::Unknown(x)),
-        _ => Ok(()),
-    }
+    decode(raw_value).map(|_| ())
 }
 
 /// Writes `len` bytes from `ptr` to the kernel debug serial output (COM1).
@@ -86,15 +104,7 @@ pub unsafe fn sys_write_serial(ptr: *const u8, len: usize) -> Result<usize, SysE
         abi::syscall2(SyscallId::WriteSerial as u64, ptr as u64, len as u64)
     };
 
-    // Keep decoding local for the same reason as `sys_yield`: avoid extra
-    // helper calls outside the user-aliased wrapper path.
-    match raw_value {
-        SYSCALL_ERR_UNSUPPORTED => Err(SysError::UnsupportedSyscall),
-        SYSCALL_ERR_INVALID_ARG => Err(SysError::InvalidArgument),
-        SYSCALL_ERR_IO => Err(SysError::IoError),
-        x if x >= SYSCALL_ERR_IO => Err(SysError::Unknown(x)),
-        written => Ok(written as usize),
-    }
+    decode(raw_value).map(|written| written as usize)
 }
 
 /// Writes `len` bytes from `ptr` to the VGA text console.
@@ -121,13 +131,7 @@ pub unsafe fn sys_write_console(ptr: *const u8, len: usize) -> Result<usize, Sys
         abi::syscall2(SyscallId::WriteConsole as u64, ptr as u64, len as u64)
     };
 
-    match raw_value {
-        SYSCALL_ERR_UNSUPPORTED => Err(SysError::UnsupportedSyscall),
-        SYSCALL_ERR_INVALID_ARG => Err(SysError::InvalidArgument),
-        SYSCALL_ERR_IO => Err(SysError::IoError),
-        x if x >= SYSCALL_ERR_IO => Err(SysError::Unknown(x)),
-        written => Ok(written as usize),
-    }
+    decode(raw_value).map(|written| written as usize)
 }
 
 /// Reads a single character from the keyboard (blocking).
@@ -163,13 +167,7 @@ pub fn sys_getchar() -> Result<u8, SysError> {
         abi::syscall0(SyscallId::GetChar as u64)
     };
 
-    match raw_value {
-        SYSCALL_ERR_UNSUPPORTED => Err(SysError::UnsupportedSyscall),
-        SYSCALL_ERR_INVALID_ARG => Err(SysError::InvalidArgument),
-        SYSCALL_ERR_IO => Err(SysError::IoError),
-        x if x >= SYSCALL_ERR_IO => Err(SysError::Unknown(x)),
-        ch => Ok(ch as u8),
-    }
+    decode(raw_value).map(|ch| ch as u8)
 }
 
 /// Returns the current VGA cursor position as `(row, col)`.
@@ -184,13 +182,7 @@ pub fn sys_get_cursor() -> Result<(usize, usize), SysError> {
         abi::syscall0(SyscallId::GetCursor as u64)
     };
 
-    match raw_value {
-        SYSCALL_ERR_UNSUPPORTED => Err(SysError::UnsupportedSyscall),
-        SYSCALL_ERR_INVALID_ARG => Err(SysError::InvalidArgument),
-        SYSCALL_ERR_IO => Err(SysError::IoError),
-        x if x >= SYSCALL_ERR_IO => Err(SysError::Unknown(x)),
-        packed => Ok(((packed >> 32) as usize, (packed & 0xFFFF_FFFF) as usize)),
-    }
+    decode(raw_value).map(|packed| ((packed >> 32) as usize, (packed & 0xFFFF_FFFF) as usize))
 }
 
 /// Sets the VGA cursor position.
@@ -207,13 +199,7 @@ pub fn sys_set_cursor(row: usize, col: usize) -> Result<(), SysError> {
         abi::syscall2(SyscallId::SetCursor as u64, row as u64, col as u64)
     };
 
-    match raw_value {
-        SYSCALL_ERR_UNSUPPORTED => Err(SysError::UnsupportedSyscall),
-        SYSCALL_ERR_INVALID_ARG => Err(SysError::InvalidArgument),
-        SYSCALL_ERR_IO => Err(SysError::IoError),
-        x if x >= SYSCALL_ERR_IO => Err(SysError::Unknown(x)),
-        _ => Ok(()),
-    }
+    decode(raw_value).map(|_| ())
 }
 
 /// Clears the VGA text screen and resets cursor to `(0, 0)`.
@@ -228,13 +214,7 @@ pub fn sys_clear_screen() -> Result<(), SysError> {
         abi::syscall0(SyscallId::ClearScreen as u64)
     };
 
-    match raw_value {
-        SYSCALL_ERR_UNSUPPORTED => Err(SysError::UnsupportedSyscall),
-        SYSCALL_ERR_INVALID_ARG => Err(SysError::InvalidArgument),
-        SYSCALL_ERR_IO => Err(SysError::IoError),
-        x if x >= SYSCALL_ERR_IO => Err(SysError::Unknown(x)),
-        _ => Ok(()),
-    }
+    decode(raw_value).map(|_| ())
 }
 
 /// Terminates the current task.
@@ -302,8 +282,6 @@ pub fn user_readline(buf: &mut [u8]) -> Result<usize, SysError> {
 
     loop {
         // Block until a character is available.
-        // Keep decoding local to avoid pulling additional Result<T, E> helper
-        // pages into the ring-3 alias mapping.
         let get_char_raw = unsafe {
             // SAFETY:
             // - This requires `unsafe` because syscall entry executes raw ABI-level interrupt machinery.
@@ -311,19 +289,7 @@ pub fn user_readline(buf: &mut [u8]) -> Result<usize, SysError> {
             // - GetChar has no memory arguments.
             abi::syscall0(SyscallId::GetChar as u64)
         };
-        if get_char_raw == SYSCALL_ERR_UNSUPPORTED {
-            return Err(SysError::UnsupportedSyscall);
-        }
-        if get_char_raw == SYSCALL_ERR_INVALID_ARG {
-            return Err(SysError::InvalidArgument);
-        }
-        if get_char_raw == SYSCALL_ERR_IO {
-            return Err(SysError::IoError);
-        }
-        if get_char_raw >= SYSCALL_ERR_IO {
-            return Err(SysError::Unknown(get_char_raw));
-        }
-        let ch = get_char_raw as u8;
+        let ch = decode(get_char_raw)? as u8;
 
         match ch {
             // Enter key - finish reading
@@ -340,18 +306,7 @@ pub fn user_readline(buf: &mut [u8]) -> Result<usize, SysError> {
                         1,
                     )
                 };
-                if raw == SYSCALL_ERR_UNSUPPORTED {
-                    return Err(SysError::UnsupportedSyscall);
-                }
-                if raw == SYSCALL_ERR_INVALID_ARG {
-                    return Err(SysError::InvalidArgument);
-                }
-                if raw == SYSCALL_ERR_IO {
-                    return Err(SysError::IoError);
-                }
-                if raw >= SYSCALL_ERR_IO {
-                    return Err(SysError::Unknown(raw));
-                }
+                decode(raw)?;
                 break;
             }
 
@@ -371,18 +326,7 @@ pub fn user_readline(buf: &mut [u8]) -> Result<usize, SysError> {
                             1,
                         )
                     };
-                    if raw == SYSCALL_ERR_UNSUPPORTED {
-                        return Err(SysError::UnsupportedSyscall);
-                    }
-                    if raw == SYSCALL_ERR_INVALID_ARG {
-                        return Err(SysError::InvalidArgument);
-                    }
-                    if raw == SYSCALL_ERR_IO {
-                        return Err(SysError::IoError);
-                    }
-                    if raw >= SYSCALL_ERR_IO {
-                        return Err(SysError::Unknown(raw));
-                    }
+                    decode(raw)?;
                 }
             }
 
@@ -398,18 +342,7 @@ pub fn user_readline(buf: &mut [u8]) -> Result<usize, SysError> {
                         // - `ch` is a valid stack byte and readable for 1 byte.
                         abi::syscall2(SyscallId::WriteConsole as u64, (&ch as *const u8) as u64, 1)
                     };
-                    if raw == SYSCALL_ERR_UNSUPPORTED {
-                        return Err(SysError::UnsupportedSyscall);
-                    }
-                    if raw == SYSCALL_ERR_INVALID_ARG {
-                        return Err(SysError::InvalidArgument);
-                    }
-                    if raw == SYSCALL_ERR_IO {
-                        return Err(SysError::IoError);
-                    }
-                    if raw >= SYSCALL_ERR_IO {
-                        return Err(SysError::Unknown(raw));
-                    }
+                    decode(raw)?;
                 }
             }
         }
@@ -450,14 +383,7 @@ pub unsafe fn sys_mmap(addr: u64, length: usize) -> Result<*mut u8, SysError> {
     // Valid user heap addresses (0x0000_7000_1000_0000...) are safely below the
     // error sentinel range (u64::MAX - 3 .. u64::MAX) so there is no ambiguity
     // between a successful pointer return and an error code.
-    match raw_value {
-        SYSCALL_ERR_UNSUPPORTED => Err(SysError::UnsupportedSyscall),
-        SYSCALL_ERR_INVALID_ARG => Err(SysError::InvalidArgument),
-        SYSCALL_ERR_IO => Err(SysError::IoError),
-        SYSCALL_ERR_OUT_OF_MEMORY => Err(SysError::OutOfMemory),
-        x if x >= SYSCALL_ERR_OUT_OF_MEMORY => Err(SysError::Unknown(x)),
-        ptr => Ok(ptr as *mut u8),
-    }
+    decode(raw_value).map(|ptr| ptr as *mut u8)
 }
 
 /// Queries the total count of discovered PCI devices.
@@ -471,12 +397,7 @@ pub fn sys_get_pci_device_count() -> Result<usize, SysError> {
         abi::syscall0(SyscallId::GetPciDeviceCount as u64)
     };
 
-    match raw_value {
-        SYSCALL_ERR_UNSUPPORTED => Err(SysError::UnsupportedSyscall),
-        SYSCALL_ERR_INVALID_ARG => Err(SysError::InvalidArgument),
-        x if x >= SYSCALL_ERR_INVALID_ARG => Err(SysError::Unknown(x)),
-        count => Ok(count as usize),
-    }
+    decode(raw_value).map(|count| count as usize)
 }
 
 /// Copies the PCI device metadata at `index` into the user-provided structure.
@@ -497,12 +418,7 @@ pub unsafe fn sys_get_pci_device(
         abi::syscall2(SyscallId::GetPciDevice as u64, index as u64, out as u64)
     };
 
-    match raw_value {
-        SYSCALL_ERR_UNSUPPORTED => Err(SysError::UnsupportedSyscall),
-        SYSCALL_ERR_INVALID_ARG => Err(SysError::InvalidArgument),
-        x if x >= SYSCALL_ERR_INVALID_ARG => Err(SysError::Unknown(x)),
-        _ => Ok(()),
-    }
+    decode(raw_value).map(|_| ())
 }
 
 /// Queries the total count of BIOS memory map entries.
@@ -516,12 +432,7 @@ pub fn sys_get_bios_memory_map_entry_count() -> Result<usize, SysError> {
         abi::syscall0(SyscallId::GetBiosMemoryMapEntryCount as u64)
     };
 
-    match raw_value {
-        SYSCALL_ERR_UNSUPPORTED => Err(SysError::UnsupportedSyscall),
-        SYSCALL_ERR_INVALID_ARG => Err(SysError::InvalidArgument),
-        x if x >= SYSCALL_ERR_INVALID_ARG => Err(SysError::Unknown(x)),
-        count => Ok(count as usize),
-    }
+    decode(raw_value).map(|count| count as usize)
 }
 
 /// Copies the BIOS memory map entry metadata at `index` into the user-provided structure.
@@ -546,12 +457,7 @@ pub unsafe fn sys_get_bios_memory_map_entry(
         )
     };
 
-    match raw_value {
-        SYSCALL_ERR_UNSUPPORTED => Err(SysError::UnsupportedSyscall),
-        SYSCALL_ERR_INVALID_ARG => Err(SysError::InvalidArgument),
-        x if x >= SYSCALL_ERR_INVALID_ARG => Err(SysError::Unknown(x)),
-        _ => Ok(()),
-    }
+    decode(raw_value).map(|_| ())
 }
 
 /// Copies the current high-precision calendar date and time into the user-provided structure.
@@ -569,12 +475,7 @@ pub unsafe fn sys_get_time(out: *mut super::types::UserDateTime) -> Result<(), S
         abi::syscall1(SyscallId::GetTime as u64, out as u64)
     };
 
-    match raw_value {
-        SYSCALL_ERR_UNSUPPORTED => Err(SysError::UnsupportedSyscall),
-        SYSCALL_ERR_INVALID_ARG => Err(SysError::InvalidArgument),
-        x if x >= SYSCALL_ERR_INVALID_ARG => Err(SysError::Unknown(x)),
-        _ => Ok(()),
-    }
+    decode(raw_value).map(|_| ())
 }
 
 /// Non-blocking check for a keyboard key event.
@@ -590,10 +491,5 @@ pub fn sys_poll_key() -> Result<u8, SysError> {
         abi::syscall0(SyscallId::PollKey as u64)
     };
 
-    match raw_value {
-        SYSCALL_ERR_UNSUPPORTED => Err(SysError::UnsupportedSyscall),
-        SYSCALL_ERR_INVALID_ARG => Err(SysError::InvalidArgument),
-        x if x >= SYSCALL_ERR_INVALID_ARG => Err(SysError::Unknown(x)),
-        byte => Ok(byte as u8),
-    }
+    decode(raw_value).map(|byte| byte as u8)
 }
