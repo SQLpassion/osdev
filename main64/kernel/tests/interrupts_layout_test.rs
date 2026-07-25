@@ -12,6 +12,7 @@
 use core::mem::{size_of, MaybeUninit};
 use core::panic::PanicInfo;
 use core::ptr::addr_of;
+use core::sync::atomic::{AtomicU32, Ordering};
 use kaos_kernel::arch::interrupts::{self, SavedRegisters};
 use kaos_kernel::syscall::{self, SyscallId};
 
@@ -377,5 +378,131 @@ fn test_int80_syscall_user_clear_screen_wrapper_resets_cursor() {
     assert!(
         pos == Ok((0, 0)),
         "sys_clear_screen must reset cursor to origin"
+    );
+}
+
+static SOFTWARE_INT_IRQ0_HANDLER_CALLS: AtomicU32 = AtomicU32::new(0);
+
+/// Test-only IRQ0 handler that just counts invocations and leaves the frame
+/// untouched, so dispatch can be observed without pulling in the scheduler.
+fn software_int_irq0_test_handler(_vector: u8, frame: &mut SavedRegisters) -> *mut SavedRegisters {
+    SOFTWARE_INT_IRQ0_HANDLER_CALLS.fetch_add(1, Ordering::Relaxed);
+    frame as *mut SavedRegisters
+}
+
+/// Contract: a software `int` on the timer IRQ vector — the exact mechanism
+/// `scheduler::yield_now` uses to reuse the timer's context-switch path —
+/// must not ring a PIC End-Of-Interrupt, because the 8259 PIC never latches
+/// an in-service bit for a software-triggered entry (issue #19).
+/// Given: The PIC is freshly initialized (remapped + masked to defaults) and
+/// a lightweight test handler is registered for `IRQ0_PIT_TIMER_VECTOR`, so
+/// the dispatcher's full handler-lookup + EOI epilogue runs exactly as it
+/// would for a real `yield_now` call, without depending on the scheduler.
+/// When: `int IRQ0_PIT_TIMER_VECTOR` is executed directly, mirroring
+/// `scheduler::yield_now`'s own inline assembly byte-for-byte.
+/// Then: the registered handler is invoked (proving dispatch actually ran),
+/// the PIC's ISR bit for IRQ0 is not set before or after, and the global EOI
+/// counter does not increase.
+/// Failure Impact: A regression here reintroduces the spurious-EOI bug from
+/// issue #19, which can desynchronize the 8259 PIC's in-service tracking
+/// (e.g. mis-acking a genuinely in-service interrupt on a later EOI).
+#[test_case]
+fn test_software_int_on_irq0_vector_does_not_send_spurious_eoi() {
+    interrupts::init();
+    interrupts::register_irq_handler(
+        interrupts::IRQ0_PIT_TIMER_VECTOR,
+        software_int_irq0_test_handler,
+    );
+    SOFTWARE_INT_IRQ0_HANDLER_CALLS.store(0, Ordering::Release);
+    interrupts::pic::reset_eoi_count_for_test();
+
+    assert!(
+        !interrupts::is_in_service(0),
+        "IRQ0 must not be in-service before a software int is issued"
+    );
+
+    // SAFETY:
+    // - This requires `unsafe` because inline assembly and privileged CPU instructions are outside Rust's static safety model.
+    // - Mirrors `scheduler::yield_now`'s own software `int` on this exact vector.
+    // - `interrupts::init()` above loaded an IDT containing this IRQ gate.
+    // - The test executes in ring 0, so invoking this software interrupt is valid.
+    unsafe {
+        core::arch::asm!(
+            "int {vector}",
+            vector = const interrupts::IRQ0_PIT_TIMER_VECTOR,
+            options(nomem)
+        );
+    }
+
+    assert!(
+        SOFTWARE_INT_IRQ0_HANDLER_CALLS.load(Ordering::Acquire) == 1,
+        "software int must still dispatch to the registered IRQ0 handler"
+    );
+    assert!(
+        !interrupts::is_in_service(0),
+        "IRQ0 must remain not-in-service after a software-triggered entry"
+    );
+    assert!(
+        interrupts::pic::eoi_count_for_test() == 0,
+        "software int on the timer vector must not ring a PIC EOI (issue #19)"
+    );
+}
+
+static HARDWARE_TICK_IRQ0_HANDLER_CALLS: AtomicU32 = AtomicU32::new(0);
+
+/// Test-only IRQ0 handler used by the genuine-hardware-tick regression test
+/// below; counts invocations and leaves the frame untouched.
+fn hardware_tick_irq0_test_handler(_vector: u8, frame: &mut SavedRegisters) -> *mut SavedRegisters {
+    HARDWARE_TICK_IRQ0_HANDLER_CALLS.fetch_add(1, Ordering::Relaxed);
+    frame as *mut SavedRegisters
+}
+
+/// Contract: a genuine hardware IRQ0 (PIT) tick must still be EOI'd exactly
+/// as before this fix — the conditional-EOI change in `dispatch_irq` must
+/// not regress the real timer path that almost every other test relies on.
+/// Given: The PIT is programmed to 250 Hz and interrupts are globally
+/// enabled, with a test handler registered for `IRQ0_PIT_TIMER_VECTOR`.
+/// When: The CPU services several real hardware timer ticks.
+/// Then: The handler runs repeatedly (which is only possible if each tick's
+/// PIC ISR bit is cleared via EOI — the 8259 in fully-nested mode refuses to
+/// re-assert the same line while its ISR bit is still set, so a suppressed
+/// EOI would freeze the handler-call count at 1), and the EOI counter keeps
+/// pace with the handler-call count.
+/// Failure Impact: Indicates the EOI epilogue was made too conservative and
+/// no longer acknowledges genuine hardware IRQs, which would hang the timer
+/// (and therefore the scheduler and most of the test suite).
+#[test_case]
+fn test_genuine_hardware_irq0_tick_still_sends_eoi() {
+    interrupts::init();
+    interrupts::register_irq_handler(
+        interrupts::IRQ0_PIT_TIMER_VECTOR,
+        hardware_tick_irq0_test_handler,
+    );
+    HARDWARE_TICK_IRQ0_HANDLER_CALLS.store(0, Ordering::Release);
+    interrupts::pic::reset_eoi_count_for_test();
+
+    interrupts::init_periodic_timer(250);
+    interrupts::enable();
+
+    let mut observed = false;
+    for _ in 0..5_000_000usize {
+        if HARDWARE_TICK_IRQ0_HANDLER_CALLS.load(Ordering::Acquire) >= 3 {
+            observed = true;
+            break;
+        }
+        core::hint::spin_loop();
+    }
+
+    interrupts::disable();
+
+    let handler_calls = HARDWARE_TICK_IRQ0_HANDLER_CALLS.load(Ordering::Acquire);
+    assert!(
+        observed,
+        "expected several genuine hardware IRQ0 ticks while interrupts were enabled \
+         (a suppressed EOI would have frozen this at 1 tick)"
+    );
+    assert!(
+        interrupts::pic::eoi_count_for_test() >= handler_calls,
+        "every genuine hardware IRQ0 tick must still be EOI'd exactly as before this fix"
     );
 }

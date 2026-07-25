@@ -2,6 +2,9 @@
 
 use crate::arch::port::PortByte;
 
+#[cfg(debug_assertions)]
+use core::sync::atomic::{AtomicU32, Ordering};
+
 const PIC1_COMMAND: u16 = 0x20;
 const PIC1_DATA: u16 = 0x21;
 const PIC2_COMMAND: u16 = 0xA0;
@@ -85,6 +88,14 @@ pub fn mask_pic() {
 }
 
 pub fn end_of_interrupt(irq: u8) {
+    // Step 1 (debug/test builds only): count every EOI actually issued to the
+    // PIC. Integration tests use this counter to assert that a software
+    // `int` on an IRQ vector (e.g. `scheduler::yield_now`) never reaches this
+    // function unless the PIC genuinely has that line in-service — see
+    // `is_in_service` and its caller in `dispatch_irq` (issue #19).
+    #[cfg(debug_assertions)]
+    EOI_COUNT.fetch_add(1, Ordering::Relaxed);
+
     // SAFETY:
     // - This requires `unsafe` because hardware port I/O is inherently outside Rust's memory-safety guarantees.
     // - EOI commands to PIC ports acknowledge serviced IRQ lines.
@@ -95,6 +106,38 @@ pub fn end_of_interrupt(irq: u8) {
         }
         PortByte::new(PIC1_COMMAND).write(PIC_EOI);
     }
+}
+
+/// Test-only counter of PIC EOI commands actually issued via
+/// [`end_of_interrupt`], across all IRQ lines.
+///
+/// Not gated behind `#[cfg(test)]`: this crate builds with `[lib] test =
+/// false`, and integration tests under `tests/*.rs` link `kaos_kernel` as an
+/// ordinary (non-`--cfg test`) dependency, so `#[cfg(test)]` items in `src/`
+/// are never visible to them. Gated behind `#[cfg(debug_assertions)]`
+/// instead — all test binaries build in the debug profile — matching the
+/// existing `scheduler::TEST_SCHEDULER_ENTER_ASSERT_TS_CLEAR` convention.
+#[cfg(debug_assertions)]
+pub static EOI_COUNT: AtomicU32 = AtomicU32::new(0);
+
+/// Test-only accessor for [`EOI_COUNT`].
+///
+/// Hidden from public docs; used by integration tests to assert that a given
+/// code path did or did not cause a PIC EOI to be issued.
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub fn eoi_count_for_test() -> u32 {
+    EOI_COUNT.load(Ordering::Acquire)
+}
+
+/// Test-only reset of [`EOI_COUNT`] back to zero.
+///
+/// Hidden from public docs; lets each test start from a known baseline
+/// regardless of EOIs issued by earlier tests or kernel init.
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub fn reset_eoi_count_for_test() {
+    EOI_COUNT.store(0, Ordering::Release);
 }
 
 /// Computes the PIT divisor for the requested interrupt frequency.
@@ -132,6 +175,49 @@ pub fn init_periodic_timer(hz: u32) {
         cmd.write(PIT_MODE_RATE_GENERATOR);
         data.write((divisor & 0xFF) as u8);
         data.write((divisor >> 8) as u8);
+    }
+}
+
+/// Checks whether the given IRQ line is currently marked in-service on the
+/// 8259 PIC, i.e. the PIC's In-Service Register (ISR) has the corresponding
+/// bit set because a real hardware assertion of that line was acknowledged
+/// by the CPU and no EOI has been sent for it yet.
+///
+/// This is the mechanism that lets [`dispatch_irq`](super::dispatch_irq)
+/// distinguish a genuine hardware IRQ entry from a software-triggered `int`
+/// on the same vector (e.g. `scheduler::yield_now`'s `int
+/// IRQ0_PIT_TIMER_VECTOR`): a software `int` never causes the PIC to latch an
+/// ISR bit, because the PIC itself never saw an edge on that line. Sending an
+/// EOI for such an entry would be spurious — it acknowledges a service the
+/// PIC never recorded, which can desynchronize the PIC's in-service tracking
+/// (e.g. by mis-acking a genuinely in-service interrupt on a later, unrelated
+/// EOI). See issue #19.
+///
+/// `irq` must be in `0..16` (direct IRQ line number, not the IDT vector).
+pub fn is_in_service(irq: u8) -> bool {
+    debug_assert!(
+        irq < 16,
+        "is_in_service: irq must be a valid IRQ line (0..16)"
+    );
+
+    // SAFETY:
+    // - This requires `unsafe` because hardware port I/O is inherently outside Rust's memory-safety guarantees.
+    // - Reading the PIC ISR (In-Service Register) via OCW3 is safe and doesn't mutate PIC state.
+    // - `irq < 8` selects the master PIC's own ISR bit; `irq >= 8` selects the
+    //   slave PIC's ISR bit for `irq - 8` (the slave enumerates IRQ8..15 as
+    //   its own bits 0..7).
+    unsafe {
+        if irq < 8 {
+            let cmd = PortByte::new(PIC1_COMMAND);
+            cmd.write(PIC_ISR_READ);
+            let isr = cmd.read();
+            (isr & (1 << irq)) != 0
+        } else {
+            let cmd = PortByte::new(PIC2_COMMAND);
+            cmd.write(PIC_ISR_READ);
+            let isr = cmd.read();
+            (isr & (1 << (irq - 8))) != 0
+        }
     }
 }
 
