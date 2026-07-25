@@ -34,6 +34,14 @@ pub enum SpawnKind {
         user_rsp: u64,
         /// Address-space root (CR3 physical address) associated with task.
         cr3: u64,
+        /// Whether this task is granted privileged-syscall capability.
+        ///
+        /// This is the seed of a capability model (see M6 in
+        /// `docs/CODE_REVIEW_2026-07-23.md`): today it gates only the
+        /// `Shutdown` syscall. `true` is reserved for the initial boot shell;
+        /// every other user task (in particular anything spawned via `Exec`)
+        /// must default to `false`.
+        privileged: bool,
     },
 }
 
@@ -155,6 +163,15 @@ pub struct TaskEntry {
     /// When set, scheduler updates `TSS.RSP0` from `kernel_rsp_top`.
     pub is_user: bool,
 
+    /// Whether this task holds the privileged-syscall capability.
+    ///
+    /// Seed of a capability model (M6, `docs/CODE_REVIEW_2026-07-23.md`):
+    /// currently only the `Shutdown` syscall implementation consults this
+    /// flag. Kernel tasks never reach the syscall boundary (they call kernel
+    /// functions directly), so this flag is only meaningful for `is_user`
+    /// tasks and defaults to `false` for everyone except the boot shell.
+    pub privileged: bool,
+
     /// Base address of this task's heap-allocated kernel stack.
     pub stack_base: *mut u8,
 
@@ -186,6 +203,7 @@ impl TaskEntry {
             user_heap_top: 0,
             kernel_rsp_top: 0,
             is_user: false,
+            privileged: false,
             stack_base: ptr::null_mut(),
             stack_size: 0,
             fpu_state: ptr::null_mut(),

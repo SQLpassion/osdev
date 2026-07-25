@@ -11,7 +11,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use kaos_kernel::arch::gdt;
 use kaos_kernel::arch::interrupts::{self, SavedRegisters};
 use kaos_kernel::memory::{heap, pmm, vmm};
-use kaos_kernel::scheduler::{self as sched, SchedulerArchCallbacks, TaskState};
+use kaos_kernel::scheduler::{self as sched, SchedulerArchCallbacks, TaskEntry, TaskState};
 use kaos_kernel::sync::singlewaitqueue::SingleWaitQueue;
 use kaos_kernel::sync::waitqueue::WaitQueue;
 use kaos_kernel::sync::waitqueue_adapter;
@@ -95,6 +95,67 @@ fn test_start_without_tasks_does_not_enter_running_state() {
     assert!(
         !sched::is_running(),
         "scheduler must stay stopped when start is called without tasks"
+    );
+}
+
+/// Contract: an empty/unused task slot defaults to unprivileged.
+///
+/// Seed of a capability model (M6, `docs/CODE_REVIEW_2026-07-23.md`): a slot
+/// that was never explicitly granted the privileged-syscall capability (e.g.
+/// via `spawn_user_task(.., privileged: true)`) must never report as
+/// privileged, so a freshly grown/reused slot cannot accidentally authorize
+/// `Shutdown` before a task is spawned into it.
+#[test_case]
+fn test_task_entry_empty_defaults_to_unprivileged() {
+    let entry = TaskEntry::empty();
+    assert!(
+        !entry.privileged,
+        "an empty/unused task slot must never report the privileged capability"
+    );
+}
+
+/// Contract: `spawn_user_task` honors the explicit `privileged` argument in both directions.
+///
+/// This is the scheduler-level half of the M6 fix (issue #18): the capability
+/// flag threaded through `spawn_user_task`/`spawn_user_task_owning_code` must
+/// be tracked per task and observable via `is_task_privileged`, independent of
+/// any syscall dispatch.
+#[test_case]
+fn test_spawn_user_task_privileged_flag_is_tracked() {
+    sched::init();
+
+    let unprivileged_cr3 = vmm::clone_kernel_pml4_for_user();
+    let unprivileged = sched::spawn_user_task(
+        vmm::USER_CODE_BASE,
+        vmm::USER_STACK_TOP - 16,
+        unprivileged_cr3,
+        false,
+    )
+    .expect("unprivileged user task should spawn");
+    assert!(
+        !sched::is_task_privileged(unprivileged),
+        "privileged=false must not grant the privileged-syscall capability"
+    );
+    assert!(
+        sched::terminate_task(unprivileged),
+        "cleanup: unprivileged task must terminate"
+    );
+
+    let privileged_cr3 = vmm::clone_kernel_pml4_for_user();
+    let privileged = sched::spawn_user_task(
+        vmm::USER_CODE_BASE,
+        vmm::USER_STACK_TOP - 16,
+        privileged_cr3,
+        true,
+    )
+    .expect("privileged user task should spawn");
+    assert!(
+        sched::is_task_privileged(privileged),
+        "privileged=true must grant the privileged-syscall capability"
+    );
+    assert!(
+        sched::terminate_task(privileged),
+        "cleanup: privileged task must terminate"
     );
 }
 
@@ -402,8 +463,13 @@ fn test_terminate_active_user_task_switches_to_kernel_cr3_via_callback() {
 
     sched::init();
 
-    let user_task = sched::spawn_user_task(vmm::USER_CODE_BASE, vmm::USER_STACK_TOP - 16, user_cr3)
-        .expect("user task spawn should succeed");
+    let user_task = sched::spawn_user_task(
+        vmm::USER_CODE_BASE,
+        vmm::USER_STACK_TOP - 16,
+        user_cr3,
+        false,
+    )
+    .expect("user task spawn should succeed");
 
     sched::start();
 
@@ -854,7 +920,7 @@ fn test_spawn_user_builds_ring3_iret_frame_with_configured_selectors_and_pointer
     let user_rsp = 0x0000_7FFF_EFFF_F000u64;
     let user_cr3 = 0x0000_0000_0040_0000u64;
 
-    let task_id = sched::spawn_user_task(user_entry, user_rsp, user_cr3)
+    let task_id = sched::spawn_user_task(user_entry, user_rsp, user_cr3, false)
         .expect("user task spawn should succeed");
 
     assert!(
@@ -907,8 +973,13 @@ fn test_scheduler_switches_cr3_between_kernel_and_user_tasks_when_enabled() {
     let kernel_frame = sched::task_frame_ptr(kernel_task).expect("kernel task frame should exist");
 
     let user_cr3 = vmm::clone_kernel_pml4_for_user();
-    let user_task = sched::spawn_user_task(vmm::USER_CODE_BASE, vmm::USER_STACK_TOP - 16, user_cr3)
-        .expect("user task spawn should succeed");
+    let user_task = sched::spawn_user_task(
+        vmm::USER_CODE_BASE,
+        vmm::USER_STACK_TOP - 16,
+        user_cr3,
+        false,
+    )
+    .expect("user task spawn should succeed");
     let user_frame = sched::task_frame_ptr(user_task).expect("user task frame should exist");
 
     sched::start();
@@ -958,8 +1029,13 @@ fn test_reaping_user_task_destroys_its_address_space() {
     sched::set_kernel_address_space_cr3(kernel_cr3);
 
     let user_cr3 = vmm::clone_kernel_pml4_for_user();
-    let user_task = sched::spawn_user_task(vmm::USER_CODE_BASE, vmm::USER_STACK_TOP - 16, user_cr3)
-        .expect("user task spawn should succeed");
+    let user_task = sched::spawn_user_task(
+        vmm::USER_CODE_BASE,
+        vmm::USER_STACK_TOP - 16,
+        user_cr3,
+        false,
+    )
+    .expect("user task spawn should succeed");
 
     sched::start();
 
@@ -1912,8 +1988,13 @@ fn test_user_task_mmap_syscall() {
     sched::init();
 
     // Step 1: Spawn user task. We want to test the mmap syscall, so it must be a user task.
-    let user_task = sched::spawn_user_task(vmm::USER_CODE_BASE, vmm::USER_STACK_TOP - 16, user_cr3)
-        .expect("user task spawn should succeed");
+    let user_task = sched::spawn_user_task(
+        vmm::USER_CODE_BASE,
+        vmm::USER_STACK_TOP - 16,
+        user_cr3,
+        false,
+    )
+    .expect("user task spawn should succeed");
 
     sched::start();
 

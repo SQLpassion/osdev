@@ -111,6 +111,21 @@ pub fn is_user_task(task_id: usize) -> bool {
     })
 }
 
+/// Returns whether `task_id` holds the privileged-syscall capability.
+///
+/// `task_id` is a packed task identifier (slot + generation) as returned by
+/// the spawn functions; the generation portion is ignored by this query.
+///
+/// An unused/unknown slot is treated as unprivileged. This is the seed of a
+/// capability model (M6, `docs/CODE_REVIEW_2026-07-23.md`): today it gates
+/// only the `Shutdown` syscall.
+pub fn is_task_privileged(task_id: usize) -> bool {
+    let slot = task_id_slot(task_id);
+    with_scheduler(|meta| {
+        slot < meta.slots.len() && meta.slots[slot].used && meta.slots[slot].privileged
+    })
+}
+
 /// Returns task context tuple `(cr3, user_rsp, kernel_rsp_top)` for `task_id`.
 ///
 /// `task_id` is a packed task identifier (slot + generation) as returned by

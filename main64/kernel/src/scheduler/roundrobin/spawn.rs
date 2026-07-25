@@ -21,11 +21,22 @@ pub fn spawn_kernel_task(entry: extern "C" fn() -> !) -> Result<usize, SpawnErro
 ///
 /// `entry_rip` and `user_rsp` are user-space virtual addresses in the task's
 /// address space identified by `cr3`.
-pub fn spawn_user_task(entry_rip: u64, user_rsp: u64, cr3: u64) -> Result<usize, SpawnError> {
+///
+/// `privileged` grants the privileged-syscall capability (currently gating
+/// `Shutdown`, see M6 in `docs/CODE_REVIEW_2026-07-23.md`). Callers should
+/// pass `false` unless spawning a task that legitimately needs that
+/// capability (today, only the boot shell).
+pub fn spawn_user_task(
+    entry_rip: u64,
+    user_rsp: u64,
+    cr3: u64,
+    privileged: bool,
+) -> Result<usize, SpawnError> {
     spawn_internal(SpawnKind::User {
         entry_rip,
         user_rsp,
         cr3,
+        privileged,
     })
 }
 
@@ -44,15 +55,22 @@ pub fn spawn_user_task(entry_rip: u64, user_rsp: u64, cr3: u64) -> Result<usize,
 /// simply survives until its other owner releases it too. Both spawn
 /// functions are therefore equivalent today; both are kept as named entry
 /// points for call-site clarity (loader-owned vs. ad-hoc/test task images).
+///
+/// `privileged` grants the privileged-syscall capability (currently gating
+/// `Shutdown`, see M6 in `docs/CODE_REVIEW_2026-07-23.md`). Callers should
+/// pass `false` unless spawning a task that legitimately needs that
+/// capability (today, only the boot shell).
 pub fn spawn_user_task_owning_code(
     entry_rip: u64,
     user_rsp: u64,
     cr3: u64,
+    privileged: bool,
 ) -> Result<usize, SpawnError> {
     spawn_internal(SpawnKind::User {
         entry_rip,
         user_rsp,
         cr3,
+        privileged,
     })
 }
 
@@ -127,20 +145,23 @@ fn spawn_internal(kind: SpawnKind) -> Result<usize, SpawnError> {
             .try_reserve(1)
             .map_err(|_| SpawnError::StackAllocationFailed)?;
 
-        let (frame_ptr, cr3, user_rsp, kernel_rsp_top, is_user) = match kind {
+        let (frame_ptr, cr3, user_rsp, kernel_rsp_top, is_user, privileged) = match kind {
             SpawnKind::Kernel { entry } => {
                 let (frame_ptr, kernel_rsp_top) =
                     build_initial_kernel_task_frame(stack_ptr, TASK_STACK_SIZE, entry);
-                (frame_ptr, 0, 0, kernel_rsp_top, false)
+                // Kernel tasks never cross the syscall boundary (they call kernel
+                // functions directly), so the privileged flag is inert for them.
+                (frame_ptr, 0, 0, kernel_rsp_top, false, false)
             }
             SpawnKind::User {
                 entry_rip,
                 user_rsp,
                 cr3,
+                privileged,
             } => {
                 let (frame_ptr, kernel_rsp_top) =
                     build_initial_user_task_frame(stack_ptr, TASK_STACK_SIZE, entry_rip, user_rsp);
-                (frame_ptr, cr3, user_rsp, kernel_rsp_top, true)
+                (frame_ptr, cr3, user_rsp, kernel_rsp_top, true, privileged)
             }
         };
 
@@ -160,6 +181,7 @@ fn spawn_internal(kind: SpawnKind) -> Result<usize, SpawnError> {
             user_heap_top: if is_user { vmm::USER_HEAP_BASE } else { 0 },
             kernel_rsp_top,
             is_user,
+            privileged,
             stack_base: stack_ptr,
             stack_size: TASK_STACK_SIZE,
             fpu_state: fpu_ptr,

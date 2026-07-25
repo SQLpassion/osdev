@@ -296,8 +296,25 @@ pub fn syscall_wait_impl(task_id: u64) -> SyscallResult<u64> {
 }
 
 /// Implements `Shutdown()`: shuts down the virtual machine.
+///
+/// # Authorization
+/// This is a privileged syscall (M6, `docs/CODE_REVIEW_2026-07-23.md`): every
+/// ring-3 task could otherwise power off the machine. Only tasks whose
+/// `TaskEntry::privileged` capability flag is set (today, only the boot
+/// shell) are authorized; every other caller receives
+/// [`SyscallError::PermissionDenied`] and the machine keeps running.
 pub fn syscall_shutdown_impl() -> SyscallResult<u64> {
-    // Step 1: Trigger system shutdown.
+    // Step 1: Identify the calling task. A missing task context (e.g. called
+    // outside a scheduled task) has nothing to authorize against, so treat it
+    // as unprivileged rather than falling through to shutdown.
+    let task_id = scheduler::current_task_id().ok_or(SyscallError::PermissionDenied)?;
+
+    // Step 2: Deny non-privileged callers before touching any hardware state.
+    if !scheduler::is_task_privileged(task_id) {
+        return Err(SyscallError::PermissionDenied);
+    }
+
+    // Step 3: Trigger system shutdown.
     crate::arch::power::shutdown();
 }
 
