@@ -103,3 +103,158 @@ fn test_parse_gpt_entries_sector_not_found() {
     let result = gpt::parse_gpt_entries_sector(&sector, 4, entry_size);
     assert_eq!(result, None);
 }
+
+// ============================================================================
+// find_esp_start_lba() integration tests
+//
+// These exercise the full function (including its I/O calls) by injecting a
+// mock `BlockDevice` via `block::set_active_device`, so every failure branch
+// documented in issue #17 can be driven deterministically without real disk
+// hardware. See docs/testing.md for how `#[test_case]` tests are structured.
+// ============================================================================
+
+use kaos_kernel::drivers::block::{self, BlockDevice, BlockError};
+use kaos_kernel::sync::spinlock::SpinLock;
+
+/// A `BlockDevice` whose behavior per-LBA is configured at test setup time, so
+/// each test can simulate a specific GPT on-disk layout or I/O failure.
+struct MockBlockDevice {
+    /// Sector returned for reads of LBA 1 (the GPT header). `None` means "fail".
+    lba1_sector: SpinLock<Option<[u8; 512]>>,
+    /// Sector returned for reads of any other LBA (partition entries). `None` means "fail".
+    entry_sector: SpinLock<Option<[u8; 512]>>,
+}
+
+impl MockBlockDevice {
+    const fn new() -> Self {
+        Self {
+            lba1_sector: SpinLock::new(None),
+            entry_sector: SpinLock::new(None),
+        }
+    }
+
+    /// Configure a valid GPT header for LBA 1 with the given partition-array metadata.
+    fn set_valid_header(&self, entry_lba: u64, num_entries: u32, entry_size: u32) {
+        let mut hdr = [0u8; 512];
+        hdr[0..8].copy_from_slice(b"EFI PART");
+        hdr[0x48..0x50].copy_from_slice(&entry_lba.to_le_bytes());
+        hdr[0x50..0x54].copy_from_slice(&num_entries.to_le_bytes());
+        hdr[0x54..0x58].copy_from_slice(&entry_size.to_le_bytes());
+        *self.lba1_sector.lock() = Some(hdr);
+    }
+
+    /// Configure the entry sector to contain a single ESP entry at `start_lba`.
+    fn set_esp_entry(&self, start_lba: u64) {
+        let mut sector = [0u8; 512];
+        sector[0..16].copy_from_slice(&ESP_TYPE_GUID);
+        sector[0x20..0x28].copy_from_slice(&start_lba.to_le_bytes());
+        *self.entry_sector.lock() = Some(sector);
+    }
+
+    /// Configure the entry sector as present but containing no ESP entry.
+    fn set_entry_sector_no_esp(&self) {
+        *self.entry_sector.lock() = Some([0u8; 512]);
+    }
+
+    fn fail_lba1(&self) {
+        *self.lba1_sector.lock() = None;
+    }
+
+    fn fail_entry_sector(&self) {
+        *self.entry_sector.lock() = None;
+    }
+}
+
+impl BlockDevice for MockBlockDevice {
+    fn read_sectors(&self, lba: u64, count: u32, buf: &mut [u8]) -> Result<(), BlockError> {
+        if count != 1 || buf.len() < 512 {
+            return Err(BlockError::BadBuffer);
+        }
+
+        let slot = if lba == 1 {
+            &self.lba1_sector
+        } else {
+            &self.entry_sector
+        };
+
+        match *slot.lock() {
+            Some(sector) => {
+                buf[..512].copy_from_slice(&sector);
+                Ok(())
+            }
+            None => Err(BlockError::Device),
+        }
+    }
+
+    fn write_sectors(&self, _lba: u64, _count: u32, _buf: &[u8]) -> Result<(), BlockError> {
+        Err(BlockError::Unsupported)
+    }
+}
+
+static MOCK_DEVICE: MockBlockDevice = MockBlockDevice::new();
+
+#[test_case]
+fn test_find_esp_start_lba_header_read_failure_returns_none() {
+    // LBA 1 (the GPT header sector) is unreadable, e.g. no disk / a hardware error.
+    MOCK_DEVICE.fail_lba1();
+    MOCK_DEVICE.fail_entry_sector();
+    block::set_active_device(&MOCK_DEVICE);
+
+    assert_eq!(gpt::find_esp_start_lba(), None);
+
+    block::reset_active_device();
+}
+
+#[test_case]
+fn test_find_esp_start_lba_invalid_signature_returns_none() {
+    // LBA 1 reads fine but does not contain a valid "EFI PART" signature -
+    // there is simply no GPT on this disk.
+    let mut bad_header = [0u8; 512];
+    bad_header[0..8].copy_from_slice(b"BAD SIG!");
+    *MOCK_DEVICE.lba1_sector.lock() = Some(bad_header);
+    MOCK_DEVICE.fail_entry_sector();
+    block::set_active_device(&MOCK_DEVICE);
+
+    assert_eq!(gpt::find_esp_start_lba(), None);
+
+    block::reset_active_device();
+}
+
+#[test_case]
+fn test_find_esp_start_lba_entry_sector_read_failure_returns_none() {
+    // The header parses correctly, but the partition-entry array itself
+    // cannot be read (e.g. bad sector further into the disk).
+    MOCK_DEVICE.set_valid_header(2, 128, 128);
+    MOCK_DEVICE.fail_entry_sector();
+    block::set_active_device(&MOCK_DEVICE);
+
+    assert_eq!(gpt::find_esp_start_lba(), None);
+
+    block::reset_active_device();
+}
+
+#[test_case]
+fn test_find_esp_start_lba_valid_gpt_no_esp_falls_back_to_2048() {
+    // A fully valid, readable GPT - but none of its entries is an ESP. This is
+    // the one case that should still legitimately fall back to LBA 2048.
+    MOCK_DEVICE.set_valid_header(2, 128, 128);
+    MOCK_DEVICE.set_entry_sector_no_esp();
+    block::set_active_device(&MOCK_DEVICE);
+
+    assert_eq!(gpt::find_esp_start_lba(), Some(2048));
+
+    block::reset_active_device();
+}
+
+#[test_case]
+fn test_find_esp_start_lba_valid_gpt_with_esp_returns_its_lba() {
+    // A fully valid GPT whose partition array declares an ESP - the real LBA
+    // from the entry must be returned, not the 2048 heuristic.
+    MOCK_DEVICE.set_valid_header(2, 128, 128);
+    MOCK_DEVICE.set_esp_entry(4096);
+    block::set_active_device(&MOCK_DEVICE);
+
+    assert_eq!(gpt::find_esp_start_lba(), Some(4096));
+
+    block::reset_active_device();
+}
