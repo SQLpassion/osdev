@@ -162,7 +162,7 @@ USER_STACK_TOP (exclusive)
 
 The loader tracks exactly which resources have been allocated and which of them have actually been inserted into page tables. This distinction is critical. Mapped pages can be reclaimed through VMM teardown. Allocated-but-never-mapped frames are invisible to VMM and must be released explicitly through PMM.
 
-On any mapping/copy failure, `cleanup_failed_program_mapping` runs. The first rollback step is `vmm::destroy_user_address_space_with_options(user_cr3, true)`, using the explicit “owned code PFNs” policy for loader-created images. After that, the loader iterates over allocation bookkeeping and releases residual PFNs that were never mapped (`code_pfns.skip(mapped_code_pages)` and optionally the stack PFN when stack mapping never happened).
+On any mapping/copy failure, `cleanup_failed_program_mapping` runs. The first rollback step is `vmm::destroy_user_address_space_with_page_counts(user_cr3, mapped_code_pages, stack_pages_mapped)`. Teardown always releases mapped leaf frames through the refcounted `PhysicalMemoryManager::release_pfn` (see §8) — there is no separate "owned vs. alias" boolean to pass anymore. After that, the loader iterates over allocation bookkeeping and releases residual PFNs that were never mapped (`code_pfns.skip(mapped_code_pages)` and optionally the stack PFN when stack mapping never happened).
 
 This gives a robust two-layer rollback model:
 
@@ -175,34 +175,25 @@ That combination is what keeps the transaction leak-resistant even when failures
 
 ## 7) Spawn Step and Ownership Transfer to Scheduler
 
-`exec_from_vfs` completes by calling `spawn_loaded_program`, which in turn calls `scheduler::spawn_user_task_owning_code(entry_rip, user_rsp, cr3)`. The `_owning_code` variant is important because it sets the task’s teardown policy to release code PFNs on destruction. This matches loader semantics: these code pages are private process-owned frames, not aliases of shared kernel pages.
+`exec_from_vfs` completes by calling `spawn_loaded_program`, which in turn calls `scheduler::spawn_user_task_owning_code(entry_rip, user_rsp, cr3, privileged)`. The `_owning_code` variant exists for call-site clarity (loader-owned vs. ad-hoc/test task images); teardown behavior for both spawn variants is identical today (refcounted release, see §8). `privileged` grants the privileged-syscall capability (currently gating `Shutdown`; see `docs/CODE_REVIEW_2026-07-23.md`, finding M6) — `exec_from_vfs` always passes `false`, so anything launched via the `Exec` syscall is unprivileged. Only the boot shell, spawned directly via `exec_from_image(image, true)`, is granted this capability.
 
-If spawn succeeds, ownership of CR3 and mapped leaves moves to scheduler/task lifecycle management. If spawn fails, the loader immediately destroys the address space with `destroy_user_address_space_with_options(..., true)` and returns `ExecError::SpawnFailed`.
+If spawn succeeds, ownership of CR3 and mapped leaves moves to scheduler/task lifecycle management. If spawn fails, the loader immediately destroys the address space with `destroy_user_address_space_with_page_counts(loaded.cr3, loaded.code_page_count, 1)` and returns `ExecError::SpawnFailed`.
 
 This explicit ownership handoff is one of the central correctness properties of the design. At no point should CR3 ownership be ambiguous.
 
 ---
 
-## 8) Teardown Policy: `owned` vs `alias` User Code Pages
+## 8) Teardown Policy: PMM-Level Frame Refcounting
 
 The VMM exposes two teardown entry points:
 
-- `destroy_user_address_space(pml4_phys)` (legacy default)
-- `destroy_user_address_space_with_options(pml4_phys, release_user_code_pfns)`
+- `destroy_user_address_space(pml4_phys)` (default full Code+Stack+Heap teardown)
+- `destroy_user_address_space_with_page_counts(pml4_phys, code_page_count, stack_page_count_from_top)`
+  (explicit mapped-page counts, used by the loader's rollback paths)
 
-The default path is alias-safe and keeps code PFNs reserved, because some paths may map user-visible aliases to kernel-owned pages. Loader-created binaries, however, are true owners of their code frames, so they must be destroyed with `release_user_code_pfns = true`.
+There is no longer an "owned vs. alias" boolean the caller must choose: every mapped leaf frame unmapped during teardown is released through the PMM's refcounted `release_pfn` (`kernel/src/memory/pmm/manager.rs`). A freshly allocated frame starts at refcount 1; a frame that is deliberately aliased into more than one mapping (e.g. user-code pages sharing a frame with kernel text) has its count bumped via `inc_refcount` at the site that creates the alias. `release_pfn` only actually frees the frame (clears the PMM bitmap bit) once the count reaches zero, so teardown can call it unconditionally for every mapped leaf without risking a double-free of a still-shared frame.
 
-Scheduler task metadata carries this policy in `release_user_code_pfns`, and `remove_task` applies it when reclaiming a user task. Stack pages are always treated as process-owned and are always released.
-
-In practical terms, the cleanup decision matrix is:
-
-```text
-Task type / mapping origin         release_user_code_pfns
----------------------------------  -----------------------
-Kernel task                        n/a (no user CR3 cleanup)
-User task with code aliases        false
-User task from VFS loader            true
-```
+Both `spawn_user_task` and `spawn_user_task_owning_code` are therefore equivalent with respect to teardown; the two names are kept for call-site clarity (ad-hoc/test task images vs. loader-owned binaries). Teardown also scans the user PML4 slot range beyond the fixed Code/Stack/Heap windows and reclaims any other present mapping it finds (e.g. a future per-process `mmap` region), so nothing in that range can be silently leaked (see finding M3, `docs/CODE_REVIEW_2026-07-23.md`).
 
 ---
 
