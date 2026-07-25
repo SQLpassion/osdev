@@ -3,6 +3,7 @@
 
 use crate::sync::spinlock::SpinLock;
 use alloc::boxed::Box;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 /// Error conditions for filesystem facade operations.
@@ -63,11 +64,35 @@ pub trait FileSystem: Send + Sync {
     fn close_task_fds(&self, task_id: usize);
 }
 
-static MOUNTED_FS: SpinLock<Option<Box<dyn FileSystem>>> = SpinLock::new(None);
+// `Arc` (rather than `Box`) is load-bearing here: `with()` below must release
+// `MOUNTED_FS`'s spinlock before calling into the backend (see its doc comment),
+// which means it cannot keep borrowing through the guard. Cloning an `Arc` is a
+// cheap atomic refcount bump taken while the lock is held; the clone then keeps
+// the filesystem allocation alive independently of the global slot for as long
+// as the closure runs, even if `mount()`/`reset_mounted_fs()` replace the slot
+// concurrently. This makes the use-after-free that motivated this module
+// structurally impossible, without holding the lock across blocking disk I/O.
+static MOUNTED_FS: SpinLock<Option<Arc<dyn FileSystem>>> = SpinLock::new(None);
 
 /// Mount the active global filesystem. Call once during kernel boot path.
+///
+/// Write-once: if a filesystem is already mounted, this call is ignored and
+/// the existing mount is left in place. This prevents a stray or duplicate
+/// boot-path call from silently replacing (and dropping) a filesystem that
+/// other code may still be using, which is the production-facing half of the
+/// use-after-free concern this module guards against — see `with()` below for
+/// the other half (in-flight borrows surviving a concurrent mount/reset).
 pub fn mount(fs: Box<dyn FileSystem>) {
-    *MOUNTED_FS.lock() = Some(fs);
+    // Step 1: Take the lock and check whether a filesystem is already mounted.
+    let mut guard = MOUNTED_FS.lock();
+    if guard.is_some() {
+        crate::debugln!("vfs::mount: filesystem already mounted; ignoring redundant mount() call");
+        return;
+    }
+
+    // Step 2: First mount: convert the incoming `Box` into an `Arc` so `with()`
+    // can hand out cheap, independently-owned clones (see `MOUNTED_FS` above).
+    *guard = Some(Arc::from(fs));
 }
 
 /// Executes a closure with a stable shared reference to the mounted filesystem.
@@ -75,29 +100,30 @@ pub fn mount(fs: Box<dyn FileSystem>) {
 /// Thread-safe: releases the spinlock before invoking the closure so the
 /// backend file operations can block/yield without disabling interrupts.
 ///
-/// The mount lock (`MOUNTED_FS`) is never held across blocking
-/// disk I/O. The guard is dropped after copying a stable pointer to the
-/// filesystem backend; the backend itself uses interior mutability for its
-/// own descriptor tables and therefore does not rely on this outer lock.
+/// The mount lock (`MOUNTED_FS`) is never held across blocking disk I/O.
+/// Instead, the guard is used only to clone the `Arc<dyn FileSystem>` (a cheap
+/// atomic refcount bump), and is dropped before the backend call. The cloned
+/// `Arc` keeps the filesystem allocation alive for the duration of the
+/// closure regardless of what `mount()` or `reset_mounted_fs()` do to the
+/// global slot in the meantime — there is no dangling pointer to it, because
+/// no raw pointer into the slot is ever taken.
 fn with<R>(f: impl FnOnce(&dyn FileSystem) -> Result<R, FsError>) -> Result<R, FsError> {
-    // Step 1: Acquire the lock briefly to copy out the raw fat pointer to the trait object.
+    // Step 1: Acquire the lock briefly to clone out the Arc handle to the trait object.
     // Keep this critical section as short as possible; the backend call below
     // may yield (ATA/AHCI waits), so holding the mount lock here would deadlock
     // on single-core preemptive I/O.
-    let ptr: *const dyn FileSystem = {
+    let fs: Arc<dyn FileSystem> = {
         let guard = MOUNTED_FS.lock();
-        match guard.as_deref() {
-            Some(fs) => fs as *const dyn FileSystem,
+        match guard.as_ref() {
+            Some(fs) => Arc::clone(fs),
             None => return Err(FsError::NotMounted),
         }
     }; // The guard is dropped here, unlocking MOUNTED_FS and enabling interrupts.
 
-    // SAFETY:
-    // - `MOUNTED_FS` is a mount-once structure set during kernel boot and never replaced or freed.
-    // - The `Box` containing the traits object remains allocated for the entire kernel lifetime.
-    // - All backend implementations use interior mutability (such as spinlocks for descriptor tables),
-    //   safely allowing concurrent access through immutable references.
-    f(unsafe { &*ptr })
+    // No `unsafe` is required: `fs` is an owned `Arc` clone, so the reference
+    // handed to the closure is backed by this call's own refcount and remains
+    // valid for the closure's entire lifetime, independent of the global slot.
+    f(&*fs)
 }
 
 // Facade helpers used by syscalls and the loader.
@@ -158,7 +184,28 @@ pub fn close_task_fds(task_id: usize) {
     });
 }
 
-/// Reset the mounted filesystem to None (used for testing state isolation).
+/// Test-only reset of the mounted filesystem back to `None`.
+///
+/// Hidden from public docs; used by integration tests to isolate state
+/// between test cases so each can start from an unmounted VFS or remount a
+/// fresh backend (`mount()` is write-once in production, see above, and would
+/// otherwise reject a test's second `mount()` call).
+///
+/// Not gated behind `#[cfg(test)]`: this crate builds with `[lib] test = false`
+/// and integration tests under `tests/*.rs` link `kaos_kernel` as an ordinary
+/// (non-`--cfg test`) dependency, so `#[cfg(test)]` items in `src/` are never
+/// visible to them. `#[doc(hidden)]` plus this doc comment is the same
+/// test-only-escape-hatch convention already used elsewhere in this crate
+/// (e.g. `Fat32Volume::for_test`, `block::reset_active_device`,
+/// `scheduler::reset_initialization_for_test`).
+///
+/// Calling this from non-test code cannot reintroduce the use-after-free this
+/// module guards against: `with()` never holds a raw pointer into
+/// `MOUNTED_FS` across the closure, so even a misuse of this function while a
+/// `with()` call is in flight only drops the global slot's `Arc` handle — the
+/// clone held by the in-flight closure keeps the filesystem allocation alive
+/// until that closure returns.
+#[doc(hidden)]
 pub fn reset_mounted_fs() {
     *MOUNTED_FS.lock() = None;
 }
