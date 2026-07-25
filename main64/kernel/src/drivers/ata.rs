@@ -29,9 +29,23 @@ const LBA_HIGH_OFFSET: u16 = 5;
 const DRIVE_HEAD_OFFSET: u16 = 6;
 const STATUS_COMMAND_OFFSET: u16 = 7;
 
+/// Primary ATA controller *control block* base I/O port.
+///
+/// This is a genuinely separate I/O port range from the command block
+/// (`PRIMARY_BASE`, ports 0x1F0-0x1F7) per the ATA/ATAPI specification -
+/// it is not reachable as an offset from `PRIMARY_BASE`. The "alternate
+/// status" register lives here; unlike the regular status register at
+/// `PRIMARY_BASE + STATUS_COMMAND_OFFSET`, reading it has no side effect
+/// of acknowledging/clearing a pending IRQ, which makes it safe to poll
+/// purely for timing purposes.
+const PRIMARY_CONTROL_BASE: u16 = 0x3F6;
+
 /// ATA PIO commands.
 const ATA_CMD_READ_SECTORS: u8 = 0x20;
 const ATA_CMD_WRITE_SECTORS: u8 = 0x30;
+
+/// Flush the drive's write cache to stable media (28-bit command set).
+const ATA_CMD_CACHE_FLUSH: u8 = 0xE7;
 
 /// Drive select byte: master drive, LBA mode.
 const DRIVE_SELECT_MASTER_LBA: u8 = 0xE0;
@@ -91,6 +105,7 @@ pub struct AtaPio {
     lba_high: PortByte,
     drive_head: PortByte,
     status_cmd: PortByte,
+    alt_status: PortByte,
 }
 
 impl AtaPio {
@@ -104,6 +119,9 @@ impl AtaPio {
             lba_high: PortByte::new(base + LBA_HIGH_OFFSET),
             drive_head: PortByte::new(base + DRIVE_HEAD_OFFSET),
             status_cmd: PortByte::new(base + STATUS_COMMAND_OFFSET),
+            // The control block lives at a fixed, separate base address
+            // per the ATA spec, not at an offset within the command block.
+            alt_status: PortByte::new(PRIMARY_CONTROL_BASE),
         }
     }
 
@@ -114,6 +132,28 @@ impl AtaPio {
         // - Reading ATA status uses the controller I/O port for this device.
         // - `self.status_cmd` was constructed from the ATA base port.
         unsafe { StatusRegister(self.status_cmd.read()) }
+    }
+
+    /// Burn ~400 ns after issuing a command by reading the alternate status
+    /// register four times, discarding the value.
+    ///
+    /// This is the well-known, industry-wide "400 ns settle" convention:
+    /// the drive is allowed to take a few hundred nanoseconds after a
+    /// command-register write before it asserts BSY, so the very first
+    /// status sample taken right after the write can observe stale
+    /// `!BSY && DRQ` from the *previous* command. Reading the alternate
+    /// status register (rather than the regular status register) avoids
+    /// accidentally acknowledging/clearing a pending IRQ while doing so.
+    fn settle_after_command(&self) {
+        // SAFETY:
+        // - This requires `unsafe` because it performs operations that Rust marks as potentially violating memory or concurrency invariants.
+        // - Reading the alternate status port has no side effect (no IRQ ack) and is used here purely to burn time.
+        // - `self.alt_status` was constructed from the documented primary control-block base port.
+        for _ in 0..4 {
+            unsafe {
+                let _ = self.alt_status.read();
+            }
+        }
     }
 
     /// Busy-wait until the BSY flag is cleared.
@@ -152,7 +192,32 @@ impl AtaPio {
             self.status_cmd.write(command);
         }
 
+        // Give the drive time to assert BSY before the caller trusts the
+        // first real-status sample. Without this, a fast real CPU can read
+        // stale `!BSY && DRQ` left over from the previous command.
+        self.settle_after_command();
+
         Ok(())
+    }
+
+    /// Issue CACHE FLUSH (0xE7) to persist the drive's write cache to
+    /// stable media.
+    ///
+    /// Per the ATA spec, re-programming the LBA/sector-count/drive-head
+    /// registers is not required for FLUSH CACHE - the preceding
+    /// `setup_command` call already selected the target drive, and only the
+    /// command byte needs to be written here.
+    fn issue_cache_flush(&self) {
+        // SAFETY:
+        // - This requires `unsafe` because it performs operations that Rust marks as potentially violating memory or concurrency invariants.
+        // - Writes the ATA command register on the configured bus.
+        // - The drive/head register still selects the correct target drive from the preceding `setup_command` call.
+        unsafe {
+            self.status_cmd.write(ATA_CMD_CACHE_FLUSH);
+        }
+
+        // Same settle rationale as after any other command-register write.
+        self.settle_after_command();
     }
 }
 
@@ -283,6 +348,57 @@ fn wait_ready_or_error() -> Result<(), AtaError> {
 
         // Step 2: terminate on ERR/DF or succeed on !BSY && DRQ.
         if status_is_ready(status)? {
+            return Ok(());
+        }
+
+        // Step 3: abort after bounded retries to prevent unbounded kernel hangs.
+        if timeout == 0 {
+            return Err(AtaError::Timeout);
+        }
+
+        timeout -= 1;
+
+        if can_sleep_on_irq().is_some() {
+            // Step 4a: consume a pending IRQ edge before yielding.
+            // If one is already queued, re-check status immediately.
+            if IRQ_EVENT_PENDING.swap(false, Ordering::AcqRel) {
+                continue;
+            }
+
+            // Step 4b: no pending IRQ hint; yield once and poll again.
+            // This keeps the system responsive even if an IRQ edge is missed.
+            scheduler::yield_now();
+        } else {
+            // Step 4c: fallback for contexts without scheduler/IRQs.
+            core::hint::spin_loop();
+        }
+    }
+}
+
+/// Wait for command completion (BSY clear) without requiring DRQ.
+///
+/// Unlike [`wait_ready_or_error`], which is used for the read/write
+/// per-sector data-request handshake, this is used after the *last* sector
+/// of a write and after CACHE FLUSH, where DRQ is not expected to be set
+/// again. Uses the same cooperative IRQ-hinted polling strategy so a
+/// comparatively slow CACHE FLUSH (real drives can take much longer to
+/// flush a write cache than to transfer a single sector) does not
+/// needlessly spin-block other tasks.
+fn wait_completion_or_error() -> Result<(), AtaError> {
+    let mut timeout = ATA_POLL_TIMEOUT_ITERATIONS;
+
+    loop {
+        // Step 1: sample controller status under controller lock.
+        let status = with_controller(AtaPio::read_status);
+
+        // Step 2: terminate on ERR/DF or succeed on !BSY.
+        if !status.is_busy() {
+            if status.has_error() {
+                return Err(AtaError::DeviceError);
+            }
+            if status.has_fault() {
+                return Err(AtaError::DeviceFault);
+            }
             return Ok(());
         }
 
@@ -495,6 +611,16 @@ pub fn write_sectors(buffer: &[u8], lba: u32, sector_count: u8) -> Result<(), At
             }
         });
     }
+
+    // Step 4: wait for the final sector's completion (BSY clear) and bail
+    // out on a device-reported error/fault before trusting the write, or
+    // before touching the write cache with a FLUSH command.
+    wait_completion_or_error()?;
+
+    // Step 5: flush the drive's write cache so the data just written is
+    // durable on stable media, then wait for the flush itself to complete.
+    with_controller(|ata| ata.issue_cache_flush());
+    wait_completion_or_error()?;
 
     Ok(())
 }
