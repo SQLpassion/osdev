@@ -967,3 +967,14 @@ fn test_aaa_map_user_page_propagates_out_of_memory_from_path_setup() {
     // Release the cloned PML4 root frame.
     vmm::destroy_user_address_space(user_cr3);
 }
+
+#[test_case]
+fn test_vmm_contracts_doc_fix_issue_13() {
+    // vmm is already imported
+    // Just a sanity check that VMM is accessible and serial_debug is reachable,
+    // which aligns with the scalar fields lock contract.
+    let old = vmm::set_debug_output(true);
+    let current = vmm::serial_debug_enabled();
+    assert_eq!(current, true);
+    vmm::set_debug_output(old);
+}

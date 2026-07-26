@@ -575,6 +575,7 @@ pub fn is_leaf_present(virtual_address: u64) -> bool {
 /// for a user write even when the leaf PTE itself is writable.
 #[inline]
 pub fn is_user_page_writable(virtual_address: u64) -> bool {
+    // Note: single-core, IF-disabled
     // Step 1: Walk the PML4 and reject absent or supervisor/read-only paths.
     let pml4 = table_at(PML4_TABLE_ADDR);
     let pml4e = table_entry(pml4, pml4_index(virtual_address));
@@ -615,6 +616,7 @@ pub fn is_user_page_writable(virtual_address: u64) -> bool {
 /// the leaf PTE itself is accessible.
 #[inline]
 pub fn is_user_page_readable(virtual_address: u64) -> bool {
+    // Note: single-core, IF-disabled
     // Step 1: Walk the PML4 and reject absent or supervisor paths.
     let pml4 = table_at(PML4_TABLE_ADDR);
     let pml4e = table_entry(pml4, pml4_index(virtual_address));
