@@ -519,6 +519,14 @@ fn handle_make(state: &mut KeyboardState, code: u8) {
             let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(10)));
             return;
         }
+        0x57 => {
+            let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(11)));
+            return;
+        }
+        0x58 => {
+            let _ = KEYBOARD.key_buffer.push(encode_key(Key::F(12)));
+            return;
+        }
         _ => {}
     }
 
