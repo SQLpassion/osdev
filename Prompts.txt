@@ -30,3 +30,30 @@
 
     CRITICAL RULE:
     - The `main` branch MUST be preserved at all times! Never delete or force-reset `main`.
+
+### PROMPT FOR CODE-REVIEW:
+    Perform a detailed code review of main64/kernel/src
+    For every finding: cite a concrete file:line reference, no claims without code
+    evidence. If you're unsure about a diagnosis, say so explicitly instead of speculating.
+
+    1. Architecture & Code Quality
+    - What's good? (with a concrete example of why it's good)
+    - What's bad? (coupling, missing abstractions, duplication, unclear invariants)
+
+    2. Security / Memory Safety (kernel-specific)
+    - All unsafe blocks: is the SAFETY justification actually correct?
+    - Privilege boundaries: do syscalls sufficiently validate inputs (pointers from ring 3)?
+    - Interrupt/exception handlers: race conditions with the scheduler, reentrancy, lock ordering
+    - Integer/pointer arithmetic in memory management (heap, PMM, VMM)
+
+    3. Immediate Fixes
+    - Prioritized by severity (critical/medium/low)
+    - With a concrete fix proposal (code snippet or diff), not just a description. An AI agent
+      should be able to fix your proposal independently.
+
+    4. Next Features
+    - Only suggest items NOT already on the existing roadmap
+    - With justification for why it's the next sensible step
+
+    Produce the report as docs/review_<scope>_<date>.md with a table of contents and
+    severity tags per finding.
