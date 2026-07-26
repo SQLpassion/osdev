@@ -11,7 +11,7 @@
 
 use core::panic::PanicInfo;
 use kaos_kernel::arch::interrupts;
-use kaos_kernel::memory::{pmm, vmm};
+use kaos_kernel::memory::{heap, pmm, vmm};
 
 /// Entry point for the VMM integration test kernel.
 #[no_mangle]
@@ -22,6 +22,7 @@ pub extern "C" fn KernelMain(_kernel_size: u64) -> ! {
     pmm::init(false);
     interrupts::init();
     vmm::init(false);
+    heap::init(false);
 
     test_main();
 
@@ -57,6 +58,27 @@ fn test_vmm_smoke_twice() {
     assert!(vmm::test_vmm(), "second vmm::test_vmm() run should succeed");
 }
 
+/// Contract: kernel non-present faults outside heap range fail demand allocation.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "kernel non-present faults outside heap range fail demand allocation".
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_kernel_non_present_fault_outside_heap_fails() {
+    const OUTSIDE_KERNEL_VA: u64 = 0xFFFF_8091_2345_6000;
+    vmm::unmap_virtual_address(OUTSIDE_KERNEL_VA);
+
+    let res = vmm::try_handle_page_fault(OUTSIDE_KERNEL_VA, 0);
+    assert_eq!(
+        res,
+        Err(vmm::PageFaultError::ProtectionFault {
+            virtual_address: OUTSIDE_KERNEL_VA,
+            error_code: 0,
+        }),
+        "non-present fault outside kernel heap arena must be refused"
+    );
+}
+
 /// Contract: non present fault allocates and maps page.
 /// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
 /// When: The exact operation sequence in this function is executed against that state.
@@ -64,7 +86,7 @@ fn test_vmm_smoke_twice() {
 /// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_non_present_fault_allocates_and_maps_page() {
-    const TEST_VA: u64 = 0xFFFF_8091_2345_6000;
+    const TEST_VA: u64 = 0xFFFF_8000_0200_2000;
     vmm::unmap_virtual_address(TEST_VA);
 
     vmm::try_handle_page_fault(TEST_VA, 0)
@@ -163,18 +185,15 @@ fn test_heap_demand_fault_maps_user_writable_non_executable_page() {
 /// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_faulted_page_is_zero_initialized() {
-    const TEST_VA: u64 = 0xFFFF_8092_3456_7000;
+    const TEST_VA: u64 = 0xFFFF_8000_0200_0000;
     vmm::unmap_virtual_address(TEST_VA);
 
-    let frame = pmm::with_pmm(|mgr| {
-        mgr.alloc_frame()
-            .expect("expected frame allocation for zero-init test")
-    });
-    vmm::map_virtual_to_physical(TEST_VA, frame.physical_address());
+    vmm::try_handle_page_fault(TEST_VA, 0)
+        .expect("non-present fault should be handled by demand allocation");
 
     // SAFETY:
     // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
-    // - `TEST_VA` is mapped writable to `frame` for one page.
+    // - `TEST_VA` was mapped by demand paging above.
     // - Access stays within first and last byte of that mapped page.
     unsafe {
         let base = TEST_VA as *mut u8;
@@ -185,7 +204,7 @@ fn test_faulted_page_is_zero_initialized() {
     vmm::unmap_virtual_address(TEST_VA);
 
     vmm::try_handle_page_fault(TEST_VA, 0)
-        .expect("non-present fault should be handled by demand allocation");
+        .expect("second non-present fault should demand-map new page");
 
     // SAFETY:
     // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
@@ -209,7 +228,7 @@ fn test_faulted_page_is_zero_initialized() {
 /// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_unmap_absent_address_is_noop() {
-    const TEST_VA: u64 = 0xFFFF_8093_4567_8000;
+    const TEST_VA: u64 = 0xFFFF_8000_0200_3000;
 
     // Must not fault even if no paging path exists yet.
     vmm::unmap_virtual_address(TEST_VA);

@@ -38,7 +38,7 @@ pub(crate) const MIN_SPLIT_SIZE: usize = MIN_FREE_BLOCK_SIZE;
 pub(crate) const FREE_BIN_COUNT: usize = 32;
 
 /// Virtual start address of the kernel heap arena.
-pub(crate) const HEAP_START_OFFSET: usize = 0xFFFF_8000_0050_0000;
+pub const HEAP_START_OFFSET: usize = 0xFFFF_8000_0050_0000;
 
 /// Heap size after `init()`.
 pub(crate) const INITIAL_HEAP_SIZE: usize = 0x1000;
