@@ -44,6 +44,13 @@ pub fn select_metadata_base(boot_pmm_metadata_base: Option<u64>, kernel_end_phys
     }
 }
 
+/// Validates that the PMM metadata end address fits within the bootloader-reserved region.
+///
+/// Returns `true` if `metadata_end` is less than or equal to `metadata_base + metadata_size`.
+pub fn check_metadata_fits(metadata_end: u64, metadata_base: u64, metadata_size: u64) -> bool {
+    metadata_end <= metadata_base.saturating_add(metadata_size)
+}
+
 impl PhysicalMemoryManager {
     /// Returns a mutable slice over the PMM region array stored after the header.
     fn regions(&mut self) -> &mut [PmmRegion] {
@@ -93,13 +100,13 @@ impl PhysicalMemoryManager {
         let kernel_end_virt = unsafe { &__bss_end as *const u8 as u64 };
         let kernel_end_phys = virt_to_phys(kernel_end_virt);
         let boot_info_raw_early = BOOT_INFO_PTR.load(Ordering::Acquire);
-        let boot_pmm_metadata_base = if boot_info_raw_early != 0 {
+        let (boot_pmm_metadata_base, boot_pmm_metadata_size) = if boot_info_raw_early != 0 {
             // SAFETY: `boot_info_raw_early` is the validated BootInfo pointer stored
             // in `KernelMain`; the magic was checked before publishing it.
             let bi = unsafe { &*(boot_info_raw_early as *const BootInfo) };
-            Some(bi.pmm_metadata_base)
+            (Some(bi.pmm_metadata_base), bi.pmm_metadata_size)
         } else {
-            None
+            (None, 0)
         };
         let metadata_base = select_metadata_base(boot_pmm_metadata_base, kernel_end_phys);
         let start_addr = align_up(metadata_base, PAGE_SIZE);
@@ -285,9 +292,22 @@ impl PhysicalMemoryManager {
             // separately so the large gap between them stays free and allocatable:
             //   1. the low kernel image + bootstrap-stack block `[KERNEL_OFFSET, STACK_TOP)`,
             //   2. the (far away) PMM metadata region `[start_addr, metadata_end)`.
+
+            // Step 1: Validate that PMM metadata does not exceed the loader-reserved region size.
+            let metadata_limit = metadata_base.saturating_add(boot_pmm_metadata_size);
+            assert!(
+                check_metadata_fits(metadata_end, metadata_base, boot_pmm_metadata_size),
+                "PMM metadata end {:#x} exceeds loader-reserved region limit {:#x} (size {:#x})",
+                metadata_end,
+                metadata_limit,
+                boot_pmm_metadata_size
+            );
+
+            // Step 2: Reserve the low kernel image + bootstrap stack range.
             let stack_end = align_up(STACK_TOP, PAGE_SIZE);
             pmm.mark_range_used(KERNEL_OFFSET, stack_end);
 
+            // Step 3: Reserve the PMM metadata region.
             // `start_addr` is the page-aligned header base; `metadata_end` is the end
             // of the last bitmap. Align the end up so the final partial page is covered.
             let metadata_region_end = align_up(metadata_end, PAGE_SIZE);
