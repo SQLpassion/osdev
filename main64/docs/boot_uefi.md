@@ -259,17 +259,28 @@ Two subtleties that previously caused real-hardware-only crashes (now fixed) —
 ### 3.3 Reserving the PMM-metadata region
 
 The kernel's Physical Memory Manager (PMM, see [`pmm.md`](pmm.md)) needs a **bitmap** with one bit
-per 4 KiB frame of RAM. That bitmap scales with installed memory: ~32 KiB per GiB, so **128 GiB
-of RAM needs ~4 MiB of bitmap**. Placing that right after the kernel image would overrun the 3 MiB
-low block and scribble over firmware-owned low memory — which triple-faulted on the real 128 GiB
-machine (QEMU hid it because OVMF keeps its structures elsewhere).
+per 4 KiB frame of RAM, plus a **per-frame refcount array** (one `u8` per frame, used to safely
+share a physical frame across more than one mapping — see finding M3,
+[`CODE_REVIEW_2026-07-23.md`](CODE_REVIEW_2026-07-23.md)). Both scale with installed memory: the
+bitmap ~32 KiB per GiB, the refcount array ~256 KiB per GiB (8x larger, since it is a full byte
+per frame rather than a bit) — so **128 GiB of RAM needs ~4 MiB of bitmap plus ~32 MiB of
+refcount array**. Placing that right after the kernel image would overrun the 3 MiB low block and
+scribble over firmware-owned low memory — which triple-faulted on the real 128 GiB machine (QEMU
+hid it because OVMF keeps its structures elsewhere).
 
 So the loader **reserves a dedicated metadata region** while boot services are still alive. It
-does an initial `GetMemoryMap`, sums the usable frames, sizes the region, and allocates it with
-`AllocatePages(AllocateAnyPages, EfiLoaderData, …)` — meaning *the firmware picks any free spot*,
-which on a large-RAM box is typically tens of GiB up. The base and size are passed to the kernel
-via `BootInfo.pmm_metadata_base` / `pmm_metadata_size`. The PMM then puts its header + region
-array + bitmaps there instead of in cramped low memory.
+does an initial `GetMemoryMap`, sums the usable frames, sizes the region (header + region array +
+bitmap + refcount array, plus slack), and allocates it with `AllocatePages(AllocateAnyPages,
+EfiLoaderData, …)` — meaning *the firmware picks any free spot*, which on a large-RAM box is
+typically tens of GiB up. The base and size are passed to the kernel via
+`BootInfo.pmm_metadata_base` / `pmm_metadata_size`. The PMM then puts its header + region array +
+bitmaps + refcount arrays there instead of in cramped low memory.
+
+> **Sizing formula lives in one place.** The loader's `meta_bytes` calculation
+> (`kaosldr_uefi/src/main.rs`) and the PMM's own per-region layout (`kernel/src/memory/pmm/
+> manager.rs`) must agree on what fits in this region; there is currently no runtime assert
+> tying them together on this path (see issue [#36](https://github.com/SQLpassion/osdev/issues/36)
+> — the BIOS path has a `STACK_TOP` assert for the equivalent case, the UEFI path does not yet).
 
 ### 3.4 Disabling the firmware watchdog
 
