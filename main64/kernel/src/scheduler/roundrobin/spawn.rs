@@ -169,7 +169,7 @@ fn spawn_internal(kind: SpawnKind) -> Result<usize, SpawnError> {
         // lock.  Fetching here (rather than before the lock) keeps the atomic
         // counter tightly coupled with slot allocation and avoids burning a
         // generation if the later frame construction fails.
-        let generation = NEXT_TASK_GENERATION.fetch_add(1, AtomicOrdering::Relaxed);
+        let generation = NEXT_TASK_GENERATION.fetch_add(1, AtomicOrdering::Relaxed) as u32 as u64;
 
         let entry = TaskEntry {
             used: true,

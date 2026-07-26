@@ -143,3 +143,18 @@ pub struct BootInfo {
 /// been validated by checking its magic signature. Subsystems (such as the Physical
 /// Memory Manager) read this pointer to access firmware tables.
 pub static BOOT_INFO_PTR: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+impl BootInfo {
+    /// Returns a static reference to the active `BootInfo` structure, if it has been validated and published.
+    pub fn get() -> Option<&'static BootInfo> {
+        let ptr = BOOT_INFO_PTR.load(core::sync::atomic::Ordering::Acquire);
+        if ptr == 0 {
+            None
+        } else {
+            // SAFETY:
+            // - If the pointer is non-zero, it was validated in `KernelMain` via magic check.
+            // - The boot loader guarantees the memory is valid and immutable for the kernel's lifetime.
+            Some(unsafe { &*(ptr as *const BootInfo) })
+        }
+    }
+}

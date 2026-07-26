@@ -55,7 +55,7 @@ pub fn init() {
 
             // Step 5: Read header type to check if it's a multi-function device.
             // SAFETY:
-            // - Reading offset 0x0C is safe as it is a standard PCI configuration register.
+            // - Reading offset 0x0E is safe as it is a standard PCI configuration register.
             let header_type = unsafe { pci_config_read_u8(bus, slot, 0, 0x0E) };
             let max_functions = if (header_type & 0x80) != 0 { 8 } else { 1 };
 

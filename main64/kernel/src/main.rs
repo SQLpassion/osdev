@@ -104,9 +104,7 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
         let magic = unsafe { *(boot_info_raw as *const u64) };
         if magic == 0x4B414F535F424F4F {
             boot_info::BOOT_INFO_PTR.store(boot_info_raw, core::sync::atomic::Ordering::Release);
-            // SAFETY:
-            // - The magic check succeeded, indicating the pointer points to a valid BootInfo struct.
-            let boot_info = unsafe { &*(boot_info_raw as *const boot_info::BootInfo) };
+            let boot_info = boot_info::BootInfo::get().unwrap();
             kernel_size = boot_info.kernel_size;
             has_boot_info = true;
             debugln!("Unified BootInfo structure detected!");
@@ -115,7 +113,7 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
 
     debugln!("Kernel size: {} bytes", kernel_size);
     if has_boot_info {
-        let boot_info = unsafe { &*(boot_info_raw as *const boot_info::BootInfo) };
+        let boot_info = boot_info::BootInfo::get().unwrap();
         debugln!("BootInfo memory map len: {}", boot_info.memory_map_len);
 
         // NOTE: Do NOT touch the linear framebuffer here. On a BIOS/VBE boot it lives at a high
@@ -172,10 +170,7 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
 
     // Dynamic console initialization based on the boot-time video mode.
     let video_type = if has_boot_info {
-        // SAFETY:
-        // - `boot_info_raw` was validated above in `KernelMain` to ensure it points to a valid `BootInfo` structure.
-        // - Dereferencing is read-only and within bounds.
-        let bi = unsafe { &*(boot_info_raw as *const boot_info::BootInfo) };
+        let bi = boot_info::BootInfo::get().unwrap();
         bi.video_type
     } else {
         boot_info::VideoModeType::VgaText
@@ -193,9 +188,7 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
         map_framebuffer(boot_info_raw);
         debugln!("Framebuffer mapped");
 
-        // SAFETY:
-        // - `boot_info_raw` contains a valid physical address to a `BootInfo` structure.
-        let bi = unsafe { &*(boot_info_raw as *const boot_info::BootInfo) };
+        let bi = boot_info::BootInfo::get().unwrap();
         let fb = bi.fb_info;
         crate::console::with_console(|console| {
             // Ensure the screen is fully cleared before the first console output.
@@ -233,9 +226,7 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
         booted_via_framebuffer(boot_info_raw, has_boot_info) && !drivers::ata::primary_present();
 
     let shell_image = if uefi {
-        // SAFETY:
-        // - `boot_info_raw` contains a valid physical address to a `BootInfo` structure.
-        let bi = unsafe { &*(boot_info_raw as *const boot_info::BootInfo) };
+        let bi = boot_info::BootInfo::get().unwrap();
         let fb = bi.fb_info;
 
         crate::console::with_console(|console| {
@@ -358,17 +349,11 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
 
 /// Returns whether the kernel was booted via a unified BootInfo with a
 /// framebuffer (the graphics path), as opposed to the legacy BIOS/VGA-text path.
-fn booted_via_framebuffer(boot_info_raw: u64, has_boot_info: bool) -> bool {
+fn booted_via_framebuffer(_boot_info_raw: u64, has_boot_info: bool) -> bool {
     if !has_boot_info {
         return false;
     }
-    // SAFETY:
-    // - `boot_info_raw` contains a valid physical address to a `BootInfo` structure.
-    // - This structure is published in `KernelMain` and has been validated by the bootloader.
-    // - The memory range is mapped and valid for read access.
-    // - Structure alignment is guaranteed by `#[repr(C)]`.
-    // - If `boot_info_raw` was null or pointing to invalid memory, this dereference would trigger a page fault.
-    let bi = unsafe { &*(boot_info_raw as *const boot_info::BootInfo) };
+    let bi = boot_info::BootInfo::get().unwrap();
     bi.video_type == boot_info::VideoModeType::Framebuffer && bi.fb_info.base_address != 0
 }
 
@@ -387,11 +372,7 @@ fn map_framebuffer(boot_info_raw: u64) {
     if !booted_via_framebuffer(boot_info_raw, true) {
         return;
     }
-    // SAFETY:
-    // - `boot_info_raw` contains a valid physical address to a `BootInfo` structure.
-    // - The structure is mapped, valid for reads, and alignment is guaranteed by `#[repr(C)]`.
-    // - If it was invalid, the dereference would cause a page fault.
-    let bi = unsafe { &*(boot_info_raw as *const boot_info::BootInfo) };
+    let bi = boot_info::BootInfo::get().unwrap();
     let fb = bi.fb_info;
     if fb.base_address == 0 || fb.size == 0 {
         return;
