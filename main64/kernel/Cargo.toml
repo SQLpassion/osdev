@@ -35,13 +35,13 @@ name = "vmm_test"
 name = "heap_test"
 
 [[test]]
-name = "spinlock_test"
+name = "sync_test"
 
 [[test]]
 name = "interrupts_layout_test"
 
 [[test]]
-name = "gdt_layout_test"
+name = "boot_layout_test"
 
 [[test]]
 name = "scheduler_rr_test"
@@ -89,16 +89,7 @@ name = "syscall_dispatch_test"
 name = "process_contract_test"
 
 [[test]]
-name = "boot_info_layout_test"
-
-[[test]]
-name = "page_table_test"
-
-[[test]]
 name = "pmm_uefi_test"
-
-[[test]]
-name = "pmm_metadata_base_test"
 
 [[test]]
 name = "gpt_test"
@@ -117,6 +108,3 @@ name = "fat32_concurrent_test"
 
 [[test]]
 name = "serial_deadlock_test"
-
-[[test]]
-name = "ringbuffer_test"

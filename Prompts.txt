@@ -1,0 +1,32 @@
+### PROMPT FOR CREATING SUB-AGENTS:
+    Launch a separate sub-agent for each of the issues #13 and #22.
+
+    Requirements for each Sub-Agent:
+    - Work in its own dedicated Git branch (e.g., `fix/issue-13` and `fix/issue-22`). Work directly on the fix branch without creating a default branch for the git worktree.
+    - Strictly follow all guidelines in `AGENTS.md` (including nightly toolchain rules, no external dependencies, required SAFETY comments for unsafe code, and inline documentation).
+    - Add comprehensive unit tests covering all new/modified functionality.
+    - Verify changes by running `cargo test`, `cargo clippy`, and `cargo fmt --check`. All three MUST pass with zero errors and zero warnings.
+    - Once finished, push the branch to remote and create a GitHub Pull Request linking to the respective issue (using `gh pr create`).
+
+    Coordinator Role (Main Agent):
+    - Wait until all sub-agents complete their tasks.
+    - Create a dedicated integration branch (e.g., `integration/issues-13-22`) off `main`.
+    - Merge the sub-agents' feature branches into this integration branch.
+    - Re-run `cargo test`, `cargo clippy`, and `cargo fmt --check` on the integration branch to ensure full compatibility.
+    - Perform a thorough final code review of all combined changes.
+    - Notify the user once everything is validated and ready for manual merge.
+
+    STRICT RULE:
+    - Do NOT merge the integration branch into `main`. The final merge into `main` will be performed MANUALLY by the user!
+
+### PROMPT FOR MERGING INTEGRATION-BRANCH BACK TO MAIN:
+    You can now merge the integration branch into `main` using a non-fast-forward merge (`git merge --no-ff`).
+
+    After the merge:
+    1. Push the updated `main` branch to remote (`git push origin main`).
+    2. Close the corresponding GitHub PRs and issues (#13, #22) using `gh pr close` and `gh issue close` (or ensure they are closed automatically by linking).
+    3. Clean up all created local and remote feature/integration branches (e.g. `fix/issue-13`, `fix/issue-22`, `integration/issues-13-22`).
+    4. Clean up any remaining Git worktrees if present.
+
+    CRITICAL RULE:
+    - The `main` branch MUST be preserved at all times! Never delete or force-reset `main`.

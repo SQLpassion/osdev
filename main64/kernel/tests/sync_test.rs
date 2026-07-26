@@ -1,7 +1,8 @@
-//! Ring buffer integration tests.
+//! Synchronization primitive integration tests: SpinLock and the SPMC RingBuffer.
 //!
-//! These tests verify the SPMC ring buffer contract, including the
-//! free-running-counter fix for the ABA race described in R-15.
+//! Both are generic sync primitives with no fachliche overlap with one of the
+//! larger subsystems, and no shared state between the two test groups, so
+//! they share one binary.
 
 #![no_std]
 #![no_main]
@@ -10,13 +11,20 @@
 #![reexport_test_harness_main = "test_main"]
 
 use core::panic::PanicInfo;
+use kaos_kernel::arch::interrupts;
+use kaos_kernel::memory::{pmm, vmm};
 use kaos_kernel::sync::ringbuffer::RingBuffer;
+use kaos_kernel::sync::spinlock::SpinLock;
 
-/// Entry point for the ring buffer integration test kernel.
+/// Entry point for the sync-primitives integration test kernel.
 #[no_mangle]
 #[link_section = ".text.boot"]
 pub extern "C" fn KernelMain(_kernel_size: u64) -> ! {
     kaos_kernel::drivers::serial::init();
+
+    pmm::init(false);
+    interrupts::init();
+    vmm::init(false);
 
     test_main();
 
@@ -30,6 +38,77 @@ pub extern "C" fn KernelMain(_kernel_size: u64) -> ! {
 fn panic(info: &PanicInfo) -> ! {
     kaos_kernel::testing::test_panic_handler(info)
 }
+
+// ============================================================================
+// SpinLock tests
+// ============================================================================
+
+/// Contract: spinlock basic mutation.
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_spinlock_basic_mutation() {
+    static LOCK: SpinLock<usize> = SpinLock::new(0);
+
+    {
+        let mut guard = LOCK.lock();
+        *guard += 1;
+    }
+
+    let guard = LOCK.lock();
+    assert!(*guard == 1, "spinlock should protect shared state");
+}
+
+/// Contract: spinlock preserves interrupt state when disabled.
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_spinlock_preserves_interrupt_state_when_disabled() {
+    static LOCK: SpinLock<usize> = SpinLock::new(0);
+
+    interrupts::disable();
+    assert!(
+        !interrupts::are_enabled(),
+        "interrupts should be disabled for this test"
+    );
+
+    {
+        let mut guard = LOCK.lock();
+        *guard += 1;
+    }
+
+    assert!(
+        !interrupts::are_enabled(),
+        "spinlock should not enable interrupts when they were disabled"
+    );
+}
+
+/// Contract: spinlock preserves interrupt state when enabled.
+/// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
+#[test_case]
+fn test_spinlock_preserves_interrupt_state_when_enabled() {
+    static LOCK: SpinLock<usize> = SpinLock::new(0);
+
+    interrupts::enable();
+    assert!(
+        interrupts::are_enabled(),
+        "interrupts should be enabled for this test"
+    );
+
+    {
+        let mut guard = LOCK.lock();
+        *guard += 1;
+    }
+
+    assert!(
+        interrupts::are_enabled(),
+        "spinlock should restore enabled interrupts state"
+    );
+
+    interrupts::disable();
+}
+
+// ============================================================================
+// RingBuffer tests
+// ============================================================================
 
 /// Contract: basic push/pop across the ring buffer works.
 /// Given: A freshly created ring buffer of capacity 4.

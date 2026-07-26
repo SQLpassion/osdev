@@ -11,6 +11,7 @@
 
 use core::panic::PanicInfo;
 use kaos_kernel::memory::pmm;
+use kaos_kernel::memory::pmm::manager::{check_metadata_fits, select_metadata_base};
 
 /// Entry point for the PMM integration test kernel
 #[no_mangle]
@@ -421,4 +422,85 @@ fn test_pmm_inc_refcount_rejects_unallocated_or_out_of_range_pfn() {
             "inc_refcount must reject a PFN outside every known region"
         );
     });
+}
+
+// ============================================================================
+// PMM metadata-base selection tests — pure; no firmware, no allocation.
+//
+// `PhysicalMemoryManager::new()` must place its layout (header + region array + bitmaps)
+// in the bootloader-reserved region (`BootInfo.pmm_metadata_base`) when one is provided,
+// and otherwise fall back to "right after the kernel image/BSS". On large-RAM UEFI
+// systems the bitmaps are far too big to sit in low memory, so picking the wrong base
+// triple-faulted real hardware (see `docs/pmm.md` §2). That decision is factored into the
+// pure helper `select_metadata_base`, which these tests pin directly — no BootInfo
+// pointer, no `__bss_end`, no side effects.
+// ============================================================================
+
+/// A stand-in "address right after the kernel BSS" for the fallback cases.
+const KERNEL_END_PHYS: u64 = 0x0020_0000;
+/// A stand-in bootloader-reserved metadata base, far above low memory (UEFI-style).
+const RESERVED_BASE: u64 = 0x0000_0020_0000_0000;
+
+/// Contract: with a non-zero bootloader-reserved base, the PMM uses that base (UEFI path).
+/// Failure Impact: the bitmaps would land in low memory and overrun firmware on large-RAM
+///        hardware — the original triple-fault. Release-blocking.
+#[test_case]
+fn test_uses_reserved_base_when_present() {
+    assert_eq!(
+        select_metadata_base(Some(RESERVED_BASE), KERNEL_END_PHYS),
+        RESERVED_BASE,
+        "a non-zero pmm_metadata_base must win over the kernel-end fallback"
+    );
+}
+
+/// Contract: with no BootInfo (BIOS loader / tests), the PMM falls back to the kernel end.
+/// Failure Impact: the BIOS path would dereference a bogus base. Release-blocking.
+#[test_case]
+fn test_falls_back_when_no_boot_info() {
+    assert_eq!(
+        select_metadata_base(None, KERNEL_END_PHYS),
+        KERNEL_END_PHYS,
+        "absent BootInfo must fall back to the address after the kernel image"
+    );
+}
+
+/// Contract: a BootInfo present but with `pmm_metadata_base == 0` also falls back.
+/// (`0` is the loader's "no reserved region" sentinel — see `BootInfo` docs.)
+/// Failure Impact: treating 0 as a real base would point the layout at the null page.
+///        Release-blocking.
+#[test_case]
+fn test_falls_back_when_reserved_base_zero() {
+    assert_eq!(
+        select_metadata_base(Some(0), KERNEL_END_PHYS),
+        KERNEL_END_PHYS,
+        "a zero pmm_metadata_base is the 'not provided' sentinel and must fall back"
+    );
+}
+
+/// Contract: check_metadata_fits returns true when metadata_end is within the reserved size.
+/// Failure Impact: false positive assertion failures on valid loader-reserved sizes.
+#[test_case]
+fn test_check_metadata_fits_within_size() {
+    let base = 0x0000_0020_0000_0000;
+    let size = 0x10000; // 64 KiB
+    assert!(
+        check_metadata_fits(base + size, base, size),
+        "metadata ending exactly at reserved boundary must fit"
+    );
+    assert!(
+        check_metadata_fits(base + 0x1000, base, size),
+        "metadata ending well within reserved size must fit"
+    );
+}
+
+/// Contract: check_metadata_fits returns false when metadata_end exceeds the reserved size.
+/// Failure Impact: PMM metadata overrunning loader-reserved region silently without assertion.
+#[test_case]
+fn test_check_metadata_fits_exceeds_size() {
+    let base = 0x0000_0020_0000_0000;
+    let size = 0x10000; // 64 KiB
+    assert!(
+        !check_metadata_fits(base + size + 1, base, size),
+        "metadata ending past reserved size must return false"
+    );
 }
