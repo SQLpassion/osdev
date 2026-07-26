@@ -324,7 +324,10 @@ impl PhysicalMemoryManager {
         let regions = self.regions();
 
         for r in regions.iter_mut() {
-            let region_end = r.start + r.frames_total * PAGE_SIZE;
+            let region_end = r
+                .start
+                .checked_add(r.frames_total.checked_mul(PAGE_SIZE).unwrap())
+                .unwrap();
 
             // Compute the overlap between the reserved range and this region.
             let overlap_start = range_start.max(r.start);
@@ -343,7 +346,7 @@ impl PhysicalMemoryManager {
                 // - `bit` is within the region bitmap bounds derived from overlap.
                 // - `bitmap` points to writable PMM bitmap memory.
                 unsafe { set_bit(bit, bitmap) };
-                r.frames_free -= 1;
+                r.frames_free = r.frames_free.checked_sub(1).unwrap();
             }
         }
     }
@@ -365,7 +368,10 @@ impl PhysicalMemoryManager {
         let regions = self.regions();
 
         for r in regions.iter_mut() {
-            let region_end = r.start + r.frames_total * PAGE_SIZE;
+            let region_end = r
+                .start
+                .checked_add(r.frames_total.checked_mul(PAGE_SIZE).unwrap())
+                .unwrap();
             if frame_start < r.start || frame_start >= region_end {
                 continue;
             }
@@ -389,7 +395,7 @@ impl PhysicalMemoryManager {
             // - `bit_idx` is within this region's bitmap bounds.
             // - `bitmap` points to writable PMM bitmap memory.
             unsafe { set_bit(bit_idx, bitmap) };
-            r.frames_free -= 1;
+            r.frames_free = r.frames_free.checked_sub(1).unwrap();
             return true;
         }
 
@@ -424,7 +430,7 @@ impl PhysicalMemoryManager {
                         // - `bit_idx < frames_total` ensures valid bit index for this region.
                         // - `bitmap` points to writable PMM bitmap memory.
                         unsafe { set_bit(bit_idx, bitmap) };
-                        r.frames_free -= 1;
+                        r.frames_free = r.frames_free.checked_sub(1).unwrap();
 
                         // A freshly allocated frame starts with exactly one owner.
                         // `inc_refcount`/`release_pfn` maintain this from here on.
@@ -469,7 +475,7 @@ impl PhysicalMemoryManager {
 
         for r in regions.iter_mut() {
             let region_start_pfn = r.start / PAGE_SIZE;
-            let region_end_pfn = region_start_pfn + r.frames_total;
+            let region_end_pfn = region_start_pfn.checked_add(r.frames_total).unwrap();
             if pfn < region_start_pfn || pfn >= region_end_pfn {
                 continue;
             }
@@ -530,7 +536,7 @@ impl PhysicalMemoryManager {
 
         for (region_index, r) in regions.iter_mut().enumerate() {
             let region_start_pfn = r.start / PAGE_SIZE;
-            let region_end_pfn = region_start_pfn + r.frames_total;
+            let region_end_pfn = region_start_pfn.checked_add(r.frames_total).unwrap();
             if pfn < region_start_pfn || pfn >= region_end_pfn {
                 continue;
             }
@@ -578,7 +584,7 @@ impl PhysicalMemoryManager {
             // - `bit_idx` belongs to this region and currently marks an allocated frame.
             // - `bitmap` points to writable PMM bitmap memory.
             unsafe { clear_bit(bit_idx, bitmap) };
-            r.frames_free += 1;
+            r.frames_free = r.frames_free.checked_add(1).unwrap();
             super::log_release(pfn, region_index as u32);
             return true;
         }

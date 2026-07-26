@@ -93,6 +93,10 @@ fn test_cluster_to_lba_rejects_out_of_range_clusters() {
 fn test_cyclic_fat_chain_returns_bad_chain_within_cluster_count() {
     // Step 1: Initialize the ATA block device so `next_cluster`'s real FAT sector reads
     // (and our own crafted write below) actually reach the QEMU disk image.
+    kaos_kernel::memory::pmm::init(false);
+    kaos_kernel::arch::interrupts::init();
+    kaos_kernel::memory::vmm::init(false);
+    kaos_kernel::memory::heap::init(false);
     kaos_kernel::drivers::ata::init();
     block::init_ata();
 
