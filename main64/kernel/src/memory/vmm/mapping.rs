@@ -247,6 +247,7 @@ pub fn try_map_virtual_to_physical(
     virtual_address: u64,
     physical_address: u64,
 ) -> Result<(), MapError> {
+    // Note: single-core, IF-disabled
     // Normalize both addresses to page granularity.
     let virtual_address = page_align_down(virtual_address);
     let physical_address = page_align_down(physical_address);
@@ -284,6 +285,7 @@ pub fn try_map_virtual_to_physical(
 /// Maps `virtual_address` to `physical_address` with present + writable flags,
 /// and configures the cache to Write-Combining (WC) via PAT1 (PWT=1).
 pub fn map_virtual_to_physical_wc(virtual_address: u64, physical_address: u64) {
+    // Note: single-core, IF-disabled
     // Thin wrapper that acts like map_virtual_to_physical but sets PWT.
     match try_map_virtual_to_physical(virtual_address, physical_address) {
         Ok(()) => {}
@@ -304,6 +306,7 @@ pub fn map_virtual_to_physical_wc(virtual_address: u64, physical_address: u64) {
 /// Maps `virtual_address` to `physical_address` with present + writable flags,
 /// and configures the cache to Uncacheable (UC) via PWT=1, PCD=1.
 pub fn map_virtual_to_physical_uc(virtual_address: u64, physical_address: u64) {
+    // Note: single-core, IF-disabled
     match try_map_virtual_to_physical(virtual_address, physical_address) {
         Ok(()) => {}
         Err(e) => panic!("VMM: UC mapping failed: {:?}", e),
@@ -324,6 +327,7 @@ pub fn map_virtual_to_physical_uc(virtual_address: u64, physical_address: u64) {
 ///
 /// Panics if the VA is already mapped to another frame.
 pub fn map_virtual_to_physical(virtual_address: u64, physical_address: u64) {
+    // Note: single-core, IF-disabled
     // Thin wrapper: convert checked map errors into a hard panic.
     match try_map_virtual_to_physical(virtual_address, physical_address) {
         Ok(()) => {}
@@ -369,6 +373,7 @@ pub fn map_virtual_to_physical(virtual_address: u64, physical_address: u64) {
 
 /// Unmaps the given virtual address and invalidates the corresponding TLB entry.
 pub fn unmap_virtual_address(virtual_address: u64) {
+    // Note: single-core, IF-disabled
     // Operate on page boundary regardless of caller offset.
     let virtual_address = page_align_down(virtual_address);
 
@@ -403,6 +408,7 @@ pub fn unmap_virtual_address(virtual_address: u64) {
 ///
 /// Intended for temporary virtual mappings to already-owned frames.
 pub fn unmap_without_release(virtual_address: u64) {
+    // Note: single-core, IF-disabled
     // Keep semantics for the mapped leaf (do not release), but prune and
     // release now-empty table levels so temporary mapping paths do not leak.
     unmap_page_and_prune_pagetable_hierarchy(virtual_address, false);
@@ -600,6 +606,7 @@ pub fn clone_kernel_pml4_for_user() -> u64 {
 /// - prunes and releases now-empty PT/PD/PDP pages,
 /// - releases the root PML4 frame itself.
 pub fn destroy_user_address_space(pml4_phys: u64) {
+    // Note: single-core, IF-disabled
     destroy_user_address_space_with_page_counts(
         pml4_phys,
         (USER_CODE_SIZE / PAGE_SIZE_U64) as usize,
@@ -651,6 +658,7 @@ pub fn destroy_user_address_space_with_page_counts(
     code_page_count: usize,
     stack_page_count_from_top: usize,
 ) {
+    // Note: single-core, IF-disabled
     // Always operate on a canonical page-aligned root frame.
     let pml4_phys = page_align_down(pml4_phys);
 
@@ -787,6 +795,7 @@ fn reclaim_user_range(scan_start: u64, scan_end: u64) {
 /// `CR3` while recursive addresses are being resolved, which can race and write
 /// into the wrong page-table hierarchy.
 pub fn map_user_page(virtual_address: u64, pfn: u64, writable: bool) -> Result<(), MapError> {
+    // Note: single-core, IF-disabled
     // Normalize to 4 KiB page granularity; callers may pass any address
     // within the target page.
     let virtual_address = page_align_down(virtual_address);
@@ -868,6 +877,7 @@ pub fn map_user_page(virtual_address: u64, pfn: u64, writable: bool) -> Result<(
 /// This correctly handles both 4 KiB and 2 MiB / 1 GiB huge pages by setting the PWT bit
 /// at the appropriate leaf level, modifying existing mappings (such as UEFI GOP mappings).
 pub fn configure_wc_mapping(start_va: u64, size: u64) {
+    // Note: single-core, IF-disabled
     use super::page_table::*;
 
     let mut addr = page_align_down(start_va);

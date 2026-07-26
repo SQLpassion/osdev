@@ -13,7 +13,8 @@
 //! - Page faults trigger demand-allocation of physical pages via PMM.
 //! - User address spaces use separate PML4 roots cloned from the kernel PML4 root,
 //!   preserving kernel space mappings.
-//! - Backed by a global spinlock for synchronized multi-core access.
+//! - Backed by a global spinlock that only protects VmmState scalar fields.
+//! - Page table mutations rely on single-core, IF-disabled execution for safety.
 //!
 //! Notes:
 //! - User Code region is mapped read-only and executable.
@@ -97,8 +98,8 @@ struct VmmState {
 
 /// Global VMM with thread-safe access via SpinLock.
 ///
-/// The lock disables interrupts during page table operations to prevent race
-/// conditions when multiple tasks attempt to map/unmap pages concurrently.
+/// The lock only protects the scalar fields within `VmmState`.
+/// Page table operations rely on single-core, IF-disabled execution.
 struct GlobalVmm {
     inner: SpinLock<VmmState>,
     initialized: AtomicBool,
@@ -121,8 +122,8 @@ static VMM: GlobalVmm = GlobalVmm::new();
 
 /// Executes a closure with mutable access to global VMM state.
 ///
-/// Thread-safe: acquires a spinlock that disables interrupts during page table
-/// operations to prevent race conditions.
+/// Thread-safe: acquires a spinlock that protects only the `VmmState` scalar fields.
+/// Does NOT protect page table edits (those require single-core, IF-disabled).
 #[inline]
 fn with_vmm<R>(f: impl FnOnce(&mut VmmState) -> R) -> R {
     // Catch accidental use before `init()` in debug/test configurations.
