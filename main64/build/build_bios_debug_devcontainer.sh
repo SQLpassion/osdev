@@ -2,7 +2,7 @@
 # build_bios_debug_devcontainer.sh - Build the KAOS Rust Kernel and bootloaders inside the dev container.
 #
 # This script compiles the 16-bit real-mode entry loader, the 64-bit kernel loader, the kernel (debug),
-# and user programs. It packages them into a raw bootable legacy BIOS FAT32 disk image (kaos64.img)
+# and user programs. It packages them into a raw bootable legacy BIOS FAT32 disk image (kaos64-bios.img)
 # using a helper script, without performing host-specific operations or deployments.
 #
 # Required tools: nasm, cargo (Rust nightly target x86_64-unknown-none), cargo-binutils (cargo objcopy),
@@ -77,14 +77,14 @@ nasm -fbin kaosldr_entry.asm -o kldr16.bin
 cd ..
 
 echo "  -> Removing old disk image if exists..."
-rm -f kaos64.img
+rm -f kaos64-bios.img
 
 echo "  -> Creating FAT32 disk image (superfloppy)..."
 "$SCRIPT_DIR/helper_make_fat32_bios_image.sh" "target/x86_64-unknown-none/debug"
 
 echo ""
 echo "  -> Disk image created successfully!"
-ls -la kaos64.img
+ls -la kaos64-bios.img
 
 echo ""
 echo "========================================"
@@ -92,9 +92,9 @@ echo "  Build Complete!"
 echo "========================================"
 echo ""
 echo "Output files:"
-echo "  - main64/kaos64.img (bootable disk image)"
+echo "  - main64/kaos64-bios.img (bootable disk image)"
 echo "  - main64/target/x86_64-unknown-none/debug/kernel.bin"
 echo ""
 echo "To run in QEMU:"
-echo "  qemu-system-x86_64 -drive format=raw,file=kaos64.img -display curses"
+echo "  qemu-system-x86_64 -drive format=raw,file=kaos64-bios.img -display curses"
 echo ""

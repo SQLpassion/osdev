@@ -2,7 +2,7 @@
 # build_bios_release.sh - Build the KAOS Rust Kernel and bootloaders (release) and deploy to UTM.
 #
 # This script compiles the 16-bit entry loader, 64-bit loader, kernel, and user programs in release mode.
-# It creates a raw FAT32 superfloppy disk image (kaos64.img), converts it to a QCOW2 image (kaos64.qcow2),
+# It creates a raw FAT32 superfloppy disk image (kaos64-bios.img), converts it to a QCOW2 image (kaos64.qcow2),
 # and copies/deploys the resulting QCOW2 image directly into the local macOS UTM application's VM directory.
 #
 # Required tools: nasm, cargo (Rust nightly target x86_64-unknown-none), llvm-tools-preview (rust-objcopy),
@@ -80,22 +80,22 @@ cd ..
 
 # Build the bootable FAT32 superfloppy on the host (mtools).
 echo "  -> Removing old disk image if exists..."
-rm -f kaos64.img
+rm -f kaos64-bios.img
 
 echo "  -> Creating FAT32 disk image (superfloppy)..."
 "$SCRIPT_DIR/helper_make_fat32_bios_image.sh" "target/x86_64-unknown-none/release"
 
 echo ""
 echo "  -> Disk image created successfully!"
-ls -la kaos64.img
+ls -la kaos64-bios.img
 
 echo "  -> Creating qcow2 image for UTM..."
 cd "$PROJECT_ROOT"
-qemu-img convert -O qcow2 kaos64.img kaos64.qcow2 
-cp kaos64.qcow2 "$HOME/Library/Containers/com.utmapp.UTM/Data/Documents/KAOS x64.utm/Data/kaos64.qcow2"
+qemu-img convert -O qcow2 kaos64-bios.img kaos64.qcow2 
+cp kaos64.qcow2 "$HOME/Library/Containers/com.utmapp.UTM/Data/Documents/KAOS x64 BIOS.utm/Data/kaos64.qcow2"
+rm -f kaos64.qcow2
 echo ""
-echo "  -> qcow2 image created successfully!"
-ls -la kaos64.qcow2
+echo "  -> qcow2 image created and deployed to UTM successfully!"
 
 echo ""
 echo "========================================"
@@ -103,7 +103,7 @@ echo "  Release Build Complete!"
 echo "========================================"
 echo ""
 echo "Output files:"
-echo "  - main64/kaos64.img (bootable disk image)"
+echo "  - main64/kaos64-bios.img (bootable disk image)"
 echo "  - main64/target/x86_64-unknown-none/release/kernel.bin"
 echo ""
 # 4) Choose how QEMU presents output.
@@ -147,7 +147,7 @@ esac
 # 5) Boot it. (Ctrl-A X quits QEMU when serial is attached to the terminal.)
 echo "==> Launching QEMU [$DISPLAY_MODE: $DISPLAY_HINT]..."
 qemu-system-x86_64 \
-    -drive format=raw,file="kaos64.img" \
+    -drive format=raw,file="kaos64-bios.img" \
     "${QEMU_DISPLAY[@]}" \
     -m 256M \
     "$@"

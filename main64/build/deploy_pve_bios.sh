@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# deploy_pve_bios.sh - Deploy the legacy BIOS disk image (kaos64.img) to a Proxmox VE (PVE) host.
+# deploy_pve_bios.sh - Deploy the legacy BIOS disk image (kaos64-bios.img) to a Proxmox VE (PVE) host.
 #
 # This script uploads the local BIOS image via SCP to the remote Proxmox server, deletes any existing
 # VM with the specified VMID (default 601), creates a new Seabios-based legacy BIOS VM with std VGA
@@ -16,7 +16,7 @@ PVE_USER="${PVE_USER:-root}"
 PVE_SSH_PORT="${PVE_SSH_PORT:-22}"
 VMID="${VMID:-601}"
 STORAGE="${STORAGE:-data}"
-LOCAL_IMG="${LOCAL_IMG:-${PROJECT_ROOT}/kaos64.img}"
+LOCAL_IMG="${LOCAL_IMG:-${PROJECT_ROOT}/kaos64-bios.img}"
 REMOTE_IMG="${REMOTE_IMG:-/tmp/kaos64-bios-${VMID}.img}"
 
 if ! [[ "$VMID" =~ ^[0-9]+$ ]]; then

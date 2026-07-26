@@ -26,7 +26,7 @@ enum FaultKind {
 
 /// Draws the initial selection screen and documents current safety status.
 fn show_welcome_screen() {
-    let _ = console::clear_screen();
+    // let _ = console::clear_screen();
     println!("================================================");
     println!("        KAOS Ring-3 Exception Exerciser");
     println!("================================================");

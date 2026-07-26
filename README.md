@@ -103,11 +103,11 @@ The OS is a Cargo workspace under `main64/` and requires the **Rust nightly** to
 
 ```bash
 # macOS (host)
-./build_bios_debug.sh   && qemu-system-x86_64 -drive format=raw,file=../kaos64.img --serial stdio
-./build_bios_release.sh && qemu-system-x86_64 -drive format=raw,file=../kaos64.img --serial stdio
+./build_bios_debug.sh   && qemu-system-x86_64 -drive format=raw,file=kaos64-bios.img --serial stdio
+./build_bios_release.sh && qemu-system-x86_64 -drive format=raw,file=kaos64-bios.img --serial stdio
 
 # Inside the dev container
-./build_bios_debug_devcontainer.sh && qemu-system-x86_64 -drive format=raw,file=kaos64.img -display curses
+./build_bios_debug_devcontainer.sh && qemu-system-x86_64 -drive format=raw,file=kaos64-bios.img -display curses
 ```
 
 ### UEFI image (QEMU + OVMF)
@@ -135,7 +135,7 @@ signals pass/fail via the `isa-debug-exit` device. See [`testing.md`](main64/doc
 Write the final FAT32 image to a physical disk, e.g. on macOS:
 
 ```bash
-sudo dd if=kaos64.img of=/dev/diskN   # where diskN is the target disk
+sudo dd if=kaos64-bios.img of=/dev/diskN   # where diskN is the target disk
 ```
 
 ---

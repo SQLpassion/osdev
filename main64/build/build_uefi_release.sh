@@ -62,6 +62,17 @@ mcopy   -i "$IMG@@$PART_OFFSET" "user_programs/kbasic/src/demo.bas"   ::/DEMO.BA
 echo "==> $IMG ready. Flash to a USB stick with (DESTRUCTIVE - pick the right device!):"
 echo "        sudo dd if=$IMG of=/dev/<your-usb> bs=4M conv=fsync"
 
+if command -v qemu-img >/dev/null 2>&1; then
+    UTM_UEFI_DIR="$HOME/Library/Containers/com.utmapp.UTM/Data/Documents/KAOS x64 UEFI.utm/Data"
+    if [ -d "$UTM_UEFI_DIR" ]; then
+        echo "==> Creating qcow2 image for UTM UEFI..."
+        qemu-img convert -O qcow2 "$IMG" kaos64.qcow2
+        cp kaos64.qcow2 "$UTM_UEFI_DIR/kaos64.qcow2"
+        rm -f kaos64.qcow2
+        echo "==> qcow2 image created and deployed to UTM UEFI successfully!"
+    fi
+fi
+
 # 3) Locate the OVMF firmware (UEFI for QEMU). Honor a manually provided OVMF_CODE first;
 # otherwise search the usual locations on macOS, Linux and Windows. Firmware file names vary:
 # edk2-x86_64-code.fd (Homebrew / Windows QEMU), OVMF_CODE_4M.fd (Ubuntu 24.04 `ovmf` package),

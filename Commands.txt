@@ -34,13 +34,13 @@
 ###########################
 # Run on physical Notebook
 ###########################
-- Write the final FAT32 image (BIOS: kaos64.img, UEFI: kaos64-uefi.img) to a physical disk:
+- Write the final FAT32 image (BIOS: kaos64-bios.img, UEFI: kaos64-uefi.img) to a physical disk:
     Mac:
         ls /dev/d*
-        sudo dd if=kaos64.img of=/dev/disk4 (where /dev/disk4 is the attached physical hard disk!)
+        sudo dd if=kaos64-bios.img of=/dev/disk4 (where /dev/disk4 is the attached physical hard disk!)
     Windows:
         wmic diskdrive list brief
-        ./dd.exe if=d:\github\sqlpassion\osdev\main64\kaos64.img of=\\.\PhysicalDrive2 (where \\.\PhysicalDrive2 is the attached physical hard disk!)
+        ./dd.exe if=d:\github\sqlpassion\osdev\main64\kaos64-bios.img of=\\.\PhysicalDrive2 (where \\.\PhysicalDrive2 is the attached physical hard disk!)
         ./dd.exe if=\\.\PhysicalDrive2 of=d:\kaos64.ima bs=512 count=2880
 
 ###############

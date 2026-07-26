@@ -1,5 +1,5 @@
 #!/bin/bash
-# helper_make_fat32_bios_image.sh - Build the bootable legacy-BIOS FAT32 superfloppy (kaos64.img).
+# helper_make_fat32_bios_image.sh - Build the bootable legacy-BIOS FAT32 superfloppy (kaos64-bios.img).
 #
 # This script formats a raw 64 MiB file as a FAT32 superfloppy with an enlarged reserved region,
 # copies the kernel and user programs as standard files, writes the early loaders at fixed LBAs
@@ -18,7 +18,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_ROOT"
 
 PROFILE_DIR="${1:?usage: helper_make_fat32_bios_image.sh <profile-target-dir>}"
-IMG=kaos64.img
+IMG=kaos64-bios.img
 
 # Disk layout constants - MUST match boot/bootsector.asm (KLDR*_LBA / *_MAX_SECTORS).
 RESERVED_SECTORS=64
