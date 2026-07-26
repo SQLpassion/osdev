@@ -53,7 +53,10 @@ pub fn task_iret_frame(task_id: usize) -> Option<InterruptStackFrame> {
 /// returned by the spawn functions; use `task_id_slot` to extract the slot
 /// portion of a packed identifier when necessary.
 pub fn current_task_id() -> Option<usize> {
-    with_scheduler(|meta| meta.running_slot)
+    with_scheduler(|meta| {
+        meta.running_slot
+            .map(|slot| super::types::pack_task_id(slot, meta.slots[slot].generation))
+    })
 }
 
 /// Returns the current length of the internal slot table.

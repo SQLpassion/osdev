@@ -2004,7 +2004,7 @@ fn test_user_task_mmap_syscall() {
     // Step 2: Tick the scheduler to make the user task the active running task.
     current = sched::on_timer_tick(current);
     assert!(
-        sched::current_task_id() == Some(sched::task_id_slot(user_task)),
+        sched::current_task_id() == Some(user_task),
         "scheduler must make user_task active"
     );
 

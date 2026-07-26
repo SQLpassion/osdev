@@ -181,8 +181,8 @@ impl Fat32Volume {
 
                 // Process 32-byte directory entries in the sector
                 // Each sector can hold exactly 16 (512/32) directory entries.
-                for entry_idx in 0..(512 / 32) {
-                    let offset = entry_idx * 32;
+                for entry_idx in 0..(self.bytes_per_sec / 32) {
+                    let offset = (entry_idx * 32) as usize;
                     let first_byte = sector[offset];
                     if first_byte == 0x00 {
                         // End of directory marker reached, early return.
@@ -193,8 +193,8 @@ impl Fat32Volume {
                         continue;
                     }
                     let attr = sector[offset + 0x0B];
-                    if attr == 0x0F {
-                        // LFN (Long File Name) entry, skip.
+                    if attr == 0x0F || attr == 0x08 {
+                        // LFN (Long File Name) or Volume ID entry, skip.
                         continue;
                     }
 
@@ -267,7 +267,7 @@ impl Fat32Volume {
                     break;
                 }
 
-                let to_copy = core::cmp::min(remaining_bytes, 512);
+                let to_copy = core::cmp::min(remaining_bytes, self.bytes_per_sec as usize);
                 content.extend_from_slice(&sector[..to_copy]);
             }
 
@@ -277,6 +277,10 @@ impl Fat32Volume {
 
             // Look up the next cluster index in the FAT to continue reading the file.
             current_cluster = self.next_cluster(current_cluster)?;
+        }
+
+        if content.len() < target_file_size as usize {
+            return Err(Fat32Error::BadChain);
         }
 
         // Step 5: Return the populated Vec<u8>
@@ -319,8 +323,8 @@ impl Fat32Volume {
                     }
 
                     // Step 2: Read 32-byte directory entries in the sector
-                    for entry_idx in 0..(512 / 32) {
-                        let offset = entry_idx * 32;
+                    for entry_idx in 0..(self.bytes_per_sec / 32) {
+                        let offset = (entry_idx * 32) as usize;
                         let first_byte = sector[offset];
                         if first_byte == 0x00 {
                             break 'dir_walk;
@@ -443,12 +447,12 @@ impl Fat32Volume {
         // Step 1: Compute FAT sector and byte offset
         // Each cluster entry in FAT32 is 4 bytes. We calculate the sector containing
         // the entry and its byte offset within that sector.
-        let fat_sector = self.fat_start_lba + (cluster * 4) as u64 / 512;
-        let offset = (cluster * 4) as usize % 512;
+        let fat_sector = self.fat_start_lba + (cluster * 4) as u64 / self.bytes_per_sec as u64;
+        let offset = (cluster * 4) as usize % self.bytes_per_sec as usize;
 
         // Step 2: Read the FAT sector
         // We perform a read via AHCI to retrieve the specific FAT sector.
-        let mut sector = [0u8; 512];
+        let mut sector = alloc::vec![0u8; self.bytes_per_sec as usize];
         crate::drivers::block::read_sectors(fat_sector, 1, &mut sector)
             .map_err(Fat32Error::Block)?;
 

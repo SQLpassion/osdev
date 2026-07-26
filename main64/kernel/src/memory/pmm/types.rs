@@ -15,7 +15,7 @@ pub const KERNEL_VIRT_BASE: u64 = 0xFFFF800000000000;
 #[inline]
 /// Aligns `x` up to the next `align` boundary.
 pub fn align_up(x: u64, align: u64) -> u64 {
-    (x + align - 1) & !(align - 1)
+    x.checked_add(align - 1).unwrap() & !(align - 1)
 }
 
 #[inline]

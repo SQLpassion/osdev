@@ -349,7 +349,7 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
 
 /// Returns whether the kernel was booted via a unified BootInfo with a
 /// framebuffer (the graphics path), as opposed to the legacy BIOS/VGA-text path.
-fn booted_via_framebuffer(boot_info_raw: u64, has_boot_info: bool) -> bool {
+fn booted_via_framebuffer(_boot_info_raw: u64, has_boot_info: bool) -> bool {
     if !has_boot_info {
         return false;
     }
