@@ -252,8 +252,9 @@ identical — only their physical location differs.
                │                                                        │
         (high) ├────────────────────────────────────────────────────────┤ ◄─ pmm_metadata_base
                │   PMM METADATA REGION (EfiLoaderData, loader-reserved) │
-               │     PmmLayoutHeader → PmmRegion[] → bitmaps            │
-               │     (sized to RAM: ~32 KiB per GiB → ~4 MiB @128 GiB)  │
+               │     PmmLayoutHeader → PmmRegion[] → bitmaps → refcounts│
+               │     (sized to RAM: bitmap ~32 KiB/GiB, refcount        │
+               │      ~256 KiB/GiB → combined ~4 MiB + ~32 MiB @128 GiB)│
                └────────────────────────────────────────────────────────┘
 
     Elsewhere (firmware-chosen address, inside the low 512 GiB):
