@@ -191,7 +191,19 @@ pub fn is_initialized() -> bool {
 /// Returns the current heap growth cap in bytes.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn max_heap_size() -> usize {
-    with_heap(|state| state.max_heap_size)
+    if is_initialized() {
+        with_heap(|state| state.max_heap_size)
+    } else {
+        compute_system_heap_cap()
+    }
+}
+
+/// Returns whether the given virtual address falls within the kernel heap arena range.
+pub fn is_kernel_heap_address(virtual_address: u64) -> bool {
+    let start = HEAP_START_OFFSET as u64;
+    let cap = max_heap_size() as u64;
+    let end = start.saturating_add(cap);
+    virtual_address >= start && virtual_address < end
 }
 
 /// Allocates `size` bytes and returns a pointer to the payload.

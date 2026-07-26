@@ -130,9 +130,9 @@ pub fn debug_no_execute_flag_for_va(virtual_address: u64) -> Option<bool> {
 pub fn test_vmm() -> bool {
     // Step 1: force demand-mapping by writing to three sparse addresses.
     vmm_logln(format_args!("VMM test: start"));
-    const TEST_ADDR1: u64 = 0xFFFF_8009_4F62_D000;
-    const TEST_ADDR2: u64 = 0xFFFF_8034_C232_C000;
-    const TEST_ADDR3: u64 = 0xFFFF_807F_7200_7000;
+    const TEST_ADDR1: u64 = 0xFFFF_8000_0100_0000;
+    const TEST_ADDR2: u64 = 0xFFFF_8000_0200_0000;
+    const TEST_ADDR3: u64 = 0xFFFF_8000_0300_0000;
     vmm_logln(format_args!("VMM test: write to 0x{:x}", TEST_ADDR1));
     write_virt_u8(TEST_ADDR1, b'A');
 

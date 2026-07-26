@@ -135,6 +135,20 @@ pub fn try_handle_page_fault(virtual_address: u64, error_code: u64) -> Result<()
         Some(UserRegion::Code) | Some(UserRegion::Stack) | Some(UserRegion::Heap)
     );
 
+    // Non-present faults in kernel space (outside user regions) must be restricted
+    // strictly to the kernel heap arena range (`HEAP_START_OFFSET` range / heap boundaries).
+    // Auto-backing arbitrary higher-half kernel addresses would mask wild kernel pointers.
+    if user_region.is_none() && !crate::memory::heap::is_kernel_heap_address(virtual_address) {
+        vmm_logln(format_args!(
+            "VMM: non-present kernel fault at 0x{:x} err=0x{:x} outside kernel heap arena (allocation refused)",
+            fault_address_raw, error_code
+        ));
+        return Err(PageFaultError::ProtectionFault {
+            virtual_address: fault_address_raw,
+            error_code,
+        });
+    }
+
     // Derive final permissions from the region:
     //   USER_CODE  → read-only  (writable=false), executable  (no_execute=false)
     //   USER_STACK → writable   (writable=true),  non-executable (no_execute=true)

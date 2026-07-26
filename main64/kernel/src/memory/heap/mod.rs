@@ -21,7 +21,7 @@ pub mod kernel;
 
 // Re-export public items to preserve the original API of the `heap` module.
 #[allow(unused_imports)]
-pub use types::HEAP_ALIGNMENT;
+pub use types::{HEAP_ALIGNMENT, HEAP_START_OFFSET};
 
 #[allow(unused_imports)]
 pub use generic::{Heap, HeapEnvironment};
@@ -29,6 +29,6 @@ pub use generic::{Heap, HeapEnvironment};
 #[allow(unused_imports)]
 #[cfg(feature = "kernel")]
 pub use kernel::{
-    debug_output_enabled, free, init, is_initialized, malloc, max_heap_size, run_self_test,
-    set_debug_output, KernelHeapEnv,
+    debug_output_enabled, free, init, is_initialized, is_kernel_heap_address, malloc,
+    max_heap_size, run_self_test, set_debug_output, KernelHeapEnv,
 };
