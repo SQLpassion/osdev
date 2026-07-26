@@ -16,7 +16,7 @@
 
 use core::panic::PanicInfo;
 
-use kaos_kernel::memory::pmm::manager::select_metadata_base;
+use kaos_kernel::memory::pmm::manager::{check_metadata_fits, select_metadata_base};
 
 #[no_mangle]
 #[link_section = ".text.boot"]
@@ -75,5 +75,33 @@ fn test_falls_back_when_reserved_base_zero() {
         select_metadata_base(Some(0), KERNEL_END_PHYS),
         KERNEL_END_PHYS,
         "a zero pmm_metadata_base is the 'not provided' sentinel and must fall back"
+    );
+}
+
+/// Contract: check_metadata_fits returns true when metadata_end is within the reserved size.
+/// Failure Impact: false positive assertion failures on valid loader-reserved sizes.
+#[test_case]
+fn test_check_metadata_fits_within_size() {
+    let base = 0x0000_0020_0000_0000;
+    let size = 0x10000; // 64 KiB
+    assert!(
+        check_metadata_fits(base + size, base, size),
+        "metadata ending exactly at reserved boundary must fit"
+    );
+    assert!(
+        check_metadata_fits(base + 0x1000, base, size),
+        "metadata ending well within reserved size must fit"
+    );
+}
+
+/// Contract: check_metadata_fits returns false when metadata_end exceeds the reserved size.
+/// Failure Impact: PMM metadata overrunning loader-reserved region silently without assertion.
+#[test_case]
+fn test_check_metadata_fits_exceeds_size() {
+    let base = 0x0000_0020_0000_0000;
+    let size = 0x10000; // 64 KiB
+    assert!(
+        !check_metadata_fits(base + size + 1, base, size),
+        "metadata ending past reserved size must return false"
     );
 }
