@@ -99,6 +99,42 @@ pub fn is_phase1_ram(entry: &UnifiedMemoryEntry) -> bool {
     entry.is_usable || entry.memory_type == EFI_ACPI_RECLAIM_MEMORY
 }
 
+/// `EFI_MEMORY_RUNTIME` attribute bit (bit 63 of an EFI memory descriptor's
+/// `attribute` field): the region must stay mapped for `SetVirtualAddressMap`/runtime
+/// service calls. KAOS calls no runtime services today, but the design doc (§2, §4)
+/// keeps these regions mapped anyway, since platform/SMM code may still depend on them.
+const EFI_MEMORY_RUNTIME: u64 = 0x8000_0000_0000_0000;
+
+/// EFI memory types the design doc's §4 table marks "map" for firmware/platform
+/// reasons, independent of the `EFI_MEMORY_RUNTIME` attribute bit.
+const EFI_RESERVED_MEMORY_TYPE: u32 = 0;
+const EFI_RUNTIME_SERVICES_CODE: u32 = 5;
+const EFI_RUNTIME_SERVICES_DATA: u32 = 6;
+const EFI_ACPI_MEMORY_NVS: u32 = 10;
+const EFI_MEMORY_MAPPED_IO: u32 = 11;
+const EFI_PAL_CODE: u32 = 13;
+
+/// Phase 2 classifier: firmware/platform regions kept mapped explicitly instead of
+/// relying on inherited firmware coverage (design doc §2/§4) — any region with the
+/// `EFI_MEMORY_RUNTIME` attribute set, plus `RuntimeServicesCode`/`RuntimeServicesData`
+/// (5/6), `ACPIMemoryNVS` (10), `Reserved` (0), `MemoryMappedIO` (11), and `PalCode`
+/// (13). Disjoint from [`is_phase1_ram`] in normal memory maps (RAM vs. non-RAM types),
+/// but the builder tolerates either classifier being run first — see the
+/// `test_second_build_call_with_huge_page_collision_is_rejected`-style reuse pattern
+/// exercised in `direct_map_test.rs`.
+pub fn is_phase2_platform(entry: &UnifiedMemoryEntry) -> bool {
+    (entry.attribute & EFI_MEMORY_RUNTIME) != 0
+        || matches!(
+            entry.memory_type,
+            EFI_RESERVED_MEMORY_TYPE
+                | EFI_RUNTIME_SERVICES_CODE
+                | EFI_RUNTIME_SERVICES_DATA
+                | EFI_ACPI_MEMORY_NVS
+                | EFI_MEMORY_MAPPED_IO
+                | EFI_PAL_CODE
+        )
+}
+
 /// Builds a direct (VA == PA) map of every region `classify` accepts into the PML4
 /// rooted at `pml4_phys`, using 2 MiB huge pages for 2-MiB-aligned bulk ranges when
 /// `use_huge_pages` (falling back to 4 KiB for any unaligned head/tail, and for
@@ -401,18 +437,30 @@ pub unsafe fn run_boot_canary(debug_output: bool) {
     zero_phys_page(pml4);
 
     let mut alloc = alloc_frame_phys;
-    let stats = build_direct_map(pml4, regions.iter(), is_phase1_ram, &mut alloc, true)
+    let ram_stats = build_direct_map(pml4, regions.iter(), is_phase1_ram, &mut alloc, true)
         .unwrap_or_else(|e| panic!("Phase 1 direct-map build failed: {:?}", e));
-
     validate_direct_map_coverage(pml4, regions.iter(), is_phase1_ram)
         .unwrap_or_else(|e| panic!("Phase 1 direct-map coverage gap: {:?}", e));
+
+    // Phase 2: reuse the same table for firmware/platform regions the design doc keeps
+    // mapped explicitly. Distinct classifier, same builder — see is_phase2_platform's
+    // doc for why running a second pass over the same tree is safe.
+    let platform_stats =
+        build_direct_map(pml4, regions.iter(), is_phase2_platform, &mut alloc, true)
+            .unwrap_or_else(|e| panic!("Phase 2 direct-map build failed: {:?}", e));
+    validate_direct_map_coverage(pml4, regions.iter(), is_phase2_platform)
+        .unwrap_or_else(|e| panic!("Phase 2 direct-map coverage gap: {:?}", e));
 
     if debug_output {
         // Deliberately not `vmm_logln`/`vmm::debug_enabled()`: those read `VMM`'s
         // shared state via `with_vmm`, which `debug_assert!`s that the VMM is already
         // initialized — not yet true at this point in `vmm::init`. `debugln!` only
         // needs the serial port, which is up from very early in `KernelMain`.
-        crate::debugln!("VMM: Phase 1 direct-map canary OK: {:?}", stats);
+        crate::debugln!(
+            "VMM: Phase 1 direct-map canary OK: RAM={:?} platform={:?}",
+            ram_stats,
+            platform_stats
+        );
     }
 
     free_direct_map_tables(pml4);

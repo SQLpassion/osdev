@@ -28,8 +28,8 @@ use kaos_kernel::arch::constants::PAGE_SIZE_U64;
 use kaos_kernel::boot_info::UnifiedMemoryEntry;
 use kaos_kernel::memory::pmm::{self, types::virt_to_phys};
 use kaos_kernel::memory::vmm::direct_map::{
-    build_direct_map, free_direct_map_tables, is_phase1_ram, validate_direct_map_coverage,
-    CoverageGap, DirectMapError,
+    build_direct_map, free_direct_map_tables, is_phase1_ram, is_phase2_platform,
+    validate_direct_map_coverage, CoverageGap, DirectMapError,
 };
 use kaos_kernel::memory::vmm::page_table::{
     self, pt_index, resolve_phys_via_root, PageTable, HUGE_PAGE_SIZE_2M,
@@ -415,4 +415,118 @@ fn test_free_direct_map_tables_returns_all_frames_to_pmm() {
 
     let free_after_release = pmm::with_pmm(|mgr| mgr.total_free_frames());
     assert_eq!(free_after_release, free_before);
+}
+
+// ============================================================================
+// Phase 2 classifier tests (`is_phase2_platform`) — part of #63, Phase 2.
+// ============================================================================
+
+/// Contract: `is_phase2_platform` accepts any region with the `EFI_MEMORY_RUNTIME`
+/// attribute bit set, regardless of its memory type.
+/// Failure Impact: missing a runtime-flagged region would drop a mapping the platform
+/// may depend on for `SetVirtualAddressMap`/SMM, once a later phase relies on this
+/// classifier instead of inherited firmware coverage.
+#[test_case]
+fn test_is_phase2_platform_matches_runtime_attribute_bit() {
+    const EFI_MEMORY_RUNTIME: u64 = 0x8000_0000_0000_0000;
+    let entry = UnifiedMemoryEntry {
+        start: 0,
+        size: PAGE_SIZE_U64,
+        memory_type: 7, // EfiConventionalMemory - not in the type list either
+        _pad: 0,
+        attribute: EFI_MEMORY_RUNTIME,
+        is_usable: true,
+    };
+    assert!(is_phase2_platform(&entry));
+}
+
+/// Contract: `is_phase2_platform` accepts exactly the EFI types the design doc's §4
+/// table marks "map" for firmware/platform reasons (0, 5, 6, 10, 11, 13), and rejects
+/// types outside that set when the runtime attribute bit is also clear.
+/// Failure Impact: an overly narrow classifier would leave e.g. ACPI NVS or MMIO
+/// unmapped once the kernel table becomes load-bearing; an overly wide one would map
+/// loader-transient memory (`BootServicesCode`/`Data`) the design doc says to drop.
+#[test_case]
+fn test_is_phase2_platform_matches_known_types_only() {
+    for &memory_type in &[0u32, 5, 6, 10, 11, 13] {
+        let entry = UnifiedMemoryEntry {
+            start: 0,
+            size: PAGE_SIZE_U64,
+            memory_type,
+            _pad: 0,
+            attribute: 0,
+            is_usable: false,
+        };
+        assert!(
+            is_phase2_platform(&entry),
+            "memory_type {} should be classified as platform",
+            memory_type
+        );
+    }
+
+    for &memory_type in &[1u32, 3, 4, 7, 9] {
+        let entry = UnifiedMemoryEntry {
+            start: 0,
+            size: PAGE_SIZE_U64,
+            memory_type,
+            _pad: 0,
+            attribute: 0,
+            is_usable: memory_type == 7,
+        };
+        assert!(
+            !is_phase2_platform(&entry),
+            "memory_type {} should NOT be classified as platform",
+            memory_type
+        );
+    }
+}
+
+/// Contract: a Phase 1 (RAM) pass and a Phase 2 (platform) pass over disjoint address
+/// ranges can reuse the same table, each producing a fully valid, independently
+/// checkable coverage — the exact "build once per classifier, same PML4" pattern
+/// `vmm::direct_map::run_boot_canary` uses in production.
+/// Failure Impact: if the two passes corrupted each other's mappings (e.g. via a stale
+/// PD/PDPT reused incorrectly), a real boot would either lose RAM coverage or firmware/
+/// MMIO coverage depending on call order — exactly the class of bug the boot-time
+/// canary exists to catch before a CR3 switch ever happens.
+#[test_case]
+fn test_phase1_and_phase2_passes_coexist_on_the_same_table() {
+    // SAFETY: single-threaded test context.
+    unsafe {
+        let pml4 = reset_pool();
+        let mut alloc = bump_alloc_from_pool;
+
+        let ram_region = ram_entry(0x0070_0000, PAGE_SIZE_U64);
+        let mmio_region = UnifiedMemoryEntry {
+            start: 0x0080_0000,
+            size: PAGE_SIZE_U64,
+            memory_type: 11, // EfiMemoryMappedIO
+            _pad: 0,
+            attribute: 0,
+            is_usable: false,
+        };
+
+        build_direct_map(pml4, [ram_region].iter(), is_phase1_ram, &mut alloc, false).unwrap();
+        build_direct_map(
+            pml4,
+            [mmio_region].iter(),
+            is_phase2_platform,
+            &mut alloc,
+            false,
+        )
+        .unwrap();
+
+        assert!(validate_direct_map_coverage(pml4, [ram_region].iter(), is_phase1_ram).is_ok());
+        assert!(
+            validate_direct_map_coverage(pml4, [mmio_region].iter(), is_phase2_platform).is_ok()
+        );
+        assert_eq!(
+            resolve_phys_via_root(pml4, 0x0070_0000),
+            Some((0x0070_0000, PAGE_SIZE_U64))
+        );
+        assert_eq!(
+            resolve_phys_via_root(pml4, 0x0080_0000),
+            Some((0x0080_0000, PAGE_SIZE_U64))
+        );
+    }
 }
