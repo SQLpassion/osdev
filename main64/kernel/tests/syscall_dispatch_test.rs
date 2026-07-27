@@ -6,7 +6,12 @@
 #![test_runner(kaos_kernel::testing::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
+extern crate alloc;
+
+use alloc::boxed::Box;
+use alloc::vec::Vec;
 use core::panic::PanicInfo;
+use kaos_kernel::io::vfs::{self, FileMode, FileSystem, FsError};
 use kaos_kernel::syscall::{
     self, is_valid_user_buffer, is_valid_user_buffer_writable, SysError, SyscallId,
 };
@@ -1324,4 +1329,129 @@ fn test_read_path_rejects_unmapped_user_pages_in_loop() {
         end_frames,
         "PMM free frames must not change; demand mapping must not occur for invalid read-path buffers"
     );
+}
+
+/// Records the last offset the mounted test filesystem's `seek()` was called
+/// with, so tests below can prove which raw `u64` value actually reached the
+/// VFS backend after `syscall_seek_file_impl`'s validation.
+static SEEK_RECORDER_LAST_OFFSET: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+
+/// Minimal `FileSystem` test double whose `seek()` always succeeds and
+/// records the `u32` offset it was called with in `SEEK_RECORDER_LAST_OFFSET`.
+/// Used by the `SeekFile` tests below (L4, issue #59) to observe, from the
+/// outside, whether an out-of-range `u64` offset was rejected before
+/// reaching the backend, and whether an in-range offset arrives unchanged.
+struct SeekRecordingFs;
+
+impl FileSystem for SeekRecordingFs {
+    fn open(&self, _name: &str, _mode: FileMode) -> Result<usize, FsError> {
+        Ok(0)
+    }
+
+    fn close(&self, _fd: usize) -> Result<(), FsError> {
+        Ok(())
+    }
+
+    fn read(&self, _fd: usize, _buf: &mut [u8]) -> Result<usize, FsError> {
+        Ok(0)
+    }
+
+    fn write(&self, _fd: usize, _buf: &[u8]) -> Result<usize, FsError> {
+        Err(FsError::Unsupported)
+    }
+
+    fn seek(&self, _fd: usize, offset: u32) -> Result<(), FsError> {
+        SEEK_RECORDER_LAST_OFFSET.store(offset, core::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn eof(&self, _fd: usize) -> Result<bool, FsError> {
+        Ok(true)
+    }
+
+    fn delete(&self, _name: &str) -> Result<(), FsError> {
+        Err(FsError::Unsupported)
+    }
+
+    fn read_file(&self, _name: &str) -> Result<Vec<u8>, FsError> {
+        Ok(Vec::new())
+    }
+
+    fn print_root_directory(&self) {}
+
+    fn close_task_fds(&self, _task_id: usize) {}
+}
+
+/// Contract: `SeekFile` rejects a `u64` offset that does not fit in the VFS
+/// backend's `u32` offset type instead of silently truncating it.
+/// Given: A mounted test filesystem and a valid, open file descriptor.
+/// When: `SeekFile` is dispatched with an offset one greater than `u32::MAX`.
+/// Then: The syscall must return `SYSCALL_ERR_INVALID_ARG`, and the backend's
+/// `seek()` must never be reached (the recorder must not observe the
+/// truncated, wrapped-to-zero value that the pre-fix `as u32` cast would have
+/// silently produced and forwarded).
+#[test_case]
+fn test_seek_file_rejects_offset_above_u32_max() {
+    // Step 1: Mount a fresh test double and open a file descriptor.
+    vfs::reset_mounted_fs();
+    vfs::mount(Box::new(SeekRecordingFs));
+    let fd = vfs::open("whatever", FileMode::Read).expect("open must succeed on the test double");
+
+    // Step 2: Poison the recorder with a sentinel value that cannot arise
+    // from a legitimate in-range seek in this test.
+    SEEK_RECORDER_LAST_OFFSET.store(0xDEAD_BEEF, core::sync::atomic::Ordering::Relaxed);
+
+    // Step 3: Dispatch SeekFile with an offset one past `u32::MAX`.
+    let out_of_range_offset = u32::MAX as u64 + 1;
+    let ret = syscall::dispatch(
+        SyscallId::SeekFile as u64,
+        fd as u64,
+        out_of_range_offset,
+        0,
+        0,
+    );
+
+    assert!(
+        ret == syscall::SYSCALL_ERR_INVALID_ARG,
+        "offset above u32::MAX must be rejected with EINVAL instead of being truncated"
+    );
+    assert_eq!(
+        SEEK_RECORDER_LAST_OFFSET.load(core::sync::atomic::Ordering::Relaxed),
+        0xDEAD_BEEF,
+        "an out-of-range offset must be rejected before ever reaching the VFS backend"
+    );
+
+    vfs::reset_mounted_fs();
+}
+
+/// Contract: `SeekFile` still accepts an in-range `u64` offset and forwards
+/// it to the backend unchanged.
+/// Given: A mounted test filesystem and a valid, open file descriptor.
+/// When: `SeekFile` is dispatched with `u32::MAX` itself (the largest
+/// representable offset, and the boundary directly adjacent to the rejected
+/// case above).
+/// Then: The syscall must succeed, and the backend must observe exactly that
+/// offset.
+#[test_case]
+fn test_seek_file_accepts_offset_at_u32_max() {
+    // Step 1: Mount a fresh test double and open a file descriptor.
+    vfs::reset_mounted_fs();
+    vfs::mount(Box::new(SeekRecordingFs));
+    let fd = vfs::open("whatever", FileMode::Read).expect("open must succeed on the test double");
+
+    // Step 2: Dispatch SeekFile at the exact u32::MAX boundary.
+    let ret = syscall::dispatch(SyscallId::SeekFile as u64, fd as u64, u32::MAX as u64, 0, 0);
+
+    assert!(
+        ret == 0,
+        "an in-range offset at the u32::MAX boundary must still succeed"
+    );
+    assert_eq!(
+        SEEK_RECORDER_LAST_OFFSET.load(core::sync::atomic::Ordering::Relaxed),
+        u32::MAX,
+        "the in-range offset must reach the VFS backend unchanged"
+    );
+
+    vfs::reset_mounted_fs();
 }

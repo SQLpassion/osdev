@@ -114,3 +114,6 @@ name = "framebuffer_panic_gate_test"
 
 [[test]]
 name = "test_framework_panic_message_test"
+
+[[test]]
+name = "scroll_dirty_range_test"

@@ -418,7 +418,6 @@ pub fn decode_result(raw: u64) -> Result<u64, SysError> {
         SYSCALL_ERR_IO => Err(SysError::IoError),
         SYSCALL_ERR_OUT_OF_MEMORY => Err(SysError::OutOfMemory),
         SYSCALL_ERR_PERMISSION_DENIED => Err(SysError::PermissionDenied),
-        x if x >= SYSCALL_ERR_PERMISSION_DENIED => Err(SysError::Unknown(x)),
         value => Ok(value),
     }
 }

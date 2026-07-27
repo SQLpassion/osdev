@@ -425,3 +425,52 @@ fn test_keyboard_clear_buffers_drains_all_inputs() {
         "key buffer must be empty after clear_buffers"
     );
 }
+
+/// Contract: the Pause/Break key's 0xE1-prefixed 6-byte make sequence is
+/// consumed as a recognized no-op and does not leak a bogus key event.
+/// Given: The keyboard driver is initialized (issue #61, L18).
+/// When: The full Pause make sequence `E1 1D 45 E1 9D C5` is enqueued and
+///   processed. The Pause key has no distinct break code, so this is the
+///   entire event for a single Pause key press.
+/// Then: No character and no `Key` event are produced by the sequence, and
+///   the state machine returns to a clean state so a subsequent, unrelated
+///   scancode still decodes correctly (proving the sequence's interior bytes
+///   — which alias LCtrl make/break and other codes — were not
+///   misinterpreted as separate key events).
+/// Failure Impact: Before this fix, the sequence's interior bytes fell
+///   through to the normal make/break decode path, which could spuriously
+///   toggle modifier state (e.g. LCtrl) or emit garbage key events.
+#[test_case]
+fn test_pause_key_scancode_sequence_is_consumed_as_no_op() {
+    keyboard::init();
+
+    // Full Pause/Break make sequence: E1 1D 45 E1 9D C5 (no break code exists).
+    for code in [0xE1u8, 0x1D, 0x45, 0xE1, 0x9D, 0xC5] {
+        keyboard::enqueue_raw_scancode(code);
+    }
+    assert!(
+        keyboard::process_pending_scancodes(),
+        "worker iteration must process the queued Pause sequence bytes"
+    );
+
+    assert!(
+        keyboard::read_char().is_none(),
+        "Pause sequence must not produce a decoded ASCII character"
+    );
+    assert!(
+        keyboard::read_key().is_none(),
+        "Pause sequence must not produce a decoded Key event"
+    );
+
+    // Follow-up scancode must decode normally, proving the sequence left no
+    // stuck state (e.g. a still-pending byte count or stuck LCtrl modifier).
+    keyboard::enqueue_raw_scancode(0x1e);
+    assert!(
+        keyboard::process_pending_scancodes(),
+        "worker iteration should process the post-Pause scancode"
+    );
+    assert!(
+        keyboard::read_char() == Some(b'a'),
+        "scancode after a Pause sequence must decode normally"
+    );
+}

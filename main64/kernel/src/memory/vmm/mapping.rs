@@ -5,8 +5,8 @@ use crate::memory::pmm;
 use super::page_table::{
     alloc_frame_phys, alloc_frame_phys_or_panic, entry_ptr, invlpg, page_align_down, pd_index,
     pd_table_addr, pdp_index, pdp_table_addr, phys_to_pfn, pml4_index, pt_for_if_present, pt_index,
-    pt_table_addr, read_cr3, table_at, table_entry, table_is_empty, table_zero, write_cr3,
-    PML4_TABLE_ADDR,
+    pt_table_addr, read_cr3, table_at, table_entry, table_is_empty, table_zero, walk_levels,
+    write_cr3, PageTable, WalkResult, PML4_TABLE_ADDR,
 };
 use super::{
     classify_user_region, debug_alloc, vmm_logln, UserRegion, TEMP_CLONE_PML4_VA,
@@ -151,44 +151,77 @@ pub fn populate_page_table_path(virtual_address: u64, user: bool) -> Result<(), 
     Ok(())
 }
 
-/// Clears one mapped leaf page and prunes empty page-table levels for `virtual_address`.
+/// Bundles the already-resolved tables and indices for one virtual address's
+/// PML4/PDP/PD/PT path, as produced by a successful [`walk_levels`] resolution.
 ///
-/// This helper is used by address-space teardown paths and intentionally does
-/// not log warnings when a leaf PFN is not PMM-managed.
+/// Grouping these together (instead of passing eight raw pointers/indices
+/// around individually) keeps [`clear_leaf_and_prune`] a plain 3-argument
+/// function and gives the shared-path callers in [`unmap_page_and_prune_pagetable_hierarchy`]
+/// and [`reclaim_user_range`] one obvious place to construct it from the
+/// pointers they compute (cheaply, via [`table_at`] + the `*_table_addr`
+/// helpers) once `walk_levels` confirms the path resolves.
+struct ResolvedPath {
+    pml4: *mut PageTable,
+    pml4_idx: usize,
+    pdp: *mut PageTable,
+    pdp_idx: usize,
+    pd: *mut PageTable,
+    pd_idx: usize,
+    pt: *mut PageTable,
+}
+
+impl ResolvedPath {
+    /// Recomputes the table pointers/indices for `virtual_address`.
+    ///
+    /// Callers must already know the path resolves (e.g. `walk_levels`
+    /// returned `WalkResult::Resolved` for this address) -- recomputation
+    /// here is pure address arithmetic (`table_at` + the `*_table_addr`
+    /// helpers), not a fresh page-table read, so this does not reintroduce
+    /// the redundant walk this refactor removes.
+    fn for_virtual_address(virtual_address: u64) -> Self {
+        Self {
+            pml4: table_at(PML4_TABLE_ADDR),
+            pml4_idx: pml4_index(virtual_address),
+            pdp: table_at(pdp_table_addr(virtual_address)),
+            pdp_idx: pdp_index(virtual_address),
+            pd: table_at(pd_table_addr(virtual_address)),
+            pd_idx: pd_index(virtual_address),
+            pt: table_at(pt_table_addr(virtual_address)),
+        }
+    }
+}
+
+/// Clears the leaf PTE for `virtual_address` in an *already-resolved* 4-level
+/// `path` and prunes now-empty PD/PDP/PML4 levels bottom-up.
 ///
-/// If `release_leaf_pfn` is `true`, the leaf PFN is returned to PMM.
-/// If `false`, the leaf mapping is only cleared.
-pub fn unmap_page_and_prune_pagetable_hierarchy(virtual_address: u64, release_leaf_pfn: bool) {
-    let virtual_address = page_align_down(virtual_address);
-
-    // Step 1: Resolve the full 4-level path for `virtual_address`.
-    // If any intermediate level is missing (or huge-mapped), there is no
-    // normal 4KiB leaf to clear and therefore nothing to prune.
-    let pml4 = table_at(PML4_TABLE_ADDR);
-    let pml4_idx = pml4_index(virtual_address);
-    let pml4e = table_entry(pml4, pml4_idx);
-    if !pml4e.present() || pml4e.huge() {
-        return;
-    }
-
-    let pdp = table_at(pdp_table_addr(virtual_address));
-    let pdp_idx = pdp_index(virtual_address);
-    let pdpe = table_entry(pdp, pdp_idx);
-    if !pdpe.present() || pdpe.huge() {
-        return;
-    }
-
-    let pd = table_at(pd_table_addr(virtual_address));
-    let pd_idx = pd_index(virtual_address);
-    let pde = table_entry(pd, pd_idx);
-    if !pde.present() || pde.huge() {
-        return;
-    }
-
-    let pt = table_at(pt_table_addr(virtual_address));
+/// This is the shared tail end of both [`unmap_page_and_prune_pagetable_hierarchy`]
+/// (which resolves the path itself via [`walk_levels`]) and [`reclaim_user_range`]
+/// (whose scanning loop has already resolved the same path one level at a time
+/// while deciding how far to descend, and passes the tables/indices straight
+/// through instead of re-walking from PML4 for every present page -- see
+/// issue #58, finding L1).
+///
+/// Callers must guarantee `path` was built for `virtual_address` and that its
+/// PML4/PDP/PD entries are present and non-huge (as [`WalkResult::Resolved`]
+/// guarantees).
+///
+/// If `release_leaf_pfn` is `true`, the leaf PFN is returned to PMM. If
+/// `false`, the leaf mapping is only cleared. This helper is used by
+/// address-space teardown paths and intentionally does not log warnings when
+/// a leaf PFN is not PMM-managed.
+fn clear_leaf_and_prune(virtual_address: u64, path: ResolvedPath, release_leaf_pfn: bool) {
+    let ResolvedPath {
+        pml4,
+        pml4_idx,
+        pdp,
+        pdp_idx,
+        pd,
+        pd_idx,
+        pt,
+    } = path;
     let pt_idx = pt_index(virtual_address);
 
-    // Step 2: Clear the leaf PTE.
+    // Step 1: Clear the leaf PTE.
     // Optionally release the old leaf PFN depending on caller policy:
     // - true  => regular owned user page, return frame to PMM
     // - false => alias/scratch mapping, only remove mapping
@@ -203,7 +236,7 @@ pub fn unmap_page_and_prune_pagetable_hierarchy(virtual_address: u64, release_le
         }
     }
 
-    // Step 3: Bottom-up pruning.
+    // Step 2: Bottom-up pruning.
     // Only remove a parent-table entry if the child table became empty.
     // This guarantees we never drop shared siblings.
     if !table_is_empty(pt.cast_const()) {
@@ -238,6 +271,32 @@ pub fn unmap_page_and_prune_pagetable_hierarchy(virtual_address: u64, release_le
     unsafe { (*entry_ptr(pml4, pml4_idx)).clear() };
     invlpg(pdp_table_addr(virtual_address));
     let _ = pmm::with_pmm(|mgr| mgr.release_pfn(pdp_pfn));
+}
+
+/// Clears one mapped leaf page and prunes empty page-table levels for `virtual_address`.
+///
+/// This helper is used by address-space teardown paths and intentionally does
+/// not log warnings when a leaf PFN is not PMM-managed.
+///
+/// If `release_leaf_pfn` is `true`, the leaf PFN is returned to PMM.
+/// If `false`, the leaf mapping is only cleared.
+pub fn unmap_page_and_prune_pagetable_hierarchy(virtual_address: u64, release_leaf_pfn: bool) {
+    let virtual_address = page_align_down(virtual_address);
+
+    // Resolve the full 4-level path for `virtual_address` through the shared
+    // walk. If any intermediate level is missing (or huge-mapped), there is
+    // no normal 4 KiB leaf to clear and therefore nothing to prune.
+    let WalkResult::Resolved { .. } = walk_levels(virtual_address) else {
+        return;
+    };
+
+    // `walk_levels` already confirmed every level is present and non-huge, so
+    // recomputing the table pointers/indices here is pure address arithmetic
+    // (no additional page-table reads) -- `clear_leaf_and_prune` needs the
+    // raw mutable pointers to prune entries, which `WalkResult` intentionally
+    // does not carry (see its doc comment).
+    let path = ResolvedPath::for_virtual_address(virtual_address);
+    clear_leaf_and_prune(virtual_address, path, release_leaf_pfn);
 }
 
 /// Maps `virtual_address` to `physical_address` with present + writable flags.
@@ -726,12 +785,28 @@ pub fn unmap_user_heap_region() {
 
 /// Reclaims every present user leaf mapping in `[scan_start, scan_end)`.
 ///
-/// Walks the 4-level page-table hierarchy, skipping non-present sub-trees at
-/// the largest granularity possible (512 GiB / 1 GiB / 2 MiB jumps) so large
-/// unmapped gaps are cheap to pass over, and releases each present leaf frame
-/// via the refcounted `PhysicalMemoryManager::release_pfn` while pruning
-/// now-empty PT/PD/PDP levels — the same technique `unmap_user_heap_region`
-/// has always used for the heap window, generalized to arbitrary bounds.
+/// Walks the 4-level page-table hierarchy via the shared [`walk_levels`],
+/// skipping non-present (or huge-mapped) sub-trees at the largest granularity
+/// possible (512 GiB / 1 GiB / 2 MiB jumps) so large unmapped gaps are cheap
+/// to pass over, and releases each present leaf frame via the refcounted
+/// `PhysicalMemoryManager::release_pfn` while pruning now-empty PT/PD/PDP
+/// levels — the same technique `unmap_user_heap_region` has always used for
+/// the heap window, generalized to arbitrary bounds.
+///
+/// For each present page this loop has *already* resolved the PML4/PDP/PD
+/// path while deciding not to skip past it, so the present-page case feeds
+/// those already-resolved tables/indices straight into
+/// [`clear_leaf_and_prune`] instead of re-entering the full 4-level walk per
+/// page through [`unmap_page_and_prune_pagetable_hierarchy`] — see issue #58,
+/// finding L1 (this used to walk the hierarchy twice per reclaimed page).
+///
+/// Note: user mappings are only ever created as 4 KiB pages (see
+/// [`map_user_page`]), so a huge PDP/PD entry is never expected inside the
+/// user scan range in practice; treating it the same as "not present" here
+/// (skip past it at its native granularity) keeps this loop's bail
+/// conditions consistent with every other walk in the VMM instead of
+/// silently misinterpreting a huge page's data frame as a child table
+/// address, which the pre-#58 version of this loop did not guard against.
 ///
 /// Callers must ensure the target address space is already active (e.g. via
 /// [`with_address_space`]) so recursive-mapping helper addresses resolve
@@ -741,39 +816,27 @@ pub fn unmap_user_heap_region() {
 fn reclaim_user_range(scan_start: u64, scan_end: u64) {
     let mut va = scan_start;
     while va < scan_end {
-        // Step 1: Resolve PML4 level and skip if non-present.
-        let pml4 = table_at(PML4_TABLE_ADDR);
-        let pml4_idx = pml4_index(va);
-        let pml4e = table_entry(pml4, pml4_idx);
-        if !pml4e.present() {
-            // PML4 entries cover 512 GiB of virtual address space.
-            va = (va + 0x80_0000_0000) & !(0x80_0000_0000 - 1);
-            continue;
+        match walk_levels(va) {
+            WalkResult::Pml4Missing => {
+                // PML4 entries cover 512 GiB of virtual address space.
+                va = (va + 0x80_0000_0000) & !(0x80_0000_0000 - 1);
+            }
+            WalkResult::PdpMissing { .. } | WalkResult::PdpHuge { .. } => {
+                // PDPT entries cover 1 GiB of virtual address space.
+                va = (va + 0x4000_0000) & !(0x4000_0000 - 1);
+            }
+            WalkResult::PdMissing { .. } | WalkResult::PdHuge { .. } => {
+                // PD entries cover 2 MiB of virtual address space.
+                va = (va + 0x20_0000) & !(0x20_0000 - 1);
+            }
+            WalkResult::Resolved { .. } => {
+                // Page table level exists; reuse the already-resolved path to
+                // clear and prune this one page, then advance by page size.
+                let path = ResolvedPath::for_virtual_address(va);
+                clear_leaf_and_prune(va, path, true);
+                va += PAGE_SIZE_U64;
+            }
         }
-
-        // Step 2: Resolve PDPT level and skip if non-present.
-        let pdp = table_at(pdp_table_addr(va));
-        let pdp_idx = pdp_index(va);
-        let pdpe = table_entry(pdp, pdp_idx);
-        if !pdpe.present() {
-            // PDPT entries cover 1 GiB of virtual address space.
-            va = (va + 0x4000_0000) & !(0x4000_0000 - 1);
-            continue;
-        }
-
-        // Step 3: Resolve PD level and skip if non-present.
-        let pd = table_at(pd_table_addr(va));
-        let pd_idx = pd_index(va);
-        let pde = table_entry(pd, pd_idx);
-        if !pde.present() {
-            // PD entries cover 2 MiB of virtual address space.
-            va = (va + 0x20_0000) & !(0x20_0000 - 1);
-            continue;
-        }
-
-        // Step 4: Page table level exists; unmap individual page and advance by page size.
-        unmap_page_and_prune_pagetable_hierarchy(va, true);
-        va += PAGE_SIZE_U64;
     }
 }
 
@@ -884,55 +947,51 @@ pub fn configure_wc_mapping(start_va: u64, size: u64) {
     let end = page_align_down(start_va + size + PAGE_SIZE_U64 - 1);
 
     while addr < end {
-        let pml4 = table_at(PML4_TABLE_ADDR);
-        let pml4_idx = pml4_index(addr);
-        let pml4e = table_entry(pml4, pml4_idx);
-        if !pml4e.present() {
-            addr += PAGE_SIZE_U64;
-            continue;
-        }
-
-        let pdp = table_at(pdp_table_addr(addr));
-        let pdp_idx = pdp_index(addr);
-        let pdpe = table_entry(pdp, pdp_idx);
-        if !pdpe.present() {
-            addr += PAGE_SIZE_U64;
-            continue;
-        }
-        if pdpe.huge() {
-            // SAFETY: Modifying cache bits of mapped memory in Ring 0 is safe.
-            unsafe {
-                (*entry_ptr(pdp, pdp_idx)).set_pwt(true);
+        // Dispatch on the shared walk to decide which level (if any) holds
+        // the mapping for `addr`, then apply the PWT bit at exactly that
+        // level. Missing entries at any level are skipped one page at a
+        // time (matching this function's original per-call behavior);
+        // that is a smaller skip than `reclaim_user_range`'s jump-by-region
+        // logic, but WC ranges (framebuffer/MMIO) are typically small
+        // contiguous windows, so this was never a hot path worth widening
+        // here, and preserving it avoids an unrelated behavior change.
+        match walk_levels(addr) {
+            WalkResult::Pml4Missing
+            | WalkResult::PdpMissing { .. }
+            | WalkResult::PdMissing { .. } => {
+                addr += PAGE_SIZE_U64;
             }
-            invlpg(addr);
-            addr = (addr + 0x4000_0000) & !0x3FFF_FFFF; // Advance by 1GiB
-            continue;
-        }
-
-        let pd = table_at(pd_table_addr(addr));
-        let pd_idx = pd_index(addr);
-        let pde = table_entry(pd, pd_idx);
-        if !pde.present() {
-            addr += PAGE_SIZE_U64;
-            continue;
-        }
-        if pde.huge() {
-            unsafe {
-                (*entry_ptr(pd, pd_idx)).set_pwt(true);
+            WalkResult::PdpHuge { .. } => {
+                let pdp = table_at(pdp_table_addr(addr));
+                let pdp_idx = pdp_index(addr);
+                // SAFETY: Modifying cache bits of mapped memory in Ring 0 is safe.
+                unsafe {
+                    (*entry_ptr(pdp, pdp_idx)).set_pwt(true);
+                }
+                invlpg(addr);
+                addr = (addr + 0x4000_0000) & !0x3FFF_FFFF; // Advance by 1GiB
             }
-            invlpg(addr);
-            addr = (addr + 0x20_0000) & !0x1F_FFFF; // Advance by 2MiB
-            continue;
-        }
-
-        let pt = table_at(pt_table_addr(addr));
-        let pt_idx = pt_index(addr);
-        if table_entry(pt, pt_idx).present() {
-            unsafe {
-                (*entry_ptr(pt, pt_idx)).set_pwt(true);
+            WalkResult::PdHuge { .. } => {
+                let pd = table_at(pd_table_addr(addr));
+                let pd_idx = pd_index(addr);
+                // SAFETY: Modifying cache bits of mapped memory in Ring 0 is safe.
+                unsafe {
+                    (*entry_ptr(pd, pd_idx)).set_pwt(true);
+                }
+                invlpg(addr);
+                addr = (addr + 0x20_0000) & !0x1F_FFFF; // Advance by 2MiB
             }
-            invlpg(addr);
+            WalkResult::Resolved { pt, .. } => {
+                let pt_idx = pt_index(addr);
+                if table_entry(pt, pt_idx).present() {
+                    // SAFETY: Modifying cache bits of mapped memory in Ring 0 is safe.
+                    unsafe {
+                        (*entry_ptr(pt, pt_idx)).set_pwt(true);
+                    }
+                    invlpg(addr);
+                }
+                addr += PAGE_SIZE_U64;
+            }
         }
-        addr += PAGE_SIZE_U64;
     }
 }

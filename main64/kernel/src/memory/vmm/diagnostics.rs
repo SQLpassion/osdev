@@ -1,8 +1,7 @@
 #![allow(dead_code)]
 
 use super::page_table::{
-    page_align_down, pd_index, pd_table_addr, pdp_index, pdp_table_addr, pml4_index,
-    pt_for_if_present, pt_index, pt_table_addr, table_at, table_entry, PML4_TABLE_ADDR,
+    page_align_down, pt_for_if_present, pt_index, table_entry, walk_levels, WalkResult,
 };
 use super::{read_virt_u8, unmap_virtual_address, vmm_logln, write_virt_u8};
 
@@ -12,32 +11,16 @@ use super::{read_virt_u8, unmap_virtual_address, vmm_logln, write_virt_u8};
 pub fn debug_table_pfns_for_va(virtual_address: u64) -> Option<(u64, u64, u64)> {
     // Diagnostics always inspect page-aligned address.
     let virtual_address = page_align_down(virtual_address);
-    let pml4 = table_at(PML4_TABLE_ADDR);
-    let pml4_idx = pml4_index(virtual_address);
-    let pml4e = table_entry(pml4, pml4_idx);
 
-    if !pml4e.present() || pml4e.huge() {
-        return None;
+    // Delegate the PML4/PDP/PD bail sequence to the shared walk; the PML4
+    // huge-page check is not part of `walk_levels` itself (see its doc
+    // comment), so it is still applied here to preserve exact behavior.
+    match walk_levels(virtual_address) {
+        WalkResult::Resolved {
+            pml4e, pdpe, pde, ..
+        } if !pml4e.huge() => Some((pml4e.frame(), pdpe.frame(), pde.frame())),
+        _ => None,
     }
-
-    let pdp = table_at(pdp_table_addr(virtual_address));
-    let pdp_idx = pdp_index(virtual_address);
-    let pdpe = table_entry(pdp, pdp_idx);
-
-    if !pdpe.present() || pdpe.huge() {
-        return None;
-    }
-
-    let pd = table_at(pd_table_addr(virtual_address));
-    let pd_idx = pd_index(virtual_address);
-    let pde = table_entry(pd, pd_idx);
-
-    if !pde.present() || pde.huge() {
-        return None;
-    }
-
-    // Return intermediate table frame numbers for caller-side inspection.
-    Some((pml4e.frame(), pdpe.frame(), pde.frame()))
 }
 
 /// Returns the mapped leaf PFN for `virtual_address` in active CR3.
@@ -63,33 +46,23 @@ pub fn debug_mapped_pfn_for_va(virtual_address: u64) -> Option<u64> {
 pub fn debug_mapping_flags_for_va(virtual_address: u64) -> Option<(bool, bool, bool, bool, bool)> {
     // Diagnostics always inspect page-aligned address.
     let virtual_address = page_align_down(virtual_address);
-    let pml4 = table_at(PML4_TABLE_ADDR);
-    let pml4_idx = pml4_index(virtual_address);
-    let pml4e = table_entry(pml4, pml4_idx);
 
-    if !pml4e.present() || pml4e.huge() {
+    // Resolve the shared path down to the leaf PT, then apply the same PML4
+    // huge-page defensive check the other diagnostics helpers use.
+    let WalkResult::Resolved {
+        pml4e,
+        pdpe,
+        pde,
+        pt,
+    } = walk_levels(virtual_address)
+    else {
+        return None;
+    };
+    if pml4e.huge() {
         return None;
     }
 
-    let pdp = table_at(pdp_table_addr(virtual_address));
-    let pdp_idx = pdp_index(virtual_address);
-    let pdpe = table_entry(pdp, pdp_idx);
-
-    if !pdpe.present() || pdpe.huge() {
-        return None;
-    }
-
-    let pd = table_at(pd_table_addr(virtual_address));
-    let pd_idx = pd_index(virtual_address);
-    let pde = table_entry(pd, pd_idx);
-
-    if !pde.present() || pde.huge() {
-        return None;
-    }
-
-    let pt = table_at(pt_table_addr(virtual_address));
     let pte = table_entry(pt, pt_index(virtual_address));
-
     if !pte.present() {
         return None;
     }

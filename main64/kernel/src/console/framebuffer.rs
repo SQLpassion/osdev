@@ -59,26 +59,26 @@ impl Default for FramebufferConsole {
 impl FramebufferConsole {
     /// Creates and initializes a new FramebufferConsole instance.
     pub fn new() -> Self {
-        let raw = crate::boot_info::BOOT_INFO_PTR.load(core::sync::atomic::Ordering::Relaxed);
-
-        let (cols, rows, fb_info, bb_size) = if raw == 0 {
-            (80, 25, None, 0)
-        } else {
-            // SAFETY: Checked pointer.
-            let bi = unsafe { &*(raw as *const crate::boot_info::BootInfo) };
-            if bi.video_type == crate::boot_info::VideoModeType::Framebuffer
-                && bi.fb_info.base_address != 0
-            {
-                let fb = bi.fb_info;
-                let bb_size = (fb.pixels_per_scanline * fb.height) as usize;
-                (
-                    (fb.width / GLYPH_W) as usize,
-                    (fb.height / GLYPH_H) as usize,
-                    Some(fb),
-                    bb_size,
-                )
-            } else {
-                (80, 25, None, 0)
+        // Re-derive `&BootInfo` through the canonical accessor instead of loading
+        // `BOOT_INFO_PTR` and casting it by hand — `BootInfo::get()` owns the
+        // pointer-validity contract (non-null, `Acquire`-ordered load) in one place.
+        let (cols, rows, fb_info, bb_size) = match crate::boot_info::BootInfo::get() {
+            None => (80, 25, None, 0),
+            Some(bi) => {
+                if bi.video_type == crate::boot_info::VideoModeType::Framebuffer
+                    && bi.fb_info.base_address != 0
+                {
+                    let fb = bi.fb_info;
+                    let bb_size = (fb.pixels_per_scanline * fb.height) as usize;
+                    (
+                        (fb.width / GLYPH_W) as usize,
+                        (fb.height / GLYPH_H) as usize,
+                        Some(fb),
+                        bb_size,
+                    )
+                } else {
+                    (80, 25, None, 0)
+                }
             }
         };
 
@@ -142,6 +142,32 @@ impl FramebufferConsole {
         if y_end > self.dirty_y_max {
             self.dirty_y_max = y_end;
         }
+    }
+
+    /// Computes the scanline range a single-row upward scroll actually touches,
+    /// for a console with `rows` text rows: the `rows - 1` shifted rows plus the
+    /// newly cleared bottom row, i.e. `rows * GLYPH_H` scanlines starting at `0`.
+    ///
+    /// This is deliberately narrower than "the whole framebuffer height" — when
+    /// `fb.height` is not an exact multiple of `GLYPH_H`, there are leftover
+    /// scanlines below the last full text row that `scroll()` never writes to
+    /// and therefore must not be marked dirty (issue #62 / L12: marking them
+    /// dirty forced the RAM-to-RAM backbuffer -> scratch copy in
+    /// `take_flush_job`, still run under `GLOBAL_CONSOLE`'s lock, to cover the
+    /// whole screen instead of just the changed region).
+    fn scroll_dirty_range(rows: usize) -> (u32, u32) {
+        let total_scanlines = rows as u32 * GLYPH_H;
+        (0, total_scanlines.saturating_sub(1))
+    }
+
+    /// Test-only accessor for [`Self::scroll_dirty_range`]. Hidden from public
+    /// docs; lets integration tests confirm the narrowed dirty-range arithmetic
+    /// without needing a live framebuffer console (see `console_flush_lock_test.rs`
+    /// / `scroll_dirty_range_test.rs`).
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn scroll_dirty_range_for_test(rows: usize) -> (u32, u32) {
+        Self::scroll_dirty_range(rows)
     }
 
     /// Writes a single 32-bit pixel value into the RAM backbuffer at coordinates (x, y).
@@ -394,8 +420,13 @@ impl FramebufferConsole {
                 let end_idx = start_idx + GLYPH_H as usize * stride;
                 self.backbuffer[start_idx..end_idx].fill(bg_rgb);
 
-                // Mark the entire screen region dirty to upload the scrolled result
-                self.mark_dirty_range(0, fb.height.saturating_sub(1));
+                // Mark only the scanlines the shift + bottom-row clear above
+                // actually touched dirty (not the whole framebuffer height),
+                // so the RAM-to-RAM backbuffer -> scratch copy that
+                // `take_flush_job` performs under `GLOBAL_CONSOLE`'s lock only
+                // covers the region that really changed (issue #62 / L12).
+                let (dirty_start, dirty_end) = Self::scroll_dirty_range(self.rows);
+                self.mark_dirty_range(dirty_start, dirty_end.min(fb.height.saturating_sub(1)));
             }
 
             // Fix logical cursor row and mark for deferred redraw.
@@ -643,11 +674,14 @@ impl KernelConsole for FramebufferConsole {
     }
 
     fn disable_blink_mode(&mut self) {
-        // No-op for framebuffer.
+        // No-op: blink mode is a VGA text-mode attribute-controller concept
+        // that has no equivalent on a pixel framebuffer. See the trait-level
+        // contract on `KernelConsole::disable_blink_mode`.
     }
 
     fn enable_blink_mode(&mut self) {
-        // No-op for framebuffer.
+        // No-op: see `disable_blink_mode` above and the trait-level contract
+        // on `KernelConsole::enable_blink_mode`.
     }
 
     fn take_pending_flush(&mut self) -> Option<PendingFlush> {

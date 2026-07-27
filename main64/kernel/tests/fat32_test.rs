@@ -10,7 +10,9 @@
 
 use core::panic::PanicInfo;
 use kaos_kernel::drivers::block;
+use kaos_kernel::drivers::block::BlockError;
 use kaos_kernel::io::fat32;
+use kaos_kernel::io::vfs::FsError;
 
 /// Entry point for the integration test kernel.
 #[no_mangle]
@@ -143,4 +145,148 @@ fn test_cyclic_fat_chain_returns_bad_chain_within_cluster_count() {
         "a cyclic FAT chain must be reported as BadChain instead of looping forever, got {:?}",
         result
     );
+}
+
+/// Contract (L7, #60): directory walks must skip both LFN continuation entries
+/// (attr == 0x0F) and the volume-label entry (attr == 0x08), the same filtering
+/// `read_file` already applied. `print_root_directory` previously only checked
+/// for 0x0F and could surface the volume label as a bogus zero-size, zero-cluster
+/// "file" in its listing.
+/// Given: The shared `is_skippable_dir_entry` predicate used by both directory
+/// walks (exposed for tests via `is_skippable_dir_entry_for_test`).
+/// When: It is evaluated against the LFN attribute, the volume-ID attribute, and
+/// a representative set of "real" entry attributes (plain file, read-only file,
+/// subdirectory).
+/// Then: Only the LFN and volume-ID attributes are reported as skippable.
+#[test_case]
+fn test_is_skippable_dir_entry_skips_lfn_and_volume_id_only() {
+    // LFN continuation entry: must be skipped.
+    assert!(fat32::is_skippable_dir_entry_for_test(0x0F));
+    // Volume label entry: must be skipped (this is the L7 fix itself).
+    assert!(fat32::is_skippable_dir_entry_for_test(0x08));
+
+    // A plain file entry must not be treated as skippable.
+    assert!(!fat32::is_skippable_dir_entry_for_test(0x00));
+    // A read-only file entry must not be treated as skippable.
+    assert!(!fat32::is_skippable_dir_entry_for_test(0x01));
+    // A subdirectory entry must not be treated as skippable (it is handled
+    // separately via the `ATTR_DIRECTORY` bit further down the walk).
+    assert!(!fat32::is_skippable_dir_entry_for_test(0x10));
+    // An archive-bit-only file entry must not be treated as skippable.
+    assert!(!fat32::is_skippable_dir_entry_for_test(0x20));
+}
+
+/// Contract (L9, #60): `map_fat32_err` must translate each distinct
+/// `Fat32Error` variant into its own `FsError` variant, instead of collapsing
+/// `NotFat32`/`IsDirectory`/`BadChain`/`TooLarge` into a generic `FsError::Io`
+/// and losing which specific failure occurred.
+/// Given: One representative value of every `Fat32Error` variant, including
+/// both `Fat32Error::Block` sub-cases (the "unsupported operation" case, which
+/// intentionally still maps to `FsError::Unsupported`, and a generic transport
+/// failure, which maps to `FsError::Io`).
+/// When: Each is passed through `map_fat32_err` (exposed for tests via
+/// `map_fat32_err_for_test`).
+/// Then: Each produces a distinct, specific `FsError` variant rather than all
+/// non-`NotFound`/`Unsupported` cases collapsing into `FsError::Io`.
+#[test_case]
+fn test_map_fat32_err_preserves_distinct_error_variants() {
+    assert!(matches!(
+        fat32::map_fat32_err_for_test(fat32::Fat32Error::NotFound),
+        FsError::NotFound
+    ));
+    assert!(matches!(
+        fat32::map_fat32_err_for_test(fat32::Fat32Error::NotFat32),
+        FsError::NotFat32
+    ));
+    assert!(matches!(
+        fat32::map_fat32_err_for_test(fat32::Fat32Error::IsDirectory),
+        FsError::IsDirectory
+    ));
+    assert!(matches!(
+        fat32::map_fat32_err_for_test(fat32::Fat32Error::BadChain),
+        FsError::BadChain
+    ));
+    assert!(matches!(
+        fat32::map_fat32_err_for_test(fat32::Fat32Error::TooLarge),
+        FsError::TooLarge
+    ));
+    assert!(matches!(
+        fat32::map_fat32_err_for_test(fat32::Fat32Error::Block(BlockError::Unsupported)),
+        FsError::Unsupported
+    ));
+    assert!(matches!(
+        fat32::map_fat32_err_for_test(fat32::Fat32Error::Block(BlockError::Device)),
+        FsError::Io
+    ));
+}
+
+/// Contract (L10, #60): `Fat32Volume::mount` must keep rejecting BPBs whose
+/// `BytesPerSec` field is not exactly 512 as `Fat32Error::NotFat32`. This is
+/// the invariant that makes the sector-size buffers throughout `fat32.rs` safe
+/// to size from `self.bytes_per_sec` (see `read_file`/`print_root_directory`):
+/// as long as `mount()` keeps enforcing 512, `self.bytes_per_sec` is always
+/// 512 in practice, so switching those buffers from a hardcoded `512` literal
+/// to `self.bytes_per_sec` is behavior-preserving for every volume that can
+/// actually mount.
+/// Given: A synthetic BPB sector at a scratch LBA, identical to a valid FAT32
+/// boot sector except `BytesPerSec` (offset 0x0B) is set to 1024 instead of 512.
+/// When: `Fat32Volume::mount` is called against that scratch LBA.
+/// Then: It must return `Err(Fat32Error::NotFat32)` rather than mounting a
+/// volume whose declared sector size disagrees with the buffers the rest of
+/// the module allocates.
+#[test_case]
+fn test_mount_rejects_non_512_byte_sector() {
+    // Step 1: The ATA block device is already initialized by
+    // `test_cyclic_fat_chain_returns_bad_chain_within_cluster_count`, which
+    // the test harness runs before this test (test cases run in a fixed,
+    // alphabetically-sorted order within a binary). Re-running `pmm::init`/
+    // `vmm::init`/`heap::init` here would re-initialize live kernel memory
+    // management state from under the current test process, which is not a
+    // supported operation, so this test intentionally reuses the already-
+    // initialized ATA device instead of repeating that setup.
+    if !kaos_kernel::memory::pmm::is_initialized() {
+        kaos_kernel::memory::pmm::init(false);
+        kaos_kernel::arch::interrupts::init();
+        kaos_kernel::memory::vmm::init(false);
+        kaos_kernel::memory::heap::init(false);
+        kaos_kernel::drivers::ata::init();
+        block::init_ata();
+    }
+
+    // Step 2: Pick a scratch LBA far past the real FAT32 filesystem built by
+    // `tests/test_runner.sh`, so this synthetic boot sector cannot collide
+    // with (or corrupt) the volume other integration tests mount.
+    const SCRATCH_BOOT_LBA: u64 = 125_500;
+
+    // Step 3: Craft a boot sector that is a valid FAT32 BPB in every respect
+    // except `BytesPerSec`, which is set to 1024 instead of the required 512.
+    let mut sector = [0u8; 512];
+    sector[0x0B..0x0D].copy_from_slice(&1024u16.to_le_bytes()); // BytesPerSec = 1024
+    sector[0x0D] = 1; // SecPerClus
+    sector[0x0E..0x10].copy_from_slice(&32u16.to_le_bytes()); // RsvdSecCnt
+    sector[0x10] = 2; // NumFATs
+    sector[0x11..0x13].copy_from_slice(&0u16.to_le_bytes()); // RootEntCnt = 0 (FAT32)
+    sector[0x13..0x15].copy_from_slice(&0u16.to_le_bytes()); // TotSec16 = 0 (FAT32)
+    sector[0x16..0x18].copy_from_slice(&0u16.to_le_bytes()); // FATSz16 = 0 (FAT32)
+    sector[0x20..0x24].copy_from_slice(&131_072u32.to_le_bytes()); // TotSec32
+    sector[0x24..0x28].copy_from_slice(&1000u32.to_le_bytes()); // FATSz32
+    sector[0x2C..0x30].copy_from_slice(&2u32.to_le_bytes()); // RootCluster
+    sector[0x1FE..0x200].copy_from_slice(&0xAA55u16.to_le_bytes()); // Boot signature
+
+    block::write_sectors(SCRATCH_BOOT_LBA, 1, &sector)
+        .expect("writing the synthetic 1024-byte-sector BPB must succeed");
+
+    // Step 4: Attempt to mount it and confirm the 512-byte-sector gate rejects it.
+    // `Fat32Volume` does not implement `Debug`, so on mismatch we report only
+    // whether an `Ok(_)` (unexpectedly mounted) or the wrong `Err` variant was
+    // returned, without trying to print the volume itself.
+    let result = fat32::Fat32Volume::mount(SCRATCH_BOOT_LBA);
+    match result {
+        Err(fat32::Fat32Error::NotFat32) => {}
+        Err(other) => panic!(
+            "mount() must reject a non-512-byte-sector BPB as NotFat32, got Err({:?})",
+            other
+        ),
+        Ok(_) => panic!("mount() must reject a non-512-byte-sector BPB as NotFat32, got Ok(_)"),
+    }
 }
