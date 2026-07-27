@@ -20,6 +20,13 @@
 //! formats via `Display`) to confirm the interpolated values survive.
 //! Under the pre-fix logic, an `as_str()`-based check on this same panic
 //! would have observed `None` and dropped the message entirely.
+//!
+//! This also covers L16 (issue #59): `panic_message_contains` used to check
+//! each formatter `write_str` chunk independently, so a search string
+//! spanning two chunks (e.g. static text immediately followed by an
+//! interpolated value) could be missed even though the fully assembled
+//! message contained it. The panic handler below additionally asserts on
+//! such a spanning substring.
 
 #![no_std]
 #![no_main]
@@ -47,19 +54,21 @@ fn panic(info: &PanicInfo) -> ! {
     // `test_panic_handler`) would see `None` for this panic, since it was
     // built with format arguments - making this contract unverifiable and
     // silently dropping the diagnostic in the real failure path.
-    //
-    // `panic_message_contains` scans one formatter `write_str` chunk at a
-    // time (see its doc comment in `testing.rs`) and does not stitch
-    // adjacent chunks together, so a search string that straddles a chunk
-    // boundary - e.g. static text immediately followed by a `{:?}`-formatted
-    // argument - can miss even though the full message contains it. To keep
-    // this test independent of that separately-tracked limitation, we search
-    // only for each interpolated numeric literal on its own, which is
-    // rendered as a single `write_str` chunk by the integer `Debug` impl.
     let has_left = kaos_kernel::testing::panic_message_contains(info, "246813579");
     let has_right = kaos_kernel::testing::panic_message_contains(info, "987654321");
 
-    if has_left && has_right {
+    // `panic_message_contains` now accumulates every formatter `write_str`
+    // chunk into one buffer before searching (see its doc comment in
+    // `testing.rs`), instead of checking each chunk in isolation. Prove that
+    // by searching for a substring that itself straddles a chunk boundary:
+    // `test_assert_eq!`'s format string emits the literal `"  left: \`"` as
+    // one `write_str` call and the interpolated `246813579` value (via the
+    // integer `Debug` impl) as a separate one, so this needle only exists in
+    // the fully assembled message, never inside a single chunk.
+    let has_spanning_substring =
+        kaos_kernel::testing::panic_message_contains(info, "left: `246813579`");
+
+    if has_left && has_right && has_spanning_substring {
         exit_qemu(QemuExitCode::Success);
     } else {
         exit_qemu(QemuExitCode::Failed);

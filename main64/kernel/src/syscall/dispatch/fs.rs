@@ -19,6 +19,16 @@ pub fn read_user_string(
             return Err(SyscallError::InvalidArg);
         }
 
+        // SAFETY:
+        // - `len` starts at 0 and only ever grows past this point after the
+        //   previous iteration's `ptr.add(len)` was validated by
+        //   `is_valid_user_buffer_readable` and successfully dereferenced.
+        // - The loop guard above (`len >= max_len`) bounds `len` to
+        //   `max_len - 1` at this point, so `ptr.add(len)` cannot walk past
+        //   the caller-supplied maximum length.
+        // - This computes a pointer value only (no dereference); the result
+        //   is validated for user-accessibility immediately below before it
+        //   is ever read.
         if !is_valid_user_buffer_readable(unsafe { ptr.add(len) }, 1) {
             return Err(SyscallError::InvalidArg);
         }
@@ -100,6 +110,14 @@ pub fn syscall_delete_file_impl(name_ptr: *const u8) -> SyscallResult<u64> {
 
 /// Implements `SeekFile()`.
 pub fn syscall_seek_file_impl(fd: u64, offset: u64) -> SyscallResult<u64> {
+    // The VFS backend's `seek()` takes a `u32` offset. A silent `as u32`
+    // truncation here would let a caller pass e.g. `0x1_0000_0000` and have
+    // it quietly land on offset `0` instead - a wrong seek executed instead
+    // of a rejected one. Reject anything that would not round-trip instead.
+    if offset > u32::MAX as u64 {
+        return Err(SyscallError::InvalidArg);
+    }
+
     crate::io::vfs::seek(fd as usize, offset as u32).map_err(map_fs_error)?;
     Ok(0)
 }

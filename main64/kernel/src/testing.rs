@@ -169,29 +169,67 @@ macro_rules! test_assert {
 /// This is used by panic contract tests to verify the expected panic behavior
 /// in a no_std environment.
 pub fn panic_message_contains(info: &core::panic::PanicInfo, expected: &str) -> bool {
-    struct Searcher<'a> {
-        search: &'a str,
-        found: bool,
+    // `core::fmt::Write::write_str` is called once per formatted fragment
+    // (e.g. once for each literal segment and once for each interpolated
+    // `{}`/`{:?}` argument), not once for the whole message. A search that
+    // checked each chunk independently would miss any `expected` substring
+    // that straddles a chunk boundary - e.g. static text immediately
+    // followed by an interpolated value - even though the fully assembled
+    // message does contain it. To avoid that gap, accumulate every chunk
+    // into one buffer here and search the assembled text exactly once,
+    // after formatting has finished.
+    //
+    // This deliberately uses a fixed-size stack buffer instead of
+    // `alloc::string::String`: panic contract tests may trigger this path
+    // before the kernel heap is initialized, and allocating from an
+    // uninitialized heap inside a panic-adjacent helper would itself abort -
+    // exactly the kind of hidden, environment-dependent failure this project
+    // avoids. 1 KiB is comfortably larger than any panic message produced by
+    // `test_assert!`/`test_assert_eq!` in this codebase; a message longer
+    // than that is truncated rather than dropped, which is an acceptable
+    // degradation for this test-only helper.
+    const CAPACITY: usize = 1024;
+
+    struct Accumulator {
+        buf: [u8; CAPACITY],
+        len: usize,
     }
 
-    impl<'a> core::fmt::Write for Searcher<'a> {
+    impl core::fmt::Write for Accumulator {
         fn write_str(&mut self, s: &str) -> core::fmt::Result {
-            // Check if the current chunk of the formatted panic message contains the substring
-            if s.contains(self.search) {
-                self.found = true;
-            }
+            // Copy as much of this fragment as still fits. Truncating here
+            // (rather than erroring out) means a message that overflows the
+            // buffer still yields a partial match instead of no match at all.
+            let bytes = s.as_bytes();
+            let remaining = CAPACITY - self.len;
+            let take = core::cmp::min(remaining, bytes.len());
+            self.buf[self.len..self.len + take].copy_from_slice(&bytes[..take]);
+            self.len += take;
             Ok(())
         }
     }
 
     use core::fmt::Write;
-    let mut searcher = Searcher {
-        search: expected,
-        found: false,
+    let mut accumulator = Accumulator {
+        buf: [0u8; CAPACITY],
+        len: 0,
     };
 
-    // Format the panic message into our searcher to scan for the expected substring
-    let _ = write!(&mut searcher, "{}", info.message());
+    // Format the panic message into our accumulator, then search the
+    // complete assembled text once so substrings spanning multiple
+    // `write_str` chunks are still found.
+    let _ = write!(&mut accumulator, "{}", info.message());
 
-    searcher.found
+    // Truncation above can only ever happen on a whole-fragment boundary
+    // (i.e. between `write_str` calls), but in the pathological case where a
+    // single fragment itself gets cut off mid-write, the tail bytes could
+    // split a multi-byte UTF-8 sequence. Fall back to the longest valid UTF-8
+    // prefix instead of unwrapping, so this helper never panics itself.
+    let filled = &accumulator.buf[..accumulator.len];
+    let text = match core::str::from_utf8(filled) {
+        Ok(text) => text,
+        Err(err) => core::str::from_utf8(&filled[..err.valid_up_to()]).unwrap_or(""),
+    };
+
+    text.contains(expected)
 }
