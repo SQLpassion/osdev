@@ -303,9 +303,14 @@ fn map_fs_error(error: FsError) -> ExecError {
     match error {
         FsError::InvalidName => ExecError::InvalidName,
         FsError::NotFound => ExecError::NotFound,
-        FsError::Unsupported | FsError::NotMounted | FsError::InvalidFd | FsError::Io => {
-            ExecError::Io
-        }
+        FsError::Unsupported
+        | FsError::NotMounted
+        | FsError::InvalidFd
+        | FsError::Io
+        | FsError::NotFat32
+        | FsError::IsDirectory
+        | FsError::BadChain
+        | FsError::TooLarge => ExecError::Io,
     }
 }
 
