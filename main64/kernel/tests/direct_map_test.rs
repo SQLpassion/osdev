@@ -610,3 +610,58 @@ fn test_map_wc_range_rounds_unaligned_base_and_size_outward() {
         );
     }
 }
+
+// ============================================================================
+// Regression: `build_direct_map` must round each region to page boundaries before
+// mapping (found via `direct_map_full_switch_test.rs`'s real-QEMU-memory-map run).
+// ============================================================================
+
+/// Contract: two adjacent regions that are individually page-unaligned but share a
+/// containing page (e.g. classic QEMU/SeaBIOS `[0x0, 0x9FC00)` usable RAM immediately
+/// followed by a `[0x9FC00, 0xA0000)` reserved region — both fall inside the same 4 KiB
+/// page `[0x9F000, 0xA0000)`) build successfully instead of spuriously erroring.
+/// Failure Impact: without rounding each region to page boundaries first, the second
+/// region's unaligned start gets silently truncated by `phys_to_pfn`'s `>>12` when
+/// written into a PTE, which then no longer matches the *unrounded* address used for
+/// the idempotency check against the page Phase 1 already mapped — a real page,
+/// already correctly identity-mapped, gets misreported as a conflicting `Overlap`.
+/// This exact map shape is what `direct_map_full_switch_test.rs` hit against QEMU's
+/// real E820 map before this fix.
+#[test_case]
+fn test_adjacent_page_unaligned_regions_sharing_a_page_do_not_spuriously_overlap() {
+    // SAFETY: single-threaded test context.
+    unsafe {
+        let pml4 = reset_pool();
+        let mut alloc = bump_alloc_from_pool;
+
+        let usable = ram_entry(0x0, 0x9FC00);
+        let reserved = UnifiedMemoryEntry {
+            start: 0x9FC00,
+            size: 0x400,    // ends at 0xA0000
+            memory_type: 0, // EfiReservedMemoryType
+            _pad: 0,
+            attribute: 0,
+            is_usable: false,
+        };
+
+        build_direct_map(pml4, [usable].iter(), is_phase1_ram, &mut alloc, false).unwrap();
+        build_direct_map(
+            pml4,
+            [reserved].iter(),
+            is_phase2_platform,
+            &mut alloc,
+            false,
+        )
+        .unwrap();
+
+        // The shared page must resolve as plain identity (VA == PA) throughout.
+        assert_eq!(
+            resolve_phys_via_root(pml4, 0x9F000),
+            Some((0x9F000, PAGE_SIZE_U64))
+        );
+        assert_eq!(
+            resolve_phys_via_root(pml4, 0x9FC00),
+            Some((0x9FC00, PAGE_SIZE_U64))
+        );
+    }
+}

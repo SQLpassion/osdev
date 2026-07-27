@@ -35,9 +35,32 @@ use crate::memory::pmm;
 
 use super::page_table::{
     alloc_frame_phys, alloc_frame_phys_or_panic, entry_ptr, pd_index, pdp_index, phys_to_pfn,
-    pml4_index, pt_index, resolve_phys_via_root, table_at, table_entry, zero_phys_page,
-    HUGE_PAGE_SIZE_2M, PT_ENTRIES,
+    pml4_index, pt_index, resolve_phys_via_root, table_at, table_entry, write_cr3, zero_phys_page,
+    HUGE_PAGE_SIZE_2M, PT_ENTRIES, RECURSIVE_SLOT,
 };
+
+/// Master switch for Phase 4 (#63): when `true`, `vmm::init` builds a genuinely
+/// kernel-owned page-table hierarchy (Phase 1 RAM + Phase 2 platform regions + the
+/// higher-half kernel mirror + the recursive self-map — see [`build_full_kernel_pml4`])
+/// and switches CR3 to it instead of the firmware-clone superset
+/// (`build_kernel_pml4_from_firmware`); `reserve_firmware_page_tables` is then skipped
+/// in `main.rs` (the firmware's own sub-tables are no longer referenced and return to
+/// the PMM).
+///
+/// Defaults to `false`. On real hardware, discarding the firmware's page tables when
+/// switching CR3 has historically caused an immediate, exception-less hard reset — the
+/// best-supported explanation is an asynchronous SMI faulting inside System Management
+/// Mode once the firmware's own mappings are gone (see `docs/vmm.md` §4 and
+/// `docs/boot_uefi.md` §3.9 for the full bisection writeup that established this).
+/// This path is implemented and exercised in QEMU (`direct_map_full_switch_test.rs`),
+/// where that SMM/SMI regression class is not reproducible at all — a QEMU pass here
+/// does **not** prove the switch is safe on real hardware. Flip this to `true` only
+/// after running the real AMD/UEFI-hardware smoke-test checklist in
+/// `docs/boot_uefi.md`.
+pub const USE_DIRECT_MAP_TABLE: bool = false;
+
+/// PML4 slot for the higher-half kernel-image mirror (virtual `0xFFFF8000_00000000`).
+const HIGHER_HALF_SLOT: usize = 256;
 
 /// EFI memory type 9 (`EfiACPIReclaimMemory`) — RAM that becomes usable after ACPI
 /// tables are parsed. Mapped by [`is_phase1_ram`] so a future ACPI parser does not
@@ -170,18 +193,31 @@ pub unsafe fn build_direct_map<'a>(
         if !classify(region) {
             continue;
         }
-        let end = region
-            .start
-            .checked_add(region.size)
-            .ok_or(DirectMapError::RegionOverflow {
-                start: region.start,
-                size: region.size,
-            })?;
+        let raw_end =
+            region
+                .start
+                .checked_add(region.size)
+                .ok_or(DirectMapError::RegionOverflow {
+                    start: region.start,
+                    size: region.size,
+                })?;
+        // Real memory maps are not guaranteed page-aligned (e.g. QEMU/SeaBIOS reports
+        // the classic low-memory region as [0x0, 0x9FC00) — 0x9FC00 is not a multiple
+        // of 4 KiB). A PTE can only ever address a page-aligned frame, so round the
+        // range outward to whole pages before mapping; otherwise the truncation
+        // implicit in `phys_to_pfn`/`pt_index` (both `addr >> 12`) would silently
+        // alias an unaligned `cur` onto the wrong page and could misreport a spurious
+        // overlap against an adjacent region that rounds to the very same page.
+        let start = region.start & !(PAGE_SIZE_U64 - 1);
+        let end = (raw_end + PAGE_SIZE_U64 - 1) & !(PAGE_SIZE_U64 - 1);
 
-        let mut cur = region.start;
+        let mut cur = start;
         while cur < end {
             let remaining = end - cur;
-            if use_huge_pages && cur % HUGE_PAGE_SIZE_2M == 0 && remaining >= HUGE_PAGE_SIZE_2M {
+            if use_huge_pages
+                && cur.is_multiple_of(HUGE_PAGE_SIZE_2M)
+                && remaining >= HUGE_PAGE_SIZE_2M
+            {
                 map_2m_page(pml4_phys, cur, alloc_frame, &mut stats)?;
                 stats.huge_2m_pages += 1;
                 cur += HUGE_PAGE_SIZE_2M;
@@ -551,4 +587,104 @@ pub unsafe fn run_boot_canary(debug_output: bool) {
     }
 
     free_direct_map_tables(pml4);
+}
+
+/// Builds a genuinely kernel-owned PML4: Phase 1 (RAM) + Phase 2 (firmware/platform)
+/// regions mapped explicitly, the higher-half kernel-image mirror (PML4 slot 256)
+/// copied verbatim from `old_pml4_phys`'s slot 256 (so the kernel's own code/data stays
+/// reachable after a future CR3 switch — this table never rebuilds that mapping
+/// itself, it only borrows the existing chain), and the recursive self-map installed
+/// at slot 511. Matches the design doc's Phase 4 checklist ("P1 + P2 + P3 + slot 511 +
+/// slot 256"; framebuffer/P3 mapping via [`map_wc_range`] is the caller's
+/// responsibility once GOP boot info is available — see `docs/todo_uefi_kernel_pagetables.md`).
+///
+/// Does **not** switch CR3 — see [`switch_to_direct_map`] for that, and
+/// [`USE_DIRECT_MAP_TABLE`] for why this is not wired in by default.
+///
+/// # Safety
+/// Same reachability contract as [`build_direct_map`], plus: `old_pml4_phys` must be
+/// the physical address of the currently active PML4, so the slot 256 copy is coherent
+/// with what the CPU is actually executing from.
+pub unsafe fn build_full_kernel_pml4(
+    old_pml4_phys: u64,
+    regions: &[UnifiedMemoryEntry],
+    alloc_frame: &mut dyn FnMut() -> Option<u64>,
+) -> Result<(u64, DirectMapStats, DirectMapStats), DirectMapError> {
+    let new_pml4 = alloc_frame().ok_or(DirectMapError::OutOfScaffoldFrames)?;
+    zero_phys_page(new_pml4);
+
+    let ram_stats = build_direct_map(new_pml4, regions.iter(), is_phase1_ram, alloc_frame, true)?;
+    validate_direct_map_coverage(new_pml4, regions.iter(), is_phase1_ram)
+        .unwrap_or_else(|e| panic!("Phase 4 direct-map RAM coverage gap: {:?}", e));
+
+    let platform_stats = build_direct_map(
+        new_pml4,
+        regions.iter(),
+        is_phase2_platform,
+        alloc_frame,
+        true,
+    )?;
+    validate_direct_map_coverage(new_pml4, regions.iter(), is_phase2_platform)
+        .unwrap_or_else(|e| panic!("Phase 4 direct-map platform coverage gap: {:?}", e));
+
+    // Higher-half kernel-image mirror: copy verbatim from the currently active PML4,
+    // rather than rebuilding it — the kernel's own image lives wherever the loader put
+    // it, and that chain already works.
+    let old_pml4_table = table_at(old_pml4_phys);
+    let new_pml4_table = table_at(new_pml4);
+    *entry_ptr(new_pml4_table, HIGHER_HALF_SLOT) = table_entry(old_pml4_table, HIGHER_HALF_SLOT);
+
+    // Recursive self-map, exactly like `build_kernel_pml4_from_firmware`'s slot 511.
+    (*entry_ptr(new_pml4_table, RECURSIVE_SLOT)).set_mapping(
+        phys_to_pfn(new_pml4),
+        true,
+        true,
+        false,
+    );
+
+    Ok((new_pml4, ram_stats, platform_stats))
+}
+
+/// Builds a full kernel-owned PML4 from the current boot memory map (see
+/// [`build_full_kernel_pml4`]) and switches CR3 to it, returning the new PML4's
+/// physical address.
+///
+/// After this returns, firmware/BIOS-loader sub-tables are no longer referenced by the
+/// active table — the caller must not also reserve them from the PMM
+/// (`reserve_firmware_page_tables`), since they should return to the pool of usable
+/// frames instead of staying permanently reserved. `vmm::init` is the only call site,
+/// gated by [`USE_DIRECT_MAP_TABLE`].
+///
+/// # Safety
+/// Must run before any other write to CR3 in this boot, with the same reachability
+/// contract as [`build_direct_map`] (the old identity map must still be active while
+/// this builds the new table). `old_pml4_phys` must be the physical address of the
+/// currently active PML4.
+pub unsafe fn switch_to_direct_map(old_pml4_phys: u64) -> u64 {
+    let boot_info_raw = BOOT_INFO_PTR.load(Ordering::Acquire);
+    assert_ne!(
+        boot_info_raw, 0,
+        "switch_to_direct_map requires a published BootInfo"
+    );
+
+    // SAFETY: see `run_boot_canary`'s identical access pattern above.
+    let boot_info = &*(boot_info_raw as *const crate::boot_info::BootInfo);
+    let regions = core::slice::from_raw_parts(
+        boot_info.memory_map_addr as *const UnifiedMemoryEntry,
+        boot_info.memory_map_len as usize,
+    );
+
+    let mut alloc = alloc_frame_phys;
+    let (new_pml4, ram_stats, platform_stats) =
+        build_full_kernel_pml4(old_pml4_phys, regions, &mut alloc)
+            .unwrap_or_else(|e| panic!("Phase 4 direct-map build failed: {:?}", e));
+
+    crate::debugln!(
+        "VMM: Phase 4 switching CR3 to kernel-owned direct map: RAM={:?} platform={:?}",
+        ram_stats,
+        platform_stats
+    );
+
+    write_cr3(new_pml4);
+    new_pml4
 }
