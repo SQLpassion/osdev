@@ -97,9 +97,14 @@ pub fn test_panic_handler(info: &core::panic::PanicInfo) -> ! {
         debugln!("  Location: {}:{}", location.file(), location.line());
     }
 
-    if let Some(message) = info.message().as_str() {
-        debugln!("  Message: {}", message);
-    }
+    // `PanicMessage::as_str()` only returns `Some` for a panic built from a
+    // bare string literal with no format arguments. `test_assert_eq!` and
+    // `test_assert!` always panic with interpolated arguments (see below), so
+    // an `as_str()`-based check silently drops the message for essentially
+    // every real assertion failure. `PanicMessage` always implements
+    // `Display`, so format it directly instead - this mirrors the panic
+    // path in `panic.rs`, which never had this bug.
+    debugln!("  Message: {}", info.message());
 
     debugln!();
     print_summary();
