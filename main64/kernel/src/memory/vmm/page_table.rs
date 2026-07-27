@@ -522,41 +522,125 @@ pub fn zero_virt_page(addr: u64) {
     }
 }
 
+/// Outcome of walking the 4-level (PML4 -> PDP -> PD -> PT) page-table
+/// hierarchy for one virtual address, resolved against the currently active
+/// CR3 through the recursive self-mapping.
+///
+/// Every VMM function that needs to resolve a virtual address down to its
+/// leaf PTE -- or determine which level blocks that resolution -- shares this
+/// single walk instead of hand-rolling the PML4/PDP/PD bail sequence. A
+/// future change to how huge-page-in-path detection works only has to happen
+/// here (see issue #58).
+///
+/// Each variant carries the entries already resolved on the way down, so
+/// callers that need permission bits from intermediate levels (e.g.
+/// [`is_user_page_writable`]) do not have to re-read them.
+#[derive(Clone, Copy)]
+pub enum WalkResult {
+    /// The PML4 entry for this address is not present.
+    Pml4Missing,
+
+    /// PML4 present; the PDP entry is not present.
+    PdpMissing { pml4e: PageTableEntry },
+
+    /// PML4 present; the PDP entry is present but marks a 1 GiB huge-page
+    /// leaf. There is no PD table below a huge PDP entry, so the walk cannot
+    /// descend further.
+    PdpHuge {
+        pml4e: PageTableEntry,
+        pdpe: PageTableEntry,
+    },
+
+    /// PML4 + PDP present (PDP non-huge); the PD entry is not present.
+    PdMissing {
+        pml4e: PageTableEntry,
+        pdpe: PageTableEntry,
+    },
+
+    /// PML4 + PDP present (PDP non-huge); the PD entry is present but marks a
+    /// 2 MiB huge-page leaf. There is no PT table below a huge PD entry, so
+    /// the walk cannot descend further.
+    PdHuge {
+        pml4e: PageTableEntry,
+        pdpe: PageTableEntry,
+        pde: PageTableEntry,
+    },
+
+    /// All three intermediate levels are present and none is a huge-page
+    /// leaf. `pt` is the leaf page table; callers read/write the final PTE
+    /// through `table_entry`/`entry_ptr` at `pt_index(virtual_address)`.
+    Resolved {
+        pml4e: PageTableEntry,
+        pdpe: PageTableEntry,
+        pde: PageTableEntry,
+        pt: *mut PageTable,
+    },
+}
+
+/// Walks PML4 -> PDP -> PD -> PT for `virtual_address` against the
+/// currently active CR3 (through the recursive self-mapping), bailing out
+/// with the appropriate [`WalkResult`] variant as soon as a level is missing
+/// or huge-mapped.
+///
+/// This is the single shared implementation of the 4-level page-table walk
+/// used throughout the VMM; see [`WalkResult`] for what each outcome means.
+#[inline]
+pub fn walk_levels(virtual_address: u64) -> WalkResult {
+    // Level 1: PML4. No huge-page bit is architecturally valid at this level
+    // (there is no 512 GiB page size on x86_64), so only presence matters.
+    let pml4 = table_at(PML4_TABLE_ADDR);
+    let pml4e = table_entry(pml4, pml4_index(virtual_address));
+    if !pml4e.present() {
+        return WalkResult::Pml4Missing;
+    }
+
+    // Level 2: PDP. A present-but-huge entry is a 1 GiB data leaf; there is
+    // no PD table underneath it, so the walk stops here.
+    let pdp = table_at(pdp_table_addr(virtual_address));
+    let pdpe = table_entry(pdp, pdp_index(virtual_address));
+    if !pdpe.present() {
+        return WalkResult::PdpMissing { pml4e };
+    }
+    if pdpe.huge() {
+        return WalkResult::PdpHuge { pml4e, pdpe };
+    }
+
+    // Level 3: PD. A present-but-huge entry is a 2 MiB data leaf; there is no
+    // PT table underneath it, so the walk stops here.
+    let pd = table_at(pd_table_addr(virtual_address));
+    let pde = table_entry(pd, pd_index(virtual_address));
+    if !pde.present() {
+        return WalkResult::PdMissing { pml4e, pdpe };
+    }
+    if pde.huge() {
+        return WalkResult::PdHuge { pml4e, pdpe, pde };
+    }
+
+    // Level 4: leaf PT. Its recursive-mapping address is always computable
+    // once PD is confirmed present and non-huge; the caller inspects or
+    // mutates the actual PTE at `pt_index(virtual_address)`.
+    let pt = table_at(pt_table_addr(virtual_address));
+    WalkResult::Resolved {
+        pml4e,
+        pdpe,
+        pde,
+        pt,
+    }
+}
+
 /// Returns the PT containing `virtual_address` if all intermediate levels exist.
 ///
 /// Returns `None` if any level is non-present or uses a huge page mapping.
 ///
 #[inline]
 pub fn pt_for_if_present(virtual_address: u64) -> Option<*mut PageTable> {
-    // Resolve PML4 level and reject missing/huge entries.
-    let pml4 = table_at(PML4_TABLE_ADDR);
-    let pml4_idx = pml4_index(virtual_address);
-    let pml4e = table_entry(pml4, pml4_idx);
-
-    if !pml4e.present() || pml4e.huge() {
-        return None;
+    // Delegate the PML4/PDP/PD bail sequence to the shared walk; only the
+    // PML4 huge-page check must still be applied here, since `walk_levels`
+    // does not special-case it (see `WalkResult::Pml4Missing` doc comment).
+    match walk_levels(virtual_address) {
+        WalkResult::Resolved { pml4e, pt, .. } if !pml4e.huge() => Some(pt),
+        _ => None,
     }
-
-    // Resolve PDP level and reject missing/huge entries.
-    let pdp = table_at(pdp_table_addr(virtual_address));
-    let pdp_idx = pdp_index(virtual_address);
-    let pdpe = table_entry(pdp, pdp_idx);
-
-    if !pdpe.present() || pdpe.huge() {
-        return None;
-    }
-
-    // Resolve PD level and reject missing/huge entries.
-    let pd = table_at(pd_table_addr(virtual_address));
-    let pd_idx = pd_index(virtual_address);
-    let pde = table_entry(pd, pd_idx);
-
-    if !pde.present() || pde.huge() {
-        return None;
-    }
-
-    // All intermediate levels are present => return leaf PT table.
-    Some(table_at(pt_table_addr(virtual_address)))
 }
 
 /// Returns whether a present leaf mapping exists for `virtual_address`.
@@ -576,37 +660,56 @@ pub fn is_leaf_present(virtual_address: u64) -> bool {
 #[inline]
 pub fn is_user_page_writable(virtual_address: u64) -> bool {
     // Note: single-core, IF-disabled
-    // Step 1: Walk the PML4 and reject absent or supervisor/read-only paths.
-    let pml4 = table_at(PML4_TABLE_ADDR);
-    let pml4e = table_entry(pml4, pml4_index(virtual_address));
-    if !pml4e.present() || !pml4e.user() || !pml4e.writable() {
-        return false;
-    }
+    // The shared walk only resolves presence/huge structure; effective
+    // user+writable permission still has to be checked level-by-level here,
+    // because a present-but-supervisor or present-but-read-only intermediate
+    // entry must reject the mapping even though the walk itself succeeds.
+    match walk_levels(virtual_address) {
+        // PML4 missing, or the walk bailed out below a level whose presence
+        // alone (with no permission bits available yet to check) already
+        // makes the address unwritable by user code.
+        WalkResult::Pml4Missing | WalkResult::PdpMissing { .. } | WalkResult::PdMissing { .. } => {
+            false
+        }
 
-    // Step 2: Apply the same effective-permission check at the PDPT level.
-    let pdp = table_at(pdp_table_addr(virtual_address));
-    let pdpe = table_entry(pdp, pdp_index(virtual_address));
-    if !pdpe.present() || !pdpe.user() || !pdpe.writable() {
-        return false;
-    }
-    if pdpe.huge() {
-        return true;
-    }
+        // Bailed at a 1 GiB huge PDP leaf: writable only if PML4 and PDP are
+        // both user + writable (no PD/PT to check underneath a huge page).
+        WalkResult::PdpHuge { pml4e, pdpe } => {
+            pml4e.user() && pml4e.writable() && pdpe.user() && pdpe.writable()
+        }
 
-    // Step 3: Check the page-directory level before descending to a 4 KiB PT.
-    let pd = table_at(pd_table_addr(virtual_address));
-    let pde = table_entry(pd, pd_index(virtual_address));
-    if !pde.present() || !pde.user() || !pde.writable() {
-        return false;
-    }
-    if pde.huge() {
-        return true;
-    }
+        // Bailed at a 2 MiB huge PD leaf: writable only if PML4, PDP and PD
+        // are all user + writable.
+        WalkResult::PdHuge { pml4e, pdpe, pde } => {
+            pml4e.user()
+                && pml4e.writable()
+                && pdpe.user()
+                && pdpe.writable()
+                && pde.user()
+                && pde.writable()
+        }
 
-    // Step 4: Validate the final 4 KiB leaf entry.
-    let pt = table_at(pt_table_addr(virtual_address));
-    let pte = table_entry(pt, pt_index(virtual_address));
-    pte.present() && pte.user() && pte.writable()
+        // Full 4 KiB path resolved: every intermediate level must be user +
+        // writable, and the leaf PTE itself must be present, user, writable.
+        WalkResult::Resolved {
+            pml4e,
+            pdpe,
+            pde,
+            pt,
+        } => {
+            if !pml4e.user() || !pml4e.writable() {
+                return false;
+            }
+            if !pdpe.user() || !pdpe.writable() {
+                return false;
+            }
+            if !pde.user() || !pde.writable() {
+                return false;
+            }
+            let pte = table_entry(pt, pt_index(virtual_address));
+            pte.present() && pte.user() && pte.writable()
+        }
+    }
 }
 
 /// Returns whether one virtual page is present and effectively user-readable.
@@ -617,37 +720,42 @@ pub fn is_user_page_writable(virtual_address: u64) -> bool {
 #[inline]
 pub fn is_user_page_readable(virtual_address: u64) -> bool {
     // Note: single-core, IF-disabled
-    // Step 1: Walk the PML4 and reject absent or supervisor paths.
-    let pml4 = table_at(PML4_TABLE_ADDR);
-    let pml4e = table_entry(pml4, pml4_index(virtual_address));
-    if !pml4e.present() || !pml4e.user() {
-        return false;
-    }
+    // Same structure as `is_user_page_writable`, but only the user bit (not
+    // writable) gates each level.
+    match walk_levels(virtual_address) {
+        WalkResult::Pml4Missing | WalkResult::PdpMissing { .. } | WalkResult::PdMissing { .. } => {
+            false
+        }
 
-    // Step 2: Apply the same effective-permission check at the PDPT level.
-    let pdp = table_at(pdp_table_addr(virtual_address));
-    let pdpe = table_entry(pdp, pdp_index(virtual_address));
-    if !pdpe.present() || !pdpe.user() {
-        return false;
-    }
-    if pdpe.huge() {
-        return true;
-    }
+        // Bailed at a 1 GiB huge PDP leaf: readable only if PML4 and PDP are
+        // both user-accessible.
+        WalkResult::PdpHuge { pml4e, pdpe } => pml4e.user() && pdpe.user(),
 
-    // Step 3: Check the page-directory level before descending to a 4 KiB PT.
-    let pd = table_at(pd_table_addr(virtual_address));
-    let pde = table_entry(pd, pd_index(virtual_address));
-    if !pde.present() || !pde.user() {
-        return false;
-    }
-    if pde.huge() {
-        return true;
-    }
+        // Bailed at a 2 MiB huge PD leaf: readable only if PML4, PDP and PD
+        // are all user-accessible.
+        WalkResult::PdHuge { pml4e, pdpe, pde } => pml4e.user() && pdpe.user() && pde.user(),
 
-    // Step 4: Validate the final 4 KiB leaf entry.
-    let pt = table_at(pt_table_addr(virtual_address));
-    let pte = table_entry(pt, pt_index(virtual_address));
-    pte.present() && pte.user()
+        // Full 4 KiB path resolved: every intermediate level must be
+        // user-accessible, and the leaf PTE itself must be present + user.
+        WalkResult::Resolved {
+            pml4e,
+            pdpe,
+            pde,
+            pt,
+        } => {
+            if !pml4e.user() {
+                return false;
+            }
+            if !pdpe.user() {
+                return false;
+            }
+            if !pde.user() {
+                return false;
+            }
+            let pte = table_entry(pt, pt_index(virtual_address));
+            pte.present() && pte.user()
+        }
+    }
 }
 
 /// Returns whether `virtual_address` is currently mapped at ANY page granularity —
@@ -665,34 +773,14 @@ pub fn is_user_page_readable(virtual_address: u64) -> bool {
 /// no lower table), so the recursive-mapping accesses below are always valid.
 #[inline]
 pub fn is_va_mapped(virtual_address: u64) -> bool {
-    let pml4 = table_at(PML4_TABLE_ADDR);
-    let pml4e = table_entry(pml4, pml4_index(virtual_address));
-    if !pml4e.present() {
-        return false;
+    match walk_levels(virtual_address) {
+        WalkResult::Pml4Missing | WalkResult::PdpMissing { .. } | WalkResult::PdMissing { .. } => {
+            false
+        }
+        // 1 GiB / 2 MiB huge page: mapped, and there is no PD/PT below it.
+        WalkResult::PdpHuge { .. } | WalkResult::PdHuge { .. } => true,
+        WalkResult::Resolved { pt, .. } => table_entry(pt, pt_index(virtual_address)).present(),
     }
-
-    let pdp = table_at(pdp_table_addr(virtual_address));
-    let pdpe = table_entry(pdp, pdp_index(virtual_address));
-    if !pdpe.present() {
-        return false;
-    }
-    // 1 GiB huge page: mapped, and there is no PD below it.
-    if pdpe.huge() {
-        return true;
-    }
-
-    let pd = table_at(pd_table_addr(virtual_address));
-    let pde = table_entry(pd, pd_index(virtual_address));
-    if !pde.present() {
-        return false;
-    }
-    // 2 MiB huge page: mapped, and there is no PT below it.
-    if pde.huge() {
-        return true;
-    }
-
-    let pt = table_at(pt_table_addr(virtual_address));
-    table_entry(pt, pt_index(virtual_address)).present()
 }
 
 /// Returns whether a page-table page contains no present entries.

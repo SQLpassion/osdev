@@ -12,9 +12,9 @@
 use core::panic::PanicInfo;
 use kaos_kernel::arch::interrupts;
 use kaos_kernel::memory::vmm::page_table::{
-    build_kernel_pml4_from_firmware, pd_index, pdp_index, phys_to_pfn, pml4_index, pt_index,
-    PageTable, PDP_TABLE_BASE, PD_TABLE_BASE, PML4_TABLE_ADDR, PT_ENTRIES, PT_TABLE_BASE,
-    RECURSIVE_SLOT,
+    build_kernel_pml4_from_firmware, entry_ptr, pd_index, pd_table_addr, pdp_index, pdp_table_addr,
+    phys_to_pfn, pml4_index, pt_index, walk_levels, PageTable, WalkResult, ENTRY_HUGE,
+    PDP_TABLE_BASE, PD_TABLE_BASE, PML4_TABLE_ADDR, PT_ENTRIES, PT_TABLE_BASE, RECURSIVE_SLOT,
 };
 use kaos_kernel::memory::{heap, pmm, vmm};
 
@@ -1128,4 +1128,312 @@ fn test_recursive_window_constants() {
     assert_eq!(PDP_TABLE_BASE, 0xFFFF_FFFF_FFE0_0000);
     assert_eq!(PD_TABLE_BASE, 0xFFFF_FFFF_C000_0000);
     assert_eq!(PT_TABLE_BASE, 0xFFFF_FF80_0000_0000);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #58: shared `walk_levels` page-table walk.
+//
+// The tests below exercise `page_table::walk_levels` directly against the
+// live kernel CR3, covering every bail point (PML4 missing, PDP missing/huge,
+// PD missing/huge, fully resolved) that used to be hand-duplicated across
+// `pt_for_if_present`, `is_user_page_writable`, `is_user_page_readable`,
+// `is_va_mapped`, the `diagnostics` helpers, and `mapping.rs`.
+//
+// All scratch virtual addresses below live in PML4 slot 257
+// (`0xFFFF_8080_0000_0000`..`0xFFFF_8100_0000_0000`, see `TEMP_CLONE_PML4_VA`'s
+// doc comment), the slot this test suite already uses for one-off scratch
+// mappings, at PDP indices not touched by any other test in this file.
+// ---------------------------------------------------------------------------
+
+/// Contract: walk_levels reports Pml4Missing for a virtual address whose PML4
+/// slot has never been populated.
+/// Given: PML4 slot 292 (`0xFFFF_9200_0000_0000`) is not used by any boot path,
+///        test fixture, or other test in this file.
+/// When: walk_levels is called for an address in that slot.
+/// Then: it returns WalkResult::Pml4Missing.
+/// Failure Impact: the shared walk's top-level bail condition regressed; every
+///       caller relying on it (is_va_mapped, is_user_page_writable/readable,
+///       pt_for_if_present, the diagnostics helpers) would misbehave.
+#[test_case]
+fn test_walk_levels_reports_pml4_missing() {
+    const UNUSED_SLOT_VA: u64 = 0xFFFF_9200_0000_0000;
+    assert_eq!(pml4_index(UNUSED_SLOT_VA), 292, "sanity: expected slot 292");
+
+    assert!(
+        matches!(walk_levels(UNUSED_SLOT_VA), WalkResult::Pml4Missing),
+        "an address in a never-populated PML4 slot must report Pml4Missing"
+    );
+}
+
+/// Contract: walk_levels reports PdpMissing when PML4 is present but the PDP
+/// entry was never created.
+/// Given: an anchor page is mapped at PDP index 200 within slot 257 (forcing
+///        PML4[257] to be present), and PDP index 205 within the same slot is
+///        left untouched.
+/// When: walk_levels is called for the untouched PDP index.
+/// Then: it returns WalkResult::PdpMissing, carrying the resolved PML4 entry.
+/// Failure Impact: same as above, one level deeper.
+#[test_case]
+fn test_walk_levels_reports_pdp_missing() {
+    const ANCHOR_VA: u64 = 0xFFFF_8080_0000_0000 + (200u64 << 30);
+    const TARGET_VA: u64 = 0xFFFF_8080_0000_0000 + (205u64 << 30);
+    assert_eq!(
+        pml4_index(ANCHOR_VA),
+        257,
+        "sanity: anchor stays in slot 257"
+    );
+    assert_eq!(
+        pml4_index(TARGET_VA),
+        257,
+        "sanity: target stays in slot 257"
+    );
+
+    vmm::unmap_virtual_address(ANCHOR_VA);
+    let anchor_frame = pmm::with_pmm(|mgr| mgr.alloc_frame().expect("anchor frame alloc failed"));
+    vmm::try_map_virtual_to_physical(ANCHOR_VA, anchor_frame.physical_address())
+        .expect("anchor mapping should succeed");
+
+    match walk_levels(TARGET_VA) {
+        WalkResult::PdpMissing { pml4e } => {
+            assert!(
+                pml4e.present(),
+                "PML4 entry must be present (anchor mapped)"
+            );
+        }
+        _ => panic!("expected WalkResult::PdpMissing for an untouched PDP index"),
+    }
+
+    vmm::unmap_virtual_address(ANCHOR_VA);
+}
+
+/// Contract: walk_levels reports PdMissing when PML4+PDP are present but the
+/// PD entry was never created.
+/// Given: an anchor page is mapped at PDP index 210 / PD index 5 (forcing that
+///        PDP entry to be present), and PD index 300 within the same PDP is
+///        left untouched.
+/// When: walk_levels is called for the untouched PD index.
+/// Then: it returns WalkResult::PdMissing, carrying the resolved PML4/PDP entries.
+#[test_case]
+fn test_walk_levels_reports_pd_missing() {
+    const PDP_BASE: u64 = 0xFFFF_8080_0000_0000 + (210u64 << 30);
+    const ANCHOR_VA: u64 = PDP_BASE + (5u64 << 21);
+    const TARGET_VA: u64 = PDP_BASE + (300u64 << 21);
+    assert_eq!(pdp_index(ANCHOR_VA), 210, "sanity: anchor PDP index");
+    assert_eq!(
+        pdp_index(TARGET_VA),
+        210,
+        "sanity: target shares the same PDP"
+    );
+    assert_ne!(
+        pd_index(ANCHOR_VA),
+        pd_index(TARGET_VA),
+        "sanity: distinct PDs"
+    );
+
+    vmm::unmap_virtual_address(ANCHOR_VA);
+    let anchor_frame = pmm::with_pmm(|mgr| mgr.alloc_frame().expect("anchor frame alloc failed"));
+    vmm::try_map_virtual_to_physical(ANCHOR_VA, anchor_frame.physical_address())
+        .expect("anchor mapping should succeed");
+
+    match walk_levels(TARGET_VA) {
+        WalkResult::PdMissing { pml4e, pdpe } => {
+            assert!(
+                pml4e.present(),
+                "PML4 entry must be present (anchor mapped)"
+            );
+            assert!(pdpe.present(), "PDP entry must be present (anchor mapped)");
+            assert!(
+                !pdpe.huge(),
+                "anchor mapping is a 4 KiB page, PDP must not be huge"
+            );
+        }
+        _ => panic!("expected WalkResult::PdMissing for an untouched PD index"),
+    }
+
+    vmm::unmap_virtual_address(ANCHOR_VA);
+}
+
+/// Contract: walk_levels resolves a fully-populated path down to the correct
+/// leaf PT, matching the physical frame the caller just mapped.
+#[test_case]
+fn test_walk_levels_resolves_mapped_page() {
+    const TEST_VA: u64 = 0xFFFF_8080_0000_0000 + (220u64 << 30);
+
+    vmm::unmap_virtual_address(TEST_VA);
+    let frame = pmm::with_pmm(|mgr| mgr.alloc_frame().expect("frame alloc failed"));
+    vmm::try_map_virtual_to_physical(TEST_VA, frame.physical_address())
+        .expect("mapping should succeed");
+
+    match walk_levels(TEST_VA) {
+        WalkResult::Resolved {
+            pml4e,
+            pdpe,
+            pde,
+            pt,
+        } => {
+            assert!(pml4e.present() && !pml4e.huge());
+            assert!(pdpe.present() && !pdpe.huge());
+            assert!(pde.present() && !pde.huge());
+            // SAFETY: `pt` is the leaf PT `walk_levels` just resolved for
+            // `TEST_VA`, reached through the recursive self-mapping; `entries`
+            // is a public field and `pt_index(TEST_VA) < PT_ENTRIES`.
+            let pte = unsafe { (*pt).entries[pt_index(TEST_VA)] };
+            assert!(pte.present(), "leaf PTE must be present");
+            assert_eq!(
+                pte.frame(),
+                frame.pfn,
+                "resolved leaf frame must match the mapped physical frame"
+            );
+        }
+        _ => panic!("expected WalkResult::Resolved for a freshly mapped page"),
+    }
+
+    vmm::unmap_virtual_address(TEST_VA);
+}
+
+/// Contract: walk_levels reports PdpHuge (and does not touch the PD/PT below)
+/// when the PDP entry is a present 1 GiB huge-page leaf.
+/// Given: a normal 4 KiB mapping is created first (so PML4/PDP/PD/PT all
+///        exist), then the PDP entry's huge bit is forced on directly through
+///        the recursive mapping -- the kernel itself never creates huge
+///        entries, so this uses raw bit manipulation solely to exercise the
+///        walk's bail path; the bit is cleared again before teardown so the
+///        hierarchy is left exactly as `unmap_virtual_address` expects it.
+/// When: walk_levels is called while the huge bit is set.
+/// Then: it returns WalkResult::PdpHuge without dereferencing a PD/PT address
+///       computed from the (now huge) PDP entry's frame field.
+#[test_case]
+fn test_walk_levels_reports_pdp_huge() {
+    const TEST_VA: u64 = 0xFFFF_8080_0000_0000 + (230u64 << 30);
+
+    vmm::unmap_virtual_address(TEST_VA);
+    let frame = pmm::with_pmm(|mgr| mgr.alloc_frame().expect("frame alloc failed"));
+    vmm::try_map_virtual_to_physical(TEST_VA, frame.physical_address())
+        .expect("mapping should succeed");
+
+    // Confirm the path is a normal, fully-resolved 4 KiB mapping before poking it.
+    assert!(matches!(walk_levels(TEST_VA), WalkResult::Resolved { .. }));
+
+    let pdp = pdp_table_addr(TEST_VA) as *mut PageTable;
+    let idx = pdp_index(TEST_VA);
+    // SAFETY:
+    // - `pdp` is the live, currently-mapped PDP table for `TEST_VA` (just
+    //   confirmed present/non-huge above), reached through the recursive
+    //   self-mapping; `idx < PT_ENTRIES`.
+    // - `PageTableEntry` is `#[repr(transparent)]` over `u64`, so reinterpreting
+    //   the entry pointer as `*mut u64` to flip one bit is layout-compatible.
+    // - This is test-only instrumentation: the huge bit is cleared again below
+    //   before any other code path (including this test's own cleanup) touches
+    //   the entry, so no other test observes the temporarily-huge entry.
+    unsafe {
+        let raw = entry_ptr(pdp, idx) as *mut u64;
+        *raw |= ENTRY_HUGE;
+    }
+
+    match walk_levels(TEST_VA) {
+        WalkResult::PdpHuge { pml4e, pdpe } => {
+            assert!(pml4e.present());
+            assert!(pdpe.present() && pdpe.huge());
+        }
+        _ => panic!("expected WalkResult::PdpHuge while the PDP huge bit is set"),
+    }
+
+    // SAFETY: same justification as above; this restores the entry to its
+    // original (non-huge) state before the normal unmap path runs.
+    unsafe {
+        let raw = entry_ptr(pdp, idx) as *mut u64;
+        *raw &= !ENTRY_HUGE;
+    }
+    vmm::unmap_virtual_address(TEST_VA);
+}
+
+/// Contract: walk_levels reports PdHuge (and does not touch the PT below)
+/// when the PD entry is a present 2 MiB huge-page leaf.
+/// Given/When/Then: mirrors `test_walk_levels_reports_pdp_huge` one level down.
+#[test_case]
+fn test_walk_levels_reports_pd_huge() {
+    const TEST_VA: u64 = 0xFFFF_8080_0000_0000 + (240u64 << 30);
+
+    vmm::unmap_virtual_address(TEST_VA);
+    let frame = pmm::with_pmm(|mgr| mgr.alloc_frame().expect("frame alloc failed"));
+    vmm::try_map_virtual_to_physical(TEST_VA, frame.physical_address())
+        .expect("mapping should succeed");
+
+    assert!(matches!(walk_levels(TEST_VA), WalkResult::Resolved { .. }));
+
+    let pd = pd_table_addr(TEST_VA) as *mut PageTable;
+    let idx = pd_index(TEST_VA);
+    // SAFETY: same justification as `test_walk_levels_reports_pdp_huge`, one
+    // level down (PD instead of PDP).
+    unsafe {
+        let raw = entry_ptr(pd, idx) as *mut u64;
+        *raw |= ENTRY_HUGE;
+    }
+
+    match walk_levels(TEST_VA) {
+        WalkResult::PdHuge { pml4e, pdpe, pde } => {
+            assert!(pml4e.present());
+            assert!(pdpe.present() && !pdpe.huge());
+            assert!(pde.present() && pde.huge());
+        }
+        _ => panic!("expected WalkResult::PdHuge while the PD huge bit is set"),
+    }
+
+    // SAFETY: restores the entry before the normal unmap path runs.
+    unsafe {
+        let raw = entry_ptr(pd, idx) as *mut u64;
+        *raw &= !ENTRY_HUGE;
+    }
+    vmm::unmap_virtual_address(TEST_VA);
+}
+
+/// Contract: destroy_user_address_space's catch-all reclaim (`reclaim_user_range`,
+/// refactored in issue #58 to resolve each present page's path once instead of
+/// walking it twice) still finds and releases every present leaf mapping, even
+/// when they are sparse and separated by both a 2 MiB (PD) and a 1 GiB (PDP)
+/// unmapped gap that the skip-ahead logic must jump over correctly.
+/// Given: three out-of-window pages are mapped directly at increasing
+///        distances (0, +2 MiB, +1 GiB) from a base VA outside all three known
+///        user regions (so only the generic catch-all scan can find them).
+/// When: destroy_user_address_space tears down the address space.
+/// Then: all three leaf frames are released back to the PMM.
+/// Failure Impact: a regression in the skip-jump/resolve dispatch would leak
+///       physical frames on every process exit -- exactly finding L1 warns about.
+#[test_case]
+fn test_destroy_user_address_space_reclaims_sparse_out_of_window_mappings() {
+    const BASE_VA: u64 = vmm::USER_HEAP_END + 0x0010_0000;
+    const FAR_VA_SAME_PDP: u64 = BASE_VA + 0x0020_0000; // +2 MiB: crosses a PD boundary
+    const FAR_VA_NEXT_PDP: u64 = BASE_VA + 0x4000_0000; // +1 GiB: crosses a PDP boundary
+    for va in [BASE_VA, FAR_VA_SAME_PDP, FAR_VA_NEXT_PDP] {
+        assert!(
+            vmm::classify_user_region(va).is_none(),
+            "test VA must not fall inside any of the three known user regions"
+        );
+    }
+
+    let user_cr3 = vmm::clone_kernel_pml4_for_user();
+    let frames: [_; 3] = [
+        pmm::with_pmm(|mgr| mgr.alloc_frame().expect("frame 0 allocation failed")),
+        pmm::with_pmm(|mgr| mgr.alloc_frame().expect("frame 1 allocation failed")),
+        pmm::with_pmm(|mgr| mgr.alloc_frame().expect("frame 2 allocation failed")),
+    ];
+    let vas = [BASE_VA, FAR_VA_SAME_PDP, FAR_VA_NEXT_PDP];
+
+    vmm::with_address_space(user_cr3, || {
+        for (va, frame) in vas.iter().zip(frames.iter()) {
+            vmm::try_map_virtual_to_physical(*va, frame.physical_address())
+                .expect("mapping an out-of-window VA should still succeed at the page-table level");
+        }
+    });
+
+    vmm::destroy_user_address_space(user_cr3);
+
+    for frame in &frames {
+        pmm::with_pmm(|mgr| {
+            assert!(
+                !mgr.release_pfn(frame.pfn),
+                "teardown's catch-all pass must have already reclaimed every sparse mapping"
+            );
+        });
+    }
 }
