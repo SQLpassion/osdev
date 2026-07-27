@@ -5,6 +5,21 @@
 
 #![no_std]
 #![no_main]
+// NOTE (issue #62 / L13): this bin target (`KernelMain`'s crate) declares the
+// same module tree as `lib.rs` via private `mod` declarations rather than
+// depending on the `kaos_kernel` library crate, so every module is compiled
+// twice: once for the library (used by integration tests under `kernel/tests/`)
+// and once for this binary. Many `pub fn`/`pub` items exist solely for the
+// library side (test-only introspection hooks, self-test entry points, trait
+// methods required by `BlockDevice`/`KernelConsole`, etc.) and are never
+// called from `KernelMain`'s own control flow, which makes them look dead
+// specifically in *this* compilation unit. A crate-wide allow is kept
+// (instead of scoping `#[allow(dead_code)]` item-by-item across dozens of
+// unrelated files) because that is where the dead code genuinely lives; the
+// two functions that were truly unused *anywhere* in the codebase
+// (`kernel_va_to_phys`, `kernel_va_to_user_code_va`) have been removed rather
+// than hidden behind this allow (verified via a repo-wide grep with zero
+// remaining callers).
 #![allow(dead_code)]
 
 extern crate alloc;
@@ -32,9 +47,6 @@ use crate::memory::pmm;
 use crate::memory::vmm;
 use drivers::keyboard;
 use drivers::serial;
-
-/// Kernel higher-half base used to translate symbol VAs to physical offsets.
-const KERNEL_HIGHER_HALF_BASE: u64 = 0xFFFF_8000_0000_0000;
 
 /// Zeroes the BSS section using linker-provided boundaries.
 ///
@@ -380,7 +392,16 @@ fn map_framebuffer(boot_info_raw: u64) {
 
     // Configure PAT MSR (0x277) to set PAT1 (bits 8..15) to Write-Combining (0x01).
     // The default value is usually 0x0007_0406_0007_0406 (PAT1 = 0x04 = WT).
-    // SAFETY: Writing to the PAT MSR is safe on x86_64, as we are in Ring 0.
+    // SAFETY:
+    // - Repointing PAT1 to WC is only safe because it is the sole PAT slot ever
+    //   repurposed by this kernel: `map_virtual_to_physical_wc`
+    //   (memory/vmm/mapping.rs) is the only mapping function that sets PWT=1/PCD=0
+    //   on a leaf entry, and it is only ever called for framebuffer pages here.
+    //   No other mapping in the kernel selects PAT1 expecting the default WT
+    //   semantics, so redefining its meaning cannot silently change the caching
+    //   behavior of an unrelated mapping.
+    // - The MSR write itself is architecturally valid only from ring 0, which this
+    //   code always runs in.
     unsafe {
         let mut pat = crate::arch::msr::rdmsr(0x277);
         pat &= !(0xFF << 8); // Clear PAT1
@@ -425,23 +446,4 @@ fn map_framebuffer(boot_info_raw: u64) {
     // `Relaxed` load in the panic path: the flag transitions only `false -> true`, so
     // any observer either sees the fully-mapped framebuffer or safely falls back.
     boot_info::FRAMEBUFFER_MAPPED.store(true, core::sync::atomic::Ordering::Release);
-}
-
-/// Converts higher-half kernel VA to physical address by removing base offset.
-fn kernel_va_to_phys(kernel_va: u64) -> Option<u64> {
-    if kernel_va >= KERNEL_HIGHER_HALF_BASE {
-        Some(kernel_va - KERNEL_HIGHER_HALF_BASE)
-    } else {
-        None
-    }
-}
-
-/// Maps a kernel symbol VA into the configured user code alias window.
-fn kernel_va_to_user_code_va(kernel_va: u64) -> Option<u64> {
-    syscall::user_alias_va_for_kernel(
-        vmm::USER_CODE_BASE,
-        vmm::USER_CODE_SIZE,
-        KERNEL_HIGHER_HALF_BASE,
-        kernel_va,
-    )
 }
