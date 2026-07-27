@@ -85,9 +85,20 @@ pub trait KernelConsole: core::fmt::Write + Send {
     fn enable_hw_cursor(&mut self);
 
     /// Disables VGA blinking mode, enabling all 16 colors to be used as backgrounds.
+    ///
+    /// This toggles a VGA-attribute-controller-specific bit (the "blink vs.
+    /// intense background" selector) and has no equivalent concept on
+    /// non-VGA backends. Implementors that do not render through the VGA
+    /// text-mode attribute controller (e.g. `FramebufferConsole`) MUST treat
+    /// this as a silent no-op rather than erroring, since callers are not
+    /// expected to branch on the active backend before calling it.
     fn disable_blink_mode(&mut self);
 
     /// Restores default VGA text mode blinking behavior.
+    ///
+    /// VGA-specific, like [`KernelConsole::disable_blink_mode`]; a no-op on
+    /// backends that do not implement VGA-style attribute-controller
+    /// blinking (e.g. `FramebufferConsole`).
     fn enable_blink_mode(&mut self);
 
     /// Extracts any VRAM upload queued by preceding drawing operations on this

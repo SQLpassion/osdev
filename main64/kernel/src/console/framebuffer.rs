@@ -643,11 +643,14 @@ impl KernelConsole for FramebufferConsole {
     }
 
     fn disable_blink_mode(&mut self) {
-        // No-op for framebuffer.
+        // No-op: blink mode is a VGA text-mode attribute-controller concept
+        // that has no equivalent on a pixel framebuffer. See the trait-level
+        // contract on `KernelConsole::disable_blink_mode`.
     }
 
     fn enable_blink_mode(&mut self) {
-        // No-op for framebuffer.
+        // No-op: see `disable_blink_mode` above and the trait-level contract
+        // on `KernelConsole::enable_blink_mode`.
     }
 
     fn take_pending_flush(&mut self) -> Option<PendingFlush> {

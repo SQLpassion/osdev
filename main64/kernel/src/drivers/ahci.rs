@@ -571,6 +571,54 @@ pub enum AhciError {
     NotInitialized,
     PortError,
     Timeout,
+
+    /// `sector_count == 0` was requested.
+    ///
+    /// Unlike a normal "nothing to do" case, this is rejected rather than
+    /// treated as a silent no-op: AHCI task files interpret a zero sector
+    /// count as a request for the maximum transfer size for the active
+    /// command (e.g. 65536 sectors for 48-bit LBA reads/writes), so silently
+    /// continuing would mis-program the device instead of doing nothing.
+    InvalidSectorCount,
+
+    /// The transfer does not fit in the fixed-size PRDT (see
+    /// [`HbaCmdTbl::prdt_entry`]) even in the worst case of maximal
+    /// physical-page fragmentation.
+    PrdtOverflow,
+}
+
+/// Maximum number of Physical Region Descriptor Table entries available in
+/// one command table (see [`HbaCmdTbl::prdt_entry`]).
+pub const MAX_PRDT_ENTRIES: usize = 44;
+
+/// Computes the worst-case number of PRDT entries needed to describe a
+/// transfer of `total_bytes`, assuming the least favorable starting
+/// physical-page alignment.
+///
+/// The real fragmentation loop in [`do_transfer`] emits one PRDT entry per
+/// contiguous physical-page run, so a buffer that starts one byte before a
+/// page boundary produces the most entries: a 1-byte first chunk, then one
+/// entry per subsequent full 4 KiB page. This helper is pure and
+/// hardware-independent (no port I/O, no page-table walk) so callers can use
+/// it to reject an oversized request up front.
+///
+/// Exposed (not just `pub(crate)`) so integration tests can exercise the
+/// validation logic directly: `do_transfer`'s hardware path cannot be driven
+/// end-to-end without a mapped AHCI port, which is not present in every test
+/// environment (e.g. default QEMU without `-device ahci`).
+pub const fn max_prdt_entries_for(total_bytes: usize) -> usize {
+    if total_bytes == 0 {
+        return 0;
+    }
+
+    // Worst case: 1 byte in the first (unaligned) page, then a full page
+    // per remaining entry.
+    const FIRST_CHUNK: usize = 1;
+    if total_bytes <= FIRST_CHUNK {
+        return 1;
+    }
+
+    1 + (total_bytes - FIRST_CHUNK).div_ceil(4096)
 }
 
 fn virt_to_phys(va: u64) -> Option<u64> {
@@ -613,10 +661,23 @@ fn virt_to_phys(va: u64) -> Option<u64> {
 }
 
 pub fn read_sectors(buffer: &mut [u8], lba: u64, sector_count: u32) -> Result<(), AhciError> {
+    // Self-contained guard: reject an ambiguous zero-sector request before
+    // touching any hardware state (see `AhciError::InvalidSectorCount`).
+    // `block.rs` already guards this for its current callers, but this
+    // function must not rely on caller discipline for a future caller.
+    if sector_count == 0 {
+        return Err(AhciError::InvalidSectorCount);
+    }
+
     do_transfer(buffer.as_mut_ptr(), buffer.len(), lba, sector_count, false)
 }
 
 pub fn write_sectors(buffer: &[u8], lba: u64, sector_count: u32) -> Result<(), AhciError> {
+    // Self-contained guard: same rationale as `read_sectors` above.
+    if sector_count == 0 {
+        return Err(AhciError::InvalidSectorCount);
+    }
+
     do_transfer(
         buffer.as_ptr() as *mut u8,
         buffer.len(),
@@ -641,6 +702,15 @@ fn do_transfer(
         buffer_len >= total_bytes,
         "Buffer too small for AHCI transfer"
     );
+
+    // Reject transfers that cannot possibly fit in the fixed-size PRDT even
+    // in the worst-case fragmentation scenario, before any port I/O is
+    // issued. This turns what used to be a mid-transfer panic (see the PRDT
+    // fragmentation loop below) into a recoverable error returned to the
+    // caller.
+    if max_prdt_entries_for(total_bytes) > MAX_PRDT_ENTRIES {
+        return Err(AhciError::PrdtOverflow);
+    }
 
     unsafe {
         let p = &mut *port;
@@ -689,10 +759,14 @@ fn do_transfer(
         let mut current_va = buffer_ptr as u64;
 
         while remaining_bytes > 0 {
-            assert!(
-                prdtl < 44,
-                "AHCI transfer fragmented into too many PRDT entries"
-            );
+            // Defense-in-depth: the upfront `max_prdt_entries_for` check above
+            // should already guarantee this never trips, but actual physical
+            // fragmentation is only known here (it depends on the live page
+            // table), so this remains a returned error rather than a panic
+            // in case that estimate is ever wrong.
+            if prdtl >= MAX_PRDT_ENTRIES {
+                return Err(AhciError::PrdtOverflow);
+            }
             let phys_addr = virt_to_phys(current_va).expect("AHCI: Unmapped buffer VA");
             let bytes_in_page = 4096 - (phys_addr & 0xFFF);
             let chunk_size = remaining_bytes.min(bytes_in_page as usize);
