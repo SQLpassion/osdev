@@ -96,6 +96,18 @@ struct KeyboardState {
     left_ctrl: bool,
     /// Set when the previous scancode was the 0xE0 extended-key prefix.
     extended: bool,
+    /// Number of remaining bytes still expected as part of an in-progress
+    /// Pause/Break (0xE1-prefixed) scancode sequence.
+    ///
+    /// The Pause key has no distinct break code: pressing it sends the fixed
+    /// 6-byte make sequence `E1 1D 45 E1 9D C5` and nothing on release. When
+    /// the leading `0xE1` is seen this is set to the count of remaining
+    /// bytes in that sequence (5); each subsequent scancode decrements it
+    /// and is consumed as a no-op instead of falling through to the
+    /// modifier/ASCII decode path, where the trailing bytes (which alias
+    /// LCtrl make/break and NumLock-adjacent codes) would otherwise be
+    /// misinterpreted as unrelated key events.
+    pause_remaining: u8,
 }
 
 impl KeyboardState {
@@ -105,6 +117,7 @@ impl KeyboardState {
             caps_lock: false,
             left_ctrl: false,
             extended: false,
+            pause_remaining: 0,
         }
     }
 }
@@ -418,6 +431,24 @@ pub fn process_pending_scancodes() -> bool {
 }
 
 fn handle_scancode(state: &mut KeyboardState, code: u8) {
+    // Consume any byte still owed to an in-progress Pause/Break (0xE1)
+    // sequence before interpreting it as anything else — the sequence's
+    // interior bytes alias other keys' make/break codes and must not be
+    // decoded on their own.
+    if state.pause_remaining > 0 {
+        state.pause_remaining -= 1;
+        return;
+    }
+
+    // 0xE1 marks the start of the Pause/Break key's fixed 6-byte make
+    // sequence (`E1 1D 45 E1 9D C5`), which has no distinct break code.
+    // Record how many further bytes belong to it and consume this prefix
+    // byte without producing any key event.
+    if code == 0xE1 {
+        state.pause_remaining = 5;
+        return;
+    }
+
     // 0xE0 marks the start of a two-byte extended scancode sequence.
     // Record the flag and consume the prefix without producing any key event.
     if code == 0xE0 {

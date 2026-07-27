@@ -158,3 +158,95 @@ fn test_ahci_concurrent_readers_and_multi_sector() {
         );
     }
 }
+
+/// Contract: AHCI read_sectors rejects sector_count == 0 without touching hardware.
+/// Given: No AHCI port needs to be initialized, since the zero-count guard in
+///   `read_sectors` must run before any hardware is touched (issue #61, L8).
+/// When: `read_sectors` is called with `sector_count == 0`.
+/// Then: The call returns `AhciError::InvalidSectorCount`, not `NotInitialized`
+///   or a panic — proving the guard is self-contained and runs first.
+/// Failure Impact: A future caller that does not pre-validate sector_count (unlike
+///   `block.rs`'s current chunking helper) could mis-program the controller, since
+///   AHCI interprets a zero sector count as a request for the maximum transfer size.
+#[test_case]
+fn test_ahci_read_sectors_rejects_zero_sector_count() {
+    let mut buf = [0u8; 512];
+    let result = ahci::read_sectors(&mut buf, 0, 0);
+
+    assert!(
+        matches!(result, Err(ahci::AhciError::InvalidSectorCount)),
+        "read_sectors must reject sector_count == 0 with InvalidSectorCount"
+    );
+}
+
+/// Contract: AHCI write_sectors rejects sector_count == 0 without touching hardware.
+/// Given/When/Then: mirrors `test_ahci_read_sectors_rejects_zero_sector_count` for
+///   the write path.
+#[test_case]
+fn test_ahci_write_sectors_rejects_zero_sector_count() {
+    let buf = [0xA5u8; 512];
+    let result = ahci::write_sectors(&buf, 0, 0);
+
+    assert!(
+        matches!(result, Err(ahci::AhciError::InvalidSectorCount)),
+        "write_sectors must reject sector_count == 0 with InvalidSectorCount"
+    );
+}
+
+/// Contract: `max_prdt_entries_for` matches the fixed PRDT capacity boundary.
+/// Given: The command table's PRDT holds `AhciError`-adjacent constant
+///   `ahci::MAX_PRDT_ENTRIES` (44) entries.
+/// When: Computing the worst-case entry count for transfer sizes at, just
+///   below, and just above the largest transfer that still fits.
+/// Then: The helper's result crosses the `MAX_PRDT_ENTRIES` boundary exactly
+///   where a real transfer of that size would overflow the PRDT — this is the
+///   pure, hardware-independent seam that stands in for `do_transfer`'s
+///   PRDT-overflow check, which cannot be driven end-to-end without a mapped
+///   AHCI port (not present in every test environment).
+/// Failure Impact: An off-by-one here would either reject legitimate transfers
+///   or let an oversized transfer reach the formerly-panicking assert path.
+#[test_case]
+fn test_ahci_max_prdt_entries_for_boundary() {
+    assert_eq!(
+        ahci::max_prdt_entries_for(0),
+        0,
+        "an empty transfer needs no PRDT entries"
+    );
+
+    // Largest transfer that still fits in MAX_PRDT_ENTRIES worst-case entries:
+    // 1 byte in the first (unaligned) page, then (MAX_PRDT_ENTRIES - 1) full
+    // 4 KiB pages.
+    let max_fitting_bytes = 1 + (ahci::MAX_PRDT_ENTRIES - 1) * 4096;
+    assert_eq!(
+        ahci::max_prdt_entries_for(max_fitting_bytes),
+        ahci::MAX_PRDT_ENTRIES,
+        "largest fitting transfer must need exactly MAX_PRDT_ENTRIES entries"
+    );
+
+    // One byte more must require one additional PRDT entry, overflowing the
+    // fixed-size table.
+    assert_eq!(
+        ahci::max_prdt_entries_for(max_fitting_bytes + 1),
+        ahci::MAX_PRDT_ENTRIES + 1,
+        "a transfer one byte larger must overflow MAX_PRDT_ENTRIES"
+    );
+}
+
+/// Contract: a transfer whose worst-case PRDT need exceeds capacity is rejected
+/// with `AhciError::PrdtOverflow` rather than being sent to `do_transfer`'s
+/// panicking assert path.
+/// Given: `MAX_PRDT_ENTRIES` is the fixed PRDT capacity and
+///   `max_prdt_entries_for` computes the worst-case entries needed.
+/// When: A byte count that needs `MAX_PRDT_ENTRIES + 1` entries is evaluated
+///   against the capacity, mirroring the guard added to `do_transfer`.
+/// Then: The guard condition used in `do_transfer` (`max_prdt_entries_for(n) >
+///   MAX_PRDT_ENTRIES`) evaluates to `true`, i.e. the request would be rejected.
+#[test_case]
+fn test_ahci_prdt_overflow_guard_condition_trips_for_oversized_transfer() {
+    let oversized_bytes = 1 + ahci::MAX_PRDT_ENTRIES * 4096;
+
+    assert!(
+        ahci::max_prdt_entries_for(oversized_bytes) > ahci::MAX_PRDT_ENTRIES,
+        "guard condition must trip for a transfer that cannot fit in the PRDT"
+    );
+}
