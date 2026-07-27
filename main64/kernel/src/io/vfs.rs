@@ -21,6 +21,16 @@ pub enum FsError {
     Io,
     /// The provided filename is invalid or cannot be parsed.
     InvalidName,
+    /// The mounted volume does not conform to the filesystem's expected on-disk
+    /// structure (e.g. a bad boot-sector signature or an unsupported geometry).
+    NotFat32,
+    /// The requested name resolves to a directory, not a readable file.
+    IsDirectory,
+    /// A loop or structurally invalid entry was encountered while following the
+    /// on-disk allocation chain for a file or directory.
+    BadChain,
+    /// The requested file exceeds the backend's defensively defined maximum size.
+    TooLarge,
 }
 
 /// File opening mode.
@@ -32,23 +42,56 @@ pub enum FileMode {
 }
 
 /// Operations the syscall layer + loader need. Writes may return `Unsupported`.
+///
+/// # Fd-ownership contract (MUST)
+///
+/// File descriptors are not globally shared: each fd is created by `open()` on
+/// behalf of the calling task and is only valid for that task afterwards. Every
+/// method below that takes an `fd` **MUST** verify, before performing the
+/// operation, that `fd` was opened by the task currently identified by
+/// `crate::scheduler::current_task_id()` — and return `FsError::InvalidFd`
+/// (the same error used for an unknown/closed fd) if it was opened by a
+/// different task. This holds for `close`, `read`, `write`, `seek`, and `eof`.
+///
+/// This check is part of the trait's contract rather than something the VFS
+/// facade (`with()`/the free functions below) enforces on the caller's behalf:
+/// the facade just forwards the fd to the mounted backend. A backend that
+/// omits the ownership check would silently allow one task to read, seek, or
+/// close file descriptors belonging to another task. The in-tree FAT32
+/// backend (`Fat32Fs` in `io/fat32.rs`) enforces this per-call; any future
+/// second backend implementing `FileSystem` MUST do the same.
 pub trait FileSystem: Send + Sync {
     /// Open a file by name. Returns the file descriptor index.
     fn open(&self, name: &str, mode: FileMode) -> Result<usize, FsError>;
 
     /// Close an active file descriptor.
+    ///
+    /// MUST reject `fd` with `FsError::InvalidFd` if it is not owned by the
+    /// calling task (see the fd-ownership contract on this trait).
     fn close(&self, fd: usize) -> Result<(), FsError>;
 
     /// Read data from an active file descriptor. Returns the number of bytes read.
+    ///
+    /// MUST reject `fd` with `FsError::InvalidFd` if it is not owned by the
+    /// calling task (see the fd-ownership contract on this trait).
     fn read(&self, fd: usize, buf: &mut [u8]) -> Result<usize, FsError>;
 
     /// Write data to an active file descriptor. Returns the number of bytes written.
+    ///
+    /// MUST reject `fd` with `FsError::InvalidFd` if it is not owned by the
+    /// calling task (see the fd-ownership contract on this trait).
     fn write(&self, fd: usize, buf: &[u8]) -> Result<usize, FsError>;
 
     /// Adjust the offset cursor of an active file descriptor.
+    ///
+    /// MUST reject `fd` with `FsError::InvalidFd` if it is not owned by the
+    /// calling task (see the fd-ownership contract on this trait).
     fn seek(&self, fd: usize, offset: u32) -> Result<(), FsError>;
 
     /// Return whether the offset cursor has reached or passed the end of the file.
+    ///
+    /// MUST reject `fd` with `FsError::InvalidFd` if it is not owned by the
+    /// calling task (see the fd-ownership contract on this trait).
     fn eof(&self, fd: usize) -> Result<bool, FsError>;
 
     /// Delete a file by name.
@@ -205,6 +248,18 @@ pub fn close_task_fds(task_id: usize) {
 /// `with()` call is in flight only drops the global slot's `Arc` handle — the
 /// clone held by the in-flight closure keeps the filesystem allocation alive
 /// until that closure returns.
+///
+/// Residual caveat (not a memory-safety issue, but a logical foot-gun): this
+/// function is intentionally ungated (no `#[cfg(test)]`) for the reasons
+/// above, so nothing at the type level stops production code from calling it.
+/// Doing so while another task's `with()` call is in flight does not corrupt
+/// memory, but it does unmount the filesystem out from under that in-flight
+/// operation's *subsequent* facade calls (e.g. a task mid-`read_file` that
+/// then calls `open` again would see `FsError::NotMounted`), and any later
+/// `mount()` call is a no-op only relative to whatever got mounted last. This
+/// function must therefore only ever be called from single-threaded test
+/// setup/teardown, never from a code path reachable while the kernel is
+/// otherwise running.
 #[doc(hidden)]
 pub fn reset_mounted_fs() {
     *MOUNTED_FS.lock() = None;

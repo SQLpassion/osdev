@@ -175,7 +175,10 @@ impl Fat32Volume {
             // Reject clusters outside the volume bounds before translating them to LBAs.
             let cluster_lba = self.cluster_to_lba(current_cluster)?;
             for i in 0..self.sec_per_clus {
-                let mut sector = [0u8; 512];
+                // Size the read buffer from `self.bytes_per_sec` rather than a hardcoded
+                // 512 so this stays correct if `mount()`'s 512-only restriction is ever
+                // relaxed (see the struct field doc comment).
+                let mut sector = alloc::vec![0u8; self.bytes_per_sec as usize];
                 crate::drivers::block::read_sectors(cluster_lba + i as u64, 1, &mut sector)
                     .map_err(Fat32Error::Block)?;
 
@@ -193,7 +196,7 @@ impl Fat32Volume {
                         continue;
                     }
                     let attr = sector[offset + 0x0B];
-                    if attr == 0x0F || attr == 0x08 {
+                    if is_skippable_dir_entry(attr) {
                         // LFN (Long File Name) or Volume ID entry, skip.
                         continue;
                     }
@@ -256,7 +259,10 @@ impl Fat32Volume {
             // Reject clusters outside the volume bounds before translating them to LBAs.
             let cluster_lba = self.cluster_to_lba(current_cluster)?;
             for i in 0..self.sec_per_clus {
-                let mut sector = [0u8; 512];
+                // Size the read buffer from `self.bytes_per_sec` rather than a hardcoded
+                // 512 so this stays correct if `mount()`'s 512-only restriction is ever
+                // relaxed (see the struct field doc comment).
+                let mut sector = alloc::vec![0u8; self.bytes_per_sec as usize];
                 crate::drivers::block::read_sectors(cluster_lba + i as u64, 1, &mut sector)
                     .map_err(Fat32Error::Block)?;
 
@@ -314,7 +320,10 @@ impl Fat32Volume {
                 };
 
                 for i in 0..self.sec_per_clus {
-                    let mut sector = [0u8; 512];
+                    // Size the read buffer from `self.bytes_per_sec` rather than a hardcoded
+                    // 512 so this stays correct if `mount()`'s 512-only restriction is ever
+                    // relaxed (see the struct field doc comment).
+                    let mut sector = alloc::vec![0u8; self.bytes_per_sec as usize];
                     if crate::drivers::block::read_sectors(cluster_lba + i as u64, 1, &mut sector)
                         .is_err()
                     {
@@ -333,7 +342,11 @@ impl Fat32Volume {
                             continue;
                         }
                         let attr = sector[offset + 0x0B];
-                        if attr == 0x0F {
+                        if is_skippable_dir_entry(attr) {
+                            // LFN (Long File Name) or Volume ID entry, skip. Matches the
+                            // filtering already applied by `read_file` (see there) so the
+                            // directory listing doesn't surface pseudo-entries that carry
+                            // no readable file data.
                             continue;
                         }
 
@@ -533,6 +546,44 @@ impl Fat32Volume {
 
         Ok(cluster_count)
     }
+}
+
+/// Test-only wrapper around `is_skippable_dir_entry`.
+///
+/// Hidden from public docs; used by integration tests to verify the shared
+/// LFN/volume-ID filtering logic (L7, #60) without needing a full directory
+/// walk over a real block device.
+#[doc(hidden)]
+pub fn is_skippable_dir_entry_for_test(attr: u8) -> bool {
+    is_skippable_dir_entry(attr)
+}
+
+/// Test-only wrapper around `map_fat32_err`.
+///
+/// Hidden from public docs; used by integration tests to verify that each
+/// distinct `Fat32Error` variant maps to its own `FsError` variant instead of
+/// collapsing into a generic `FsError::Io` (L9, #60).
+#[doc(hidden)]
+pub fn map_fat32_err_for_test(err: Fat32Error) -> crate::io::vfs::FsError {
+    map_fat32_err(err)
+}
+
+/// FAT directory-entry attribute bit for a Volume ID / Volume Label entry.
+const ATTR_VOLUME_ID: u8 = 0x08;
+
+/// FAT directory-entry attribute bit for a Long File Name (LFN) entry.
+const ATTR_LONG_NAME: u8 = 0x0F;
+
+/// Returns whether a directory entry with the given `attr` byte is a
+/// pseudo-entry that must be skipped by any directory walk (LFN continuation
+/// entry or the volume label entry), rather than a real file/subdirectory.
+///
+/// Shared by `read_file` and `print_root_directory` so both directory walks
+/// apply exactly the same filtering; `print_root_directory` previously only
+/// skipped LFN entries and could surface the volume label as a bogus
+/// zero-cluster "file" in the listing.
+fn is_skippable_dir_entry(attr: u8) -> bool {
+    attr == ATTR_LONG_NAME || attr == ATTR_VOLUME_ID
 }
 
 /// Helper to convert a file name to the 11-byte space-padded uppercase 8.3 form.
@@ -756,12 +807,22 @@ impl crate::io::vfs::FileSystem for Fat32Fs {
 }
 
 /// Translate FAT32 errors into VFS FsError variants.
+///
+/// Each distinct `Fat32Error` maps to its own `FsError` variant so callers
+/// (syscall dispatch, the program loader) can tell e.g. "tried to read a
+/// directory as a file" (`IsDirectory`) apart from "the on-disk FAT chain is
+/// corrupt" (`BadChain`) instead of both collapsing into a generic `Io` error
+/// that loses that diagnostic information.
 fn map_fat32_err(err: Fat32Error) -> crate::io::vfs::FsError {
     match err {
         Fat32Error::NotFound => crate::io::vfs::FsError::NotFound,
+        Fat32Error::NotFat32 => crate::io::vfs::FsError::NotFat32,
+        Fat32Error::IsDirectory => crate::io::vfs::FsError::IsDirectory,
+        Fat32Error::BadChain => crate::io::vfs::FsError::BadChain,
+        Fat32Error::TooLarge => crate::io::vfs::FsError::TooLarge,
         Fat32Error::Block(crate::drivers::block::BlockError::Unsupported) => {
             crate::io::vfs::FsError::Unsupported
         }
-        _ => crate::io::vfs::FsError::Io,
+        Fat32Error::Block(_) => crate::io::vfs::FsError::Io,
     }
 }
