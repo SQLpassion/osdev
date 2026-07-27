@@ -144,6 +144,26 @@ pub struct BootInfo {
 /// Memory Manager) read this pointer to access firmware tables.
 pub static BOOT_INFO_PTR: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
+/// Tracks whether the linear framebuffer reported in `BootInfo` has actually been
+/// mapped into the kernel address space yet.
+///
+/// `BOOT_INFO_PTR` is published (and `BootInfo.video_type` already reads
+/// `Framebuffer` on a BIOS+VBE boot) long before `map_framebuffer()` in `main.rs`
+/// runs — `gdt::init()`, `fpu::init()`, `pmm::init()`, `interrupts::init()`,
+/// `vmm::init()`, and `heap::init()` all execute in between. A panic during any of
+/// those early steps must NOT let the panic handler treat the framebuffer's base
+/// address as a valid, writable pointer: on BIOS+VBE that address lives outside the
+/// bootstrap loader's low identity map, and no page-fault handler is installed that
+/// early, so a write would triple-fault the CPU with zero diagnostic output.
+///
+/// Set to `true` (with `Release` ordering) only at the very end of `map_framebuffer()`,
+/// after every page of the framebuffer has been mapped. Readers (e.g. the panic
+/// handler) may use `Relaxed` loads: the flag itself is the synchronization point —
+/// it only ever transitions `false -> true`, and a stale `false` read merely causes
+/// the safe VGA-text fallback to be used instead of the framebuffer.
+pub static FRAMEBUFFER_MAPPED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
 impl BootInfo {
     /// Returns a static reference to the active `BootInfo` structure, if it has been validated and published.
     pub fn get() -> Option<&'static BootInfo> {
@@ -156,5 +176,40 @@ impl BootInfo {
             // - The boot loader guarantees the memory is valid and immutable for the kernel's lifetime.
             Some(unsafe { &*(ptr as *const BootInfo) })
         }
+    }
+}
+
+/// Decides whether it is currently safe to render panic diagnostics onto the linear
+/// framebuffer, as opposed to falling back to the legacy VGA text-mode writer.
+///
+/// This is the single seam shared by the panic path's writer-selection logic and this
+/// module's tests: it combines the two independent facts that must both hold before any
+/// code touches `fb_info.base_address` as a live pointer:
+/// 1. The active boot actually selected a linear framebuffer (`video_type ==
+///    Framebuffer` with a non-zero base address) rather than legacy VGA text mode.
+/// 2. `map_framebuffer()` has already run to completion and published
+///    [`FRAMEBUFFER_MAPPED`] — otherwise the address is a physical address that may sit
+///    outside the bootstrap loader's low identity map (BIOS+VBE case), with no
+///    page-fault handler installed early enough to survive a wild write.
+///
+/// Checking (2) first is deliberate: on a BIOS+VBE boot, `BootInfo.video_type` already
+/// reads `Framebuffer` the instant `BOOT_INFO_PTR` is published in `KernelMain` — long
+/// before `gdt::init()`, `pmm::init()`, `interrupts::init()`, `vmm::init()`, or
+/// `map_framebuffer()` run. A panic during any of those early steps must not be able to
+/// pick the framebuffer writer just because `video_type` looks right.
+pub fn framebuffer_panic_writer_available() -> bool {
+    // Step 1: gate on the mapping flag first. `Relaxed` is sufficient here: the flag
+    // only ever transitions `false -> true`, and the `Release` store in
+    // `map_framebuffer()` is the sole writer, so a stale `false` read merely defers
+    // to the always-safe VGA-text fallback rather than causing a hazard.
+    if !FRAMEBUFFER_MAPPED.load(core::sync::atomic::Ordering::Relaxed) {
+        return false;
+    }
+
+    // Step 2: only once mapping is confirmed, check whether the boot info actually
+    // describes a usable linear framebuffer.
+    match BootInfo::get() {
+        Some(bi) => bi.video_type == VideoModeType::Framebuffer && bi.fb_info.base_address != 0,
+        None => false,
     }
 }
