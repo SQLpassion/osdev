@@ -2,7 +2,7 @@
 //!
 //! Required for `no_std` environments.
 
-use crate::boot_info::{BootInfo, PixelFormat, VideoModeType, BOOT_INFO_PTR};
+use crate::boot_info::{framebuffer_panic_writer_available, BootInfo, PixelFormat, BOOT_INFO_PTR};
 use crate::console::FramebufferConsole;
 use crate::drivers::screen::Color;
 use core::fmt::Write;
@@ -44,8 +44,25 @@ struct PanicFramebufferWriter {
 
 impl PanicFramebufferWriter {
     /// Builds a writer from the published boot info, or `None` when the active
-    /// boot is not a usable linear framebuffer (e.g. legacy VGA text mode).
+    /// boot is not a usable linear framebuffer (e.g. legacy VGA text mode) or the
+    /// framebuffer has not been mapped into the address space yet.
     fn from_boot_info() -> Option<Self> {
+        // Gate on the shared predicate before treating `fb_info.base_address` as a
+        // live pointer. `BOOT_INFO_PTR` is published (and `video_type` may already
+        // read `Framebuffer` on a BIOS+VBE boot) well before `map_framebuffer()` runs
+        // in `KernelMain` — `gdt::init()`, `fpu::init()`, `pmm::init()`,
+        // `interrupts::init()`, `vmm::init()`, and `heap::init()` all execute first.
+        // A panic during any of those steps must not treat the framebuffer address as
+        // valid and writable: on BIOS+VBE it lives outside the bootstrap loader's low
+        // identity map, and no fault handler exists that early, so the write would
+        // triple-fault the CPU with zero diagnostic output. Bail out to the VGA-text
+        // fallback (always safe, within the low identity map) until
+        // `framebuffer_panic_writer_available()` confirms both that a framebuffer
+        // boot was selected AND that it has actually been mapped.
+        if !framebuffer_panic_writer_available() {
+            return None;
+        }
+
         let raw = BOOT_INFO_PTR.load(Ordering::Relaxed);
         if raw == 0 {
             return None;
@@ -53,9 +70,6 @@ impl PanicFramebufferWriter {
         // SAFETY: `raw` is the boot-info pointer published in `KernelMain` after a
         // magic check; the structure lives in identity-mapped low memory.
         let bi = unsafe { &*(raw as *const BootInfo) };
-        if bi.video_type != VideoModeType::Framebuffer || bi.fb_info.base_address == 0 {
-            return None;
-        }
         let fb = bi.fb_info;
         Some(Self {
             base: fb.base_address as *mut u32,

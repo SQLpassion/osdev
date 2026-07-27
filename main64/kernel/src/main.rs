@@ -417,6 +417,14 @@ fn map_framebuffer(boot_info_raw: u64) {
         end,
         fb.size
     );
+
+    // Publish that the framebuffer is now safe to write to. The panic handler reads
+    // this flag before touching `fb.base_address`; setting it only here (after every
+    // page above has been mapped) is what prevents an early panic from triple-faulting
+    // by writing through a still-unmapped physical address. `Release` pairs with the
+    // `Relaxed` load in the panic path: the flag transitions only `false -> true`, so
+    // any observer either sees the fully-mapped framebuffer or safely falls back.
+    boot_info::FRAMEBUFFER_MAPPED.store(true, core::sync::atomic::Ordering::Release);
 }
 
 /// Converts higher-half kernel VA to physical address by removing base offset.

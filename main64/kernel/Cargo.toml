@@ -108,3 +108,6 @@ name = "fat32_concurrent_test"
 
 [[test]]
 name = "serial_deadlock_test"
+
+[[test]]
+name = "framebuffer_panic_gate_test"
