@@ -206,14 +206,24 @@ This also fixes two latent bugs for free: the loader-provided **`BootInfo`** and
 **PMM-metadata region** (see [`pmm.md`](pmm.md)) both live in RAM that `PML4[0]` identity-maps, so
 they remain reachable after the switch — a hand-built 4 MiB map would have lost them.
 
-### 4.4 Known caveat (open follow-up)
+### 4.4 Known caveat — being addressed by issue #63
 
 The cloned sub-tables are **firmware-owned frames** that the PMM does **not** know are in use, so
-it could later hand them out and corrupt the page tables. For the current bring-up (boot to a
-stable idle/heartbeat) this has not bitten, but a future "clean" address space should either
-reserve those frames or rebuild kernel-owned tables as a *proper superset* that still covers the
-critical firmware/SMM/MMIO regions. Do not assume the firmware sub-tables are private to the
-kernel.
+it could later hand them out and corrupt the page tables. Today this is mitigated by
+`reserve_firmware_page_tables()`, which walks the cloned tree right after `pmm::init` and marks
+every firmware PDPT/PD/PT frame used so the PMM never reallocates one — a workaround, not a fix
+(those frames are permanently lost from the allocatable pool).
+
+**Issue #63** (`docs/todo_uefi_kernel_pagetables.md`, branch
+`feature/issue-63-uefi-kernel-pagetables`) implements the real fix: a new
+`kernel/src/memory/vmm/direct_map.rs` module builds a genuinely kernel-owned page-table
+hierarchy (own RAM/platform-region mappings, not cloned firmware sub-tables) and can switch CR3
+to it (`direct_map::switch_to_direct_map`), after which `reserve_firmware_page_tables()` becomes
+unnecessary and the firmware frames return to the PMM. This is implemented and passes in QEMU,
+but stays behind `direct_map::USE_DIRECT_MAP_TABLE` (default `false`) until validated with the
+real-hardware smoke-test checklist in `docs/boot_uefi.md` — the SMM/SMI regression this section's
+history is about is not reproducible in QEMU, so a QEMU pass alone does not clear it for
+production use.
 
 ---
 

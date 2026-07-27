@@ -1,7 +1,14 @@
 # Implementation Plan: Kernel-Owned Page Tables on the UEFI Path
 
 > **Audience:** Coding AI, for step-by-step implementation.
-> **Status:** Plan, not yet implemented.
+> **Status:** Phases 0-4 implemented; Phase 5 partial (NX done, kernel `.text` RO+X not
+> yet done — see `kernel/src/memory/vmm/direct_map.rs`'s `build_full_kernel_pml4` doc
+> comment). Tracked in issue #63, branch `feature/issue-63-uefi-kernel-pagetables`.
+> The new kernel-owned table is implemented and exercised in QEMU
+> (`kernel/tests/direct_map_full_switch_test.rs`), but stays behind
+> `direct_map::USE_DIRECT_MAP_TABLE` (default `false`) pending the mandatory
+> real-hardware smoke test (§6, `docs/boot_uefi.md`) — see §5 below for the current
+> per-phase status and what changed vs. this document's original file/line references.
 > **Predecessor context:** `docs/vmm.md` §4 (write_cr3 saga), `docs/boot_uefi.md`.
 
 ---
@@ -127,6 +134,36 @@ Attribute bit: EFI_MEMORY_RUNTIME = 0x8000_0000_0000_0000  -> always map
 Each phase is independently buildable/testable. The order is **binding** (Phase 0 is a
 hard prerequisite). After each phase: `cargo build` + `cargo test` from `main64/` must be
 green; the QEMU boot must not regress.
+
+### Implementation status (2026-07-27, issue #63)
+
+All phases below are implemented on `feature/issue-63-uefi-kernel-pagetables`. Notable
+deviations from the plan as originally written:
+
+- **A third `UnifiedMemoryEntry` copy** (`kaosldr_64/src/boot_info.rs`, the BIOS loader)
+  was missing from this document's Phase 0 scope. The kernel reads the memory map
+  boot-path-agnostically, so leaving it at the old 24-byte layout would have silently
+  broken the BIOS boot path the moment the other two copies grew to 40 bytes. Fixed in
+  the same commit as the UEFI/kernel struct changes.
+- **Real file paths differ slightly** from this doc's references (mostly line-number
+  drift, plus `kernel/src/memory/pmm/types.rs`, not `kernel/src/pmm/types.rs`).
+- **A real bug was caught by `direct_map_full_switch_test.rs`** (a QEMU-only test that
+  calls the actual CR3-switch path directly): `build_direct_map` did not round each
+  memory-map region to page boundaries before mapping. QEMU/SeaBIOS's classic
+  `[0x0, 0x9FC00)` usable / `[0x9FC00, 0xA0000)` reserved split — both inside the same
+  4 KiB page — made `phys_to_pfn`'s implicit `>>12` truncate an unaligned region start,
+  which then mismatched against the untruncated address in the idempotency check and
+  raised a spurious `Overlap` error. Fixed by rounding each region outward to page
+  boundaries in `build_direct_map`; regression-tested in `direct_map_test.rs`.
+- **Phase 4's CR3 switch is implemented but gated off by default**
+  (`direct_map::USE_DIRECT_MAP_TABLE = false`) pending the real-hardware smoke test in
+  `docs/boot_uefi.md` — this could not be run in the environment that implemented it.
+  The switch itself is exercised in QEMU (which cannot reproduce the SMM/SMI regression
+  class that motivated the firmware-clone approach in the first place — see §6).
+- **Phase 5 is partial**: NX across the whole kernel-owned identity/direct map is done;
+  kernel `.text` RO+X is not (it requires page-aligning `link.ld` and rebuilding the
+  higher-half PML4 slot at 4 KiB granularity — a higher-blast-radius change than the
+  rest of this effort, left as explicit follow-up).
 
 ---
 
