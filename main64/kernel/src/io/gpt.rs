@@ -83,7 +83,14 @@ pub fn parse_gpt_header(header_sector: &[u8; 512]) -> Option<(u64, u32, u32)> {
     let num_entries = u32::from_le_bytes(header_sector[0x50..0x54].try_into().unwrap());
     let entry_size = u32::from_le_bytes(header_sector[0x54..0x58].try_into().unwrap());
 
-    if entry_size == 0 || entry_size > 512 || 512 % entry_size != 0 {
+    // The UEFI spec mandates SizeOfPartitionEntry >= 128, and 128 bytes is also
+    // the minimum size that guarantees every field this driver reads from an
+    // entry - the type GUID at offset 0x00..0x10 and StartingLBA at
+    // 0x20..0x28 - actually fits inside a single entry's stride. Accepting a
+    // smaller-but-still-a-divisor-of-512 value (e.g. 8, 32, 64) would let
+    // `parse_gpt_entries_sector` compute an `offset` for which
+    // `offset + 0x28` walks past the end of the 512-byte sector buffer.
+    if !(128..=512).contains(&entry_size) || 512 % entry_size != 0 {
         return None;
     }
 
@@ -98,6 +105,18 @@ pub fn parse_gpt_entries_sector(
 ) -> Option<u64> {
     for i in 0..entries_in_this_sector {
         let offset = (i * entry_size) as usize;
+
+        // Defense-in-depth: `parse_gpt_header` already rejects any
+        // `entry_size` below 128, which is the minimum needed for the GUID
+        // (0x00..0x10) and StartingLBA (0x20..0x28) fields read below to fit
+        // inside a single entry's stride. This check guards against any
+        // other caller path (or future refactor) that might invoke this
+        // function directly with a corrupt/undersized `entry_size`, turning
+        // a would-be out-of-bounds slice panic into a graceful stop instead.
+        if offset + 0x28 > entry_sector.len() {
+            break;
+        }
+
         let guid = &entry_sector[offset..offset + 16];
 
         // Check if this partition is the EFI System Partition.

@@ -77,6 +77,36 @@ fn test_parse_gpt_header_invalid_entry_size() {
 }
 
 #[test_case]
+fn test_parse_gpt_header_rejects_small_divisors_of_512() {
+    // Regression test for H1 / issue #42: entry sizes that cleanly divide 512
+    // but are below the UEFI-mandated minimum of 128 bytes must be rejected
+    // by the header validation, not accepted and later fed to
+    // `parse_gpt_entries_sector` where they cause an out-of-bounds slice.
+    let mut header = [0u8; 512];
+    header[0..8].copy_from_slice(b"EFI PART");
+    header[0x48..0x50].copy_from_slice(&2u64.to_le_bytes());
+    header[0x50..0x54].copy_from_slice(&128u32.to_le_bytes());
+
+    for &entry_size in &[8u32, 32, 64] {
+        header[0x54..0x58].copy_from_slice(&entry_size.to_le_bytes());
+        assert_eq!(gpt::parse_gpt_header(&header), None);
+    }
+}
+
+#[test_case]
+fn test_parse_gpt_header_accepts_minimum_valid_entry_size() {
+    // SizeOfPartitionEntry = 128 is the UEFI-mandated minimum and must still
+    // be accepted.
+    let mut header = [0u8; 512];
+    header[0..8].copy_from_slice(b"EFI PART");
+    header[0x48..0x50].copy_from_slice(&2u64.to_le_bytes());
+    header[0x50..0x54].copy_from_slice(&128u32.to_le_bytes());
+    header[0x54..0x58].copy_from_slice(&128u32.to_le_bytes());
+
+    assert_eq!(gpt::parse_gpt_header(&header), Some((2, 128, 128)));
+}
+
+#[test_case]
 fn test_parse_gpt_entries_sector_found() {
     let mut sector = [0u8; 512];
     let entry_size = 128;
@@ -101,6 +131,23 @@ fn test_parse_gpt_entries_sector_not_found() {
     sector[128..128 + 16].copy_from_slice(&dummy_guid);
 
     let result = gpt::parse_gpt_entries_sector(&sector, 4, entry_size);
+    assert_eq!(result, None);
+}
+
+#[test_case]
+fn test_parse_gpt_entries_sector_small_entry_size_does_not_panic() {
+    // Regression test for H1 / issue #42: this is the actual OOB-slice bug -
+    // `parse_gpt_header` now rejects `entry_size = 8` before it ever reaches
+    // this function, but `parse_gpt_entries_sector` itself must still not
+    // panic if invoked directly with a small `entry_size` (e.g. by a future
+    // caller that bypasses header validation). With `entry_size = 8` and
+    // `entries_in_this_sector = 64`, the last iteration (`i = 63`) computes
+    // `offset = 504`, and `504 + 0x28 = 544 > 512` used to panic on the
+    // unchecked slice; it must now gracefully break and return `None`.
+    let entry_size = 8;
+    let sector = [0u8; 512];
+
+    let result = gpt::parse_gpt_entries_sector(&sector, 64, entry_size);
     assert_eq!(result, None);
 }
 
@@ -255,6 +302,25 @@ fn test_find_esp_start_lba_valid_gpt_with_esp_returns_its_lba() {
     block::set_active_device(&MOCK_DEVICE);
 
     assert_eq!(gpt::find_esp_start_lba(), Some(4096));
+
+    block::reset_active_device();
+}
+
+#[test_case]
+fn test_find_esp_start_lba_small_entry_size_returns_none_not_panic() {
+    // Regression test for H1 / issue #42: a disk with a valid "EFI PART"
+    // signature, NumberOfPartitionEntries = 128, but SizeOfPartitionEntry = 8
+    // (a divisor of 512, but below the UEFI-mandated minimum of 128) used to
+    // panic the kernel via an out-of-bounds slice deep inside
+    // `parse_gpt_entries_sector`. It must now be rejected gracefully at the
+    // header-validation stage and reported as `None`, not panic and not fall
+    // back to the LBA 2048 heuristic (which is reserved for "valid GPT, no
+    // ESP entry" only).
+    MOCK_DEVICE.set_valid_header(2, 128, 8);
+    MOCK_DEVICE.set_esp_entry(4096);
+    block::set_active_device(&MOCK_DEVICE);
+
+    assert_eq!(gpt::find_esp_start_lba(), None);
 
     block::reset_active_device();
 }
