@@ -266,6 +266,36 @@ unsafe fn map_2m_page(
     Ok(())
 }
 
+/// Ensures the PD -> PT path for `va` exists, allocating/zeroing a missing PT frame via
+/// `alloc_frame`. Returns the physical address of the PT table. Shared by
+/// [`map_4k_page`] and [`map_4k_wc_page`] — the only difference between a normal and a
+/// write-combining 4 KiB leaf is the flags on the final PTE, not how the path above it
+/// is built.
+///
+/// # Safety
+/// Same contract as [`build_direct_map`].
+unsafe fn ensure_pt_table(
+    pml4_phys: u64,
+    va: u64,
+    alloc_frame: &mut dyn FnMut() -> Option<u64>,
+    stats: &mut DirectMapStats,
+) -> Result<u64, DirectMapError> {
+    let pd_phys = ensure_pd_table(pml4_phys, va, alloc_frame, stats)?;
+    let pd = table_at(pd_phys);
+    let pd_idx = pd_index(va);
+    let pde = table_entry(pd, pd_idx);
+    if pde.present() && pde.huge() {
+        return Err(DirectMapError::HugePageCollision { va });
+    }
+    if !pde.present() {
+        let phys = alloc_frame().ok_or(DirectMapError::OutOfScaffoldFrames)?;
+        zero_phys_page(phys);
+        (*entry_ptr(pd, pd_idx)).set_mapping(phys_to_pfn(phys), true, true, false);
+        stats.pt_frames_allocated += 1;
+    }
+    Ok(table_entry(pd, pd_idx).frame() * PAGE_SIZE_U64)
+}
+
 /// Maps one 4 KiB page at physical/virtual address `pa` (identity map: VA == PA).
 ///
 /// # Safety
@@ -276,20 +306,7 @@ unsafe fn map_4k_page(
     alloc_frame: &mut dyn FnMut() -> Option<u64>,
     stats: &mut DirectMapStats,
 ) -> Result<(), DirectMapError> {
-    let pd_phys = ensure_pd_table(pml4_phys, pa, alloc_frame, stats)?;
-    let pd = table_at(pd_phys);
-    let pd_idx = pd_index(pa);
-    let pde = table_entry(pd, pd_idx);
-    if pde.present() && pde.huge() {
-        return Err(DirectMapError::HugePageCollision { va: pa });
-    }
-    if !pde.present() {
-        let phys = alloc_frame().ok_or(DirectMapError::OutOfScaffoldFrames)?;
-        zero_phys_page(phys);
-        (*entry_ptr(pd, pd_idx)).set_mapping(phys_to_pfn(phys), true, true, false);
-        stats.pt_frames_allocated += 1;
-    }
-    let pt_phys = table_entry(pd, pd_idx).frame() * PAGE_SIZE_U64;
+    let pt_phys = ensure_pt_table(pml4_phys, pa, alloc_frame, stats)?;
     let pt = table_at(pt_phys);
     let pt_idx = pt_index(pa);
     let existing = table_entry(pt, pt_idx);
@@ -305,6 +322,76 @@ unsafe fn map_4k_page(
         return Ok(()); // identical, already installed - idempotent.
     }
     (*entry_ptr(pt, pt_idx)).set_mapping(phys_to_pfn(pa), true, true, false);
+    Ok(())
+}
+
+/// Maps `[base, base + size)` identity (VA == PA) as write-combining, NX, 4 KiB pages
+/// into the tree rooted at `pml4_phys` — Phase 3 of #63: the GOP framebuffer must be
+/// mapped explicitly in the kernel-owned table instead of relying on inherited firmware
+/// coverage (design doc problem P4). `base` is rounded down and `size` up to page
+/// boundaries, matching `mapping.rs`'s existing `configure_wc_mapping` PAT1 convention
+/// (bit 3 = PWT, bit 4 = PCD; PAT1 is configured for Write-Combining by the PAT MSR
+/// setup in `main.rs`'s `map_framebuffer`) — this function assumes that PAT
+/// configuration is already in place, it only sets the PWT/PCD bits on each leaf.
+/// Always 4 KiB granularity: framebuffers are rarely 2 MiB-aligned, and — unlike bulk
+/// RAM — there is no benefit to huge pages for a single MMIO range mapped once at boot.
+///
+/// # Safety
+/// Same contract as [`build_direct_map`]: `pml4_phys` and every physical address
+/// `alloc_frame` returns must be dereferenceable as an identical virtual address for the
+/// whole call.
+pub unsafe fn map_wc_range(
+    pml4_phys: u64,
+    base: u64,
+    size: u64,
+    alloc_frame: &mut dyn FnMut() -> Option<u64>,
+) -> Result<(), DirectMapError> {
+    let start = base & !(PAGE_SIZE_U64 - 1);
+    let end = base
+        .checked_add(size)
+        .map(|end| (end + PAGE_SIZE_U64 - 1) & !(PAGE_SIZE_U64 - 1))
+        .ok_or(DirectMapError::RegionOverflow { start: base, size })?;
+
+    let mut stats = DirectMapStats::default();
+    let mut cur = start;
+    while cur < end {
+        map_4k_wc_page(pml4_phys, cur, alloc_frame, &mut stats)?;
+        cur += PAGE_SIZE_U64;
+    }
+    Ok(())
+}
+
+/// Maps one 4 KiB write-combining, NX leaf at physical/virtual address `pa` (identity
+/// map: VA == PA). See [`map_wc_range`] for the PAT/PWT/PCD convention.
+///
+/// # Safety
+/// Same contract as [`build_direct_map`].
+unsafe fn map_4k_wc_page(
+    pml4_phys: u64,
+    pa: u64,
+    alloc_frame: &mut dyn FnMut() -> Option<u64>,
+    stats: &mut DirectMapStats,
+) -> Result<(), DirectMapError> {
+    let pt_phys = ensure_pt_table(pml4_phys, pa, alloc_frame, stats)?;
+    let pt = table_at(pt_phys);
+    let pt_idx = pt_index(pa);
+    let existing = table_entry(pt, pt_idx);
+    if existing.present() {
+        let existing_pa = existing.frame() * PAGE_SIZE_U64;
+        if existing_pa != pa {
+            return Err(DirectMapError::Overlap {
+                va: pa,
+                expected_pa: pa,
+                existing_pa,
+            });
+        }
+        return Ok(()); // identical, already installed - idempotent.
+    }
+    let entry = &mut *entry_ptr(pt, pt_idx);
+    entry.set_mapping(phys_to_pfn(pa), true, true, false);
+    entry.set_pwt(true);
+    entry.set_pcd(false);
+    entry.set_no_execute(true);
     Ok(())
 }
 

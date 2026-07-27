@@ -28,11 +28,11 @@ use kaos_kernel::arch::constants::PAGE_SIZE_U64;
 use kaos_kernel::boot_info::UnifiedMemoryEntry;
 use kaos_kernel::memory::pmm::{self, types::virt_to_phys};
 use kaos_kernel::memory::vmm::direct_map::{
-    build_direct_map, free_direct_map_tables, is_phase1_ram, is_phase2_platform,
+    build_direct_map, free_direct_map_tables, is_phase1_ram, is_phase2_platform, map_wc_range,
     validate_direct_map_coverage, CoverageGap, DirectMapError,
 };
 use kaos_kernel::memory::vmm::page_table::{
-    self, pt_index, resolve_phys_via_root, PageTable, HUGE_PAGE_SIZE_2M,
+    self, pt_index, resolve_phys_via_root, PageTable, ENTRY_PCD, ENTRY_PWT, HUGE_PAGE_SIZE_2M,
 };
 
 #[no_mangle]
@@ -527,6 +527,86 @@ fn test_phase1_and_phase2_passes_coexist_on_the_same_table() {
         assert_eq!(
             resolve_phys_via_root(pml4, 0x0080_0000),
             Some((0x0080_0000, PAGE_SIZE_U64))
+        );
+    }
+}
+
+// ============================================================================
+// Phase 3: `map_wc_range` (explicit GOP-framebuffer-style write-combining mapping) -
+// part of #63, Phase 3.
+// ============================================================================
+
+/// Contract: `map_wc_range` maps every page of `[base, base+size)` identity (VA == PA),
+/// rounding to page boundaries, with the write-combining PTE flags (PWT set, PCD
+/// clear) and NX — the exact combination `main.rs`'s PAT1 setup expects.
+/// Failure Impact: a wrong flag combination would either lose write-combining
+/// performance (falls back to a slower cache mode) or, worse, allow code execution
+/// from framebuffer memory if NX were missing — the entire point of Phase 3 mapping
+/// this range explicitly instead of inheriting whatever the firmware happened to set.
+#[test_case]
+fn test_map_wc_range_sets_identity_mapping_and_wc_nx_flags() {
+    // SAFETY: single-threaded test context; POOL is reset before use. Fresh pool means
+    // deterministic allocation order: POOL[1]=PDPT, POOL[2]=PD, POOL[3]=PT.
+    unsafe {
+        let pml4 = reset_pool();
+        let mut alloc = bump_alloc_from_pool;
+
+        let base = 0x0090_0000_u64; // not page-boundary-sensitive; already 4 KiB aligned
+        let size = 2 * PAGE_SIZE_U64;
+        map_wc_range(pml4, base, size, &mut alloc).unwrap();
+
+        assert_eq!(
+            resolve_phys_via_root(pml4, base),
+            Some((base, PAGE_SIZE_U64))
+        );
+        assert_eq!(
+            resolve_phys_via_root(pml4, base + PAGE_SIZE_U64),
+            Some((base + PAGE_SIZE_U64, PAGE_SIZE_U64))
+        );
+
+        let pt = &*addr_of!(POOL[3]);
+        let entry = pt.entries[pt_index(base)];
+        assert!(entry.present());
+        assert!(entry.writable());
+        assert!(!entry.huge());
+        assert!(entry.no_execute(), "framebuffer mapping must be NX");
+        assert_ne!(
+            entry.raw() & ENTRY_PWT,
+            0,
+            "PWT must be set for write-combining"
+        );
+        assert_eq!(
+            entry.raw() & ENTRY_PCD,
+            0,
+            "PCD must be clear for write-combining"
+        );
+    }
+}
+
+/// Contract: `map_wc_range` rounds a non-page-aligned `base`/`size` outward so the
+/// entire requested byte range ends up covered, not truncated.
+/// Failure Impact: a real GOP framebuffer's `base_address` is not guaranteed page
+/// aligned by firmware; truncating the range would leave the tail of the framebuffer
+/// unmapped once this table becomes load-bearing.
+#[test_case]
+fn test_map_wc_range_rounds_unaligned_base_and_size_outward() {
+    // SAFETY: see test_map_wc_range_sets_identity_mapping_and_wc_nx_flags.
+    unsafe {
+        let pml4 = reset_pool();
+        let mut alloc = bump_alloc_from_pool;
+
+        let base = 0x00A0_0123_u64; // deliberately unaligned
+        let size = PAGE_SIZE_U64 + 1; // spills one byte into a second page
+        map_wc_range(pml4, base, size, &mut alloc).unwrap();
+
+        let rounded_start = base & !(PAGE_SIZE_U64 - 1);
+        assert_eq!(
+            resolve_phys_via_root(pml4, rounded_start),
+            Some((rounded_start, PAGE_SIZE_U64))
+        );
+        assert_eq!(
+            resolve_phys_via_root(pml4, rounded_start + PAGE_SIZE_U64),
+            Some((rounded_start + PAGE_SIZE_U64, PAGE_SIZE_U64))
         );
     }
 }
