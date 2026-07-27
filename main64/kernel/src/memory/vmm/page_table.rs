@@ -25,6 +25,11 @@ pub const ENTRY_FRAME_MASK: u64 = 0x0000_FFFF_FFFF_F000;
 /// Must NOT be set on code pages (USER_CODE region).
 pub const ENTRY_NO_EXECUTE: u64 = 1 << 63;
 
+/// Size of a 2 MiB huge page (a PD-level leaf entry).
+pub const HUGE_PAGE_SIZE_2M: u64 = 2 * 1024 * 1024;
+/// Masks a physical/virtual address down to its containing 2 MiB-aligned base.
+pub const HUGE_PAGE_MASK_2M: u64 = !(HUGE_PAGE_SIZE_2M - 1);
+
 pub const PML4_TABLE_ADDR: u64 = 0xFFFF_FFFF_FFFF_F000;
 pub const PDP_TABLE_BASE: u64 = 0xFFFF_FFFF_FFE0_0000;
 pub const PD_TABLE_BASE: u64 = 0xFFFF_FFFF_C000_0000;
@@ -190,11 +195,49 @@ impl PageTableEntry {
 
     /// Returns whether the huge-page bit is set.
     ///
-    /// Used during page walks to detect/reject huge-page (1 GiB / 2 MiB) leaves. The
-    /// kernel only ever *creates* 4 KiB mappings, so there is no `set_huge` setter.
+    /// Used during page walks to detect/reject huge-page (1 GiB / 2 MiB) leaves.
+    /// Historically the kernel only ever *created* 4 KiB mappings itself (huge pages
+    /// only ever appeared as inherited firmware/loader entries) — see `set_huge`/
+    /// `set_huge_mapping` below for the direct-map builder's 2 MiB PD-leaf creation.
     #[inline]
     pub fn huge(self) -> bool {
         (self.0 & ENTRY_HUGE) != 0
+    }
+
+    /// Sets or clears the huge-page bit (bit 7).
+    ///
+    /// Meaningful only on PDPT (1 GiB leaf) and PD (2 MiB leaf) entries — never on
+    /// PML4 or PT entries, which have no huge-page bit semantics.
+    #[inline]
+    pub fn set_huge(&mut self, val: bool) {
+        if val {
+            self.0 |= ENTRY_HUGE;
+        } else {
+            self.0 &= !ENTRY_HUGE;
+        }
+    }
+
+    /// Sets frame + huge bit + basic permission bits in one call — the 2 MiB
+    /// (PD-level) leaf-creation counterpart to `set_mapping`.
+    ///
+    /// # Panics
+    /// Panics if `phys` is not 2 MiB aligned. This is a real `assert!` rather than a
+    /// `debug_assert!`: this runs only a few thousand times per boot (once per PD
+    /// entry the direct-map builder creates), and a silently misaligned huge frame
+    /// would corrupt address translation instead of failing loudly at the call site.
+    #[inline]
+    pub fn set_huge_mapping(&mut self, phys: u64, present: bool, writable: bool, user: bool) {
+        assert_eq!(
+            phys % HUGE_PAGE_SIZE_2M,
+            0,
+            "huge-page frame {:#x} is not 2 MiB aligned",
+            phys
+        );
+        self.set_frame(phys_to_pfn(phys));
+        self.set_present(present);
+        self.set_writable(writable);
+        self.set_user(user);
+        self.set_huge(true);
     }
 
     /// Returns the raw 64-bit entry value (frame bits + flags). Primarily for tests
@@ -641,6 +684,64 @@ pub fn pt_for_if_present(virtual_address: u64) -> Option<*mut PageTable> {
         WalkResult::Resolved { pml4e, pt, .. } if !pml4e.huge() => Some(pt),
         _ => None,
     }
+}
+
+/// Resolves `va` through the explicit table hierarchy rooted at `pml4_phys`,
+/// returning `(physical_address, leaf_page_size)`. `leaf_page_size` is
+/// `1 GiB` for a PDPT huge leaf, `HUGE_PAGE_SIZE_2M` for a PD huge leaf, or
+/// `PAGE_SIZE_U64` for a 4 KiB PT leaf. Returns `None` if any level along the path is
+/// not present.
+///
+/// Unlike [`pt_for_if_present`] and the other recursive-mapping helpers, this walks
+/// tables by their PHYSICAL addresses directly (`table_at(phys)`), so it works on a
+/// PML4 that is *not* the currently active CR3 — needed by the direct-map builder
+/// (`memory::vmm::direct_map`) to validate a table it built but has not yet switched
+/// to.
+///
+/// # Safety
+/// Every physical address encountered while walking (`pml4_phys`, and any PDPT/PD/PT
+/// frame reached via a present entry) must be dereferenceable as an identical virtual
+/// address for the duration of the call — true while the original identity map
+/// (firmware or BIOS loader) is still active, i.e. before any CR3 switch away from it.
+#[inline]
+pub unsafe fn resolve_phys_via_root(pml4_phys: u64, va: u64) -> Option<(u64, u64)> {
+    const GIB: u64 = 1024 * 1024 * 1024;
+
+    let pml4e = table_entry(table_at(pml4_phys), pml4_index(va));
+    if !pml4e.present() {
+        return None;
+    }
+    let pdpt_phys = pml4e.frame() * PAGE_SIZE_U64;
+
+    let pdpte = table_entry(table_at(pdpt_phys), pdp_index(va));
+    if !pdpte.present() {
+        return None;
+    }
+    if pdpte.huge() {
+        return Some((pdpte.frame() * PAGE_SIZE_U64 + (va & (GIB - 1)), GIB));
+    }
+    let pd_phys = pdpte.frame() * PAGE_SIZE_U64;
+
+    let pde = table_entry(table_at(pd_phys), pd_index(va));
+    if !pde.present() {
+        return None;
+    }
+    if pde.huge() {
+        return Some((
+            pde.frame() * PAGE_SIZE_U64 + (va & (HUGE_PAGE_SIZE_2M - 1)),
+            HUGE_PAGE_SIZE_2M,
+        ));
+    }
+    let pt_phys = pde.frame() * PAGE_SIZE_U64;
+
+    let pte = table_entry(table_at(pt_phys), pt_index(va));
+    if !pte.present() {
+        return None;
+    }
+    Some((
+        pte.frame() * PAGE_SIZE_U64 + (va & (PAGE_SIZE_U64 - 1)),
+        PAGE_SIZE_U64,
+    ))
 }
 
 /// Returns whether a present leaf mapping exists for `virtual_address`.
