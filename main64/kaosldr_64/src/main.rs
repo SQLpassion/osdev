@@ -54,8 +54,28 @@ struct BiosMemoryRegion {
 static mut UNIFIED_MEM_MAP: [UnifiedMemoryEntry; 128] = [UnifiedMemoryEntry {
     start: 0,
     size: 0,
+    memory_type: 0,
+    _pad: 0,
+    attribute: 0,
     is_usable: false,
 }; 128];
+
+/// Maps a BIOS E820 `region_type` to the equivalent EFI memory-descriptor type, so the
+/// kernel's boot-path-agnostic memory-map reader (`kernel::boot_info::UnifiedMemoryEntry`)
+/// sees a consistent classification regardless of which loader ran. E820 has no runtime/
+/// MMIO/PAL-code distinction, so those EFI types are never produced here.
+///
+/// E820 types: 1 = Usable RAM, 2 = Reserved, 3 = ACPI Reclaimable, 4 = ACPI NVS,
+/// 5 = Bad memory (anything else is treated as unusable/reserved).
+fn e820_type_to_efi_memory_type(region_type: u32) -> u32 {
+    match region_type {
+        1 => 7,  // EfiConventionalMemory
+        2 => 0,  // EfiReservedMemoryType
+        3 => 9,  // EfiACPIReclaimMemory
+        4 => 10, // EfiACPIMemoryNVS
+        _ => 8,  // EfiUnusableMemory
+    }
+}
 
 static mut BOOT_INFO: BootInfo = BootInfo {
     magic: 0x4B414F535F424F4F,
@@ -121,6 +141,9 @@ pub unsafe extern "C" fn kaosldr_main() -> ! {
                     UNIFIED_MEM_MAP[i] = UnifiedMemoryEntry {
                         start: current_region.start,
                         size: current_region.size,
+                        memory_type: e820_type_to_efi_memory_type(current_region.region_type),
+                        _pad: 0,
+                        attribute: 0,
                         is_usable: current_region.region_type == 1,
                     };
                 }

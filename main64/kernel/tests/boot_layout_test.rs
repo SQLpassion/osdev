@@ -109,13 +109,18 @@ fn test_framebuffer_info_layout() {
 }
 
 /// Contract: the exact `#[repr(C)]` layout of `UnifiedMemoryEntry` (the loader's memory-map element).
+/// This struct is hand-duplicated in THREE places (`kernel::boot_info`, `kaosldr_uefi::main`,
+/// `kaosldr_64::boot_info`) and must stay byte-identical in all three, or the kernel
+/// misinterprets whichever loader's memory map it was handed.
 /// Failure Impact: the PMM would mis-parse the memory map. Release-blocking.
 #[test_case]
 fn test_unified_memory_entry_layout() {
     assert_eq!(offset_of!(UnifiedMemoryEntry, start), 0);
     assert_eq!(offset_of!(UnifiedMemoryEntry, size), 8);
-    assert_eq!(offset_of!(UnifiedMemoryEntry, is_usable), 16);
-    assert_eq!(size_of::<UnifiedMemoryEntry>(), 24);
+    assert_eq!(offset_of!(UnifiedMemoryEntry, memory_type), 16);
+    assert_eq!(offset_of!(UnifiedMemoryEntry, attribute), 24);
+    assert_eq!(offset_of!(UnifiedMemoryEntry, is_usable), 32);
+    assert_eq!(size_of::<UnifiedMemoryEntry>(), 40);
     assert_eq!(align_of::<UnifiedMemoryEntry>(), 8);
 }
 

@@ -70,6 +70,20 @@ pub struct UnifiedMemoryEntry {
     /// Size of the physical memory region in bytes.
     pub size: u64,
 
+    /// EFI-style memory classification derived from the E820 `region_type`, so the
+    /// kernel's boot-path-agnostic memory-map reader sees a consistent value
+    /// regardless of loader. Layout must stay byte-identical to
+    /// `kernel::boot_info::UnifiedMemoryEntry` / `kaosldr_uefi::UnifiedMemoryEntry`
+    /// (see `kernel/tests/boot_layout_test.rs`). See `kaosldr_64/src/main.rs` for the
+    /// E820-type -> this mapping.
+    pub memory_type: u32,
+
+    /// Explicit padding for `attribute`'s 8-byte alignment.
+    pub _pad: u32,
+
+    /// E820 has no equivalent attribute bitfield; always 0 on this (BIOS) path.
+    pub attribute: u64,
+
     /// If true, this region is general-purpose usable RAM. If false, it is reserved.
     pub is_usable: bool,
 }

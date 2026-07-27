@@ -396,11 +396,20 @@ pub struct FramebufferInfo {
 }
 
 /// Simplified memory map entries for the kernel physical memory manager.
+///
+/// Layout must stay byte-identical to `kernel::boot_info::UnifiedMemoryEntry` and
+/// `kaosldr_64::boot_info::UnifiedMemoryEntry` (see `kernel/tests/boot_layout_test.rs`).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct UnifiedMemoryEntry {
     pub start: u64,
     pub size: u64,
+    /// Raw EFI memory descriptor type (see `EfiMemoryDescriptor::memory_type`).
+    pub memory_type: u32,
+    /// Explicit padding for `attribute`'s 8-byte alignment.
+    pub _pad: u32,
+    /// Raw EFI memory descriptor attribute bits (e.g. `EFI_MEMORY_RUNTIME`).
+    pub attribute: u64,
     pub is_usable: bool,
 }
 
@@ -429,6 +438,9 @@ pub struct BootInfo {
 static mut UNIFIED_MEM_MAP: [UnifiedMemoryEntry; 256] = [UnifiedMemoryEntry {
     start: 0,
     size: 0,
+    memory_type: 0,
+    _pad: 0,
+    attribute: 0,
     is_usable: false,
 }; 256];
 
@@ -863,6 +875,9 @@ pub unsafe extern "efiapi" fn efi_main(
                 UNIFIED_MEM_MAP[usable_entry_count as usize] = UnifiedMemoryEntry {
                     start: desc.physical_start,
                     size: desc.number_of_pages * 4096,
+                    memory_type: desc.memory_type,
+                    _pad: 0,
+                    attribute: desc.attribute,
                     is_usable,
                 };
                 usable_entry_count += 1;
