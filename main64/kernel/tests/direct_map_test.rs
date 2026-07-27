@@ -32,7 +32,8 @@ use kaos_kernel::memory::vmm::direct_map::{
     validate_direct_map_coverage, CoverageGap, DirectMapError,
 };
 use kaos_kernel::memory::vmm::page_table::{
-    self, pt_index, resolve_phys_via_root, PageTable, ENTRY_PCD, ENTRY_PWT, HUGE_PAGE_SIZE_2M,
+    self, pd_index, pt_index, resolve_phys_via_root, PageTable, ENTRY_PCD, ENTRY_PWT,
+    HUGE_PAGE_SIZE_2M,
 };
 
 #[no_mangle]
@@ -663,5 +664,65 @@ fn test_adjacent_page_unaligned_regions_sharing_a_page_do_not_spuriously_overlap
             resolve_phys_via_root(pml4, 0x9FC00),
             Some((0x9FC00, PAGE_SIZE_U64))
         );
+    }
+}
+
+// ============================================================================
+// Phase 5 (#63): the whole identity/direct map (RAM + platform) is NX.
+// ============================================================================
+
+/// Contract: a 2 MiB huge-page RAM mapping is created NX.
+/// Failure Impact: the design doc's Phase 5 goal ("data + direct map: NX") would be
+/// unmet for the huge-page bulk path — the vast majority of real RAM — leaving code
+/// injected into RAM through the identity map executable.
+#[test_case]
+fn test_2mib_ram_mapping_is_nx() {
+    // SAFETY: single-threaded test context; fresh pool means POOL[2] is the PD frame.
+    unsafe {
+        let pml4 = reset_pool();
+        let mut alloc = bump_alloc_from_pool;
+        let region = ram_entry(HUGE_PAGE_SIZE_2M, HUGE_PAGE_SIZE_2M);
+        build_direct_map(pml4, [region].iter(), is_phase1_ram, &mut alloc, true).unwrap();
+
+        let pd = &*addr_of!(POOL[2]);
+        let entry = pd.entries[pd_index(HUGE_PAGE_SIZE_2M)];
+        assert!(entry.present());
+        assert!(entry.huge());
+        assert!(entry.no_execute(), "2 MiB RAM mapping must be NX");
+    }
+}
+
+/// Contract: a 4 KiB RAM mapping and a 4 KiB Phase 2 platform mapping are both created
+/// NX.
+/// Failure Impact: same as above, but for the 4 KiB fallback/edge path and for
+/// firmware/platform regions (MMIO in particular — an executable MMIO mapping is a
+/// classic privilege-escalation primitive).
+#[test_case]
+fn test_4kib_ram_and_platform_mappings_are_nx() {
+    // SAFETY: single-threaded test context; fresh pool means POOL[3] is the PT frame.
+    unsafe {
+        let pml4 = reset_pool();
+        let mut alloc = bump_alloc_from_pool;
+        let region = ram_entry(0x0060_0000, PAGE_SIZE_U64);
+        build_direct_map(pml4, [region].iter(), is_phase1_ram, &mut alloc, false).unwrap();
+
+        let pt = &*addr_of!(POOL[3]);
+        let entry = pt.entries[pt_index(0x0060_0000)];
+        assert!(entry.present());
+        assert!(!entry.huge());
+        assert!(entry.no_execute(), "4 KiB RAM mapping must be NX");
+
+        let mmio = UnifiedMemoryEntry {
+            start: 0x0061_0000,
+            size: PAGE_SIZE_U64,
+            memory_type: 11, // EfiMemoryMappedIO
+            _pad: 0,
+            attribute: 0,
+            is_usable: false,
+        };
+        build_direct_map(pml4, [mmio].iter(), is_phase2_platform, &mut alloc, false).unwrap();
+        let mmio_entry = pt.entries[pt_index(0x0061_0000)];
+        assert!(mmio_entry.present());
+        assert!(mmio_entry.no_execute(), "MMIO mapping must be NX");
     }
 }

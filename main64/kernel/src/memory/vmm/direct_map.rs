@@ -298,7 +298,15 @@ unsafe fn map_2m_page(
         }
         return Ok(()); // identical, already installed - idempotent.
     }
-    (*entry_ptr(pd, idx)).set_huge_mapping(pa, true, true, false);
+    // Phase 5 (#63): NX on the whole identity/direct map. Safe because the kernel's
+    // own code never executes through this identity mapping — it runs from the
+    // separate higher-half mirror (PML4 slot 256), which maps the same physical
+    // frames through different, unrelated PDPT/PD/PT entries and keeps whatever
+    // permissions that chain already has (see `build_full_kernel_pml4`'s slot-256
+    // copy). Marking the identity copy NX cannot affect what the CPU fetches from.
+    let entry = &mut *entry_ptr(pd, idx);
+    entry.set_huge_mapping(pa, true, true, false);
+    entry.set_no_execute(true);
     Ok(())
 }
 
@@ -357,7 +365,11 @@ unsafe fn map_4k_page(
         }
         return Ok(()); // identical, already installed - idempotent.
     }
-    (*entry_ptr(pt, pt_idx)).set_mapping(phys_to_pfn(pa), true, true, false);
+    // Phase 5 (#63): NX on the whole identity/direct map — see map_2m_page's comment
+    // for why this cannot affect the kernel's own (higher-half) code execution.
+    let entry = &mut *entry_ptr(pt, pt_idx);
+    entry.set_mapping(phys_to_pfn(pa), true, true, false);
+    entry.set_no_execute(true);
     Ok(())
 }
 
@@ -590,13 +602,24 @@ pub unsafe fn run_boot_canary(debug_output: bool) {
 }
 
 /// Builds a genuinely kernel-owned PML4: Phase 1 (RAM) + Phase 2 (firmware/platform)
-/// regions mapped explicitly, the higher-half kernel-image mirror (PML4 slot 256)
+/// regions mapped explicitly (both NX — Phase 5's "data + direct map: NX", see
+/// `map_2m_page`/`map_4k_page`), the higher-half kernel-image mirror (PML4 slot 256)
 /// copied verbatim from `old_pml4_phys`'s slot 256 (so the kernel's own code/data stays
 /// reachable after a future CR3 switch — this table never rebuilds that mapping
 /// itself, it only borrows the existing chain), and the recursive self-map installed
 /// at slot 511. Matches the design doc's Phase 4 checklist ("P1 + P2 + P3 + slot 511 +
 /// slot 256"; framebuffer/P3 mapping via [`map_wc_range`] is the caller's
 /// responsibility once GOP boot info is available — see `docs/todo_uefi_kernel_pagetables.md`).
+///
+/// **Phase 5 scope note:** because slot 256 is copied verbatim rather than rebuilt,
+/// this does *not* yet enforce "kernel `.text` is RO+X" (the other half of Phase 5) —
+/// that chain keeps whatever permissions it already had (today, RWX, matching problem
+/// P1 in the design doc). Enforcing W^X on the kernel image itself requires page-
+/// aligning `.text`/`.rodata`/`.data` in `link.ld` (they are currently packed
+/// contiguously with no boundary symbols) and rebuilding slot 256 at 4 KiB granularity
+/// for just the kernel-image range — a separate, higher-blast-radius change (the linker
+/// script affects every boot configuration, not just `USE_DIRECT_MAP_TABLE`) left as
+/// follow-up work; see the tracking issue.
 ///
 /// Does **not** switch CR3 — see [`switch_to_direct_map`] for that, and
 /// [`USE_DIRECT_MAP_TABLE`] for why this is not wired in by default.
