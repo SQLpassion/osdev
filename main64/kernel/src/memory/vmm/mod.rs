@@ -29,6 +29,7 @@ use crate::console::KernelConsole;
 use crate::logging;
 
 pub mod diagnostics;
+pub mod direct_map;
 pub mod mapping;
 pub mod page_fault;
 pub mod page_table;
@@ -279,6 +280,18 @@ pub fn init(debug_output: bool) {
     use page_table::{
         alloc_frame_phys_or_panic, build_kernel_pml4_from_firmware, table_at, zero_phys_page,
     };
+
+    // Phase 1 boot-time canary (part of #63 — kernel-owned page tables on the UEFI
+    // path): build a complete kernel-owned direct map from the boot memory map,
+    // validate its coverage, then free it again. No CR3 switch happens here yet — the
+    // firmware-clone superset below stays the one that goes live, until a later phase
+    // replaces it. See `direct_map.rs` for the full rationale and safety argument.
+    // SAFETY: the old firmware/BIOS-loader identity map is still active (CR3 is only
+    // switched by `write_cr3` at the end of this function), so every physical address
+    // the canary touches is reachable as an identical virtual address.
+    unsafe {
+        direct_map::run_boot_canary(debug_output);
+    }
 
     // Allocate and zero a fresh frame for the kernel's own PML4.
     let pml4 =
