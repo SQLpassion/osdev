@@ -1,5 +1,5 @@
 ### PROMPT FOR CREATING SUB-AGENTS:
-    Launch a separate sub-agent for each of the issues C1, H1, and H2.
+    Launch a separate sub-agent for each of the github issues #58, #59, #60, #61, and #62.
 
     Requirements for each Sub-Agent:
     - Work in its own dedicated Git branch (e.g., `fix/issue-...`). Work directly on the fix branch without creating a default branch for the git worktree.
@@ -24,7 +24,7 @@
 
     After the merge:
     1. Push the updated `main` branch to remote (`git push origin main`).
-    2. Close the corresponding GitHub PRs and issues (#13, #22) using `gh pr close` and `gh issue close` (or ensure they are closed automatically by linking).
+    2. Close the corresponding GitHub PRs and issues using `gh pr close` and `gh issue close` (or ensure they are closed automatically by linking).
     3. Clean up all created local and remote feature/integration branches.
     4. Clean up any remaining Git worktrees if present.
 
