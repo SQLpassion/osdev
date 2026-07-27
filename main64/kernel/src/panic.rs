@@ -2,12 +2,11 @@
 //!
 //! Required for `no_std` environments.
 
-use crate::boot_info::{framebuffer_panic_writer_available, BootInfo, PixelFormat, BOOT_INFO_PTR};
+use crate::boot_info::{framebuffer_panic_writer_available, BootInfo, PixelFormat};
 use crate::console::FramebufferConsole;
 use crate::drivers::screen::Color;
 use core::fmt::Write;
 use core::panic::PanicInfo;
-use core::sync::atomic::Ordering;
 
 /// Pixel width of a single text glyph (matches the framebuffer console font).
 const GLYPH_W: u32 = 8;
@@ -63,13 +62,11 @@ impl PanicFramebufferWriter {
             return None;
         }
 
-        let raw = BOOT_INFO_PTR.load(Ordering::Relaxed);
-        if raw == 0 {
-            return None;
-        }
-        // SAFETY: `raw` is the boot-info pointer published in `KernelMain` after a
-        // magic check; the structure lives in identity-mapped low memory.
-        let bi = unsafe { &*(raw as *const BootInfo) };
+        // Re-derive the reference through the canonical accessor rather than
+        // re-loading `BOOT_INFO_PTR` and casting it by hand here — `BootInfo::get()`
+        // is the single place that owns the pointer-validity contract (non-null,
+        // `Acquire`-ordered load pairing with the `Release` store in `KernelMain`).
+        let bi = BootInfo::get()?;
         let fb = bi.fb_info;
         Some(Self {
             base: fb.base_address as *mut u32,

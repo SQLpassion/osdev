@@ -980,7 +980,7 @@ fn test_vmm_contracts_doc_fix_issue_13() {
     // which aligns with the scalar fields lock contract.
     let old = vmm::set_debug_output(true);
     let current = vmm::serial_debug_enabled();
-    assert_eq!(current, true);
+    assert!(current);
     vmm::set_debug_output(old);
 }
 
