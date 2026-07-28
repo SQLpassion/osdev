@@ -57,7 +57,7 @@ use super::page_table::{
 /// does **not** prove the switch is safe on real hardware. Flip this to `true` only
 /// after running the real AMD/UEFI-hardware smoke-test checklist in
 /// `docs/boot_uefi.md`.
-pub const USE_DIRECT_MAP_TABLE: bool = false;
+pub const USE_DIRECT_MAP_TABLE: bool = true;
 
 /// PML4 slot for the higher-half kernel-image mirror (virtual `0xFFFF8000_00000000`).
 const HIGHER_HALF_SLOT: usize = 256;

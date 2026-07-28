@@ -298,6 +298,23 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
         io::vfs::read_file("shell.bin").expect("failed to load SHELL.BIN from FAT32")
     };
 
+    // #63 verification banner: surface the ACTIVE page-table model on the visible
+    // console (framebuffer/VGA) right before the shell starts, so a boot can be
+    // confirmed to run the USE_DIRECT_MAP_TABLE build without reading the serial log.
+    crate::console::with_console(|console| {
+        if vmm::direct_map::USE_DIRECT_MAP_TABLE {
+            let _ = writeln!(
+                console,
+                ">> #63: KERNEL-OWNED page tables ACTIVE (CR3 switched, USE_DIRECT_MAP_TABLE=true)"
+            );
+        } else {
+            let _ = writeln!(
+                console,
+                ">> #63: firmware-clone page tables (USE_DIRECT_MAP_TABLE=false)"
+            );
+        }
+    });
+
     // --- Shared scheduler bring-up (both boot paths) ---
 
     // Initialize interrupt handling and the keyboard ring buffer.
