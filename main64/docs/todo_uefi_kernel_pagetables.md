@@ -165,6 +165,48 @@ deviations from the plan as originally written:
   higher-half PML4 slot at 4 KiB granularity — a higher-blast-radius change than the
   rest of this effort, left as explicit follow-up).
 
+### Activation-path review follow-up (2026-07-28)
+
+A review of `USE_DIRECT_MAP_TABLE`'s activation path (still disabled by default) found
+five gaps, all now fixed:
+
+1. **`EfiLoaderCode`/`EfiLoaderData` (types 1/2) were unmapped** by either classifier —
+   on UEFI, `kaosldr_uefi` allocates the PMM-metadata region as `EfiLoaderData`
+   (`allocate_pages(0, 2, …)`), and the loader's own `BootInfo`/memory-map statics
+   typically live in one of these two types too. Fixed with a new `is_loader_owned`
+   classifier, wired as a third `build_direct_map` pass.
+2. **No independent sanity check** that the addresses the kernel actually dereferences
+   (`BootInfo` itself, its memory map, the PMM-metadata region) resolve, regardless of
+   classifier coverage. Fixed with `validate_essential_boot_addresses`, deliberately
+   redundant with the classifiers so a future classifier regression can't silently
+   reopen this exact gap.
+3. **No test exercised the UEFI-shaped memory layout** — `direct_map_full_switch_test.rs`
+   only ever boots via the BIOS loader, where the PMM-metadata region falls back to
+   plain usable RAM. Fixed with a synthetic-memory-map test
+   (`test_build_full_kernel_pml4_maps_uefi_style_loader_data_metadata`) that calls
+   `build_full_kernel_pml4` directly with an `EfiLoaderData`-typed metadata region,
+   without a real CR3 switch (an incomplete synthetic map doing a real switch could
+   crash the test kernel). A full UEFI-boot (OVMF/GPT) test harness remains a separate,
+   larger follow-up, not blocking for this issue.
+4. **The framebuffer was never actually mapped** by the switch path — `map_wc_range`
+   was implemented and unit-tested but the doc comment describing it as "the caller's
+   responsibility" was never acted on by the one production caller. Fixed:
+   `build_full_kernel_pml4` now calls it when a framebuffer is present.
+5. **MMIO (`EfiMemoryMappedIO`, 11) was mapped write-back**, not uncacheable — it went
+   through the same `is_phase2_platform`/`map_2m_page`/`map_4k_page` path as
+   Reserved/RuntimeServices/ACPI-NVS/PalCode, which only sets NX. Fixed by splitting
+   MMIO into its own `is_mmio` classifier mapped via a new `build_uc_direct_map`
+   (PCD set, PWT clear, 4 KiB-only, mirroring `map_wc_range`'s reasoning).
+
+While wiring the point-3 test's cleanup, also found and fixed a latent bug in
+`free_direct_map_tables`: it walked every PML4 slot unconditionally, including slot 256
+(the higher-half mirror, borrowed verbatim from whatever table was active when
+`build_full_kernel_pml4` ran — freeing it would release frames a different, still-live
+table depends on) and slot 511 (the recursive self-map, misinterpreted as a regular
+PDPT entry one level down, plus a double-release of the PML4's own frame). Never
+triggered before because `free_direct_map_tables` had only ever been called on plain
+`build_direct_map`-only canary tables, which never populate either slot.
+
 ---
 
 ### Phase 0 — Loader forwards EFI type + attribute *(hard prerequisite)*
