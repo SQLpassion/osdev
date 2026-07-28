@@ -135,6 +135,7 @@ const EFI_RUNTIME_SERVICES_CODE: u32 = 5;
 const EFI_RUNTIME_SERVICES_DATA: u32 = 6;
 const EFI_ACPI_MEMORY_NVS: u32 = 10;
 const EFI_MEMORY_MAPPED_IO: u32 = 11;
+const EFI_MEMORY_MAPPED_IO_PORT_SPACE: u32 = 12;
 const EFI_PAL_CODE: u32 = 13;
 
 /// Phase 2 classifier: firmware/platform regions kept mapped explicitly instead of
@@ -146,15 +147,16 @@ const EFI_PAL_CODE: u32 = 13;
 /// `test_second_build_call_with_huge_page_collision_is_rejected`-style reuse pattern
 /// exercised in `direct_map_test.rs`.
 ///
-/// **Deliberately excludes `MemoryMappedIO` (11)** — unconditionally, *including* when
-/// it carries the `EFI_MEMORY_RUNTIME` attribute. MMIO is handled exclusively by the
-/// uncacheable path ([`is_mmio`]/[`build_uc_direct_map`]): device memory needs
-/// uncacheable mappings, not the write-back default `map_2m_page`/`map_4k_page` apply
-/// here. Without the explicit `is_mmio` guard below, the `EFI_MEMORY_RUNTIME` clause
-/// would re-claim a runtime-flagged MMIO region (OVMF marks such regions on the UEFI
-/// path), map it write-back — as a 2 MiB huge page when aligned — and the later MMIO
-/// pass would then hit a [`DirectMapError::HugePageCollision`], panicking the
-/// unconditional boot-time canary (#63 activation-path review, point 5).
+/// **Deliberately excludes `MemoryMappedIO` (11) and `MemoryMappedIOPortSpace` (12)** —
+/// unconditionally, *including* when either carries the `EFI_MEMORY_RUNTIME` attribute.
+/// Both are handled exclusively by the uncacheable path ([`is_mmio`]/
+/// [`build_uc_direct_map`]): device memory needs uncacheable mappings, not the
+/// write-back default `map_2m_page`/`map_4k_page` apply here. Without the explicit
+/// `is_mmio` guard below, the `EFI_MEMORY_RUNTIME` clause would re-claim a
+/// runtime-flagged MMIO region (OVMF marks such regions on the UEFI path), map it
+/// write-back — as a 2 MiB huge page when aligned — and the later MMIO pass would then
+/// hit a [`DirectMapError::HugePageCollision`], panicking the unconditional boot-time
+/// canary (#63 activation-path review, point 5).
 pub fn is_phase2_platform(entry: &UnifiedMemoryEntry) -> bool {
     if is_mmio(entry) {
         return false;
@@ -170,12 +172,19 @@ pub fn is_phase2_platform(entry: &UnifiedMemoryEntry) -> bool {
         )
 }
 
-/// `EfiMemoryMappedIO` (11) classifier — split out of [`is_phase2_platform`] (#63
-/// activation-path review, point 5) because MMIO must be mapped uncacheable (PCD set),
-/// not the write-back default `map_2m_page`/`map_4k_page` apply to the rest of Phase 2.
-/// Mapped via [`build_uc_direct_map`] instead of [`build_direct_map`].
+/// `EfiMemoryMappedIO` (11) / `EfiMemoryMappedIOPortSpace` (12) classifier — split out
+/// of [`is_phase2_platform`] (#63 activation-path review, point 5) because both must be
+/// mapped uncacheable (PCD set), not the write-back default `map_2m_page`/`map_4k_page`
+/// apply to the rest of Phase 2. Type 12 (port-mapped I/O apertures, mainly relevant on
+/// IA-64 and rare on x86_64 UEFI) is grouped with type 11 here rather than given its own
+/// classifier: the design doc's §4 table gives it no distinct cacheability rule, and it
+/// is the same class of device-backed address-space window MMIO is. Mapped via
+/// [`build_uc_direct_map`] instead of [`build_direct_map`].
 pub fn is_mmio(entry: &UnifiedMemoryEntry) -> bool {
-    entry.memory_type == EFI_MEMORY_MAPPED_IO
+    matches!(
+        entry.memory_type,
+        EFI_MEMORY_MAPPED_IO | EFI_MEMORY_MAPPED_IO_PORT_SPACE
+    )
 }
 
 const EFI_LOADER_CODE: u32 = 1;
@@ -788,8 +797,9 @@ pub unsafe fn run_boot_canary(debug_output: bool) {
     validate_direct_map_coverage(pml4, regions.iter(), is_loader_owned)
         .unwrap_or_else(|e| panic!("Loader-owned direct-map coverage gap: {:?}", e));
 
-    // MMIO (EfiMemoryMappedIO, 11): mapped uncacheable via its own builder, split out
-    // of the Phase 2 pass above — see is_mmio's doc.
+    // MMIO (EfiMemoryMappedIO 11 / EfiMemoryMappedIOPortSpace 12): mapped
+    // uncacheable via its own builder, split out of the Phase 2 pass above — see
+    // is_mmio's doc.
     let mmio_stats = build_uc_direct_map(pml4, regions.iter(), is_mmio, &mut alloc)
         .unwrap_or_else(|e| panic!("MMIO direct-map build failed: {:?}", e));
     validate_direct_map_coverage(pml4, regions.iter(), is_mmio)
@@ -886,8 +896,9 @@ pub unsafe fn build_full_kernel_pml4(
     validate_direct_map_coverage(new_pml4, regions.iter(), is_loader_owned)
         .unwrap_or_else(|e| panic!("Phase 4 loader-owned direct-map coverage gap: {:?}", e));
 
-    // MMIO (EfiMemoryMappedIO, 11): mapped uncacheable via its own builder, split out
-    // of the Phase 2 pass above — see is_mmio's doc.
+    // MMIO (EfiMemoryMappedIO 11 / EfiMemoryMappedIOPortSpace 12): mapped
+    // uncacheable via its own builder, split out of the Phase 2 pass above — see
+    // is_mmio's doc.
     let mmio_stats = build_uc_direct_map(new_pml4, regions.iter(), is_mmio, alloc_frame)?;
     validate_direct_map_coverage(new_pml4, regions.iter(), is_mmio)
         .unwrap_or_else(|e| panic!("Phase 4 MMIO direct-map coverage gap: {:?}", e));

@@ -468,9 +468,9 @@ fn test_is_phase2_platform_matches_known_types_only() {
         );
     }
 
-    // 11 (MemoryMappedIO) is deliberately excluded here - see is_mmio/
-    // test_is_mmio_matches_type_11_only below.
-    for &memory_type in &[1u32, 3, 4, 7, 9, 11] {
+    // 11 (MemoryMappedIO) and 12 (MemoryMappedIOPortSpace) are deliberately excluded
+    // here - see is_mmio/test_is_mmio_matches_type_11_and_12_only below.
+    for &memory_type in &[1u32, 3, 4, 7, 9, 11, 12] {
         let entry = UnifiedMemoryEntry {
             start: 0,
             size: PAGE_SIZE_U64,
@@ -744,26 +744,36 @@ fn test_4kib_ram_and_platform_mappings_are_nx() {
 // Follow-up (review #63, point 5): MMIO is mapped uncacheable, not write-back.
 // ============================================================================
 
-/// Contract: `is_mmio` accepts exactly `EfiMemoryMappedIO` (11) and rejects everything
-/// `is_phase2_platform` accepts.
+/// Contract: `is_mmio` accepts exactly `EfiMemoryMappedIO` (11) and
+/// `EfiMemoryMappedIOPortSpace` (12), and rejects everything `is_phase2_platform`
+/// accepts.
 /// Failure Impact: if `is_mmio` and `is_phase2_platform` overlapped, a region could be
 /// mapped twice with conflicting caching attributes (WB from one pass, UC from the
-/// other) — undefined behavior on real hardware for device memory.
+/// other) — undefined behavior on real hardware for device memory. Missing type 12
+/// entirely (as originally shipped) instead silently drops those regions from every
+/// classifier — no mapping at all, not just a wrong one.
 #[test_case]
-fn test_is_mmio_matches_type_11_only() {
-    let mmio = UnifiedMemoryEntry {
-        start: 0,
-        size: PAGE_SIZE_U64,
-        memory_type: 11,
-        _pad: 0,
-        attribute: 0,
-        is_usable: false,
-    };
-    assert!(is_mmio(&mmio));
-    assert!(
-        !is_phase2_platform(&mmio),
-        "MMIO must not also be accepted by is_phase2_platform"
-    );
+fn test_is_mmio_matches_type_11_and_12_only() {
+    for &memory_type in &[11u32, 12] {
+        let mmio = UnifiedMemoryEntry {
+            start: 0,
+            size: PAGE_SIZE_U64,
+            memory_type,
+            _pad: 0,
+            attribute: 0,
+            is_usable: false,
+        };
+        assert!(
+            is_mmio(&mmio),
+            "memory_type {} should be classified as MMIO",
+            memory_type
+        );
+        assert!(
+            !is_phase2_platform(&mmio),
+            "memory_type {} must not also be accepted by is_phase2_platform",
+            memory_type
+        );
+    }
 
     for &memory_type in &[0u32, 1, 5, 6, 7, 9, 10, 13] {
         let entry = UnifiedMemoryEntry {
@@ -782,10 +792,11 @@ fn test_is_mmio_matches_type_11_only() {
     }
 }
 
-/// Regression (#63 review point 5): a `MemoryMappedIO` (11) region that ALSO carries
-/// the `EFI_MEMORY_RUNTIME` attribute must still be rejected by `is_phase2_platform`
-/// (and accepted by `is_mmio`). The plain `test_is_mmio_matches_type_11_only` above
-/// only covers `attribute == 0`, so it misses exactly this overlap.
+/// Regression (#63 review point 5): a `MemoryMappedIO` (11) or `MemoryMappedIOPortSpace`
+/// (12) region that ALSO carries the `EFI_MEMORY_RUNTIME` attribute must still be
+/// rejected by `is_phase2_platform` (and accepted by `is_mmio`). The plain
+/// `test_is_mmio_matches_type_11_and_12_only` above only covers `attribute == 0`, so it
+/// misses exactly this overlap.
 /// Failure Impact: OVMF marks such a region on the UEFI path. If `is_phase2_platform`'s
 /// `EFI_MEMORY_RUNTIME` clause re-claimed it, the Phase 2 pass would map the window
 /// write-back — as a 2 MiB huge page when aligned — and the later uncacheable MMIO pass
@@ -794,20 +805,23 @@ fn test_is_mmio_matches_type_11_only() {
 #[test_case]
 fn test_mmio_with_runtime_attribute_is_not_phase2() {
     const EFI_MEMORY_RUNTIME: u64 = 0x8000_0000_0000_0000;
-    let mmio_runtime = UnifiedMemoryEntry {
-        start: 0,
-        size: PAGE_SIZE_U64,
-        memory_type: 11,
-        _pad: 0,
-        attribute: EFI_MEMORY_RUNTIME,
-        is_usable: false,
-    };
-    assert!(is_mmio(&mmio_runtime));
-    assert!(
-        !is_phase2_platform(&mmio_runtime),
-        "type-11 MMIO with EFI_MEMORY_RUNTIME must be handled by the UC path only, \
-         never re-claimed by is_phase2_platform"
-    );
+    for &memory_type in &[11u32, 12] {
+        let mmio_runtime = UnifiedMemoryEntry {
+            start: 0,
+            size: PAGE_SIZE_U64,
+            memory_type,
+            _pad: 0,
+            attribute: EFI_MEMORY_RUNTIME,
+            is_usable: false,
+        };
+        assert!(is_mmio(&mmio_runtime));
+        assert!(
+            !is_phase2_platform(&mmio_runtime),
+            "type-{} MMIO with EFI_MEMORY_RUNTIME must be handled by the UC path only, \
+             never re-claimed by is_phase2_platform",
+            memory_type
+        );
+    }
 }
 
 /// Contract: `build_uc_direct_map` maps MMIO as present, NX, uncacheable (PCD set,
@@ -882,7 +896,7 @@ fn test_is_loader_owned_matches_types_1_and_2_only() {
         );
     }
 
-    for &memory_type in &[0u32, 3, 5, 7, 9, 11] {
+    for &memory_type in &[0u32, 3, 5, 7, 9, 11, 12] {
         let entry = UnifiedMemoryEntry {
             start: 0,
             size: PAGE_SIZE_U64,

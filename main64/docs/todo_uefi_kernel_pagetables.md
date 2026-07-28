@@ -202,6 +202,14 @@ before the flip described in the next subsection) found five gaps, all now fixed
    MMIO into its own `is_mmio` classifier mapped via a new `build_uc_direct_map`
    (PCD set, PWT clear, 4 KiB-only, mirroring `map_wc_range`'s reasoning).
 
+6. **`EfiMemoryMappedIOPortSpace` (type 12) was classified nowhere** — not
+   `is_phase1_ram`, not `is_phase2_platform`, not `is_mmio` — so a region of this type
+   was silently left unmapped by every pass, rather than mapped as §4 requires. Found in
+   a follow-up review after the five points above. Fixed by widening `is_mmio` to accept
+   both 11 and 12: architecturally the same class of device-backed address-space window
+   as `EfiMemoryMappedIO`, so it goes through the same uncacheable `build_uc_direct_map`
+   path rather than getting a fourth classifier/pass.
+
 While wiring the point-3 test's cleanup, also found and fixed a latent bug in
 `free_direct_map_tables`: it walked every PML4 slot unconditionally, including slot 256
 (the higher-half mirror, borrowed verbatim from whatever table was active when
