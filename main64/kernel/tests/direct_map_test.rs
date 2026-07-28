@@ -25,11 +25,14 @@ use core::ptr::{addr_of, addr_of_mut};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use kaos_kernel::arch::constants::PAGE_SIZE_U64;
-use kaos_kernel::boot_info::UnifiedMemoryEntry;
+use kaos_kernel::boot_info::{
+    BootInfo, FramebufferInfo, PixelFormat, UnifiedMemoryEntry, VideoModeType,
+};
 use kaos_kernel::memory::pmm::{self, types::virt_to_phys};
 use kaos_kernel::memory::vmm::direct_map::{
-    build_direct_map, free_direct_map_tables, is_phase1_ram, is_phase2_platform, map_wc_range,
-    validate_direct_map_coverage, CoverageGap, DirectMapError,
+    build_direct_map, free_direct_map_tables, is_loader_owned, is_phase1_ram, is_phase2_platform,
+    map_wc_range, validate_direct_map_coverage, validate_essential_boot_addresses, CoverageGap,
+    DirectMapError,
 };
 use kaos_kernel::memory::vmm::page_table::{
     self, pd_index, pt_index, resolve_phys_via_root, PageTable, ENTRY_PCD, ENTRY_PWT,
@@ -724,5 +727,143 @@ fn test_4kib_ram_and_platform_mappings_are_nx() {
         let mmio_entry = pt.entries[pt_index(0x0061_0000)];
         assert!(mmio_entry.present());
         assert!(mmio_entry.no_execute(), "MMIO mapping must be NX");
+    }
+}
+
+// ============================================================================
+// Follow-up to the #63 review: loader-owned regions and essential-address checks.
+// ============================================================================
+
+/// Contract: `is_loader_owned` accepts exactly `EfiLoaderCode` (1) and `EfiLoaderData`
+/// (2), and rejects other types.
+/// Failure Impact: the UEFI loader allocates the PMM-metadata region as
+/// `EfiLoaderData` — missing this type here would leave that region unmapped once the
+/// kernel-owned table becomes active, corrupting or faulting on the very first PMM
+/// bitmap access after the switch.
+#[test_case]
+fn test_is_loader_owned_matches_types_1_and_2_only() {
+    for &memory_type in &[1u32, 2] {
+        let entry = UnifiedMemoryEntry {
+            start: 0,
+            size: PAGE_SIZE_U64,
+            memory_type,
+            _pad: 0,
+            attribute: 0,
+            is_usable: false,
+        };
+        assert!(
+            is_loader_owned(&entry),
+            "memory_type {} should be classified as loader-owned",
+            memory_type
+        );
+    }
+
+    for &memory_type in &[0u32, 3, 5, 7, 9, 11] {
+        let entry = UnifiedMemoryEntry {
+            start: 0,
+            size: PAGE_SIZE_U64,
+            memory_type,
+            _pad: 0,
+            attribute: 0,
+            is_usable: memory_type == 7,
+        };
+        assert!(
+            !is_loader_owned(&entry),
+            "memory_type {} should NOT be classified as loader-owned",
+            memory_type
+        );
+    }
+}
+
+/// Synthetic `BootInfo` for the `validate_essential_boot_addresses` tests below —
+/// its own address stands in for "the address the kernel dereferences", exactly like
+/// `pmm_uefi_test.rs`'s `SYN_BOOT_INFO`.
+static mut ESSENTIAL_TEST_BOOT_INFO: BootInfo = BootInfo {
+    magic: 0,
+    video_type: VideoModeType::VgaText,
+    fb_info: FramebufferInfo {
+        base_address: 0,
+        size: 0,
+        width: 0,
+        height: 0,
+        pixels_per_scanline: 0,
+        pixel_format: PixelFormat::Bgr,
+    },
+    memory_map_addr: 0,
+    memory_map_len: 0,
+    kernel_size: 0,
+    pmm_metadata_base: 0,
+    pmm_metadata_size: 0,
+    boot_year: 0,
+    boot_month: 0,
+    boot_day: 0,
+    boot_hour: 0,
+    boot_minute: 0,
+    boot_second: 0,
+    boot_timezone: 0,
+};
+
+/// Contract: `validate_essential_boot_addresses` succeeds when the `BootInfo`
+/// structure's own address is actually covered by the table.
+/// Failure Impact: a false negative here (reporting a gap that isn't real) would make
+/// the check useless — every real boot would panic on it.
+#[test_case]
+fn test_validate_essential_boot_addresses_passes_when_covered() {
+    // SAFETY: single-threaded test context.
+    unsafe {
+        let pml4 = reset_pool();
+        let mut alloc = bump_alloc_from_pool;
+
+        // Dereference the PHYSICAL-equivalent address, exactly like production does
+        // (`&*(boot_info_raw as *const BootInfo)` in `run_boot_canary`/
+        // `switch_to_direct_map`) — `boot_info as *const _ as u64` inside
+        // `validate_essential_boot_addresses` must match the address the `ram_entry`
+        // region below covers, not the kernel-image (higher-half) static address.
+        let boot_info_phys = virt_to_phys(addr_of!(ESSENTIAL_TEST_BOOT_INFO) as u64);
+        let region = ram_entry(
+            boot_info_phys & !(PAGE_SIZE_U64 - 1),
+            PAGE_SIZE_U64 * 2, // generous: covers the struct regardless of page straddling
+        );
+        build_direct_map(pml4, [region].iter(), is_phase1_ram, &mut alloc, false).unwrap();
+
+        let boot_info_ref = &*(boot_info_phys as *const BootInfo);
+        assert!(validate_essential_boot_addresses(pml4, boot_info_ref).is_ok());
+    }
+}
+
+/// Contract: `validate_essential_boot_addresses` reports a gap when the `BootInfo`
+/// structure itself is NOT covered by any mapping — this is the exact class of bug the
+/// #63 review found (EfiLoaderData/EfiLoaderCode regions unmapped by either
+/// classifier), pinned independently of whatever classifiers exist today.
+/// Failure Impact: without this check, a future classifier regression that stops
+/// covering the `BootInfo`/memory-map/PMM-metadata addresses would only surface as an
+/// unexplained fault or silent corruption deep in `heap::init`, far from the root cause.
+#[test_case]
+fn test_validate_essential_boot_addresses_detects_unmapped_bootinfo() {
+    // SAFETY: single-threaded test context.
+    unsafe {
+        let pml4 = reset_pool();
+        let mut alloc = bump_alloc_from_pool;
+
+        // Map some unrelated RAM, but deliberately NOT the BootInfo's own address.
+        let unrelated_region = ram_entry(0x0070_0000, PAGE_SIZE_U64);
+        build_direct_map(
+            pml4,
+            [unrelated_region].iter(),
+            is_phase1_ram,
+            &mut alloc,
+            false,
+        )
+        .unwrap();
+
+        let boot_info_phys = virt_to_phys(addr_of!(ESSENTIAL_TEST_BOOT_INFO) as u64);
+        let boot_info_ref = &*(boot_info_phys as *const BootInfo);
+        // Unlike `build_direct_map`, `validate_byte_range_coverage` does not floor its
+        // start address to a page boundary before the first `resolve_phys_via_root`
+        // call, so the reported gap is at the exact (unfloored) BootInfo address.
+        assert_eq!(
+            validate_essential_boot_addresses(pml4, boot_info_ref),
+            Err(CoverageGap::Unmapped { va: boot_info_phys })
+        );
     }
 }

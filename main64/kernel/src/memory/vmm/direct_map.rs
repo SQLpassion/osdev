@@ -158,6 +158,28 @@ pub fn is_phase2_platform(entry: &UnifiedMemoryEntry) -> bool {
         )
 }
 
+const EFI_LOADER_CODE: u32 = 1;
+const EFI_LOADER_DATA: u32 = 2;
+
+/// Loader-owned classifier: `EfiLoaderCode` (1) and `EfiLoaderData` (2) — the design
+/// doc's §4 type table calls these out separately from Phase 2's firmware/platform
+/// reasons ("BootInfo/map/PMM-meta live here; keep explicitly" for type 2, "otherwise
+/// drop" for type 1). Kept as its own classifier rather than folded into
+/// [`is_phase2_platform`] because the *reason* to map it is different: this is about
+/// the loader's own allocations still being referenced by the kernel across the CR3
+/// switch, not about platform/SMM needs.
+///
+/// Both types are mapped unconditionally here, not just type 2: on the UEFI path
+/// `kaosldr_uefi` allocates the PMM-metadata region as `EfiLoaderData`
+/// (`kaosldr_uefi/src/main.rs`'s `allocate_pages(0, 2, …)` call), and the loader's own
+/// image (holding the `BootInfo`/memory-map statics) is typically allocated as one of
+/// these two types by firmware convention — at boot time there is no cheap way to
+/// prove nothing needed still lives in the `EfiLoaderCode` portion, and address space
+/// is far cheaper than a fault or, worse, silent corruption from a missing mapping.
+pub fn is_loader_owned(entry: &UnifiedMemoryEntry) -> bool {
+    matches!(entry.memory_type, EFI_LOADER_CODE | EFI_LOADER_DATA)
+}
+
 /// Builds a direct (VA == PA) map of every region `classify` accepts into the PML4
 /// rooted at `pml4_phys`, using 2 MiB huge pages for 2-MiB-aligned bulk ranges when
 /// `use_huge_pages` (falling back to 4 KiB for any unaligned head/tail, and for
@@ -465,22 +487,80 @@ pub unsafe fn validate_direct_map_coverage<'a>(
         if !classify(region) {
             continue;
         }
-        let end = region.start.saturating_add(region.size);
-        let mut cur = region.start;
-        while cur < end {
-            match resolve_phys_via_root(pml4_phys, cur) {
-                None => return Err(CoverageGap::Unmapped { va: cur }),
-                Some((pa, _)) if pa != cur => {
-                    return Err(CoverageGap::Mismatch {
-                        va: cur,
-                        expected_pa: cur,
-                        got_pa: pa,
-                    })
-                }
-                Some((_, step)) => cur += step,
+        validate_byte_range_coverage(pml4_phys, region.start, region.size)?;
+    }
+    Ok(())
+}
+
+/// Verifies every page of `[start, start + size)` resolves to its own physical address
+/// (VA == PA) in the table rooted at `pml4_phys`. Shared stepping logic behind
+/// [`validate_direct_map_coverage`] (which iterates `UnifiedMemoryEntry` regions) and
+/// [`validate_essential_boot_addresses`] (which checks specific byte ranges that have
+/// no `UnifiedMemoryEntry` of their own to iterate).
+///
+/// # Safety
+/// Same reachability contract as [`build_direct_map`].
+unsafe fn validate_byte_range_coverage(
+    pml4_phys: u64,
+    start: u64,
+    size: u64,
+) -> Result<(), CoverageGap> {
+    let end = start.saturating_add(size);
+    let mut cur = start;
+    while cur < end {
+        match resolve_phys_via_root(pml4_phys, cur) {
+            None => return Err(CoverageGap::Unmapped { va: cur }),
+            Some((pa, _)) if pa != cur => {
+                return Err(CoverageGap::Mismatch {
+                    va: cur,
+                    expected_pa: cur,
+                    got_pa: pa,
+                })
             }
+            Some((_, step)) => cur += step,
         }
     }
+    Ok(())
+}
+
+/// Validates that a handful of addresses the kernel unconditionally dereferences after
+/// a CR3 switch — the `BootInfo` structure itself, its memory-map array, and (if
+/// present) the PMM-metadata region — resolve correctly in the table rooted at
+/// `pml4_phys`.
+///
+/// Deliberately independent of [`is_phase1_ram`]/[`is_phase2_platform`]/
+/// [`is_loader_owned`]: those classify by EFI memory *type*, and a future bug or
+/// change in one of them should not silently reopen a gap in exactly the addresses
+/// that matter most — this check does not care which classifier (if any) covers them,
+/// only whether they resolve.
+///
+/// # Safety
+/// Same reachability contract as [`build_direct_map`]; `boot_info` must be the
+/// currently published `BootInfo` (still reachable via the old identity map).
+pub unsafe fn validate_essential_boot_addresses(
+    pml4_phys: u64,
+    boot_info: &crate::boot_info::BootInfo,
+) -> Result<(), CoverageGap> {
+    validate_byte_range_coverage(
+        pml4_phys,
+        boot_info as *const _ as u64,
+        core::mem::size_of::<crate::boot_info::BootInfo>() as u64,
+    )?;
+
+    validate_byte_range_coverage(
+        pml4_phys,
+        boot_info.memory_map_addr,
+        boot_info.memory_map_len as u64 * core::mem::size_of::<UnifiedMemoryEntry>() as u64,
+    )?;
+
+    if boot_info.pmm_metadata_base != 0 {
+        validate_byte_range_coverage(
+            pml4_phys,
+            boot_info.pmm_metadata_base,
+            boot_info.pmm_metadata_size,
+        )?;
+    }
+
     Ok(())
 }
 
@@ -586,15 +666,30 @@ pub unsafe fn run_boot_canary(debug_output: bool) {
     validate_direct_map_coverage(pml4, regions.iter(), is_phase2_platform)
         .unwrap_or_else(|e| panic!("Phase 2 direct-map coverage gap: {:?}", e));
 
+    // Loader-owned regions (EfiLoaderCode/EfiLoaderData): on the UEFI path the PMM
+    // metadata region and the loader's own BootInfo/memory-map statics typically live
+    // here — see is_loader_owned's doc. Neither Phase 1 nor Phase 2 classifies these.
+    let loader_stats = build_direct_map(pml4, regions.iter(), is_loader_owned, &mut alloc, true)
+        .unwrap_or_else(|e| panic!("Loader-owned direct-map build failed: {:?}", e));
+    validate_direct_map_coverage(pml4, regions.iter(), is_loader_owned)
+        .unwrap_or_else(|e| panic!("Loader-owned direct-map coverage gap: {:?}", e));
+
+    // Independent of the classifiers above: confirm the specific addresses the kernel
+    // actually dereferences (BootInfo itself, its memory map, the PMM metadata region)
+    // resolve in the new table, regardless of which classifier happens to cover them.
+    validate_essential_boot_addresses(pml4, boot_info)
+        .unwrap_or_else(|e| panic!("Essential boot address coverage gap: {:?}", e));
+
     if debug_output {
         // Deliberately not `vmm_logln`/`vmm::debug_enabled()`: those read `VMM`'s
         // shared state via `with_vmm`, which `debug_assert!`s that the VMM is already
         // initialized — not yet true at this point in `vmm::init`. `debugln!` only
         // needs the serial port, which is up from very early in `KernelMain`.
         crate::debugln!(
-            "VMM: Phase 1 direct-map canary OK: RAM={:?} platform={:?}",
+            "VMM: Phase 1 direct-map canary OK: RAM={:?} platform={:?} loader={:?}",
             ram_stats,
-            platform_stats
+            platform_stats,
+            loader_stats
         );
     }
 
@@ -631,8 +726,9 @@ pub unsafe fn run_boot_canary(debug_output: bool) {
 pub unsafe fn build_full_kernel_pml4(
     old_pml4_phys: u64,
     regions: &[UnifiedMemoryEntry],
+    boot_info: &crate::boot_info::BootInfo,
     alloc_frame: &mut dyn FnMut() -> Option<u64>,
-) -> Result<(u64, DirectMapStats, DirectMapStats), DirectMapError> {
+) -> Result<(u64, DirectMapStats, DirectMapStats, DirectMapStats), DirectMapError> {
     let new_pml4 = alloc_frame().ok_or(DirectMapError::OutOfScaffoldFrames)?;
     zero_phys_page(new_pml4);
 
@@ -650,6 +746,20 @@ pub unsafe fn build_full_kernel_pml4(
     validate_direct_map_coverage(new_pml4, regions.iter(), is_phase2_platform)
         .unwrap_or_else(|e| panic!("Phase 4 direct-map platform coverage gap: {:?}", e));
 
+    // Loader-owned regions (EfiLoaderCode/EfiLoaderData) — see is_loader_owned's doc:
+    // on the UEFI path the PMM-metadata region and the loader's own BootInfo/memory-map
+    // statics typically live here, and neither classifier above covers it.
+    let loader_stats =
+        build_direct_map(new_pml4, regions.iter(), is_loader_owned, alloc_frame, true)?;
+    validate_direct_map_coverage(new_pml4, regions.iter(), is_loader_owned)
+        .unwrap_or_else(|e| panic!("Phase 4 loader-owned direct-map coverage gap: {:?}", e));
+
+    // Independent of the three classifiers above: confirm the specific addresses the
+    // kernel actually dereferences after the switch resolve, regardless of which (if
+    // any) classifier happens to cover them today.
+    validate_essential_boot_addresses(new_pml4, boot_info)
+        .unwrap_or_else(|e| panic!("Phase 4 essential boot address coverage gap: {:?}", e));
+
     // Higher-half kernel-image mirror: copy verbatim from the currently active PML4,
     // rather than rebuilding it — the kernel's own image lives wherever the loader put
     // it, and that chain already works.
@@ -665,7 +775,7 @@ pub unsafe fn build_full_kernel_pml4(
         false,
     );
 
-    Ok((new_pml4, ram_stats, platform_stats))
+    Ok((new_pml4, ram_stats, platform_stats, loader_stats))
 }
 
 /// Builds a full kernel-owned PML4 from the current boot memory map (see
@@ -698,14 +808,15 @@ pub unsafe fn switch_to_direct_map(old_pml4_phys: u64) -> u64 {
     );
 
     let mut alloc = alloc_frame_phys;
-    let (new_pml4, ram_stats, platform_stats) =
-        build_full_kernel_pml4(old_pml4_phys, regions, &mut alloc)
+    let (new_pml4, ram_stats, platform_stats, loader_stats) =
+        build_full_kernel_pml4(old_pml4_phys, regions, boot_info, &mut alloc)
             .unwrap_or_else(|e| panic!("Phase 4 direct-map build failed: {:?}", e));
 
     crate::debugln!(
-        "VMM: Phase 4 switching CR3 to kernel-owned direct map: RAM={:?} platform={:?}",
+        "VMM: Phase 4 switching CR3 to kernel-owned direct map: RAM={:?} platform={:?} loader={:?}",
         ram_stats,
-        platform_stats
+        platform_stats,
+        loader_stats
     );
 
     write_cr3(new_pml4);
