@@ -583,6 +583,18 @@ pub unsafe fn free_direct_map_tables(pml4_phys: u64) {
         mgr.release_pfn(phys_to_pfn(pml4_phys));
         let pml4 = table_at(pml4_phys);
         for i in 0..PT_ENTRIES {
+            // Skip the higher-half mirror (borrowed verbatim from whatever PML4 was
+            // active when `build_full_kernel_pml4` ran — freeing it would release
+            // frames a *different*, still-live table still depends on) and the
+            // recursive self-map (points back at `pml4_phys` itself, already released
+            // above; walking it as if it were a PDPT would misinterpret this table's
+            // own top-level entries as a level down and release unrelated frames).
+            // Both slots are no-ops for a plain `build_direct_map`-only canary table
+            // (neither is ever set there), so this is a pure safety fix, not a
+            // behavior change for that use case.
+            if i == HIGHER_HALF_SLOT || i == RECURSIVE_SLOT {
+                continue;
+            }
             let e = table_entry(pml4, i);
             if !e.present() {
                 continue;

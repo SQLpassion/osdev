@@ -30,9 +30,9 @@ use kaos_kernel::boot_info::{
 };
 use kaos_kernel::memory::pmm::{self, types::virt_to_phys};
 use kaos_kernel::memory::vmm::direct_map::{
-    build_direct_map, free_direct_map_tables, is_loader_owned, is_phase1_ram, is_phase2_platform,
-    map_wc_range, validate_direct_map_coverage, validate_essential_boot_addresses, CoverageGap,
-    DirectMapError,
+    build_direct_map, build_full_kernel_pml4, free_direct_map_tables, is_loader_owned,
+    is_phase1_ram, is_phase2_platform, map_wc_range, validate_direct_map_coverage,
+    validate_essential_boot_addresses, CoverageGap, DirectMapError,
 };
 use kaos_kernel::memory::vmm::page_table::{
     self, pd_index, pt_index, resolve_phys_via_root, PageTable, ENTRY_PCD, ENTRY_PWT,
@@ -865,5 +865,104 @@ fn test_validate_essential_boot_addresses_detects_unmapped_bootinfo() {
             validate_essential_boot_addresses(pml4, boot_info_ref),
             Err(CoverageGap::Unmapped { va: boot_info_phys })
         );
+    }
+}
+
+// ============================================================================
+// Regression (review #63, point 3): a UEFI-shaped memory layout, where the PMM
+// metadata region lives in EfiLoaderData (as kaosldr_uefi actually allocates it),
+// must build successfully through `build_full_kernel_pml4` — the same function
+// `switch_to_direct_map` uses for the real CR3 switch. Exercises the *build* only
+// (no `write_cr3`), so an incomplete synthetic map cannot crash the test kernel, while
+// still directly covering the gap `direct_map_full_switch_test.rs` (which only ever
+// boots via the BIOS loader, where metadata falls back to plain usable RAM) does not.
+// ============================================================================
+
+#[repr(C, align(4096))]
+struct PageAlignedBuf([u8; PAGE_SIZE_U64 as usize]);
+static mut UEFI_METADATA_BUF: PageAlignedBuf = PageAlignedBuf([0u8; PAGE_SIZE_U64 as usize]);
+
+static mut UEFI_LAYOUT_REGIONS: [UnifiedMemoryEntry; 2] = [
+    UnifiedMemoryEntry {
+        start: 0x0010_0000,
+        size: 0x0100_0000, // 16 MiB of ordinary usable RAM
+        memory_type: 7,    // EfiConventionalMemory
+        _pad: 0,
+        attribute: 0,
+        is_usable: true,
+    },
+    UnifiedMemoryEntry {
+        start: 0, // filled in at test time with UEFI_METADATA_BUF's physical address
+        size: PAGE_SIZE_U64,
+        memory_type: 2, // EfiLoaderData - matches kaosldr_uefi's allocate_pages(0, 2, ...)
+        _pad: 0,
+        attribute: 0,
+        is_usable: false,
+    },
+];
+
+static mut UEFI_LAYOUT_BOOT_INFO: BootInfo = BootInfo {
+    magic: 0,
+    video_type: VideoModeType::VgaText,
+    fb_info: FramebufferInfo {
+        base_address: 0,
+        size: 0,
+        width: 0,
+        height: 0,
+        pixels_per_scanline: 0,
+        pixel_format: PixelFormat::Bgr,
+    },
+    memory_map_addr: 0,
+    memory_map_len: 2,
+    kernel_size: 0,
+    pmm_metadata_base: 0,
+    pmm_metadata_size: PAGE_SIZE_U64,
+    boot_year: 0,
+    boot_month: 0,
+    boot_day: 0,
+    boot_hour: 0,
+    boot_minute: 0,
+    boot_second: 0,
+    boot_timezone: 0,
+};
+
+/// Contract: `build_full_kernel_pml4` succeeds and correctly maps the PMM-metadata
+/// region when it lives in `EfiLoaderData` — the real UEFI placement — instead of
+/// panicking or leaving it uncovered.
+/// Failure Impact: without the `is_loader_owned` classifier and the
+/// `validate_essential_boot_addresses` check, this exact layout would previously have
+/// left `pmm_metadata_base` unmapped; the first PMM bitmap access after a real
+/// `switch_to_direct_map` would then fault or (via on-demand paging) silently swap in
+/// a fresh zeroed page over the real metadata, corrupting the allocator.
+#[test_case]
+fn test_build_full_kernel_pml4_maps_uefi_style_loader_data_metadata() {
+    // SAFETY: single-threaded test context. `old_pml4_phys` is the currently active
+    // (real) PML4 - only its slot 256 entry is read, to seed the higher-half mirror;
+    // no write happens to it and CR3 is never switched.
+    unsafe {
+        let metadata_phys = virt_to_phys(addr_of!(UEFI_METADATA_BUF) as u64);
+        UEFI_LAYOUT_REGIONS[1].start = metadata_phys;
+        UEFI_LAYOUT_BOOT_INFO.memory_map_addr = virt_to_phys(addr_of!(UEFI_LAYOUT_REGIONS) as u64);
+        UEFI_LAYOUT_BOOT_INFO.pmm_metadata_base = metadata_phys;
+
+        let boot_info_phys = virt_to_phys(addr_of!(UEFI_LAYOUT_BOOT_INFO) as u64);
+        let boot_info_ref = &*(boot_info_phys as *const BootInfo);
+        let regions_ref =
+            &*(UEFI_LAYOUT_BOOT_INFO.memory_map_addr as *const [UnifiedMemoryEntry; 2]);
+
+        let old_pml4 = page_table::read_cr3() & 0x000F_FFFF_FFFF_F000;
+        let mut alloc = page_table::alloc_frame_phys;
+
+        let (new_pml4, _ram_stats, _platform_stats, loader_stats) =
+            build_full_kernel_pml4(old_pml4, regions_ref, boot_info_ref, &mut alloc).unwrap();
+
+        assert_eq!(loader_stats.regions_mapped, 1);
+        assert_eq!(
+            resolve_phys_via_root(new_pml4, metadata_phys),
+            Some((metadata_phys, PAGE_SIZE_U64))
+        );
+        assert!(validate_essential_boot_addresses(new_pml4, boot_info_ref).is_ok());
+
+        free_direct_map_tables(new_pml4);
     }
 }
