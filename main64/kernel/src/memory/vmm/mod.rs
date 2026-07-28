@@ -296,9 +296,16 @@ pub fn init(debug_output: bool) {
     let fw_pml4 = read_cr3() & 0x000F_FFFF_FFFF_F000;
 
     // Phase 4 (part of #63): when `USE_DIRECT_MAP_TABLE` is set, switch to a genuinely
-    // kernel-owned table instead of cloning the firmware's. Defaults to `false` —
-    // real-hardware-unvalidated, see `direct_map::USE_DIRECT_MAP_TABLE`'s doc.
-    let pml4 = if direct_map::USE_DIRECT_MAP_TABLE {
+    // kernel-owned table instead of cloning the firmware's.
+    //
+    // Gated additionally on a published `BootInfo`: the kernel-owned table is built
+    // from the boot memory map, so with no `BootInfo` there is nothing to build from.
+    // Unit-test kernels call `vmm::init` without publishing one; they fall back to the
+    // firmware-clone path here — identical to the `USE_DIRECT_MAP_TABLE=false` behavior
+    // — instead of tripping `switch_to_direct_map`'s BootInfo assertion. Every real
+    // boot takes the switch, since both the BIOS and UEFI loaders publish a `BootInfo`.
+    let boot_info_published = crate::boot_info::BOOT_INFO_PTR.load(Ordering::Acquire) != 0;
+    let pml4 = if direct_map::USE_DIRECT_MAP_TABLE && boot_info_published {
         // SAFETY: the old firmware/BIOS-loader identity map is still active (this is
         // the first and only CR3 write in this function on this path); `fw_pml4` is
         // the physical address of the currently active PML4.
