@@ -140,11 +140,15 @@ const EFI_PAL_CODE: u32 = 13;
 /// Phase 2 classifier: firmware/platform regions kept mapped explicitly instead of
 /// relying on inherited firmware coverage (design doc §2/§4) — any region with the
 /// `EFI_MEMORY_RUNTIME` attribute set, plus `RuntimeServicesCode`/`RuntimeServicesData`
-/// (5/6), `ACPIMemoryNVS` (10), `Reserved` (0), `MemoryMappedIO` (11), and `PalCode`
-/// (13). Disjoint from [`is_phase1_ram`] in normal memory maps (RAM vs. non-RAM types),
-/// but the builder tolerates either classifier being run first — see the
+/// (5/6), `ACPIMemoryNVS` (10), `Reserved` (0), and `PalCode` (13). Disjoint from
+/// [`is_phase1_ram`] in normal memory maps (RAM vs. non-RAM types), but the builder
+/// tolerates either classifier being run first — see the
 /// `test_second_build_call_with_huge_page_collision_is_rejected`-style reuse pattern
 /// exercised in `direct_map_test.rs`.
+///
+/// **Deliberately excludes `MemoryMappedIO` (11)** — see [`is_mmio`]/
+/// [`build_uc_direct_map`]: device memory needs uncacheable mappings, not the
+/// write-back default this classifier's regions get from `map_2m_page`/`map_4k_page`.
 pub fn is_phase2_platform(entry: &UnifiedMemoryEntry) -> bool {
     (entry.attribute & EFI_MEMORY_RUNTIME) != 0
         || matches!(
@@ -153,9 +157,16 @@ pub fn is_phase2_platform(entry: &UnifiedMemoryEntry) -> bool {
                 | EFI_RUNTIME_SERVICES_CODE
                 | EFI_RUNTIME_SERVICES_DATA
                 | EFI_ACPI_MEMORY_NVS
-                | EFI_MEMORY_MAPPED_IO
                 | EFI_PAL_CODE
         )
+}
+
+/// `EfiMemoryMappedIO` (11) classifier — split out of [`is_phase2_platform`] (#63
+/// activation-path review, point 5) because MMIO must be mapped uncacheable (PCD set),
+/// not the write-back default `map_2m_page`/`map_4k_page` apply to the rest of Phase 2.
+/// Mapped via [`build_uc_direct_map`] instead of [`build_direct_map`].
+pub fn is_mmio(entry: &UnifiedMemoryEntry) -> bool {
+    entry.memory_type == EFI_MEMORY_MAPPED_IO
 }
 
 const EFI_LOADER_CODE: u32 = 1;
@@ -465,6 +476,88 @@ unsafe fn map_4k_wc_page(
     Ok(())
 }
 
+/// Builds an uncacheable (PCD set, PWT clear), NX, 4 KiB-only direct map of every
+/// region `classify` accepts — the MMIO counterpart to [`map_wc_range`]'s
+/// write-combining framebuffer mapping (#63 activation-path review, point 5). Always
+/// 4 KiB granularity, for the same reason `map_wc_range` is: MMIO ranges are rarely
+/// 2 MiB-aligned and gain nothing from huge pages for what is usually a handful of
+/// mappings created once at boot.
+///
+/// # Safety
+/// `pml4_phys` and every physical address `alloc_frame` returns must be
+/// dereferenceable as an identical virtual address for the whole call — same contract
+/// as [`build_direct_map`].
+pub unsafe fn build_uc_direct_map<'a>(
+    pml4_phys: u64,
+    regions: impl IntoIterator<Item = &'a UnifiedMemoryEntry>,
+    classify: impl Fn(&UnifiedMemoryEntry) -> bool,
+    alloc_frame: &mut dyn FnMut() -> Option<u64>,
+) -> Result<DirectMapStats, DirectMapError> {
+    let mut stats = DirectMapStats::default();
+
+    for region in regions {
+        stats.regions_considered += 1;
+        if !classify(region) {
+            continue;
+        }
+        let raw_end =
+            region
+                .start
+                .checked_add(region.size)
+                .ok_or(DirectMapError::RegionOverflow {
+                    start: region.start,
+                    size: region.size,
+                })?;
+        // Round outward to page boundaries — see build_direct_map's identical comment
+        // for why (real memory-map regions are not guaranteed page-aligned).
+        let start = region.start & !(PAGE_SIZE_U64 - 1);
+        let end = (raw_end + PAGE_SIZE_U64 - 1) & !(PAGE_SIZE_U64 - 1);
+
+        let mut cur = start;
+        while cur < end {
+            map_4k_uc_page(pml4_phys, cur, alloc_frame, &mut stats)?;
+            stats.small_4k_pages += 1;
+            cur += PAGE_SIZE_U64;
+        }
+        stats.regions_mapped += 1;
+    }
+
+    Ok(stats)
+}
+
+/// Maps one 4 KiB uncacheable, NX leaf at physical/virtual address `pa` (identity map:
+/// VA == PA). See [`build_uc_direct_map`] for the PCD/PWT convention.
+///
+/// # Safety
+/// Same contract as [`build_direct_map`].
+unsafe fn map_4k_uc_page(
+    pml4_phys: u64,
+    pa: u64,
+    alloc_frame: &mut dyn FnMut() -> Option<u64>,
+    stats: &mut DirectMapStats,
+) -> Result<(), DirectMapError> {
+    let pt_phys = ensure_pt_table(pml4_phys, pa, alloc_frame, stats)?;
+    let pt = table_at(pt_phys);
+    let pt_idx = pt_index(pa);
+    let existing = table_entry(pt, pt_idx);
+    if existing.present() {
+        let existing_pa = existing.frame() * PAGE_SIZE_U64;
+        if existing_pa != pa {
+            return Err(DirectMapError::Overlap {
+                va: pa,
+                expected_pa: pa,
+                existing_pa,
+            });
+        }
+        return Ok(()); // identical, already installed - idempotent.
+    }
+    let entry = &mut *entry_ptr(pt, pt_idx);
+    entry.set_mapping(phys_to_pfn(pa), true, true, false);
+    entry.set_pcd(true);
+    entry.set_no_execute(true);
+    Ok(())
+}
+
 /// Verifies every page of every region `classify` accepts resolves to its own
 /// physical address (VA == PA) in the table rooted at `pml4_phys`, stepping by
 /// whatever granularity is actually installed (2 MiB under a huge PD leaf, 4 KiB
@@ -686,6 +779,13 @@ pub unsafe fn run_boot_canary(debug_output: bool) {
     validate_direct_map_coverage(pml4, regions.iter(), is_loader_owned)
         .unwrap_or_else(|e| panic!("Loader-owned direct-map coverage gap: {:?}", e));
 
+    // MMIO (EfiMemoryMappedIO, 11): mapped uncacheable via its own builder, split out
+    // of the Phase 2 pass above — see is_mmio's doc.
+    let mmio_stats = build_uc_direct_map(pml4, regions.iter(), is_mmio, &mut alloc)
+        .unwrap_or_else(|e| panic!("MMIO direct-map build failed: {:?}", e));
+    validate_direct_map_coverage(pml4, regions.iter(), is_mmio)
+        .unwrap_or_else(|e| panic!("MMIO direct-map coverage gap: {:?}", e));
+
     // Independent of the classifiers above: confirm the specific addresses the kernel
     // actually dereferences (BootInfo itself, its memory map, the PMM metadata region)
     // resolve in the new table, regardless of which classifier happens to cover them.
@@ -698,10 +798,11 @@ pub unsafe fn run_boot_canary(debug_output: bool) {
         // initialized — not yet true at this point in `vmm::init`. `debugln!` only
         // needs the serial port, which is up from very early in `KernelMain`.
         crate::debugln!(
-            "VMM: Phase 1 direct-map canary OK: RAM={:?} platform={:?} loader={:?}",
+            "VMM: Phase 1 direct-map canary OK: RAM={:?} platform={:?} loader={:?} mmio={:?}",
             ram_stats,
             platform_stats,
-            loader_stats
+            loader_stats,
+            mmio_stats
         );
     }
 
@@ -741,7 +842,16 @@ pub unsafe fn build_full_kernel_pml4(
     regions: &[UnifiedMemoryEntry],
     boot_info: &crate::boot_info::BootInfo,
     alloc_frame: &mut dyn FnMut() -> Option<u64>,
-) -> Result<(u64, DirectMapStats, DirectMapStats, DirectMapStats), DirectMapError> {
+) -> Result<
+    (
+        u64,
+        DirectMapStats,
+        DirectMapStats,
+        DirectMapStats,
+        DirectMapStats,
+    ),
+    DirectMapError,
+> {
     let new_pml4 = alloc_frame().ok_or(DirectMapError::OutOfScaffoldFrames)?;
     zero_phys_page(new_pml4);
 
@@ -766,6 +876,12 @@ pub unsafe fn build_full_kernel_pml4(
         build_direct_map(new_pml4, regions.iter(), is_loader_owned, alloc_frame, true)?;
     validate_direct_map_coverage(new_pml4, regions.iter(), is_loader_owned)
         .unwrap_or_else(|e| panic!("Phase 4 loader-owned direct-map coverage gap: {:?}", e));
+
+    // MMIO (EfiMemoryMappedIO, 11): mapped uncacheable via its own builder, split out
+    // of the Phase 2 pass above — see is_mmio's doc.
+    let mmio_stats = build_uc_direct_map(new_pml4, regions.iter(), is_mmio, alloc_frame)?;
+    validate_direct_map_coverage(new_pml4, regions.iter(), is_mmio)
+        .unwrap_or_else(|e| panic!("Phase 4 MMIO direct-map coverage gap: {:?}", e));
 
     // Independent of the three classifiers above: confirm the specific addresses the
     // kernel actually dereferences after the switch resolve, regardless of which (if
@@ -805,7 +921,13 @@ pub unsafe fn build_full_kernel_pml4(
         false,
     );
 
-    Ok((new_pml4, ram_stats, platform_stats, loader_stats))
+    Ok((
+        new_pml4,
+        ram_stats,
+        platform_stats,
+        loader_stats,
+        mmio_stats,
+    ))
 }
 
 /// Builds a full kernel-owned PML4 from the current boot memory map (see
@@ -838,15 +960,16 @@ pub unsafe fn switch_to_direct_map(old_pml4_phys: u64) -> u64 {
     );
 
     let mut alloc = alloc_frame_phys;
-    let (new_pml4, ram_stats, platform_stats, loader_stats) =
+    let (new_pml4, ram_stats, platform_stats, loader_stats, mmio_stats) =
         build_full_kernel_pml4(old_pml4_phys, regions, boot_info, &mut alloc)
             .unwrap_or_else(|e| panic!("Phase 4 direct-map build failed: {:?}", e));
 
     crate::debugln!(
-        "VMM: Phase 4 switching CR3 to kernel-owned direct map: RAM={:?} platform={:?} loader={:?}",
+        "VMM: Phase 4 switching CR3 to kernel-owned direct map: RAM={:?} platform={:?} loader={:?} mmio={:?}",
         ram_stats,
         platform_stats,
-        loader_stats
+        loader_stats,
+        mmio_stats
     );
 
     write_cr3(new_pml4);

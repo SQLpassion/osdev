@@ -30,9 +30,9 @@ use kaos_kernel::boot_info::{
 };
 use kaos_kernel::memory::pmm::{self, types::virt_to_phys};
 use kaos_kernel::memory::vmm::direct_map::{
-    build_direct_map, build_full_kernel_pml4, free_direct_map_tables, is_loader_owned,
-    is_phase1_ram, is_phase2_platform, map_wc_range, validate_direct_map_coverage,
-    validate_essential_boot_addresses, CoverageGap, DirectMapError,
+    build_direct_map, build_full_kernel_pml4, build_uc_direct_map, free_direct_map_tables,
+    is_loader_owned, is_mmio, is_phase1_ram, is_phase2_platform, map_wc_range,
+    validate_direct_map_coverage, validate_essential_boot_addresses, CoverageGap, DirectMapError,
 };
 use kaos_kernel::memory::vmm::page_table::{
     self, pd_index, pt_index, resolve_phys_via_root, PageTable, ENTRY_PCD, ENTRY_PWT,
@@ -452,7 +452,7 @@ fn test_is_phase2_platform_matches_runtime_attribute_bit() {
 /// loader-transient memory (`BootServicesCode`/`Data`) the design doc says to drop.
 #[test_case]
 fn test_is_phase2_platform_matches_known_types_only() {
-    for &memory_type in &[0u32, 5, 6, 10, 11, 13] {
+    for &memory_type in &[0u32, 5, 6, 10, 13] {
         let entry = UnifiedMemoryEntry {
             start: 0,
             size: PAGE_SIZE_U64,
@@ -468,7 +468,9 @@ fn test_is_phase2_platform_matches_known_types_only() {
         );
     }
 
-    for &memory_type in &[1u32, 3, 4, 7, 9] {
+    // 11 (MemoryMappedIO) is deliberately excluded here - see is_mmio/
+    // test_is_mmio_matches_type_11_only below.
+    for &memory_type in &[1u32, 3, 4, 7, 9, 11] {
         let entry = UnifiedMemoryEntry {
             start: 0,
             size: PAGE_SIZE_U64,
@@ -501,10 +503,10 @@ fn test_phase1_and_phase2_passes_coexist_on_the_same_table() {
         let mut alloc = bump_alloc_from_pool;
 
         let ram_region = ram_entry(0x0070_0000, PAGE_SIZE_U64);
-        let mmio_region = UnifiedMemoryEntry {
+        let platform_region = UnifiedMemoryEntry {
             start: 0x0080_0000,
             size: PAGE_SIZE_U64,
-            memory_type: 11, // EfiMemoryMappedIO
+            memory_type: 0, // EfiReservedMemoryType
             _pad: 0,
             attribute: 0,
             is_usable: false,
@@ -513,7 +515,7 @@ fn test_phase1_and_phase2_passes_coexist_on_the_same_table() {
         build_direct_map(pml4, [ram_region].iter(), is_phase1_ram, &mut alloc, false).unwrap();
         build_direct_map(
             pml4,
-            [mmio_region].iter(),
+            [platform_region].iter(),
             is_phase2_platform,
             &mut alloc,
             false,
@@ -522,7 +524,8 @@ fn test_phase1_and_phase2_passes_coexist_on_the_same_table() {
 
         assert!(validate_direct_map_coverage(pml4, [ram_region].iter(), is_phase1_ram).is_ok());
         assert!(
-            validate_direct_map_coverage(pml4, [mmio_region].iter(), is_phase2_platform).is_ok()
+            validate_direct_map_coverage(pml4, [platform_region].iter(), is_phase2_platform)
+                .is_ok()
         );
         assert_eq!(
             resolve_phys_via_root(pml4, 0x0070_0000),
@@ -715,18 +718,111 @@ fn test_4kib_ram_and_platform_mappings_are_nx() {
         assert!(!entry.huge());
         assert!(entry.no_execute(), "4 KiB RAM mapping must be NX");
 
-        let mmio = UnifiedMemoryEntry {
+        let platform = UnifiedMemoryEntry {
             start: 0x0061_0000,
             size: PAGE_SIZE_U64,
-            memory_type: 11, // EfiMemoryMappedIO
+            memory_type: 0, // EfiReservedMemoryType
             _pad: 0,
             attribute: 0,
             is_usable: false,
         };
-        build_direct_map(pml4, [mmio].iter(), is_phase2_platform, &mut alloc, false).unwrap();
-        let mmio_entry = pt.entries[pt_index(0x0061_0000)];
-        assert!(mmio_entry.present());
-        assert!(mmio_entry.no_execute(), "MMIO mapping must be NX");
+        build_direct_map(
+            pml4,
+            [platform].iter(),
+            is_phase2_platform,
+            &mut alloc,
+            false,
+        )
+        .unwrap();
+        let platform_entry = pt.entries[pt_index(0x0061_0000)];
+        assert!(platform_entry.present());
+        assert!(platform_entry.no_execute(), "platform mapping must be NX");
+    }
+}
+
+// ============================================================================
+// Follow-up (review #63, point 5): MMIO is mapped uncacheable, not write-back.
+// ============================================================================
+
+/// Contract: `is_mmio` accepts exactly `EfiMemoryMappedIO` (11) and rejects everything
+/// `is_phase2_platform` accepts.
+/// Failure Impact: if `is_mmio` and `is_phase2_platform` overlapped, a region could be
+/// mapped twice with conflicting caching attributes (WB from one pass, UC from the
+/// other) — undefined behavior on real hardware for device memory.
+#[test_case]
+fn test_is_mmio_matches_type_11_only() {
+    let mmio = UnifiedMemoryEntry {
+        start: 0,
+        size: PAGE_SIZE_U64,
+        memory_type: 11,
+        _pad: 0,
+        attribute: 0,
+        is_usable: false,
+    };
+    assert!(is_mmio(&mmio));
+    assert!(
+        !is_phase2_platform(&mmio),
+        "MMIO must not also be accepted by is_phase2_platform"
+    );
+
+    for &memory_type in &[0u32, 1, 5, 6, 7, 9, 10, 13] {
+        let entry = UnifiedMemoryEntry {
+            start: 0,
+            size: PAGE_SIZE_U64,
+            memory_type,
+            _pad: 0,
+            attribute: 0,
+            is_usable: memory_type == 7,
+        };
+        assert!(
+            !is_mmio(&entry),
+            "memory_type {} should NOT be classified as MMIO",
+            memory_type
+        );
+    }
+}
+
+/// Contract: `build_uc_direct_map` maps MMIO as present, NX, uncacheable (PCD set,
+/// PWT clear), 4 KiB only — never a 2 MiB huge leaf.
+/// Failure Impact: mapping device memory write-back (the default `map_2m_page`/
+/// `map_4k_page` caching) risks stale reads and write reordering against real
+/// hardware registers — silent, hard-to-diagnose device misbehavior, not a crash.
+#[test_case]
+fn test_build_uc_direct_map_sets_uncacheable_nx_4kib_only() {
+    // SAFETY: single-threaded test context; fresh pool means POOL[3] is the PT frame.
+    unsafe {
+        let pml4 = reset_pool();
+        let mut alloc = bump_alloc_from_pool;
+        let mmio = UnifiedMemoryEntry {
+            start: 0x0062_0000,
+            size: PAGE_SIZE_U64,
+            memory_type: 11,
+            _pad: 0,
+            attribute: 0,
+            is_usable: false,
+        };
+
+        let stats = build_uc_direct_map(pml4, [mmio].iter(), is_mmio, &mut alloc).unwrap();
+        assert_eq!(stats.small_4k_pages, 1);
+        assert_eq!(stats.huge_2m_pages, 0);
+
+        let pt = &*addr_of!(POOL[3]);
+        let entry = pt.entries[pt_index(0x0062_0000)];
+        assert!(entry.present());
+        assert!(!entry.huge());
+        assert!(entry.no_execute(), "MMIO mapping must be NX");
+        assert_eq!(
+            entry.raw() & ENTRY_PCD,
+            ENTRY_PCD,
+            "PCD must be set for MMIO"
+        );
+        assert_eq!(entry.raw() & ENTRY_PWT, 0, "PWT must be clear for MMIO");
+
+        assert_eq!(
+            resolve_phys_via_root(pml4, 0x0062_0000),
+            Some((0x0062_0000, PAGE_SIZE_U64))
+        );
+        assert!(validate_direct_map_coverage(pml4, [mmio].iter(), is_mmio).is_ok());
     }
 }
 
@@ -953,7 +1049,7 @@ fn test_build_full_kernel_pml4_maps_uefi_style_loader_data_metadata() {
         let old_pml4 = page_table::read_cr3() & 0x000F_FFFF_FFFF_F000;
         let mut alloc = page_table::alloc_frame_phys;
 
-        let (new_pml4, _ram_stats, _platform_stats, loader_stats) =
+        let (new_pml4, _ram_stats, _platform_stats, loader_stats, _mmio_stats) =
             build_full_kernel_pml4(old_pml4, regions_ref, boot_info_ref, &mut alloc).unwrap();
 
         assert_eq!(loader_stats.regions_mapped, 1);
