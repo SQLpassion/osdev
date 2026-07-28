@@ -1,14 +1,16 @@
 # Implementation Plan: Kernel-Owned Page Tables on the UEFI Path
 
 > **Audience:** Coding AI, for step-by-step implementation.
-> **Status:** Phases 0-4 implemented; Phase 5 partial (NX done, kernel `.text` RO+X not
-> yet done — see `kernel/src/memory/vmm/direct_map.rs`'s `build_full_kernel_pml4` doc
-> comment). Tracked in issue #63, branch `feature/issue-63-uefi-kernel-pagetables`.
-> The new kernel-owned table is implemented and exercised in QEMU
-> (`kernel/tests/direct_map_full_switch_test.rs`), but stays behind
-> `direct_map::USE_DIRECT_MAP_TABLE` (default `false`) pending the mandatory
-> real-hardware smoke test (§6, `docs/boot_uefi.md`) — see §5 below for the current
-> per-phase status and what changed vs. this document's original file/line references.
+> **Status:** Phases 0-4 implemented and **ENABLED** (`direct_map::USE_DIRECT_MAP_TABLE =
+> true` since 2026-07-28); Phase 5 partial (NX done, kernel `.text` RO+X not yet done —
+> see `kernel/src/memory/vmm/direct_map.rs`'s `build_full_kernel_pml4` doc comment).
+> Tracked in issue #63, branch `feature/issue-63-uefi-kernel-pagetables`.
+> The kernel-owned table is validated end-to-end: QEMU/OVMF **and** the real AMD/UEFI
+> box boot to the ring-3 shell (all shell commands + `TUI.BIN`), and `cargo test` is
+> green (401/401). The firmware-clone path is kept as the fallback for the
+> no-`BootInfo` case (`vmm::init` gates the switch on a published `BootInfo`) and the
+> flag remains as a kill-switch. See §5 for per-phase status, the activation-path review
+> follow-up, and the real-hardware activation notes.
 > **Predecessor context:** `docs/vmm.md` §4 (write_cr3 saga), `docs/boot_uefi.md`.
 
 ---
@@ -155,11 +157,13 @@ deviations from the plan as originally written:
   which then mismatched against the untruncated address in the idempotency check and
   raised a spurious `Overlap` error. Fixed by rounding each region outward to page
   boundaries in `build_direct_map`; regression-tested in `direct_map_test.rs`.
-- **Phase 4's CR3 switch is implemented but gated off by default**
-  (`direct_map::USE_DIRECT_MAP_TABLE = false`) pending the real-hardware smoke test in
-  `docs/boot_uefi.md` — this could not be run in the environment that implemented it.
-  The switch itself is exercised in QEMU (which cannot reproduce the SMM/SMI regression
-  class that motivated the firmware-clone approach in the first place — see §6).
+- **Phase 4's CR3 switch is implemented and ENABLED** (`direct_map::USE_DIRECT_MAP_TABLE
+  = true` since 2026-07-28) and validated on the real AMD/UEFI box (boots to the ring-3
+  shell; all shell commands and `TUI.BIN` work). QEMU cannot reproduce the SMM/SMI
+  regression class that motivated the firmware-clone approach (see §6), so the
+  real-hardware boot — not the QEMU pass — is what cleared it. `vmm::init` gates the
+  switch on a published `BootInfo`, falling back to the firmware clone otherwise (e.g.
+  unit-test kernels); the flag remains as a kill-switch.
 - **Phase 5 is partial**: NX across the whole kernel-owned identity/direct map is done;
   kernel `.text` RO+X is not (it requires page-aligning `link.ld` and rebuilding the
   higher-half PML4 slot at 4 KiB granularity — a higher-blast-radius change than the
@@ -167,8 +171,8 @@ deviations from the plan as originally written:
 
 ### Activation-path review follow-up (2026-07-28)
 
-A review of `USE_DIRECT_MAP_TABLE`'s activation path (still disabled by default) found
-five gaps, all now fixed:
+A review of `USE_DIRECT_MAP_TABLE`'s activation path (run while it was still disabled,
+before the flip described in the next subsection) found five gaps, all now fixed:
 
 1. **`EfiLoaderCode`/`EfiLoaderData` (types 1/2) were unmapped** by either classifier —
    on UEFI, `kaosldr_uefi` allocates the PMM-metadata region as `EfiLoaderData`
@@ -206,6 +210,34 @@ table depends on) and slot 511 (the recursive self-map, misinterpreted as a regu
 PDPT entry one level down, plus a double-release of the PML4's own frame). Never
 triggered before because `free_direct_map_tables` had only ever been called on plain
 `build_direct_map`-only canary tables, which never populate either slot.
+
+### Activation on real hardware (2026-07-28)
+
+With the five gaps above fixed, `USE_DIRECT_MAP_TABLE` was flipped to `true` and the
+branch was validated on the physical AMD/UEFI box: it boots to the ring-3 shell and all
+shell commands work. Two further issues surfaced **only on real hardware** (both fixed):
+
+1. **`TUI.BIN` crashed at startup** — `page_fault.rs` "protection page fault at 0x100e".
+   The `GetBiosMemoryMapEntryCount`/`GetBiosMemoryMapEntry` syscalls read the BIOS
+   Information Block at the fixed low physical address `BIB_OFFSET` (0x1000; `0x100e` =
+   `+ offset_of(memory_map_entries)`), a BIOS-only structure. Harmless under the firmware
+   clone (the firmware identity-maps 0x1000, so the read returns garbage), but the
+   kernel-owned table does **not** map that low page on real UEFI firmware (it is a
+   dropped type there), so the read faulted. QEMU/OVMF maps 0x1000, so it reproduced only
+   on hardware; TUI-specific because only TUI issues that syscall at startup. Fixed: both
+   syscalls now read the loader's `UnifiedMemoryEntry` map when a `BootInfo` is present
+   (mirroring `drivers::time`'s guard), touching 0x1000 only on the legacy no-`BootInfo`
+   path. **General lesson:** kernel-owned tables expose *any* latent read of a hardcoded
+   low physical address that the firmware identity map used to satisfy silently — audit
+   for other such derefs.
+2. **`cargo test` went red** — ~20 test kernels call `vmm::init` without publishing a
+   `BootInfo`, tripping `switch_to_direct_map`'s BootInfo assertion. Fixed by gating the
+   switch on `USE_DIRECT_MAP_TABLE && BOOT_INFO_PTR != 0`; with no `BootInfo`, `vmm::init`
+   falls back to the firmware clone (identical to the `false` behavior). `cargo test` is
+   green again (401/401 across 39 test files).
+
+Branch commits: `57a2ce7` (MMIO/phase2 RUNTIME split), `e82329a` (enable flag + visible
+boot banner), `9c1d8d9` (BIOS-syscall fix), `5794b5c` (BootInfo-gate).
 
 ---
 

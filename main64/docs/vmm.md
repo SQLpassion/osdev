@@ -206,7 +206,7 @@ This also fixes two latent bugs for free: the loader-provided **`BootInfo`** and
 **PMM-metadata region** (see [`pmm.md`](pmm.md)) both live in RAM that `PML4[0]` identity-maps, so
 they remain reachable after the switch — a hand-built 4 MiB map would have lost them.
 
-### 4.4 Known caveat — being addressed by issue #63
+### 4.4 Known caveat — resolved by issue #63 (kernel-owned tables now enabled)
 
 The cloned sub-tables are **firmware-owned frames** that the PMM does **not** know are in use, so
 it could later hand them out and corrupt the page tables. Today this is mitigated by
@@ -219,11 +219,17 @@ every firmware PDPT/PD/PT frame used so the PMM never reallocates one — a work
 `kernel/src/memory/vmm/direct_map.rs` module builds a genuinely kernel-owned page-table
 hierarchy (own RAM/platform-region mappings, not cloned firmware sub-tables) and can switch CR3
 to it (`direct_map::switch_to_direct_map`), after which `reserve_firmware_page_tables()` becomes
-unnecessary and the firmware frames return to the PMM. This is implemented and passes in QEMU,
-but stays behind `direct_map::USE_DIRECT_MAP_TABLE` (default `false`) until validated with the
-real-hardware smoke-test checklist in `docs/boot_uefi.md` — the SMM/SMI regression this section's
-history is about is not reproducible in QEMU, so a QEMU pass alone does not clear it for
-production use.
+unnecessary and the firmware frames return to the PMM. As of 2026-07-28 this is **enabled**
+(`direct_map::USE_DIRECT_MAP_TABLE = true`) and validated end-to-end on QEMU/OVMF **and on real
+AMD/UEFI hardware**: the kernel switches CR3 to its own table, `reserve_firmware_page_tables()` is
+skipped on that path, and the SMM/SMI hard reset this section's history is about did **not** occur
+on that box (building the *complete* region set — all RAM/platform/runtime/MMIO/loader regions —
+rather than a minimal map is what makes discarding the firmware tables safe). Two caveats remain:
+the firmware-clone path is kept as the fallback when no `BootInfo` is published (`vmm::init` gates
+the switch on `BOOT_INFO_PTR != 0`, so unit-test kernels and any BootInfo-less boot still clone),
+and the flag stays as a kill-switch — flip it back to `false` and rebuild if a different machine
+misbehaves (QEMU cannot reproduce the SMM/SMI class, so it can never clear a new machine on its
+own).
 
 ---
 
