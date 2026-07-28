@@ -708,15 +708,16 @@ pub unsafe fn run_boot_canary(debug_output: bool) {
     free_direct_map_tables(pml4);
 }
 
-/// Builds a genuinely kernel-owned PML4: Phase 1 (RAM) + Phase 2 (firmware/platform)
-/// regions mapped explicitly (both NX — Phase 5's "data + direct map: NX", see
-/// `map_2m_page`/`map_4k_page`), the higher-half kernel-image mirror (PML4 slot 256)
-/// copied verbatim from `old_pml4_phys`'s slot 256 (so the kernel's own code/data stays
-/// reachable after a future CR3 switch — this table never rebuilds that mapping
-/// itself, it only borrows the existing chain), and the recursive self-map installed
-/// at slot 511. Matches the design doc's Phase 4 checklist ("P1 + P2 + P3 + slot 511 +
-/// slot 256"; framebuffer/P3 mapping via [`map_wc_range`] is the caller's
-/// responsibility once GOP boot info is available — see `docs/todo_uefi_kernel_pagetables.md`).
+/// Builds a genuinely kernel-owned PML4: Phase 1 (RAM) + Phase 2 (firmware/platform) +
+/// loader-owned (EfiLoaderCode/EfiLoaderData — see [`is_loader_owned`]) regions mapped
+/// explicitly (RAM/platform both NX — Phase 5's "data + direct map: NX", see
+/// `map_2m_page`/`map_4k_page`), the GOP framebuffer mapped write-combining + NX via
+/// [`map_wc_range`] when one is present (Phase 3), the higher-half kernel-image mirror
+/// (PML4 slot 256) copied verbatim from `old_pml4_phys`'s slot 256 (so the kernel's own
+/// code/data stays reachable after a future CR3 switch — this table never rebuilds
+/// that mapping itself, it only borrows the existing chain), and the recursive
+/// self-map installed at slot 511. Matches the design doc's Phase 4 checklist
+/// ("P1 + P2 + P3 + slot 511 + slot 256" — see `docs/todo_uefi_kernel_pagetables.md`).
 ///
 /// **Phase 5 scope note:** because slot 256 is copied verbatim rather than rebuilt,
 /// this does *not* yet enforce "kernel `.text` is RO+X" (the other half of Phase 5) —
@@ -771,6 +772,23 @@ pub unsafe fn build_full_kernel_pml4(
     // any) classifier happens to cover them today.
     validate_essential_boot_addresses(new_pml4, boot_info)
         .unwrap_or_else(|e| panic!("Phase 4 essential boot address coverage gap: {:?}", e));
+
+    // Phase 3: map the GOP framebuffer explicitly (write-combining + NX), instead of
+    // relying on inherited firmware coverage — design doc problem P4. Only present on
+    // a graphics-mode boot (BIOS text-mode/no-framebuffer boots leave `base_address`
+    // at 0). This was previously documented as "the caller's responsibility" but never
+    // actually wired in anywhere — fixed here, the only production call site.
+    if boot_info.video_type == crate::boot_info::VideoModeType::Framebuffer
+        && boot_info.fb_info.base_address != 0
+    {
+        map_wc_range(
+            new_pml4,
+            boot_info.fb_info.base_address,
+            boot_info.fb_info.size as u64,
+            alloc_frame,
+        )
+        .unwrap_or_else(|e| panic!("Phase 4 framebuffer direct-map failed: {:?}", e));
+    }
 
     // Higher-half kernel-image mirror: copy verbatim from the currently active PML4,
     // rather than rebuilding it — the kernel's own image lives wherever the loader put

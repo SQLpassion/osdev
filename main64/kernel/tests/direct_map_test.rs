@@ -966,3 +966,106 @@ fn test_build_full_kernel_pml4_maps_uefi_style_loader_data_metadata() {
         free_direct_map_tables(new_pml4);
     }
 }
+
+// ============================================================================
+// Regression (review #63, point 4): the GOP framebuffer must actually be mapped by
+// `build_full_kernel_pml4` when one is present, not just documented as "the caller's
+// responsibility" while no caller ever does it.
+// ============================================================================
+
+#[repr(C, align(4096))]
+struct FbBuf([u8; 3 * PAGE_SIZE_U64 as usize]);
+static mut FB_TEST_BUF: FbBuf = FbBuf([0u8; 3 * PAGE_SIZE_U64 as usize]);
+
+static mut FB_TEST_REGIONS: [UnifiedMemoryEntry; 2] = [
+    UnifiedMemoryEntry {
+        start: 0, // filled in at test time: BootInfo's own page
+        size: PAGE_SIZE_U64 * 2,
+        memory_type: 7,
+        _pad: 0,
+        attribute: 0,
+        is_usable: true,
+    },
+    UnifiedMemoryEntry {
+        start: 0, // filled in at test time: the regions array's own page
+        size: PAGE_SIZE_U64 * 2,
+        memory_type: 7,
+        _pad: 0,
+        attribute: 0,
+        is_usable: true,
+    },
+];
+
+static mut FB_TEST_BOOT_INFO: BootInfo = BootInfo {
+    magic: 0,
+    video_type: VideoModeType::Framebuffer,
+    fb_info: FramebufferInfo {
+        base_address: 0, // filled in at test time
+        size: 0,         // filled in at test time
+        width: 0,
+        height: 0,
+        pixels_per_scanline: 0,
+        pixel_format: PixelFormat::Bgr,
+    },
+    memory_map_addr: 0,
+    memory_map_len: 2,
+    kernel_size: 0,
+    pmm_metadata_base: 0,
+    pmm_metadata_size: 0,
+    boot_year: 0,
+    boot_month: 0,
+    boot_day: 0,
+    boot_hour: 0,
+    boot_minute: 0,
+    boot_second: 0,
+    boot_timezone: 0,
+};
+
+/// Contract: when `BootInfo.video_type == Framebuffer` and `fb_info.base_address != 0`,
+/// `build_full_kernel_pml4` maps the whole `[base_address, base_address + size)` range,
+/// not just the classifier-covered RAM/platform/loader regions.
+///
+/// The complementary "no framebuffer -> not mapped, no panic" case is already covered
+/// implicitly by `test_build_full_kernel_pml4_maps_uefi_style_loader_data_metadata`
+/// (that test's `BootInfo` stays `VideoModeType::VgaText` with `base_address == 0` and
+/// completes without ever calling `map_wc_range`).
+///
+/// Failure Impact: before this fix, `map_wc_range` was implemented and unit-tested in
+/// isolation but never actually called from the only production call site
+/// (`switch_to_direct_map`) — a real UEFI/GOP boot would have lost the framebuffer
+/// mapping entirely the instant `USE_DIRECT_MAP_TABLE` went live.
+#[test_case]
+fn test_build_full_kernel_pml4_maps_framebuffer_when_present() {
+    // SAFETY: single-threaded test context. `old_pml4_phys` is only read (slot 256),
+    // never written; CR3 is never switched.
+    unsafe {
+        let boot_info_phys = virt_to_phys(addr_of!(FB_TEST_BOOT_INFO) as u64);
+        let regions_phys = virt_to_phys(addr_of!(FB_TEST_REGIONS) as u64);
+        let fb_phys = virt_to_phys(addr_of!(FB_TEST_BUF) as u64);
+
+        FB_TEST_REGIONS[0].start = boot_info_phys & !(PAGE_SIZE_U64 - 1);
+        FB_TEST_REGIONS[1].start = regions_phys & !(PAGE_SIZE_U64 - 1);
+        FB_TEST_BOOT_INFO.memory_map_addr = regions_phys;
+        FB_TEST_BOOT_INFO.fb_info.base_address = fb_phys;
+        FB_TEST_BOOT_INFO.fb_info.size = 3 * PAGE_SIZE_U64 as usize;
+
+        let boot_info_ref = &*(boot_info_phys as *const BootInfo);
+        let regions_ref = &*(regions_phys as *const [UnifiedMemoryEntry; 2]);
+        let old_pml4 = page_table::read_cr3() & 0x000F_FFFF_FFFF_F000;
+        let mut alloc = page_table::alloc_frame_phys;
+
+        let (new_pml4, ..) =
+            build_full_kernel_pml4(old_pml4, regions_ref, boot_info_ref, &mut alloc).unwrap();
+
+        assert_eq!(
+            resolve_phys_via_root(new_pml4, fb_phys),
+            Some((fb_phys, PAGE_SIZE_U64))
+        );
+        assert_eq!(
+            resolve_phys_via_root(new_pml4, fb_phys + 2 * PAGE_SIZE_U64),
+            Some((fb_phys + 2 * PAGE_SIZE_U64, PAGE_SIZE_U64))
+        );
+
+        free_direct_map_tables(new_pml4);
+    }
+}
