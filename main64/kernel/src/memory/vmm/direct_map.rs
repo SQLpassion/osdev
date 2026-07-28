@@ -146,10 +146,19 @@ const EFI_PAL_CODE: u32 = 13;
 /// `test_second_build_call_with_huge_page_collision_is_rejected`-style reuse pattern
 /// exercised in `direct_map_test.rs`.
 ///
-/// **Deliberately excludes `MemoryMappedIO` (11)** — see [`is_mmio`]/
-/// [`build_uc_direct_map`]: device memory needs uncacheable mappings, not the
-/// write-back default this classifier's regions get from `map_2m_page`/`map_4k_page`.
+/// **Deliberately excludes `MemoryMappedIO` (11)** — unconditionally, *including* when
+/// it carries the `EFI_MEMORY_RUNTIME` attribute. MMIO is handled exclusively by the
+/// uncacheable path ([`is_mmio`]/[`build_uc_direct_map`]): device memory needs
+/// uncacheable mappings, not the write-back default `map_2m_page`/`map_4k_page` apply
+/// here. Without the explicit `is_mmio` guard below, the `EFI_MEMORY_RUNTIME` clause
+/// would re-claim a runtime-flagged MMIO region (OVMF marks such regions on the UEFI
+/// path), map it write-back — as a 2 MiB huge page when aligned — and the later MMIO
+/// pass would then hit a [`DirectMapError::HugePageCollision`], panicking the
+/// unconditional boot-time canary (#63 activation-path review, point 5).
 pub fn is_phase2_platform(entry: &UnifiedMemoryEntry) -> bool {
+    if is_mmio(entry) {
+        return false;
+    }
     (entry.attribute & EFI_MEMORY_RUNTIME) != 0
         || matches!(
             entry.memory_type,

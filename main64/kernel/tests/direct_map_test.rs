@@ -782,6 +782,34 @@ fn test_is_mmio_matches_type_11_only() {
     }
 }
 
+/// Regression (#63 review point 5): a `MemoryMappedIO` (11) region that ALSO carries
+/// the `EFI_MEMORY_RUNTIME` attribute must still be rejected by `is_phase2_platform`
+/// (and accepted by `is_mmio`). The plain `test_is_mmio_matches_type_11_only` above
+/// only covers `attribute == 0`, so it misses exactly this overlap.
+/// Failure Impact: OVMF marks such a region on the UEFI path. If `is_phase2_platform`'s
+/// `EFI_MEMORY_RUNTIME` clause re-claimed it, the Phase 2 pass would map the window
+/// write-back — as a 2 MiB huge page when aligned — and the later uncacheable MMIO pass
+/// would hit a `HugePageCollision`, panicking the unconditional boot-time canary (this
+/// is the QEMU/OVMF boot hang this fix resolves). Release-blocking on UEFI.
+#[test_case]
+fn test_mmio_with_runtime_attribute_is_not_phase2() {
+    const EFI_MEMORY_RUNTIME: u64 = 0x8000_0000_0000_0000;
+    let mmio_runtime = UnifiedMemoryEntry {
+        start: 0,
+        size: PAGE_SIZE_U64,
+        memory_type: 11,
+        _pad: 0,
+        attribute: EFI_MEMORY_RUNTIME,
+        is_usable: false,
+    };
+    assert!(is_mmio(&mmio_runtime));
+    assert!(
+        !is_phase2_platform(&mmio_runtime),
+        "type-11 MMIO with EFI_MEMORY_RUNTIME must be handled by the UC path only, \
+         never re-claimed by is_phase2_platform"
+    );
+}
+
 /// Contract: `build_uc_direct_map` maps MMIO as present, NX, uncacheable (PCD set,
 /// PWT clear), 4 KiB only — never a 2 MiB huge leaf.
 /// Failure Impact: mapping device memory write-back (the default `map_2m_page`/
