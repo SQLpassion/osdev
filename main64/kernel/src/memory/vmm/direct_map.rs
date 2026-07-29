@@ -32,10 +32,10 @@
 //! construction: the PMM pools *only* usable RAM at or above `KERNEL_OFFSET` (1 MiB)
 //! (`pmm::manager`), whereas the active tables live outside that pool — on UEFI in
 //! firmware-owned, non-`EfiConventionalMemory` memory; on BIOS in the loader's
-//! `0x9000..=0x15FFF` tables, all below 1 MiB. The same disjointness is why the
-//! higher-half mirror (PML4 slot 256), which `build_full_kernel_pml4` copies verbatim
-//! and keeps pointing at a firmware sub-tree *after* the switch, is safe to leave
-//! unreserved: the PMM will never hand those borrowed frames out either.
+//! `0x9000..=0x15FFF` tables, all below 1 MiB. (The higher-half kernel image at PML4
+//! slot 256 is itself rebuilt here from fresh PMM-allocated scaffold frames — see
+//! [`map_kernel_image_higher_half`] — not borrowed from the firmware, so it is just
+//! more of this same kernel-owned table and needs no special treatment.)
 //! `switch_to_direct_map` asserts this invariant up front via
 //! `page_table::assert_no_active_table_frame_is_pmm_free`, so a future regression (a
 //! loader that parks its tables in usable RAM, or a PMM that pools more memory types)
@@ -57,8 +57,19 @@ use super::page_table::{
     zero_phys_page, HUGE_PAGE_SIZE_2M, RECURSIVE_SLOT,
 };
 
-/// PML4 slot for the higher-half kernel-image mirror (virtual `0xFFFF8000_00000000`).
-const HIGHER_HALF_SLOT: usize = 256;
+/// Higher-half base (`KERNEL_VIRT_BASE` in `link.ld`): the kernel image is linked at
+/// `KERNEL_VIRT_BASE + 0x100000` and maps to physical `VA - KERNEL_VIRT_BASE`. Used by
+/// [`map_kernel_image_higher_half`] / [`kernel_image_layout`] to translate the linker's
+/// higher-half section symbols to their load-physical addresses.
+const KERNEL_VIRT_BASE: u64 = 0xFFFF_8000_0000_0000;
+
+/// Higher-half VA of the legacy VGA text buffer (physical `0xB8000`). It is written by
+/// the panic path (`panic.rs`), the fatal-exception handler
+/// (`arch/interrupts/handlers.rs`, on *every* boot), and the VGA console
+/// (`drivers/screen.rs`). The page-fault handler refuses non-heap higher-half faults
+/// (`page_fault.rs`), so — unlike the heap/task-stacks — this page cannot be
+/// demand-paged and MUST be mapped eagerly (RW+NX) when slot 256 is rebuilt (#63 Phase 5).
+const VGA_TEXT_VA: u64 = 0xFFFF_8000_000B_8000;
 
 /// EFI memory type 9 (`EfiACPIReclaimMemory`) — RAM that becomes usable after ACPI
 /// tables are parsed. Mapped by [`is_phase1_ram`] so a future ACPI parser does not
@@ -349,10 +360,9 @@ unsafe fn map_2m_page(
     }
     // Phase 5 (#63): NX on the whole identity/direct map. Safe because the kernel's
     // own code never executes through this identity mapping — it runs from the
-    // separate higher-half mirror (PML4 slot 256), which maps the same physical
-    // frames through different, unrelated PDPT/PD/PT entries and keeps whatever
-    // permissions that chain already has (see `build_full_kernel_pml4`'s slot-256
-    // copy). Marking the identity copy NX cannot affect what the CPU fetches from.
+    // separate higher-half kernel image (PML4 slot 256), which maps `.text` through its
+    // own RO+X PTEs (see `map_kernel_image_higher_half`). Marking the identity copy NX
+    // cannot affect what the CPU fetches from.
     let entry = &mut *entry_ptr(pd, idx);
     entry.set_huge_mapping(pa, true, true, false);
     entry.set_no_execute(true);
@@ -677,35 +687,178 @@ pub unsafe fn validate_essential_boot_addresses(
     Ok(())
 }
 
+/// One contiguous, page-aligned higher-half kernel-image section and the permissions its
+/// pages must carry (#63 Phase 5). `execute == true` leaves the NX bit clear.
+#[derive(Clone, Copy)]
+pub struct KernelSection {
+    /// Page-aligned higher-half start VA.
+    pub virt_start: u64,
+    /// Page-aligned, exclusive higher-half end VA.
+    pub virt_end: u64,
+    /// Leaf writable bit (`.text`/`.rodata` = false; `.data`/`.bss` = true).
+    pub writable: bool,
+    /// Leaf executable (`.text` = true → NX clear; everything else = false → NX set).
+    pub execute: bool,
+}
+
+/// Per-section W^X layout of the higher-half kernel image, plus the VGA text page. The
+/// three sections carry `.text` RO+X, `.rodata` RO+NX, `.data`/`.bss` RW+NX; the VGA page
+/// is RW+NX. Produced by [`kernel_image_layout`] from the `link.ld` boundary symbols.
+#[derive(Clone, Copy)]
+pub struct KernelImageLayout {
+    pub text: KernelSection,
+    pub rodata: KernelSection,
+    pub data_bss: KernelSection,
+    pub vga_text_va: u64,
+}
+
+/// Rebuilds PML4 slot 256 as a precise per-section W^X map of the higher-half kernel
+/// image at 4 KiB granularity (`.text` RO+X, `.rodata` RO+NX, `.data`/`.bss` RW+NX) plus
+/// the VGA text page (RW+NX) — #63 Phase 5. Replaces the previous verbatim slot-256 copy
+/// of the firmware's low-RAM huge-page mirror (which left `.text` RWX, problem P1).
+///
+/// Everything else that lives in slot 256 — the kernel heap, heap-allocated ring-3 task
+/// stacks, the VMM diagnostics test window — is deliberately left *unmapped* here and
+/// served on demand by the page-fault handler (`page_fault.rs`'s kernel-heap-arena path).
+/// That works because this builder always creates real, non-huge PDPT/PD/PT tables via
+/// [`ensure_pt_table`]: after the switch, `populate_page_table_path` can walk
+/// `PML4[256] → PDPT[0] → PD` through the recursive window and extend the sub-tree for
+/// those faulting VAs. It also removes the old mirror's latent aliasing of heap/stack VAs
+/// onto free PMM frames (the demand pager now hands them properly-allocated frames).
+///
+/// Identity-map note: the same physical `.text` frames are also reachable through the
+/// slot-0 identity direct map, which is RW+NX (2 MiB huge pages) — so no *single* mapping
+/// is W+X, and the kernel only ever fetches code through this higher-half RO+X mapping.
+/// Making the low identity alias RO for the image range (a huge-page split) is a separate,
+/// larger hardening left as future work.
+///
+/// # Safety
+/// Same reachability contract as [`build_direct_map`]: `pml4_phys` and every frame
+/// `alloc_frame` returns must be dereferenceable as an identical virtual address for the
+/// whole call — true while the original identity map is still active (before the CR3
+/// switch). The `pa` computed per leaf (`va - KERNEL_VIRT_BASE`) must be the image's true
+/// load-physical address, which holds because `link.ld` maps every section
+/// `LMA = VMA - KERNEL_VIRT_BASE`.
+pub unsafe fn map_kernel_image_higher_half(
+    pml4_phys: u64,
+    layout: &KernelImageLayout,
+    alloc_frame: &mut dyn FnMut() -> Option<u64>,
+) -> Result<(), DirectMapError> {
+    for sec in [layout.text, layout.rodata, layout.data_bss] {
+        let mut va = sec.virt_start & !(PAGE_SIZE_U64 - 1);
+        let end = (sec.virt_end + PAGE_SIZE_U64 - 1) & !(PAGE_SIZE_U64 - 1);
+        while va < end {
+            map_higher_half_leaf(
+                pml4_phys,
+                va,
+                va - KERNEL_VIRT_BASE,
+                sec.writable,
+                sec.execute,
+                alloc_frame,
+            )?;
+            va += PAGE_SIZE_U64;
+        }
+    }
+
+    // VGA text page: phys 0xB8000, RW + NX (see VGA_TEXT_VA's doc for why it must be eager).
+    map_higher_half_leaf(
+        pml4_phys,
+        layout.vga_text_va,
+        layout.vga_text_va - KERNEL_VIRT_BASE,
+        true,
+        false,
+        alloc_frame,
+    )
+}
+
+/// Stamps one 4 KiB higher-half leaf `va -> pa` with explicit writable/execute bits,
+/// allocating any missing PDPT/PD/PT frames via the shared [`ensure_pt_table`]. Unlike
+/// [`map_4k_page`] this is NOT identity (VA != PA) and does not force NX.
+///
+/// # Safety
+/// Same contract as [`map_kernel_image_higher_half`].
+unsafe fn map_higher_half_leaf(
+    pml4_phys: u64,
+    va: u64,
+    pa: u64,
+    writable: bool,
+    execute: bool,
+    alloc_frame: &mut dyn FnMut() -> Option<u64>,
+) -> Result<(), DirectMapError> {
+    let mut stats = DirectMapStats::default();
+    let pt_phys = ensure_pt_table(pml4_phys, va, alloc_frame, &mut stats)?;
+    let entry = &mut *entry_ptr(table_at(pt_phys), pt_index(va));
+    entry.set_mapping(phys_to_pfn(pa), true, writable, false);
+    entry.set_no_execute(!execute);
+    Ok(())
+}
+
+/// Production kernel-image layout, read from the `link.ld` boundary symbols (#63 Phase 5).
+///
+/// The extent runs from `__text_start` to `__kernel_end` and **includes `.bss`** — it must
+/// NOT be derived from `BootInfo.kernel_size`, which is the flat-binary file size and
+/// excludes `.bss` (NOBITS). `.data` and `.bss` share one RW+NX range (`__data_start ..
+/// __kernel_end`). All symbol addresses are already 4 KiB-aligned by the linker.
+pub fn kernel_image_layout() -> KernelImageLayout {
+    extern "C" {
+        static __text_start: u8;
+        static __text_end: u8;
+        static __rodata_start: u8;
+        static __rodata_end: u8;
+        static __data_start: u8;
+        static __kernel_end: u8;
+    }
+
+    // SAFETY: these are linker-defined symbols with static lifetime; we only take their
+    // addresses (never dereference), exactly like `main.rs`/`pmm::manager`'s __bss_* use.
+    unsafe {
+        let addr = |s: &u8| s as *const u8 as u64;
+        KernelImageLayout {
+            text: KernelSection {
+                virt_start: addr(&__text_start),
+                virt_end: addr(&__text_end),
+                writable: false,
+                execute: true,
+            },
+            rodata: KernelSection {
+                virt_start: addr(&__rodata_start),
+                virt_end: addr(&__rodata_end),
+                writable: false,
+                execute: false,
+            },
+            data_bss: KernelSection {
+                virt_start: addr(&__data_start),
+                virt_end: addr(&__kernel_end),
+                writable: true,
+                execute: false,
+            },
+            vga_text_va: VGA_TEXT_VA,
+        }
+    }
+}
+
 /// Builds a genuinely kernel-owned PML4: Phase 1 (RAM) + Phase 2 (firmware/platform) +
 /// loader-owned (EfiLoaderCode/EfiLoaderData — see [`is_loader_owned`]) regions mapped
 /// explicitly (RAM/platform both NX — Phase 5's "data + direct map: NX", see
 /// `map_2m_page`/`map_4k_page`), the GOP framebuffer mapped write-combining + NX via
-/// [`map_wc_range`] when one is present (Phase 3), the higher-half kernel-image mirror
-/// (PML4 slot 256) copied verbatim from `old_pml4_phys`'s slot 256 (so the kernel's own
-/// code/data stays reachable after a future CR3 switch — this table never rebuilds
-/// that mapping itself, it only borrows the existing chain), and the recursive
-/// self-map installed at slot 511. Matches the design doc's Phase 4 checklist
-/// ("P1 + P2 + P3 + slot 511 + slot 256" — see `docs/todo_uefi_kernel_pagetables.md`).
+/// [`map_wc_range`] when one is present (Phase 3), the higher-half kernel image (PML4
+/// slot 256) rebuilt per-section as a W^X map via [`map_kernel_image_higher_half`]
+/// (`.text` RO+X, `.rodata` RO+NX, `.data`/`.bss` RW+NX, plus the VGA text page RW+NX —
+/// Phase 5), and the recursive self-map installed at slot 511. Matches the design doc's
+/// Phase 4/5 checklist ("P1 + P2 + P3 + slot 511 + slot 256, W^X" — see
+/// `docs/todo_uefi_kernel_pagetables.md`).
 ///
-/// **Phase 5 scope note:** because slot 256 is copied verbatim rather than rebuilt,
-/// this does *not* yet enforce "kernel `.text` is RO+X" (the other half of Phase 5) —
-/// that chain keeps whatever permissions it already had (today, RWX, matching problem
-/// P1 in the design doc). Enforcing W^X on the kernel image itself requires page-
-/// aligning `.text`/`.rodata`/`.data` in `link.ld` (they are currently packed
-/// contiguously with no boundary symbols) and rebuilding slot 256 at 4 KiB granularity
-/// for just the kernel-image range — a separate, higher-blast-radius change (the linker
-/// script affects every boot configuration) left as follow-up work; see the tracking
-/// issue.
+/// Slot 256 no longer borrows the firmware's low-RAM mirror: the kernel heap and
+/// heap-allocated ring-3 task stacks (also higher-half) are now served by the page-fault
+/// demand pager — see [`map_kernel_image_higher_half`] for why that is safe under the
+/// rebuilt sub-tree. CR0.WP (`arch::cpu::enable_write_protect`, set in `KernelMain`) is
+/// what makes the RO `.text`/`.rodata` enforced against ring-0 writes.
 ///
 /// Does **not** switch CR3 — see [`switch_to_direct_map`] for that.
 ///
 /// # Safety
-/// Same reachability contract as [`build_direct_map`], plus: `old_pml4_phys` must be
-/// the physical address of the currently active PML4, so the slot 256 copy is coherent
-/// with what the CPU is actually executing from.
+/// Same reachability contract as [`build_direct_map`].
 pub unsafe fn build_full_kernel_pml4(
-    old_pml4_phys: u64,
     regions: &[UnifiedMemoryEntry],
     boot_info: &crate::boot_info::BootInfo,
     alloc_frame: &mut dyn FnMut() -> Option<u64>,
@@ -774,14 +927,15 @@ pub unsafe fn build_full_kernel_pml4(
         .unwrap_or_else(|e| panic!("Phase 4 framebuffer direct-map failed: {:?}", e));
     }
 
-    // Higher-half kernel-image mirror: copy verbatim from the currently active PML4,
-    // rather than rebuilding it — the kernel's own image lives wherever the loader put
-    // it, and that chain already works.
-    let old_pml4_table = table_at(old_pml4_phys);
-    let new_pml4_table = table_at(new_pml4);
-    *entry_ptr(new_pml4_table, HIGHER_HALF_SLOT) = table_entry(old_pml4_table, HIGHER_HALF_SLOT);
+    // Phase 5 (#63): rebuild the higher-half kernel image (slot 256) as a per-section
+    // W^X map (.text RO+X / .rodata RO+NX / .data+.bss RW+NX) + the VGA text page (RW+NX),
+    // instead of copying the firmware's low-RAM RWX huge-page mirror verbatim. Heap/task
+    // stacks are served on demand afterwards — see map_kernel_image_higher_half's doc.
+    map_kernel_image_higher_half(new_pml4, &kernel_image_layout(), alloc_frame)
+        .unwrap_or_else(|e| panic!("Phase 5 kernel-image higher-half map failed: {:?}", e));
 
     // Recursive self-map, exactly like `build_kernel_pml4_from_firmware`'s slot 511.
+    let new_pml4_table = table_at(new_pml4);
     (*entry_ptr(new_pml4_table, RECURSIVE_SLOT)).set_mapping(
         phys_to_pfn(new_pml4),
         true,
@@ -839,7 +993,7 @@ pub unsafe fn switch_to_direct_map(old_pml4_phys: u64) -> u64 {
 
     let mut alloc = alloc_frame_phys;
     let (new_pml4, ram_stats, platform_stats, loader_stats, mmio_stats) =
-        build_full_kernel_pml4(old_pml4_phys, regions, boot_info, &mut alloc)
+        build_full_kernel_pml4(regions, boot_info, &mut alloc)
             .unwrap_or_else(|e| panic!("Phase 4 direct-map build failed: {:?}", e));
 
     crate::debugln!(

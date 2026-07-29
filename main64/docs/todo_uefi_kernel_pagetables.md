@@ -1,11 +1,16 @@
 # Implementation Plan: Kernel-Owned Page Tables on the UEFI Path
 
 > **Audience:** Coding AI, for step-by-step implementation.
-> **Status:** Phases 0-4 implemented and now the **unconditional standard path**: on
+> **Status:** Phases 0-5 implemented and now the **unconditional standard path**: on
 > every boot that publishes a `BootInfo` (i.e. every real boot), `vmm::init` builds a
-> kernel-owned page-table hierarchy and switches CR3 to it. Phase 5 partial (NX done,
-> kernel `.text` RO+X not yet done — see `kernel/src/memory/vmm/direct_map.rs`'s
-> `build_full_kernel_pml4` doc comment). Tracked in issue #63, branch
+> kernel-owned page-table hierarchy and switches CR3 to it. **Phase 5 (W^X) done:** the
+> higher-half kernel image (PML4 slot 256) is rebuilt per-section — `.text` RO+X,
+> `.rodata` RO+NX, `.data`/`.bss` RW+NX — plus the VGA text page RW+NX
+> (`map_kernel_image_higher_half`); the kernel heap and heap-backed ring-3 task stacks are
+> demand-paged RW+NX; and `CR0.WP` is set (`arch::cpu::enable_write_protect`) so RO
+> `.text` is enforced against ring 0. Remaining hardening left as future work: the slot-0
+> *identity alias* of the image is still RW (a huge-page split would close it), and ring-3
+> user code is still mapped RW+X (a separate issue). Tracked in issue #63, branch
 > `feature/issue-63-uefi-kernel-pagetables`.
 > The kernel-owned table is validated end-to-end: QEMU/OVMF **and** the real AMD/UEFI
 > box boot to the ring-3 shell (all shell commands + `TUI.BIN`), and `cargo test` is
@@ -174,10 +179,9 @@ deviations from the plan as originally written:
   unit-test kernels). (The `USE_DIRECT_MAP_TABLE` const kill-switch that guarded this at
   the time was removed on 2026-07-29 once the real-hardware boot was proven — see the
   post-validation cleanup note at the top of this document.)
-- **Phase 5 is partial**: NX across the whole kernel-owned identity/direct map is done;
-  kernel `.text` RO+X is not (it requires page-aligning `link.ld` and rebuilding the
-  higher-half PML4 slot at 4 KiB granularity — a higher-blast-radius change than the
-  rest of this effort, left as explicit follow-up).
+- **Phase 5 was partial at 2026-07-27** (NX on the identity/direct map done; kernel
+  `.text` RO+X not). **Completed 2026-07-29** — see the "Phase 5 (W^X) completion" note
+  below and §5 Phase 5.
 
 ### Activation-path review follow-up (2026-07-28)
 
@@ -429,6 +433,59 @@ region if needed (the rest of the direct map may stay huge).
 **Acceptance:** A write attempt to kernel `.text` → `#PF` (targeted death test in the
 style of `page_fault_death_test.rs`); boot stays green.
 
+#### Phase 5 (W^X) completion note (2026-07-29)
+
+Implemented as designed and **validated on the real AMD/UEFI box**: it boots to the
+ring-3 shell (all shell commands + `TUI.BIN`) with `.text` RO+X enforced. Summary of what
+shipped:
+
+- **`link.ld`**: each section is page-aligned (`. = ALIGN(4K)` between them) and delimited
+  by boundary symbols (`__text_start/__text_end`, `__rodata_start/__rodata_end`,
+  `__data_start`, `__kernel_start/__kernel_end`), so slot 256 can carry per-section rights.
+- **Slot 256 rebuilt** (not copied verbatim): `direct_map::map_kernel_image_higher_half`
+  maps the image per-section at 4 KiB — `.text` RO+X, `.rodata` RO+NX, `.data`/`.bss`
+  RW+NX — plus the **VGA text page** (`0xFFFF_8000_000B_8000` → phys `0xB8000`) RW+NX. The
+  VGA page must be *eager* because the fatal-exception/panic paths write it and the #PF
+  handler refuses non-heap higher-half faults.
+- **Heap/task-stacks demand-paged**: the kernel heap and heap-backed ring-3 task stacks
+  (also higher-half) are no longer mirror-backed; the page-fault handler serves them RW+NX
+  (`page_fault.rs`), which the rebuilt, non-huge slot-256 sub-tree lets it extend. This
+  also fixed a latent bug where those VAs aliased free PMM frames.
+- **`CR0.WP`**: `arch::cpu::enable_write_protect()` in `KernelMain` — without it ring-0
+  writes ignore the RO bit and `.text` RO would be unenforced.
+- **Tests**: `direct_map_test::test_map_kernel_image_higher_half_per_section_perms`
+  (per-section perms + non-huge slot 256), `kernel_text_wx_death_test` (ring-0 write to
+  `.text` → protection `#PF`), `kernel_owned_heap_runtime_test` (heap demand paging +
+  64 KiB block + VGA write through the rebuilt slot 256).
+- **Out of scope (future work):** the slot-0 *identity alias* of the image is still RW
+  (a huge-page split would make it RO); ring-3 user code is still RW+X (separate issue).
+
+##### Real-hardware activation findings (2026-07-29)
+
+Narrowing slot 256 made the kernel heap **demand-paged for the first time** (previously
+the verbatim slot-256 mirror satisfied every heap access, so the demand path never ran in
+production). That flushed out three latent problems on the real box — all fixed, all
+would have hung/crawled the boot on any demand-paged config:
+
+1. **Reentrancy deadlock (boot hang).** `malloc` holds the heap spinlock while `grow_heap`
+   writes a not-yet-present page; the resulting `#PF` re-entered
+   `is_kernel_heap_address → max_heap_size() → with_heap` on the already-held lock. Fixed:
+   `is_kernel_heap_address` is now lock-free, reading the arena ceiling from the
+   `KERNEL_HEAP_MAX_CAP` atomic published at `heap::init` (falling back to the lock-free
+   `compute_system_heap_cap()` before init). Regression-guarded by
+   `kernel_owned_heap_runtime_test`.
+2. **Per-fault debug-logging storm (~minutes, looked like a hang).** With VMM debug on,
+   the `#PF` handler emitted a verbose trace *and* a `debug_alloc("PT", …)` per demand-
+   mapped page; a single multi-MB early allocation (the framebuffer console back buffer)
+   faults thousands of times. Fixed in `page_fault.rs`: the verbose trace now fires only
+   for protection faults (P=1), and the per-leaf `debug_alloc` was removed (per-*table*
+   traces kept).
+3. **Per-frame PMM allocation logging (~10 s boot).** `pmm::log_alloc` emits a serial line
+   per frame allocation; the demand-paged heap allocates thousands of frames per boot.
+   Fixed by running production with debug logging **off**: `main.rs` now calls
+   `pmm::init(false)` / `vmm::init(false)` / `heap::init(false)` (pass `true` only when
+   specifically debugging those subsystems).
+
 ---
 
 ### Phase 6 — Validation
@@ -458,9 +515,8 @@ style of `page_fault_death_test.rs`); boot stays green.
 Status as of the post-validation cleanup (2026-07-29). The only substantive item still
 open is kernel `.text` RO+X (the second half of Phase 5).
 
-- [ ] **Phases 0–6, each green** — Phases 0–4 and 6 are implemented and green; **Phase 5
-  is partial** (data/direct-map/MMIO NX done, kernel `.text` RO+X not — see the next
-  item and the Phase 5 note in §5).
+- [x] **Phases 0–6, each green** — all implemented and green, including **Phase 5 (W^X)**
+  as of 2026-07-29 (see the Phase 5 completion note in §5).
 - [x] **UEFI boot to the ring-3 shell on QEMU and on the AMD/UEFI HW** — validated
   end-to-end (all shell commands + `TUI.BIN`).
 - [x] **Firmware PT frames no longer permanently reserved on the real path** — done, but
@@ -470,10 +526,12 @@ open is kernel `.text` RO+X (the second half of Phase 5).
   safe by the R1 guard `assert_no_active_table_frame_is_pmm_free` (see §R1). Removing the
   function outright would break the fallback, so the original "removed" wording is
   deliberately superseded.
-- [ ] **Kernel `.text` is RO+X; data/direct-map/MMIO are NX (W^X)** — **still open.** The
-  NX half (data/direct-map/MMIO) is done; `.text` RO+X needs page-aligning
-  `.text`/`.rodata` in `link.ld` and rebuilding the higher-half slot-256 mapping at 4 KiB
-  granularity (higher blast radius; tracked as a follow-up).
+- [x] **Kernel `.text` is RO+X; data/direct-map/MMIO are NX (W^X)** — done (2026-07-29):
+  slot 256 rebuilt per-section (`.text` RO+X, `.rodata` RO+NX, `.data`/`.bss` RW+NX, VGA
+  RW+NX) via `map_kernel_image_higher_half`; heap/task-stacks demand-paged RW+NX; `CR0.WP`
+  set. Two residual hardening items remain as future work: the slot-0 *identity alias* of
+  the image is still RW (a huge-page split would close it), and ring-3 user code is still
+  RW+X (separate issue).
 - [x] **Fallback documented and disablable** — the `USE_DIRECT_MAP_TABLE` const flag was
   *removed* after HW validation; the switch is now unconditional on a published
   `BootInfo`, with the firmware clone kept as the no-`BootInfo` fallback. Reverting to

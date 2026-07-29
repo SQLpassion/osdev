@@ -152,8 +152,22 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
     arch::msr::enable_no_execute();
     debugln!("EFER.NXE enabled (No-Execute paging active)");
 
-    // Initialize the Physical Memory Manager
-    pmm::init(true);
+    // Enable CR0.WP so the kernel's own read-only mappings are enforced against ring-0
+    // writes (#63 Phase 5 W^X). Without WP, ring 0 ignores the read/write bit, so the RO
+    // `.text`/`.rodata` mappings the kernel-owned table installs would not actually stop
+    // a kernel write. Harmless here (the pre-switch tables map `.text` RWX); it becomes
+    // load-bearing the instant `vmm::init` switches CR3 to the kernel-owned table.
+    arch::cpu::enable_write_protect();
+    debugln!("CR0.WP enabled (kernel W^X enforced)");
+
+    // Initialize the Physical Memory Manager.
+    //
+    // Debug logging OFF in production: `pmm`'s `log_alloc` emits a serial line per frame
+    // allocation. Since #63 Phase 5 the kernel heap is demand-paged, so a normal boot now
+    // allocates *thousands* of frames (e.g. the framebuffer console's multi-MB back
+    // buffer) — with logging on that was thousands of serial lines, adding ~10 s to boot.
+    // Pass `true` here only when specifically debugging the PMM.
+    pmm::init(false);
     debugln!("Physical Memory Manager initialized");
 
     // Reserve the firmware-owned page-table frames before any significant allocation -
@@ -195,11 +209,14 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
     // it switches CR3 to a genuinely kernel-owned page-table hierarchy built from the
     // boot memory map; a BootInfo-less boot falls back to a superset clone of the
     // firmware page tables (all firmware mappings + a recursive self-map).
-    vmm::init(true);
+    // Debug logging OFF in production (same reason as `pmm::init` above): the VMM logs a
+    // line per intermediate page-table allocation, which the demand-paged heap now
+    // triggers many times per boot.
+    vmm::init(false);
     debugln!("Virtual Memory Manager initialized");
 
-    // Initialize the Heap Manager
-    heap::init(true);
+    // Initialize the Heap Manager (debug logging OFF in production — logs per allocation).
+    heap::init(false);
     debugln!("Heap Manager initialized");
 
     // Dynamic console initialization based on the boot-time video mode.

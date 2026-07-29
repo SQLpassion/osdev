@@ -29,12 +29,13 @@ use kaos_kernel::boot_info::{
 use kaos_kernel::memory::pmm::{self, types::virt_to_phys};
 use kaos_kernel::memory::vmm::direct_map::{
     build_direct_map, build_full_kernel_pml4, build_uc_direct_map, is_loader_owned, is_mmio,
-    is_phase1_ram, is_phase2_platform, map_wc_range, validate_direct_map_coverage,
-    validate_essential_boot_addresses, CoverageGap, DirectMapError,
+    is_phase1_ram, is_phase2_platform, map_kernel_image_higher_half, map_wc_range,
+    validate_direct_map_coverage, validate_essential_boot_addresses, CoverageGap, DirectMapError,
+    KernelImageLayout, KernelSection,
 };
 use kaos_kernel::memory::vmm::page_table::{
-    self, pd_index, pt_index, resolve_phys_via_root, PageTable, ENTRY_PCD, ENTRY_PWT,
-    HUGE_PAGE_SIZE_2M,
+    self, pd_index, pdp_index, pml4_index, pt_index, resolve_phys_via_root, PageTable,
+    PageTableEntry, ENTRY_PCD, ENTRY_PWT, HUGE_PAGE_SIZE_2M,
 };
 
 #[no_mangle]
@@ -115,6 +116,38 @@ fn ram_entry(start: u64, size: u64) -> UnifiedMemoryEntry {
         attribute: 0,
         is_usable: true,
     }
+}
+
+/// Walks the tree at `pml4_phys` and returns the 4 KiB PT leaf entry for `va` (so the
+/// test can inspect its writable/NX bits), or `None` if any level is absent or a huge
+/// leaf. Reads each table by its physical address (identity-mapped in the test kernel),
+/// the same trick the other synthetic-table tests use.
+///
+/// # Safety
+/// `pml4_phys` and every table frame reached from it must be dereferenceable as an
+/// identical virtual address (true in these tests, which never switch CR3).
+unsafe fn leaf_entry(pml4_phys: u64, va: u64) -> Option<PageTableEntry> {
+    let pml4 = &*(pml4_phys as *const PageTable);
+    let e = pml4.entries[pml4_index(va)];
+    if !e.present() {
+        return None;
+    }
+    let pdpt = &*((e.frame() * PAGE_SIZE_U64) as *const PageTable);
+    let e = pdpt.entries[pdp_index(va)];
+    if !e.present() || e.huge() {
+        return None;
+    }
+    let pd = &*((e.frame() * PAGE_SIZE_U64) as *const PageTable);
+    let e = pd.entries[pd_index(va)];
+    if !e.present() || e.huge() {
+        return None;
+    }
+    let pt = &*((e.frame() * PAGE_SIZE_U64) as *const PageTable);
+    let e = pt.entries[pt_index(va)];
+    if !e.present() {
+        return None;
+    }
+    Some(e)
 }
 
 /// Contract: a single small, unaligned region maps entirely as 4 KiB pages, and every
@@ -1231,9 +1264,10 @@ static mut UEFI_LAYOUT_BOOT_INFO: BootInfo = BootInfo {
 /// a fresh zeroed page over the real metadata, corrupting the allocator.
 #[test_case]
 fn test_build_full_kernel_pml4_maps_uefi_style_loader_data_metadata() {
-    // SAFETY: single-threaded test context. `old_pml4_phys` is the currently active
-    // (real) PML4 - only its slot 256 entry is read, to seed the higher-half mirror;
-    // no write happens to it and CR3 is never switched.
+    // SAFETY: single-threaded test context. This test draws real PMM frames but never
+    // switches CR3; `build_full_kernel_pml4` rebuilds slot 256 from the running test
+    // kernel's own linker symbols (kernel_image_layout), so the image/VGA mappings below
+    // reflect this binary.
     unsafe {
         let metadata_phys = virt_to_phys(addr_of!(UEFI_METADATA_BUF) as u64);
         UEFI_LAYOUT_REGIONS[1].start = metadata_phys;
@@ -1245,11 +1279,10 @@ fn test_build_full_kernel_pml4_maps_uefi_style_loader_data_metadata() {
         let regions_ref =
             &*(UEFI_LAYOUT_BOOT_INFO.memory_map_addr as *const [UnifiedMemoryEntry; 2]);
 
-        let old_pml4 = page_table::read_cr3() & 0x000F_FFFF_FFFF_F000;
         let mut alloc = page_table::alloc_frame_phys;
 
         let (new_pml4, _ram_stats, _platform_stats, loader_stats, _mmio_stats) =
-            build_full_kernel_pml4(old_pml4, regions_ref, boot_info_ref, &mut alloc).unwrap();
+            build_full_kernel_pml4(regions_ref, boot_info_ref, &mut alloc).unwrap();
 
         assert_eq!(loader_stats.regions_mapped, 1);
         assert_eq!(
@@ -1258,10 +1291,7 @@ fn test_build_full_kernel_pml4_maps_uefi_style_loader_data_metadata() {
         );
         assert!(validate_essential_boot_addresses(new_pml4, boot_info_ref).is_ok());
 
-        // Slot 511 must be the recursive self-map (points back at the new PML4), and
-        // slot 256 must be copied verbatim from the previously active PML4 (the
-        // higher-half kernel-image mirror), so the kernel stays reachable and the
-        // recursive-mapping API keeps working after a CR3 switch to this table.
+        // Slot 511 must be the recursive self-map (points back at the new PML4).
         let new_table = &*(new_pml4 as *const PageTable);
         let recursive = new_table.entries[511];
         assert!(
@@ -1274,12 +1304,36 @@ fn test_build_full_kernel_pml4_maps_uefi_style_loader_data_metadata() {
             "slot 511 must point back at the new PML4 (recursive self-map)"
         );
 
-        let old_table = &*(old_pml4 as *const PageTable);
-        assert_eq!(
-            new_table.entries[256].raw(),
-            old_table.entries[256].raw(),
-            "slot 256 must mirror the active PML4's higher-half entry verbatim"
+        // Slot 256 (#63 Phase 5): the higher-half kernel image is rebuilt per-section,
+        // NOT copied verbatim. It must be present AND non-huge (PDPT[0] too) so the
+        // page-fault demand pager can later extend the sub-tree for heap/task-stack VAs.
+        let e256 = new_table.entries[256];
+        assert!(e256.present() && !e256.huge(), "slot 256 present, non-huge");
+        let pdpt0 = (*((e256.frame() * PAGE_SIZE_U64) as *const PageTable)).entries[0];
+        assert!(
+            pdpt0.present() && !pdpt0.huge(),
+            "PDPT[0] present, non-huge (demand-paging precondition)"
         );
+
+        // The VGA text page must be eagerly mapped RW+NX at phys 0xB8000 (the fatal-
+        // exception path writes it and the #PF handler cannot rescue it).
+        const VGA_VA: u64 = 0xFFFF_8000_000B_8000;
+        assert_eq!(
+            resolve_phys_via_root(new_pml4, VGA_VA),
+            Some((0x000B_8000, PAGE_SIZE_U64))
+        );
+        let vga = leaf_entry(new_pml4, VGA_VA).expect("VGA leaf present");
+        assert!(vga.writable() && vga.no_execute(), "VGA page RW+NX");
+
+        // The test kernel's own .text (KernelMain lives in .text.boot) must be mapped
+        // RO+X at its load-physical address.
+        let text_va = KernelMain as *const () as u64;
+        assert_eq!(
+            resolve_phys_via_root(new_pml4, text_va),
+            Some((text_va - 0xFFFF_8000_0000_0000, PAGE_SIZE_U64))
+        );
+        let text = leaf_entry(new_pml4, text_va).expect(".text leaf present");
+        assert!(!text.writable() && !text.no_execute(), "kernel .text RO+X");
     }
 }
 
@@ -1367,11 +1421,10 @@ fn test_build_full_kernel_pml4_maps_framebuffer_when_present() {
 
         let boot_info_ref = &*(boot_info_phys as *const BootInfo);
         let regions_ref = &*(regions_phys as *const [UnifiedMemoryEntry; 2]);
-        let old_pml4 = page_table::read_cr3() & 0x000F_FFFF_FFFF_F000;
         let mut alloc = page_table::alloc_frame_phys;
 
         let (new_pml4, ..) =
-            build_full_kernel_pml4(old_pml4, regions_ref, boot_info_ref, &mut alloc).unwrap();
+            build_full_kernel_pml4(regions_ref, boot_info_ref, &mut alloc).unwrap();
 
         assert_eq!(
             resolve_phys_via_root(new_pml4, fb_phys),
@@ -1380,6 +1433,86 @@ fn test_build_full_kernel_pml4_maps_framebuffer_when_present() {
         assert_eq!(
             resolve_phys_via_root(new_pml4, fb_phys + 2 * PAGE_SIZE_U64),
             Some((fb_phys + 2 * PAGE_SIZE_U64, PAGE_SIZE_U64))
+        );
+    }
+}
+
+// ============================================================================
+// Phase 5 (#63): per-section W^X map of the higher-half kernel image (slot 256).
+// ============================================================================
+
+/// Contract: `map_kernel_image_higher_half` maps each section VA -> (VA - KERNEL_VIRT_BASE)
+/// at 4 KiB with the right W^X bits — `.text` RO+X, `.rodata` RO+NX, `.data`/`.bss` RW+NX,
+/// and the VGA text page RW+NX — and leaves slot 256 / PDPT[0] as present, NON-huge tables
+/// (the precondition that lets the page-fault demand pager extend the sub-tree for
+/// heap/task-stack VAs afterward).
+/// Failure Impact: a wrong bit means either the kernel `.text` stays writable (W^X hole,
+/// the whole point of Phase 5) or executable data / a non-extendable slot 256 (heap faults
+/// would then be unrecoverable). Release-blocking.
+#[test_case]
+fn test_map_kernel_image_higher_half_per_section_perms() {
+    const KVB: u64 = 0xFFFF_8000_0000_0000;
+    // SAFETY: single-threaded test context; POOL reset before use; no CR3 switch.
+    unsafe {
+        let pml4 = reset_pool();
+        let mut alloc = bump_alloc_from_pool;
+        let layout = KernelImageLayout {
+            text: KernelSection {
+                virt_start: KVB + 0x0010_0000,
+                virt_end: KVB + 0x0010_2000, // 2 pages
+                writable: false,
+                execute: true,
+            },
+            rodata: KernelSection {
+                virt_start: KVB + 0x0010_2000,
+                virt_end: KVB + 0x0010_3000, // 1 page
+                writable: false,
+                execute: false,
+            },
+            data_bss: KernelSection {
+                virt_start: KVB + 0x0010_3000,
+                virt_end: KVB + 0x0010_5000, // 2 pages
+                writable: true,
+                execute: false,
+            },
+            vga_text_va: KVB + 0x000B_8000,
+        };
+
+        map_kernel_image_higher_half(pml4, &layout, &mut alloc).unwrap();
+
+        // .text: RO + X, identity offset VA - KERNEL_VIRT_BASE.
+        for va in [KVB + 0x0010_0000, KVB + 0x0010_1000] {
+            assert_eq!(
+                resolve_phys_via_root(pml4, va),
+                Some((va - KVB, PAGE_SIZE_U64))
+            );
+            let e = leaf_entry(pml4, va).expect(".text leaf present");
+            assert!(!e.writable() && !e.no_execute(), ".text must be RO+X");
+        }
+        // .rodata: RO + NX.
+        let ro = leaf_entry(pml4, KVB + 0x0010_2000).expect(".rodata leaf present");
+        assert!(!ro.writable() && ro.no_execute(), ".rodata must be RO+NX");
+        // .data/.bss: RW + NX.
+        for va in [KVB + 0x0010_3000, KVB + 0x0010_4000] {
+            let e = leaf_entry(pml4, va).expect(".data/.bss leaf present");
+            assert!(e.writable() && e.no_execute(), ".data/.bss must be RW+NX");
+        }
+        // VGA text page: phys 0xB8000, RW + NX.
+        assert_eq!(
+            resolve_phys_via_root(pml4, KVB + 0x000B_8000),
+            Some((0x000B_8000, PAGE_SIZE_U64))
+        );
+        let vga = leaf_entry(pml4, KVB + 0x000B_8000).expect("VGA leaf present");
+        assert!(vga.writable() && vga.no_execute(), "VGA must be RW+NX");
+
+        // Slot 256 and PDPT[0] must be present and NON-huge (demand-paging precondition).
+        let pml4t = &*(pml4 as *const PageTable);
+        let e256 = pml4t.entries[256];
+        assert!(e256.present() && !e256.huge(), "slot 256 present, non-huge");
+        let pdpt0 = (*((e256.frame() * PAGE_SIZE_U64) as *const PageTable)).entries[0];
+        assert!(
+            pdpt0.present() && !pdpt0.huge(),
+            "PDPT[0] present, non-huge"
         );
     }
 }

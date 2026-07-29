@@ -2,6 +2,7 @@
 
 pub mod cache;
 pub mod constants;
+pub mod cpu;
 pub mod fpu;
 pub mod gdt;
 pub mod interrupts;

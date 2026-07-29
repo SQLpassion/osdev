@@ -238,6 +238,15 @@ firmware/loader tables live outside it). `switch_to_direct_map` asserts exactly 
 panics loudly instead of silently resetting the box — see
 [`todo_uefi_kernel_pagetables.md`](todo_uefi_kernel_pagetables.md) §R1.
 
+**W^X (issue #63 Phase 5).** The kernel-owned table enforces write-XOR-execute. The RAM
+direct map, framebuffer, MMIO, and the kernel heap/task-stacks (demand-paged) are all **NX**;
+the higher-half kernel image (PML4 slot 256) is rebuilt per-section by
+`direct_map::map_kernel_image_higher_half` — `.text` **RO+X**, `.rodata` RO+NX, `.data`/`.bss`
+RW+NX — plus the VGA text page RW+NX. `CR0.WP` (`arch::cpu::enable_write_protect`, set in
+`KernelMain`) makes the RO `.text` enforced against ring-0 writes. Two residual items are left
+as future hardening: the low **identity alias** of the image (slot 0) is still RW (huge pages;
+a split would make it RO), and ring-3 user code is still mapped RW+X (a separate issue).
+
 ---
 
 ## 5) Page faults: how the kernel handles them
