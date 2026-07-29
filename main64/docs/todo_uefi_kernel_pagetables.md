@@ -257,6 +257,41 @@ shell commands work. Two further issues surfaced **only on real hardware** (both
 Branch commits: `57a2ce7` (MMIO/phase2 RUNTIME split), `e82329a` (enable flag + visible
 boot banner), `9c1d8d9` (BIOS-syscall fix), `5794b5c` (BootInfo-gate).
 
+### R1: firmware-table / PMM-pool disjointness invariant (2026-07-29)
+
+Skipping `reserve_firmware_page_tables()` on the kernel-owned-table path rests on a
+load-bearing invariant that was previously only implicit (the module doc argued that
+scaffold frames are *reachable*, but not that they can never *alias* a live table frame):
+
+> **Invariant.** No frame of the currently-active firmware/BIOS-loader page tables is
+> ever a frame the PMM can allocate.
+
+Why it matters: `switch_to_direct_map` draws scaffold frames from the PMM *while the
+firmware/loader tables are still live in CR3*, and `build_full_kernel_pml4` copies the
+higher-half mirror (PML4 slot 256) verbatim, so a firmware sub-tree stays referenced
+*after* the switch too. If the PMM could hand out one of those live frames, zeroing it
+during the build — or reusing it at runtime — would corrupt address translation and
+hard-reset the machine with no diagnostic (a real-hardware-only failure).
+
+Why it holds by construction: the PMM pools **only** usable RAM at or above
+`KERNEL_OFFSET` (1 MiB), whereas the active tables live outside that pool — on UEFI in
+firmware-owned, non-`EfiConventionalMemory` memory; on BIOS in the loader's
+`0x9000..=0x15FFF` tables, all below 1 MiB.
+
+What was done for R1:
+- **Documented** the invariant (both facets) at the reserve-skip site in `main.rs` and in
+  `direct_map.rs`'s module doc.
+- **Guarded** it: `switch_to_direct_map` now calls
+  `page_table::assert_no_active_table_frame_is_pmm_free(old_pml4_phys)` before drawing
+  any scaffold frame. It walks the active tree and panics loudly (naming the invariant)
+  if any table frame is a free PMM frame, turning a future regression (a loader that
+  parks tables in usable RAM, or a PMM that pools more memory types) into a located
+  panic instead of a mystery reset. Backed by a new read-only PMM query
+  `PhysicalMemoryManager::is_pfn_free`.
+- **Tested**: `is_pfn_free` behaviour and the guard's no-false-positive path in
+  `pmm_test.rs`; the guard's panic-on-violation path in
+  `firmware_tables_pmm_pool_death_test.rs`.
+
 ---
 
 ### Phase 0 — Loader forwards EFI type + attribute *(hard prerequisite)*

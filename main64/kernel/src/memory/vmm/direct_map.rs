@@ -17,10 +17,29 @@
 //! precisely problem P2 in the design doc, inverted into a guarantee here). So every
 //! freshly-allocated scaffold frame (a new PDPT/PD/PT frame for the table being built)
 //! is reachable through the *old*, still-active map, even while it is being populated
-//! with data for the *new* map. The new map only becomes load-bearing once a future
-//! phase switches CR3 to it. If this reachability assumption were ever violated (a gap
-//! in the firmware's own map), the first `zero_phys_page`/write on that frame would
-//! page-fault immediately, at a well-understood point — not silently corrupt later.
+//! with data for the *new* map. The new map only becomes load-bearing once
+//! `switch_to_direct_map` switches CR3 to it. If this reachability assumption were ever
+//! violated (a gap in the firmware's own map), the first `zero_phys_page`/write on that
+//! frame would page-fault immediately, at a well-understood point — not silently
+//! corrupt later.
+//!
+//! # Why a scaffold frame can never alias a *live* table frame (#63 R1)
+//!
+//! Reachability (above) is not enough: a scaffold frame the builder `zero_phys_page`s
+//! must also never *be* a frame the currently-active firmware/BIOS-loader tables are
+//! themselves built from — otherwise zeroing it would corrupt the live CR3 walk mid-
+//! build. It cannot, because the PMM pool and the active table frames are disjoint by
+//! construction: the PMM pools *only* usable RAM at or above `KERNEL_OFFSET` (1 MiB)
+//! (`pmm::manager`), whereas the active tables live outside that pool — on UEFI in
+//! firmware-owned, non-`EfiConventionalMemory` memory; on BIOS in the loader's
+//! `0x9000..=0x15FFF` tables, all below 1 MiB. The same disjointness is why the
+//! higher-half mirror (PML4 slot 256), which `build_full_kernel_pml4` copies verbatim
+//! and keeps pointing at a firmware sub-tree *after* the switch, is safe to leave
+//! unreserved: the PMM will never hand those borrowed frames out either.
+//! `switch_to_direct_map` asserts this invariant up front via
+//! `page_table::assert_no_active_table_frame_is_pmm_free`, so a future regression (a
+//! loader that parks its tables in usable RAM, or a PMM that pools more memory types)
+//! panics loudly instead of silently resetting the machine.
 //!
 //! This module deliberately operates on explicit physical addresses via `table_at`
 //! (like `build_kernel_pml4_from_firmware` and `reserve_firmware_page_tables` already
@@ -33,9 +52,9 @@ use crate::arch::constants::PAGE_SIZE_U64;
 use crate::boot_info::{UnifiedMemoryEntry, BOOT_INFO_PTR};
 
 use super::page_table::{
-    alloc_frame_phys, entry_ptr, pd_index, pdp_index, phys_to_pfn, pml4_index, pt_index,
-    resolve_phys_via_root, table_at, table_entry, write_cr3, zero_phys_page, HUGE_PAGE_SIZE_2M,
-    RECURSIVE_SLOT,
+    alloc_frame_phys, assert_no_active_table_frame_is_pmm_free, entry_ptr, pd_index, pdp_index,
+    phys_to_pfn, pml4_index, pt_index, resolve_phys_via_root, table_at, table_entry, write_cr3,
+    zero_phys_page, HUGE_PAGE_SIZE_2M, RECURSIVE_SLOT,
 };
 
 /// PML4 slot for the higher-half kernel-image mirror (virtual `0xFFFF8000_00000000`).
@@ -806,6 +825,13 @@ pub unsafe fn switch_to_direct_map(old_pml4_phys: u64) -> u64 {
         boot_info.memory_map_addr as *const UnifiedMemoryEntry,
         boot_info.memory_map_len as usize,
     );
+
+    // #63 R1 guard: before drawing a single scaffold frame from the PMM, prove that no
+    // frame of the currently-active firmware/BIOS-loader table tree is allocatable.
+    // `reserve_firmware_page_tables` is skipped on this path, so this is the check that
+    // upholds the "PMM never hands out a live page-table frame" invariant the skip
+    // relies on. See `page_table::assert_no_active_table_frame_is_pmm_free`.
+    assert_no_active_table_frame_is_pmm_free(old_pml4_phys);
 
     let mut alloc = alloc_frame_phys;
     let (new_pml4, ram_stats, platform_stats, loader_stats, mmio_stats) =

@@ -231,6 +231,13 @@ kernels and any BootInfo-less boot still clone). If a different machine ever mis
 to the clone path in `vmm::init` (QEMU cannot reproduce the SMM/SMI class, so it can never clear
 a new machine on its own).
 
+Skipping the reservation on the kernel-owned path is safe only because the PMM pool and the
+active firmware/loader table frames are disjoint (the PMM pools only usable RAM ≥ `KERNEL_OFFSET`;
+firmware/loader tables live outside it). `switch_to_direct_map` asserts exactly this up front via
+`page_table::assert_no_active_table_frame_is_pmm_free`, so a future regression of that invariant
+panics loudly instead of silently resetting the box — see
+[`todo_uefi_kernel_pagetables.md`](todo_uefi_kernel_pagetables.md) §R1.
+
 ---
 
 ## 5) Page faults: how the kernel handles them

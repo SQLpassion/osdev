@@ -539,6 +539,83 @@ pub unsafe fn reserve_firmware_page_tables() {
     });
 }
 
+/// #63 R1 guard: walks the page-table tree rooted at `pml4_phys` — the *active*
+/// firmware/BIOS-loader tables, before the CR3 switch — and panics if any PDPT/PD/PT
+/// table frame it reaches is currently a free, allocatable PMM frame.
+///
+/// This is the invariant that makes skipping [`reserve_firmware_page_tables`] on the
+/// kernel-owned-table path safe. `direct_map::switch_to_direct_map` draws scaffold
+/// frames from the PMM *while these tables are still live in CR3* (and after the switch
+/// the higher-half mirror in PML4 slot 256 keeps borrowing a firmware sub-tree). If the
+/// PMM could ever hand one of these live table frames out, zeroing it during the build
+/// — or reusing it at runtime — would corrupt address translation and hard-reset the
+/// machine with no diagnostic. By construction the firmware/loader tables live outside
+/// the PMM pool (UEFI: firmware-owned, non-`EfiConventionalMemory` memory; BIOS: the
+/// `0x9000..=0x15FFF` loader tables, all below `KERNEL_OFFSET`), so this never fires —
+/// it exists to turn a future regression of that invariant (a loader that parks its
+/// tables in usable RAM, or a PMM that pools more memory types) into a loud, located
+/// panic instead of a mystery reset (see `docs/todo_uefi_kernel_pagetables.md` §R1 and
+/// `docs/vmm.md` §4.4).
+///
+/// Read-only and cheap — the firmware tree has only a handful of *table* frames (2 MiB /
+/// 1 GiB huge leaves stop the descent), so it runs unconditionally, including in
+/// release, where its diagnostic value is greatest (the reset it guards against is
+/// reproducible only on real hardware).
+///
+/// # Safety
+/// `pml4_phys` and every table frame reachable from it must be dereferenceable as an
+/// identical virtual address — true while the original firmware/BIOS identity map is
+/// still active, i.e. before any CR3 switch away from it.
+pub unsafe fn assert_no_active_table_frame_is_pmm_free(pml4_phys: u64) {
+    pmm::with_pmm(|mgr| {
+        let mgr = &*mgr;
+        let check = |frame_phys: u64| {
+            let pfn = phys_to_pfn(frame_phys);
+            assert!(
+                !mgr.is_pfn_free(pfn),
+                "#63 R1 invariant violated: active page-table frame {:#x} (pfn {:#x}) is a \
+                 free/allocatable PMM frame — skipping reserve_firmware_page_tables would let \
+                 the direct-map build zero it out from under the live CR3",
+                frame_phys,
+                pfn
+            );
+        };
+
+        check(pml4_phys);
+        let pml4 = table_at(pml4_phys);
+        for i in 0..PT_ENTRIES {
+            let pml4e = table_entry(pml4, i);
+            if !pml4e.present() {
+                continue;
+            }
+            let pdpt_phys = pml4e.frame() * PAGE_SIZE_U64;
+            check(pdpt_phys);
+
+            let pdpt = table_at(pdpt_phys);
+            for j in 0..PT_ENTRIES {
+                let pdpte = table_entry(pdpt, j);
+                // 1 GiB huge leaves have no sub-table frame to check.
+                if !pdpte.present() || pdpte.huge() {
+                    continue;
+                }
+                let pd_phys = pdpte.frame() * PAGE_SIZE_U64;
+                check(pd_phys);
+
+                let pd = table_at(pd_phys);
+                for k in 0..PT_ENTRIES {
+                    let pde = table_entry(pd, k);
+                    // 2 MiB huge leaves have no sub-table frame to check.
+                    if !pde.present() || pde.huge() {
+                        continue;
+                    }
+                    check(pde.frame() * PAGE_SIZE_U64);
+                    // PT entries are 4 KiB data leaves, not table frames.
+                }
+            }
+        }
+    });
+}
+
 /// Zeros one 4 KiB page in physical memory.
 ///
 /// Caller contract: `addr` must be writable and page-aligned physical memory.

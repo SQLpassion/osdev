@@ -164,6 +164,18 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
     // kernel-owned-table path (a published `BootInfo`, i.e. every real boot) those
     // sub-tables are never referenced by the new table at all, so reserving them would
     // just leak memory forever instead of letting the PMM reclaim it after the switch.
+    //
+    // Why skipping the reservation there is safe (#63 R1 invariant): the direct-map
+    // builder draws scaffold frames from the PMM while the firmware/loader tables are
+    // still live in CR3, and after the switch the higher-half mirror (PML4 slot 256)
+    // keeps borrowing a firmware sub-tree. Both are only safe because the PMM pool and
+    // the active table frames are disjoint: the PMM pools *only* usable RAM at or above
+    // `KERNEL_OFFSET` (1 MiB) (see `pmm::manager`), whereas the firmware/loader tables
+    // live outside that pool — on UEFI in firmware-owned, non-`EfiConventionalMemory`
+    // memory, and on BIOS in the loader's `0x9000..=0x15FFF` tables, all below 1 MiB.
+    // `switch_to_direct_map` asserts exactly this (a live table frame is never a free
+    // PMM frame) via `page_table::assert_no_active_table_frame_is_pmm_free`, so a future
+    // regression of the invariant panics loudly instead of silently resetting the box.
     let boot_info_published =
         boot_info::BOOT_INFO_PTR.load(core::sync::atomic::Ordering::Acquire) != 0;
     if !boot_info_published {
