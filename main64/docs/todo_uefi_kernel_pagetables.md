@@ -1,16 +1,24 @@
 # Implementation Plan: Kernel-Owned Page Tables on the UEFI Path
 
 > **Audience:** Coding AI, for step-by-step implementation.
-> **Status:** Phases 0-4 implemented and **ENABLED** (`direct_map::USE_DIRECT_MAP_TABLE =
-> true` since 2026-07-28); Phase 5 partial (NX done, kernel `.text` RO+X not yet done —
-> see `kernel/src/memory/vmm/direct_map.rs`'s `build_full_kernel_pml4` doc comment).
-> Tracked in issue #63, branch `feature/issue-63-uefi-kernel-pagetables`.
+> **Status:** Phases 0-4 implemented and now the **unconditional standard path**: on
+> every boot that publishes a `BootInfo` (i.e. every real boot), `vmm::init` builds a
+> kernel-owned page-table hierarchy and switches CR3 to it. Phase 5 partial (NX done,
+> kernel `.text` RO+X not yet done — see `kernel/src/memory/vmm/direct_map.rs`'s
+> `build_full_kernel_pml4` doc comment). Tracked in issue #63, branch
+> `feature/issue-63-uefi-kernel-pagetables`.
 > The kernel-owned table is validated end-to-end: QEMU/OVMF **and** the real AMD/UEFI
 > box boot to the ring-3 shell (all shell commands + `TUI.BIN`), and `cargo test` is
-> green (401/401). The firmware-clone path is kept as the fallback for the
-> no-`BootInfo` case (`vmm::init` gates the switch on a published `BootInfo`) and the
-> flag remains as a kill-switch. See §5 for per-phase status, the activation-path review
-> follow-up, and the real-hardware activation notes.
+> green. The firmware-clone path is kept only as the fallback for the no-`BootInfo`
+> case (`vmm::init` gates the switch on a published `BootInfo`).
+>
+> **Post-validation cleanup (2026-07-29):** now that the real-hardware boot is proven,
+> the `USE_DIRECT_MAP_TABLE` const kill-switch/rollout flag was removed (the switch is
+> no longer gated on a compile-time flag, only on `BootInfo` presence), and the
+> redundant Phase 1 boot canary (`run_boot_canary` + its `free_direct_map_tables`
+> helper — a build+validate+free pass that duplicated the coverage validation
+> `build_full_kernel_pml4` already performs before the CR3 switch) was removed. The
+> historical mentions of the flag/canary in §5 below are kept for context.
 > **Predecessor context:** `docs/vmm.md` §4 (write_cr3 saga), `docs/boot_uefi.md`.
 
 ---
@@ -163,7 +171,9 @@ deviations from the plan as originally written:
   regression class that motivated the firmware-clone approach (see §6), so the
   real-hardware boot — not the QEMU pass — is what cleared it. `vmm::init` gates the
   switch on a published `BootInfo`, falling back to the firmware clone otherwise (e.g.
-  unit-test kernels); the flag remains as a kill-switch.
+  unit-test kernels). (The `USE_DIRECT_MAP_TABLE` const kill-switch that guarded this at
+  the time was removed on 2026-07-29 once the real-hardware boot was proven — see the
+  post-validation cleanup note at the top of this document.)
 - **Phase 5 is partial**: NX across the whole kernel-owned identity/direct map is done;
   kernel `.text` RO+X is not (it requires page-aligning `link.ld` and rebuilding the
   higher-half PML4 slot at 4 KiB granularity — a higher-blast-radius change than the

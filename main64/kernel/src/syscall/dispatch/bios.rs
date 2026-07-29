@@ -41,7 +41,7 @@ fn unified_memory_map() -> Option<&'static [crate::boot_info::UnifiedMemoryEntry
     // `UnifiedMemoryEntry` at `memory_map_addr` (loader-owned memory, covered by the
     // kernel-owned direct map's `is_loader_owned` pass and asserted mapped by
     // `validate_essential_boot_addresses`). Same access pattern as `pmm::manager`
-    // and `vmm::direct_map::run_boot_canary`.
+    // and `vmm::direct_map::switch_to_direct_map`.
     Some(unsafe {
         core::slice::from_raw_parts(
             bi.memory_map_addr as *const crate::boot_info::UnifiedMemoryEntry,

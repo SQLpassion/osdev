@@ -31,33 +31,12 @@ use core::sync::atomic::Ordering;
 
 use crate::arch::constants::PAGE_SIZE_U64;
 use crate::boot_info::{UnifiedMemoryEntry, BOOT_INFO_PTR};
-use crate::memory::pmm;
 
 use super::page_table::{
-    alloc_frame_phys, alloc_frame_phys_or_panic, entry_ptr, pd_index, pdp_index, phys_to_pfn,
-    pml4_index, pt_index, resolve_phys_via_root, table_at, table_entry, write_cr3, zero_phys_page,
-    HUGE_PAGE_SIZE_2M, PT_ENTRIES, RECURSIVE_SLOT,
+    alloc_frame_phys, entry_ptr, pd_index, pdp_index, phys_to_pfn, pml4_index, pt_index,
+    resolve_phys_via_root, table_at, table_entry, write_cr3, zero_phys_page, HUGE_PAGE_SIZE_2M,
+    RECURSIVE_SLOT,
 };
-
-/// Master switch for Phase 4 (#63): when `true`, `vmm::init` builds a genuinely
-/// kernel-owned page-table hierarchy (Phase 1 RAM + Phase 2 platform regions + the
-/// higher-half kernel mirror + the recursive self-map — see [`build_full_kernel_pml4`])
-/// and switches CR3 to it instead of the firmware-clone superset
-/// (`build_kernel_pml4_from_firmware`); `reserve_firmware_page_tables` is then skipped
-/// in `main.rs` (the firmware's own sub-tables are no longer referenced and return to
-/// the PMM).
-///
-/// Defaults to `false`. On real hardware, discarding the firmware's page tables when
-/// switching CR3 has historically caused an immediate, exception-less hard reset — the
-/// best-supported explanation is an asynchronous SMI faulting inside System Management
-/// Mode once the firmware's own mappings are gone (see `docs/vmm.md` §4 and
-/// `docs/boot_uefi.md` §3.9 for the full bisection writeup that established this).
-/// This path is implemented and exercised in QEMU (`direct_map_full_switch_test.rs`),
-/// where that SMM/SMI regression class is not reproducible at all — a QEMU pass here
-/// does **not** prove the switch is safe on real hardware. Flip this to `true` only
-/// after running the real AMD/UEFI-hardware smoke-test checklist in
-/// `docs/boot_uefi.md`.
-pub const USE_DIRECT_MAP_TABLE: bool = true;
 
 /// PML4 slot for the higher-half kernel-image mirror (virtual `0xFFFF8000_00000000`).
 const HIGHER_HALF_SLOT: usize = 256;
@@ -69,8 +48,8 @@ const EFI_ACPI_RECLAIM_MEMORY: u32 = 9;
 
 /// Aggregate counters returned by [`build_direct_map`]. Deliberately not a list of
 /// allocated frames: `heap::init` (and therefore `Vec`) has not run yet at the point in
-/// boot this builder is meant to run, so [`free_direct_map_tables`] re-walks the tree
-/// structurally instead of consuming a stored list.
+/// boot this builder runs, so it reports only aggregate statistics rather than a
+/// per-frame list.
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DirectMapStats {
     pub regions_considered: u32,
@@ -155,8 +134,8 @@ const EFI_PAL_CODE: u32 = 13;
 /// `is_mmio` guard below, the `EFI_MEMORY_RUNTIME` clause would re-claim a
 /// runtime-flagged MMIO region (OVMF marks such regions on the UEFI path), map it
 /// write-back — as a 2 MiB huge page when aligned — and the later MMIO pass would then
-/// hit a [`DirectMapError::HugePageCollision`], panicking the unconditional boot-time
-/// canary (#63 activation-path review, point 5).
+/// hit a [`DirectMapError::HugePageCollision`], panicking the kernel-owned table build
+/// in [`build_full_kernel_pml4`] (#63 activation-path review, point 5).
 pub fn is_phase2_platform(entry: &UnifiedMemoryEntry) -> bool {
     if is_mmio(entry) {
         return false;
@@ -675,159 +654,6 @@ pub unsafe fn validate_essential_boot_addresses(
     Ok(())
 }
 
-/// Walks the whole tree at `pml4_phys`, releasing every present, non-huge
-/// PML4/PDPT/PD/PT scaffold frame back to the PMM. Mirrors
-/// `reserve_firmware_page_tables`'s walk (released instead of reserved) and needs no
-/// stored frame list for the same reason `DirectMapStats` is aggregate-only (see the
-/// module doc).
-///
-/// Used by the Phase 1 boot-time canary (build + validate + free, no CR3 switch yet)
-/// so exercising this on every real boot has no lasting memory cost. A future phase
-/// that actually switches CR3 to this table simply stops calling this function.
-///
-/// # Safety
-/// `pml4_phys` and the whole tree reached from it must be dereferenceable as
-/// identical virtual addresses, and must not be in use by anything else (in
-/// particular: must not be the currently active CR3).
-pub unsafe fn free_direct_map_tables(pml4_phys: u64) {
-    pmm::with_pmm(|mgr| {
-        mgr.release_pfn(phys_to_pfn(pml4_phys));
-        let pml4 = table_at(pml4_phys);
-        for i in 0..PT_ENTRIES {
-            // Skip the higher-half mirror (borrowed verbatim from whatever PML4 was
-            // active when `build_full_kernel_pml4` ran — freeing it would release
-            // frames a *different*, still-live table still depends on) and the
-            // recursive self-map (points back at `pml4_phys` itself, already released
-            // above; walking it as if it were a PDPT would misinterpret this table's
-            // own top-level entries as a level down and release unrelated frames).
-            // Both slots are no-ops for a plain `build_direct_map`-only canary table
-            // (neither is ever set there), so this is a pure safety fix, not a
-            // behavior change for that use case.
-            if i == HIGHER_HALF_SLOT || i == RECURSIVE_SLOT {
-                continue;
-            }
-            let e = table_entry(pml4, i);
-            if !e.present() {
-                continue;
-            }
-            let pdpt_phys = e.frame() * PAGE_SIZE_U64;
-            mgr.release_pfn(e.frame());
-
-            let pdpt = table_at(pdpt_phys);
-            for j in 0..PT_ENTRIES {
-                let e = table_entry(pdpt, j);
-                if !e.present() || e.huge() {
-                    continue;
-                }
-                let pd_phys = e.frame() * PAGE_SIZE_U64;
-                mgr.release_pfn(e.frame());
-
-                let pd = table_at(pd_phys);
-                for k in 0..PT_ENTRIES {
-                    let e = table_entry(pd, k);
-                    if !e.present() || e.huge() {
-                        continue;
-                    }
-                    mgr.release_pfn(e.frame());
-                }
-            }
-        }
-    });
-}
-
-/// Runs the Phase 1 boot-time canary: builds a complete kernel-owned direct map of
-/// every RAM region described by the boot memory map, validates its coverage, then
-/// frees it again — no CR3 switch happens here. Called from `vmm::init`, before the
-/// (for now, still load-bearing) firmware-clone superset PML4 is built.
-///
-/// Runs unconditionally on every boot — both the BIOS and UEFI loaders publish a
-/// `BootInfo` with a `UnifiedMemoryEntry` memory map — so a Phase 1 builder bug
-/// surfaces as a loud, well-understood panic right here instead of a much later,
-/// misleading real-hardware SMM-reset symptom once a future phase actually switches
-/// CR3 to a table built this way. See the module doc above for why allocating scaffold
-/// frames here, before this table is active, is safe.
-///
-/// # Safety
-/// Must run before any CR3 switch away from the original firmware/BIOS-loader identity
-/// map — true at its one call site in `vmm::init`, which calls this before its own
-/// `write_cr3`.
-pub unsafe fn run_boot_canary(debug_output: bool) {
-    let boot_info_raw = BOOT_INFO_PTR.load(Ordering::Acquire);
-    if boot_info_raw == 0 {
-        // No BootInfo published (e.g. a unit-test kernel that never goes through the
-        // normal boot path) - nothing to validate.
-        return;
-    }
-
-    // SAFETY: `boot_info_raw` is the validated BootInfo pointer published by
-    // `KernelMain` after checking its magic; the memory map it references is valid,
-    // aligned, loader-populated memory (mirrors the existing access pattern in
-    // `pmm::manager`).
-    let boot_info = &*(boot_info_raw as *const crate::boot_info::BootInfo);
-    let regions = core::slice::from_raw_parts(
-        boot_info.memory_map_addr as *const UnifiedMemoryEntry,
-        boot_info.memory_map_len as usize,
-    );
-
-    let pml4 = alloc_frame_phys_or_panic(
-        "VMM: out of physical memory while allocating the Phase 1 direct-map canary PML4",
-    );
-    zero_phys_page(pml4);
-
-    let mut alloc = alloc_frame_phys;
-    let ram_stats = build_direct_map(pml4, regions.iter(), is_phase1_ram, &mut alloc, true)
-        .unwrap_or_else(|e| panic!("Phase 1 direct-map build failed: {:?}", e));
-    validate_direct_map_coverage(pml4, regions.iter(), is_phase1_ram)
-        .unwrap_or_else(|e| panic!("Phase 1 direct-map coverage gap: {:?}", e));
-
-    // Phase 2: reuse the same table for firmware/platform regions the design doc keeps
-    // mapped explicitly. Distinct classifier, same builder — see is_phase2_platform's
-    // doc for why running a second pass over the same tree is safe.
-    let platform_stats =
-        build_direct_map(pml4, regions.iter(), is_phase2_platform, &mut alloc, true)
-            .unwrap_or_else(|e| panic!("Phase 2 direct-map build failed: {:?}", e));
-    validate_direct_map_coverage(pml4, regions.iter(), is_phase2_platform)
-        .unwrap_or_else(|e| panic!("Phase 2 direct-map coverage gap: {:?}", e));
-
-    // Loader-owned regions (EfiLoaderCode/EfiLoaderData): on the UEFI path the PMM
-    // metadata region and the loader's own BootInfo/memory-map statics typically live
-    // here — see is_loader_owned's doc. Neither Phase 1 nor Phase 2 classifies these.
-    let loader_stats = build_direct_map(pml4, regions.iter(), is_loader_owned, &mut alloc, true)
-        .unwrap_or_else(|e| panic!("Loader-owned direct-map build failed: {:?}", e));
-    validate_direct_map_coverage(pml4, regions.iter(), is_loader_owned)
-        .unwrap_or_else(|e| panic!("Loader-owned direct-map coverage gap: {:?}", e));
-
-    // MMIO (EfiMemoryMappedIO 11 / EfiMemoryMappedIOPortSpace 12): mapped
-    // uncacheable via its own builder, split out of the Phase 2 pass above — see
-    // is_mmio's doc.
-    let mmio_stats = build_uc_direct_map(pml4, regions.iter(), is_mmio, &mut alloc)
-        .unwrap_or_else(|e| panic!("MMIO direct-map build failed: {:?}", e));
-    validate_direct_map_coverage(pml4, regions.iter(), is_mmio)
-        .unwrap_or_else(|e| panic!("MMIO direct-map coverage gap: {:?}", e));
-
-    // Independent of the classifiers above: confirm the specific addresses the kernel
-    // actually dereferences (BootInfo itself, its memory map, the PMM metadata region)
-    // resolve in the new table, regardless of which classifier happens to cover them.
-    validate_essential_boot_addresses(pml4, boot_info)
-        .unwrap_or_else(|e| panic!("Essential boot address coverage gap: {:?}", e));
-
-    if debug_output {
-        // Deliberately not `vmm_logln`/`vmm::debug_enabled()`: those read `VMM`'s
-        // shared state via `with_vmm`, which `debug_assert!`s that the VMM is already
-        // initialized — not yet true at this point in `vmm::init`. `debugln!` only
-        // needs the serial port, which is up from very early in `KernelMain`.
-        crate::debugln!(
-            "VMM: Phase 1 direct-map canary OK: RAM={:?} platform={:?} loader={:?} mmio={:?}",
-            ram_stats,
-            platform_stats,
-            loader_stats,
-            mmio_stats
-        );
-    }
-
-    free_direct_map_tables(pml4);
-}
-
 /// Builds a genuinely kernel-owned PML4: Phase 1 (RAM) + Phase 2 (firmware/platform) +
 /// loader-owned (EfiLoaderCode/EfiLoaderData — see [`is_loader_owned`]) regions mapped
 /// explicitly (RAM/platform both NX — Phase 5's "data + direct map: NX", see
@@ -846,11 +672,10 @@ pub unsafe fn run_boot_canary(debug_output: bool) {
 /// aligning `.text`/`.rodata`/`.data` in `link.ld` (they are currently packed
 /// contiguously with no boundary symbols) and rebuilding slot 256 at 4 KiB granularity
 /// for just the kernel-image range — a separate, higher-blast-radius change (the linker
-/// script affects every boot configuration, not just `USE_DIRECT_MAP_TABLE`) left as
-/// follow-up work; see the tracking issue.
+/// script affects every boot configuration) left as follow-up work; see the tracking
+/// issue.
 ///
-/// Does **not** switch CR3 — see [`switch_to_direct_map`] for that, and
-/// [`USE_DIRECT_MAP_TABLE`] for why this is not wired in by default.
+/// Does **not** switch CR3 — see [`switch_to_direct_map`] for that.
 ///
 /// # Safety
 /// Same reachability contract as [`build_direct_map`], plus: `old_pml4_phys` must be
@@ -958,7 +783,8 @@ pub unsafe fn build_full_kernel_pml4(
 /// active table — the caller must not also reserve them from the PMM
 /// (`reserve_firmware_page_tables`), since they should return to the pool of usable
 /// frames instead of staying permanently reserved. `vmm::init` is the only call site,
-/// gated by [`USE_DIRECT_MAP_TABLE`].
+/// taken whenever a `BootInfo` has been published (every real boot); a BootInfo-less
+/// boot (e.g. unit-test kernels) falls back to the firmware clone instead.
 ///
 /// # Safety
 /// Must run before any other write to CR3 in this boot, with the same reachability
@@ -972,7 +798,9 @@ pub unsafe fn switch_to_direct_map(old_pml4_phys: u64) -> u64 {
         "switch_to_direct_map requires a published BootInfo"
     );
 
-    // SAFETY: see `run_boot_canary`'s identical access pattern above.
+    // SAFETY: `boot_info_raw` is the validated BootInfo pointer published by
+    // `KernelMain` after checking its magic; the memory map it references is valid,
+    // aligned, loader-populated memory (mirrors the access pattern in `pmm::manager`).
     let boot_info = &*(boot_info_raw as *const crate::boot_info::BootInfo);
     let regions = core::slice::from_raw_parts(
         boot_info.memory_map_addr as *const UnifiedMemoryEntry,

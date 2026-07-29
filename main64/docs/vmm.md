@@ -217,19 +217,19 @@ every firmware PDPT/PD/PT frame used so the PMM never reallocates one — a work
 **Issue #63** (`docs/todo_uefi_kernel_pagetables.md`, branch
 `feature/issue-63-uefi-kernel-pagetables`) implements the real fix: a new
 `kernel/src/memory/vmm/direct_map.rs` module builds a genuinely kernel-owned page-table
-hierarchy (own RAM/platform-region mappings, not cloned firmware sub-tables) and can switch CR3
+hierarchy (own RAM/platform-region mappings, not cloned firmware sub-tables) and switches CR3
 to it (`direct_map::switch_to_direct_map`), after which `reserve_firmware_page_tables()` becomes
-unnecessary and the firmware frames return to the PMM. As of 2026-07-28 this is **enabled**
-(`direct_map::USE_DIRECT_MAP_TABLE = true`) and validated end-to-end on QEMU/OVMF **and on real
-AMD/UEFI hardware**: the kernel switches CR3 to its own table, `reserve_firmware_page_tables()` is
-skipped on that path, and the SMM/SMI hard reset this section's history is about did **not** occur
-on that box (building the *complete* region set — all RAM/platform/runtime/MMIO/loader regions —
-rather than a minimal map is what makes discarding the firmware tables safe). Two caveats remain:
-the firmware-clone path is kept as the fallback when no `BootInfo` is published (`vmm::init` gates
-the switch on `BOOT_INFO_PTR != 0`, so unit-test kernels and any BootInfo-less boot still clone),
-and the flag stays as a kill-switch — flip it back to `false` and rebuild if a different machine
-misbehaves (QEMU cannot reproduce the SMM/SMI class, so it can never clear a new machine on its
-own).
+unnecessary and the firmware frames return to the PMM. This is the **unconditional standard
+path** on every boot that publishes a `BootInfo` (i.e. every real boot), and is validated
+end-to-end on QEMU/OVMF **and on real AMD/UEFI hardware**: the kernel switches CR3 to its own
+table, `reserve_firmware_page_tables()` is skipped on that path, and the SMM/SMI hard reset this
+section's history is about did **not** occur on that box (building the *complete* region set —
+all RAM/platform/runtime/MMIO/loader regions — rather than a minimal map is what makes discarding
+the firmware tables safe). The firmware-clone path is kept only as the fallback when no
+`BootInfo` is published (`vmm::init` gates the switch on `BOOT_INFO_PTR != 0`, so unit-test
+kernels and any BootInfo-less boot still clone). If a different machine ever misbehaves, revert
+to the clone path in `vmm::init` (QEMU cannot reproduce the SMM/SMI class, so it can never clear
+a new machine on its own).
 
 ---
 

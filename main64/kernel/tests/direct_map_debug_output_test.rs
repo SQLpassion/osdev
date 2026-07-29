@@ -2,13 +2,11 @@
 //!
 //! Every other integration test boots via `vmm::init(false)`, so a bug that only
 //! triggers on the `debug_output = true` path — exactly production's `vmm::init(true)`
-//! call in `main.rs` — went unnoticed by the whole test suite here. It was caught only
-//! by a direct QEMU boot of the production kernel: the Phase 1 direct-map boot canary's
-//! debug summary line originally called `vmm_logln`, which reads `VMM`'s shared state
-//! via `with_vmm` — that `debug_assert!`s the VMM is already initialized, which isn't
-//! true yet at the canary's call site (see `memory::vmm::direct_map::run_boot_canary`).
-//! This test pins the fix (plain `debugln!`, no VMM-state dependency) by exercising the
-//! exact call production makes.
+//! call in `main.rs` — could go unnoticed by the rest of the suite. Such a bug was hit
+//! once historically: an early-boot debug line called `vmm_logln`, which reads `VMM`'s
+//! shared state via `with_vmm` and `debug_assert!`s the VMM is already initialized —
+//! not yet true that early in `vmm::init`. This test pins the fix (plain `debugln!`, no
+//! VMM-state dependency) by exercising the exact call production makes.
 
 #![no_std]
 #![no_main]
@@ -41,9 +39,8 @@ fn panic(info: &PanicInfo) -> ! {
     kaos_kernel::testing::test_panic_handler(info)
 }
 
-/// Contract: `vmm::init(true)` completes (the boot canary's debug-output branch runs
-/// without hitting the `with_vmm`/`debug_assert!` ordering bug) and leaves the VMM
-/// usable afterward.
+/// Contract: `vmm::init(true)` completes (its debug-output branch runs without hitting
+/// the `with_vmm`/`debug_assert!` ordering bug) and leaves the VMM usable afterward.
 /// Failure Impact: a regression here reintroduces a debug-only production hang that no
 /// other test in this suite would catch, since every other test boots with
 /// `debug_output = false`.

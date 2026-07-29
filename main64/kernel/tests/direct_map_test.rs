@@ -1,18 +1,16 @@
-//! `direct_map::build_direct_map` / `validate_direct_map_coverage` / `free_direct_map_tables`
-//! — pure-builder integration tests (part of #63, Phase 1).
+//! `direct_map::build_direct_map` / `validate_direct_map_coverage` / `build_full_kernel_pml4`
+//! — pure-builder integration tests (part of #63).
 //!
 //! Most tests here build a synthetic PML4 over a small static pool of page-aligned
 //! `PageTable`s, standing in for scaffold frames a real boot would draw from the PMM
 //! (same trick as `pmm_uefi_test.rs`'s `META_BUF`: the buffer's own address is used as
 //! the "physical" address, converted through `virt_to_phys` where it is written into a
 //! page-table entry's frame field — see `page_table_test.rs` for why that conversion
-//! is required). These tests never call `pmm::init`/`vmm::init` and never touch the
-//! real PMM.
+//! is required). These tests never switch CR3 and never rely on `vmm::init`.
 //!
-//! The one exception is `test_free_direct_map_tables_returns_all_frames_to_pmm`, which
-//! exercises the full real-PMM lifecycle (`pmm::init` + `page_table::alloc_frame_phys`)
-//! since `free_direct_map_tables` releases frames back to the *real* global PMM and
-//! must not be pointed at synthetic addresses that were never allocated from it.
+//! The exceptions are the `build_full_kernel_pml4` tests, which draw real scaffold
+//! frames from the global PMM (`pmm::init` + `page_table::alloc_frame_phys`) to build a
+//! complete kernel-owned table without switching to it.
 
 #![no_std]
 #![no_main]
@@ -30,9 +28,9 @@ use kaos_kernel::boot_info::{
 };
 use kaos_kernel::memory::pmm::{self, types::virt_to_phys};
 use kaos_kernel::memory::vmm::direct_map::{
-    build_direct_map, build_full_kernel_pml4, build_uc_direct_map, free_direct_map_tables,
-    is_loader_owned, is_mmio, is_phase1_ram, is_phase2_platform, map_wc_range,
-    validate_direct_map_coverage, validate_essential_boot_addresses, CoverageGap, DirectMapError,
+    build_direct_map, build_full_kernel_pml4, build_uc_direct_map, is_loader_owned, is_mmio,
+    is_phase1_ram, is_phase2_platform, map_wc_range, validate_direct_map_coverage,
+    validate_essential_boot_addresses, CoverageGap, DirectMapError,
 };
 use kaos_kernel::memory::vmm::page_table::{
     self, pd_index, pt_index, resolve_phys_via_root, PageTable, ENTRY_PCD, ENTRY_PWT,
@@ -387,40 +385,6 @@ fn test_validate_direct_map_coverage_detects_synthetic_gap() {
     }
 }
 
-/// Contract: `free_direct_map_tables` returns every scaffold frame it allocated back to
-/// the real PMM, so the Phase 1 boot-time canary (build + validate + free, no CR3
-/// switch yet) has no lasting memory cost.
-/// Failure Impact: a leak here would shrink available RAM by the whole direct-map
-/// scaffold size (~hundreds of KiB on real hardware) on every boot, silently.
-#[test_case]
-fn test_free_direct_map_tables_returns_all_frames_to_pmm() {
-    let free_before = pmm::with_pmm(|mgr| mgr.total_free_frames());
-
-    let pml4 = page_table::alloc_frame_phys_or_panic("test: OOM allocating PML4");
-    page_table::zero_phys_page(pml4);
-
-    let region = ram_entry(HUGE_PAGE_SIZE_2M, HUGE_PAGE_SIZE_2M + PAGE_SIZE_U64);
-    let mut alloc = page_table::alloc_frame_phys;
-
-    // SAFETY: pml4 is a freshly allocated, zeroed frame; alloc_frame_phys draws real
-    // PMM frames, all reachable via the active identity map (no CR3 switch involved).
-    let stats = unsafe { build_direct_map(pml4, [region].iter(), is_phase1_ram, &mut alloc, true) }
-        .unwrap();
-    assert!(
-        stats.pdpt_frames_allocated + stats.pd_frames_allocated + stats.pt_frames_allocated > 0
-    );
-
-    let free_after_build = pmm::with_pmm(|mgr| mgr.total_free_frames());
-    // The PML4 itself plus every scaffold frame the builder drew must have been spent.
-    assert!(free_after_build < free_before);
-
-    // SAFETY: this table is not the active CR3 and nothing else references it.
-    unsafe { free_direct_map_tables(pml4) };
-
-    let free_after_release = pmm::with_pmm(|mgr| mgr.total_free_frames());
-    assert_eq!(free_after_release, free_before);
-}
-
 // ============================================================================
 // Phase 2 classifier tests (`is_phase2_platform`) — part of #63, Phase 2.
 // ============================================================================
@@ -490,11 +454,11 @@ fn test_is_phase2_platform_matches_known_types_only() {
 /// Contract: a Phase 1 (RAM) pass and a Phase 2 (platform) pass over disjoint address
 /// ranges can reuse the same table, each producing a fully valid, independently
 /// checkable coverage — the exact "build once per classifier, same PML4" pattern
-/// `vmm::direct_map::run_boot_canary` uses in production.
+/// `vmm::direct_map::build_full_kernel_pml4` uses in production.
 /// Failure Impact: if the two passes corrupted each other's mappings (e.g. via a stale
 /// PD/PDPT reused incorrectly), a real boot would either lose RAM coverage or firmware/
-/// MMIO coverage depending on call order — exactly the class of bug the boot-time
-/// canary exists to catch before a CR3 switch ever happens.
+/// MMIO coverage depending on call order — exactly the class of bug the pre-CR3-switch
+/// coverage validation exists to catch before a CR3 switch ever happens.
 #[test_case]
 fn test_phase1_and_phase2_passes_coexist_on_the_same_table() {
     // SAFETY: single-threaded test context.
@@ -800,8 +764,9 @@ fn test_is_mmio_matches_type_11_and_12_only() {
 /// Failure Impact: OVMF marks such a region on the UEFI path. If `is_phase2_platform`'s
 /// `EFI_MEMORY_RUNTIME` clause re-claimed it, the Phase 2 pass would map the window
 /// write-back — as a 2 MiB huge page when aligned — and the later uncacheable MMIO pass
-/// would hit a `HugePageCollision`, panicking the unconditional boot-time canary (this
-/// is the QEMU/OVMF boot hang this fix resolves). Release-blocking on UEFI.
+/// would hit a `HugePageCollision`, panicking the kernel-owned table build in
+/// `build_full_kernel_pml4` (this is the QEMU/OVMF boot hang this fix resolves).
+/// Release-blocking on UEFI.
 #[test_case]
 fn test_mmio_with_runtime_attribute_is_not_phase2() {
     const EFI_MEMORY_RUNTIME: u64 = 0x8000_0000_0000_0000;
@@ -953,8 +918,8 @@ fn test_validate_essential_boot_addresses_passes_when_covered() {
         let mut alloc = bump_alloc_from_pool;
 
         // Dereference the PHYSICAL-equivalent address, exactly like production does
-        // (`&*(boot_info_raw as *const BootInfo)` in `run_boot_canary`/
-        // `switch_to_direct_map`) — `boot_info as *const _ as u64` inside
+        // (`&*(boot_info_raw as *const BootInfo)` in `switch_to_direct_map`) —
+        // `boot_info as *const _ as u64` inside
         // `validate_essential_boot_addresses` must match the address the `ram_entry`
         // region below covers, not the kernel-image (higher-half) static address.
         let boot_info_phys = virt_to_phys(addr_of!(ESSENTIAL_TEST_BOOT_INFO) as u64);
@@ -1100,8 +1065,6 @@ fn test_build_full_kernel_pml4_maps_uefi_style_loader_data_metadata() {
             Some((metadata_phys, PAGE_SIZE_U64))
         );
         assert!(validate_essential_boot_addresses(new_pml4, boot_info_ref).is_ok());
-
-        free_direct_map_tables(new_pml4);
     }
 }
 
@@ -1170,8 +1133,8 @@ static mut FB_TEST_BOOT_INFO: BootInfo = BootInfo {
 ///
 /// Failure Impact: before this fix, `map_wc_range` was implemented and unit-tested in
 /// isolation but never actually called from the only production call site
-/// (`switch_to_direct_map`) — a real UEFI/GOP boot would have lost the framebuffer
-/// mapping entirely the instant `USE_DIRECT_MAP_TABLE` went live.
+/// (`switch_to_direct_map`) — a real UEFI/GOP boot would lose the framebuffer mapping
+/// entirely once CR3 is switched to the kernel-owned table.
 #[test_case]
 fn test_build_full_kernel_pml4_maps_framebuffer_when_present() {
     // SAFETY: single-threaded test context. `old_pml4_phys` is only read (slot 256),
@@ -1203,7 +1166,5 @@ fn test_build_full_kernel_pml4_maps_framebuffer_when_present() {
             resolve_phys_via_root(new_pml4, fb_phys + 2 * PAGE_SIZE_U64),
             Some((fb_phys + 2 * PAGE_SIZE_U64, PAGE_SIZE_U64))
         );
-
-        free_direct_map_tables(new_pml4);
     }
 }

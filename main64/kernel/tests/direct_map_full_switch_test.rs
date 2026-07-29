@@ -1,7 +1,7 @@
 //! Phase 4 (#63): exercises the actual CR3 switch to a fully kernel-owned page table
-//! (`direct_map::switch_to_direct_map`) in QEMU, bypassing the `USE_DIRECT_MAP_TABLE`
-//! const flag directly (that flag defaults to `false` and gates the *production* boot
-//! path — see its doc comment).
+//! (`direct_map::switch_to_direct_map`) in QEMU, calling the switch entry point directly
+//! (production reaches the same code from `vmm::init` on every boot that publishes a
+//! `BootInfo`).
 //!
 //! This is the highest-risk operation in the whole #63 effort: discarding the
 //! firmware's page tables when switching CR3 has historically caused an immediate,
@@ -9,9 +9,8 @@
 //! inside SMM once the firmware's own mappings are gone — see `docs/vmm.md` §4 and
 //! `docs/boot_uefi.md` §3.9). That regression class is **not reproducible in QEMU at
 //! all**, so a green run here proves the mapping/switch mechanics are correct, but
-//! makes NO claim about real-hardware safety. Flipping `USE_DIRECT_MAP_TABLE` to `true`
-//! in production still requires the real-hardware smoke-test checklist in
-//! `docs/boot_uefi.md`.
+//! makes NO claim about real-hardware safety — that was cleared separately by the
+//! real-hardware smoke-test checklist in `docs/boot_uefi.md`.
 
 #![no_std]
 #![no_main]
