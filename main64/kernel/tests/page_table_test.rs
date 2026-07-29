@@ -194,6 +194,45 @@ fn test_resolve_phys_via_root_2m_leaf() {
     }
 }
 
+/// Contract: `resolve_phys_via_root` resolves a VA through a 1 GiB PDPT huge leaf,
+/// without descending into a (nonexistent) PD/PT, returning `(pa, 1 GiB)`.
+/// Failure Impact: firmware page tables commonly use 1 GiB pages, and the coverage
+/// validator walks whatever the active firmware/loader table actually contains; a wrong
+/// 1 GiB result (or a spurious descent) would misreport coverage for gigabyte-sized
+/// ranges.
+#[test_case]
+fn test_resolve_phys_via_root_1g_leaf() {
+    const GIB: u64 = 1024 * 1024 * 1024;
+    // VA with pml4_idx=0, pdp_idx=1 (1 GiB aligned), offset=0x5000.
+    let va: u64 = GIB | 0x5000;
+
+    // SAFETY: see test_resolve_phys_via_root_4k_leaf. Only PML4 -> PDPT is linked; the
+    // PDPT entry is installed as a 1 GiB huge leaf, so no PD/PT is involved.
+    unsafe {
+        (*addr_of_mut!(PML4)).zero();
+        (*addr_of_mut!(PDPT)).zero();
+
+        let pml4_phys = virt_to_phys(addr_of!(PML4) as u64);
+        let pdpt_phys = virt_to_phys(addr_of!(PDPT) as u64);
+
+        (*addr_of_mut!(PML4)).entries[pml4_index(va)].set_mapping(
+            phys_to_pfn(pdpt_phys),
+            true,
+            true,
+            false,
+        );
+
+        // 1 GiB-aligned target installed directly as a huge PDPT leaf (the huge bit at
+        // PDPT level means a 1 GiB page). 1 GiB-aligned satisfies `set_huge_mapping`'s
+        // 2 MiB-alignment assertion.
+        let leaf_phys = 0x0000_0003_0000_0000_u64;
+        (*addr_of_mut!(PDPT)).entries[pdp_index(va)].set_huge_mapping(leaf_phys, true, true, false);
+
+        let resolved = resolve_phys_via_root(pml4_phys, va);
+        assert_eq!(resolved, Some((leaf_phys + 0x5000, GIB)));
+    }
+}
+
 /// Contract: `resolve_phys_via_root` returns `None` for a VA whose path is not fully
 /// present (here: the PD entry itself is absent).
 /// Failure Impact: a coverage check that can't distinguish "unmapped" from "mapped" would

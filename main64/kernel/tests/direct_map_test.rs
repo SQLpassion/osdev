@@ -385,6 +385,152 @@ fn test_validate_direct_map_coverage_detects_synthetic_gap() {
     }
 }
 
+/// Contract: `validate_direct_map_coverage` reports `Mismatch` (not `Unmapped`) when a
+/// leaf is present but resolves to the wrong physical frame — the non-identity-detection
+/// half of the coverage validator.
+/// Failure Impact: a builder bug that mapped a page to the *wrong* frame (rather than
+/// leaving it unmapped) would slip past the pre-CR3-switch coverage validation and
+/// surface as silent memory corruption once the kernel-owned table goes live.
+#[test_case]
+fn test_validate_direct_map_coverage_detects_mismatch() {
+    // SAFETY: single-threaded; fresh tree => POOL[1]=PDPT, POOL[2]=PD, POOL[3]=PT.
+    unsafe {
+        let pml4 = reset_pool();
+        let mut alloc = bump_alloc_from_pool;
+        let va = 0x0060_0000_u64;
+        let region = ram_entry(va, PAGE_SIZE_U64);
+
+        build_direct_map(pml4, [region].iter(), is_phase1_ram, &mut alloc, false).unwrap();
+        assert!(validate_direct_map_coverage(pml4, [region].iter(), is_phase1_ram).is_ok());
+
+        // Repoint the known leaf (POOL[3]) at a different, non-identity frame: present,
+        // but wrong physical target.
+        let wrong_pa = va + PAGE_SIZE_U64;
+        (*addr_of_mut!(POOL[3])).entries[pt_index(va)].set_mapping(
+            wrong_pa >> 12,
+            true,
+            true,
+            false,
+        );
+
+        assert_eq!(
+            validate_direct_map_coverage(pml4, [region].iter(), is_phase1_ram),
+            Err(CoverageGap::Mismatch {
+                va,
+                expected_pa: va,
+                got_pa: wrong_pa,
+            })
+        );
+    }
+}
+
+/// Contract: requesting a 4 KiB mapping *inside* an already-installed 2 MiB huge page is
+/// rejected with `HugePageCollision` — the reverse of
+/// `test_second_build_call_with_huge_page_collision_is_rejected`, exercising the huge-leaf
+/// guard in `ensure_pt_table` rather than the one in `map_2m_page`.
+/// Failure Impact: silently descending into a huge PD leaf as if it were a PT pointer
+/// would treat the huge frame's bits as a sub-table address and corrupt translation.
+#[test_case]
+fn test_four_kib_inside_existing_huge_page_is_rejected() {
+    // SAFETY: single-threaded test context.
+    unsafe {
+        let pml4 = reset_pool();
+        let mut alloc = bump_alloc_from_pool;
+
+        // First: a 2 MiB huge page at [2 MiB, 4 MiB).
+        let huge = ram_entry(HUGE_PAGE_SIZE_2M, HUGE_PAGE_SIZE_2M);
+        build_direct_map(pml4, [huge].iter(), is_phase1_ram, &mut alloc, true).unwrap();
+
+        // Then: a 4 KiB request at the huge page's base (use_huge_pages = false).
+        let inside = ram_entry(HUGE_PAGE_SIZE_2M, PAGE_SIZE_U64);
+        let result = build_direct_map(pml4, [inside].iter(), is_phase1_ram, &mut alloc, false);
+        assert_eq!(
+            result,
+            Err(DirectMapError::HugePageCollision {
+                va: HUGE_PAGE_SIZE_2M
+            })
+        );
+    }
+}
+
+/// Contract: mapping the identical 2 MiB huge region twice is idempotent — the second
+/// build re-finds the present huge leaf with the same target and succeeds without
+/// allocating a new scaffold frame or erroring (the `Ok(())` idempotent branch in
+/// `map_2m_page`).
+/// Failure Impact: a non-idempotent huge path would either double-count/leak scaffold
+/// frames or spuriously `Overlap`-fail when two passes legitimately share a window.
+#[test_case]
+fn test_identical_2mib_huge_region_is_idempotent() {
+    // SAFETY: single-threaded test context.
+    unsafe {
+        let pml4 = reset_pool();
+        let mut alloc = bump_alloc_from_pool;
+        let region = ram_entry(HUGE_PAGE_SIZE_2M, HUGE_PAGE_SIZE_2M);
+
+        let first =
+            build_direct_map(pml4, [region].iter(), is_phase1_ram, &mut alloc, true).unwrap();
+        assert_eq!(first.huge_2m_pages, 1);
+
+        // Second pass over the same table + region: the huge leaf already exists.
+        let second =
+            build_direct_map(pml4, [region].iter(), is_phase1_ram, &mut alloc, true).unwrap();
+        assert_eq!(second.huge_2m_pages, 1);
+        assert_eq!(
+            second.pd_frames_allocated, 0,
+            "no new PD frame the second time"
+        );
+        assert_eq!(
+            second.pdpt_frames_allocated, 0,
+            "no new PDPT frame the second time"
+        );
+
+        assert_eq!(
+            resolve_phys_via_root(pml4, HUGE_PAGE_SIZE_2M),
+            Some((HUGE_PAGE_SIZE_2M, HUGE_PAGE_SIZE_2M))
+        );
+    }
+}
+
+/// Contract: all three builders report `RegionOverflow` (rather than panicking on the
+/// `start + size` arithmetic) when a region wraps `u64`.
+/// Failure Impact: an unchecked add would panic — or worse, wrap to a small end and map
+/// a bogus range — on a malformed memory map, instead of a clean, named error.
+#[test_case]
+fn test_region_overflow_is_reported_by_all_builders() {
+    // SAFETY: single-threaded test context.
+    unsafe {
+        let pml4 = reset_pool();
+        let mut alloc = bump_alloc_from_pool;
+
+        let start = u64::MAX - 0xFFF;
+        let size = 0x2000; // start + size overflows u64
+
+        let ram = ram_entry(start, size);
+        assert_eq!(
+            build_direct_map(pml4, [ram].iter(), is_phase1_ram, &mut alloc, true),
+            Err(DirectMapError::RegionOverflow { start, size })
+        );
+
+        let mmio = UnifiedMemoryEntry {
+            start,
+            size,
+            memory_type: 11, // EfiMemoryMappedIO
+            _pad: 0,
+            attribute: 0,
+            is_usable: false,
+        };
+        assert_eq!(
+            build_uc_direct_map(pml4, [mmio].iter(), is_mmio, &mut alloc),
+            Err(DirectMapError::RegionOverflow { start, size })
+        );
+
+        assert_eq!(
+            map_wc_range(pml4, start, size, &mut alloc),
+            Err(DirectMapError::RegionOverflow { start, size })
+        );
+    }
+}
+
 // ============================================================================
 // Phase 2 classifier tests (`is_phase2_platform`) — part of #63, Phase 2.
 // ============================================================================
@@ -409,8 +555,9 @@ fn test_is_phase2_platform_matches_runtime_attribute_bit() {
 }
 
 /// Contract: `is_phase2_platform` accepts exactly the EFI types the design doc's §4
-/// table marks "map" for firmware/platform reasons (0, 5, 6, 10, 11, 13), and rejects
-/// types outside that set when the runtime attribute bit is also clear.
+/// table marks "map" for firmware/platform reasons (0, 5, 6, 10, 13), and rejects types
+/// outside that set when the runtime attribute bit is also clear. Types 11/12 (MMIO)
+/// are deliberately *not* here — they go through `is_mmio`/`build_uc_direct_map`.
 /// Failure Impact: an overly narrow classifier would leave e.g. ACPI NVS or MMIO
 /// unmapped once the kernel table becomes load-bearing; an overly wide one would map
 /// loader-transient memory (`BootServicesCode`/`Data`) the design doc says to drop.
@@ -550,6 +697,51 @@ fn test_map_wc_range_sets_identity_mapping_and_wc_nx_flags() {
             entry.raw() & ENTRY_PCD,
             0,
             "PCD must be clear for write-combining"
+        );
+    }
+}
+
+/// Contract (#63 R3): when the GOP framebuffer overlaps an `EfiMemoryMappedIO` region
+/// that an earlier pass already mapped uncacheable, `map_wc_range` *re-stamps* the leaf
+/// write-combining (PWT set, PCD clear) instead of leaving the uncacheable mapping in
+/// place — the idempotency check compares only the physical target, not the caching bits.
+/// Failure Impact: the framebuffer would silently fall back to uncacheable (a large
+/// real-world draw-performance regression) whenever firmware types the GOP aperture as
+/// `EfiMemoryMappedIO`.
+#[test_case]
+fn test_map_wc_range_restamps_over_existing_uncacheable_page() {
+    // SAFETY: single-threaded test context; fresh pool => POOL[3] is the PT for `base`.
+    unsafe {
+        let pml4 = reset_pool();
+        let mut alloc = bump_alloc_from_pool;
+        let base = 0x00A0_0000_u64;
+
+        // First map it uncacheable, exactly as the MMIO pass would.
+        let mmio = UnifiedMemoryEntry {
+            start: base,
+            size: PAGE_SIZE_U64,
+            memory_type: 11, // EfiMemoryMappedIO
+            _pad: 0,
+            attribute: 0,
+            is_usable: false,
+        };
+        build_uc_direct_map(pml4, [mmio].iter(), is_mmio, &mut alloc).unwrap();
+        let uc = (*addr_of!(POOL[3])).entries[pt_index(base)];
+        assert_ne!(
+            uc.raw() & ENTRY_PCD,
+            0,
+            "MMIO pass must map uncacheable (PCD set)"
+        );
+
+        // The framebuffer pass over the same page must now win with write-combining.
+        map_wc_range(pml4, base, PAGE_SIZE_U64, &mut alloc).unwrap();
+        let entry = (*addr_of!(POOL[3])).entries[pt_index(base)];
+        assert_ne!(entry.raw() & ENTRY_PWT, 0, "WC re-stamp must set PWT");
+        assert_eq!(entry.raw() & ENTRY_PCD, 0, "WC re-stamp must clear PCD");
+        assert!(entry.no_execute(), "framebuffer mapping must stay NX");
+        assert_eq!(
+            resolve_phys_via_root(pml4, base),
+            Some((base, PAGE_SIZE_U64))
         );
     }
 }
@@ -1065,6 +1257,29 @@ fn test_build_full_kernel_pml4_maps_uefi_style_loader_data_metadata() {
             Some((metadata_phys, PAGE_SIZE_U64))
         );
         assert!(validate_essential_boot_addresses(new_pml4, boot_info_ref).is_ok());
+
+        // Slot 511 must be the recursive self-map (points back at the new PML4), and
+        // slot 256 must be copied verbatim from the previously active PML4 (the
+        // higher-half kernel-image mirror), so the kernel stays reachable and the
+        // recursive-mapping API keeps working after a CR3 switch to this table.
+        let new_table = &*(new_pml4 as *const PageTable);
+        let recursive = new_table.entries[511];
+        assert!(
+            recursive.present(),
+            "recursive self-map slot 511 must be present"
+        );
+        assert_eq!(
+            recursive.frame() * PAGE_SIZE_U64,
+            new_pml4,
+            "slot 511 must point back at the new PML4 (recursive self-map)"
+        );
+
+        let old_table = &*(old_pml4 as *const PageTable);
+        assert_eq!(
+            new_table.entries[256].raw(),
+            old_table.entries[256].raw(),
+            "slot 256 must mirror the active PML4's higher-half entry verbatim"
+        );
     }
 }
 

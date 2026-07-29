@@ -455,9 +455,28 @@ style of `page_fault_death_test.rs`); boot stays green.
 
 ## 7. Definition of Done
 
-- [ ] Phases 0–6 implemented, each green (`cargo build` + `cargo test` from `main64/`).
-- [ ] UEFI boot to the ring-3 shell on QEMU **and** on the AMD/UEFI HW.
-- [ ] `reserve_firmware_page_tables` removed; firmware PT frames back in the PMM.
-- [ ] Kernel `.text` is RO+X; data/direct-map/MMIO are NX (W^X verified).
-- [ ] Fallback path (full clone) documented behind a flag and disablable once HW-validated.
-- [ ] `docs/vmm.md` extended with the new model; this plan marked "implemented".
+Status as of the post-validation cleanup (2026-07-29). The only substantive item still
+open is kernel `.text` RO+X (the second half of Phase 5).
+
+- [ ] **Phases 0–6, each green** — Phases 0–4 and 6 are implemented and green; **Phase 5
+  is partial** (data/direct-map/MMIO NX done, kernel `.text` RO+X not — see the next
+  item and the Phase 5 note in §5).
+- [x] **UEFI boot to the ring-3 shell on QEMU and on the AMD/UEFI HW** — validated
+  end-to-end (all shell commands + `TUI.BIN`).
+- [x] **Firmware PT frames no longer permanently reserved on the real path** — done, but
+  by *skipping* `reserve_firmware_page_tables` on the kernel-owned path rather than
+  *removing* it. The function is intentionally kept as the no-`BootInfo` fallback (unit-
+  test kernels / any BootInfo-less boot still clone and still need it). The skip is made
+  safe by the R1 guard `assert_no_active_table_frame_is_pmm_free` (see §R1). Removing the
+  function outright would break the fallback, so the original "removed" wording is
+  deliberately superseded.
+- [ ] **Kernel `.text` is RO+X; data/direct-map/MMIO are NX (W^X)** — **still open.** The
+  NX half (data/direct-map/MMIO) is done; `.text` RO+X needs page-aligning
+  `.text`/`.rodata` in `link.ld` and rebuilding the higher-half slot-256 mapping at 4 KiB
+  granularity (higher blast radius; tracked as a follow-up).
+- [x] **Fallback documented and disablable** — the `USE_DIRECT_MAP_TABLE` const flag was
+  *removed* after HW validation; the switch is now unconditional on a published
+  `BootInfo`, with the firmware clone kept as the no-`BootInfo` fallback. Reverting to
+  the clone path is a one-line change in `vmm::init`, documented in `docs/vmm.md` §4.4.
+- [x] **`docs/vmm.md` extended with the new model; this plan updated** — see `vmm.md`
+  §4.4 and this document's status header + §5 (including §R1).

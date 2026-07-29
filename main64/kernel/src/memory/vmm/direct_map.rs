@@ -473,17 +473,21 @@ unsafe fn map_4k_wc_page(
     let pt = table_at(pt_phys);
     let pt_idx = pt_index(pa);
     let existing = table_entry(pt, pt_idx);
-    if existing.present() {
-        let existing_pa = existing.frame() * PAGE_SIZE_U64;
-        if existing_pa != pa {
-            return Err(DirectMapError::Overlap {
-                va: pa,
-                expected_pa: pa,
-                existing_pa,
-            });
-        }
-        return Ok(()); // identical, already installed - idempotent.
+    if existing.present() && existing.frame() * PAGE_SIZE_U64 != pa {
+        return Err(DirectMapError::Overlap {
+            va: pa,
+            expected_pa: pa,
+            existing_pa: existing.frame() * PAGE_SIZE_U64,
+        });
     }
+    // Stamp (or *re-stamp*) the leaf as write-combining + NX. Re-stamping matters when an
+    // earlier pass already mapped this exact identity page: the GOP framebuffer can fall
+    // inside an `EfiMemoryMappedIO` region that `build_uc_direct_map` mapped uncacheable
+    // first, and the framebuffer must end up write-combining (PWT set, PCD clear), not
+    // uncacheable. The physical-target check above deliberately does not early-return on
+    // an identical mapping the way `map_4k_page`/`map_4k_uc_page` do, because it only
+    // compares the frame, not the caching bits — a plain early-return would leave the
+    // wrong memory type in place (#63 R3).
     let entry = &mut *entry_ptr(pt, pt_idx);
     entry.set_mapping(phys_to_pfn(pa), true, true, false);
     entry.set_pwt(true);
