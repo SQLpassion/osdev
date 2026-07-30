@@ -55,7 +55,7 @@ use crate::memory::pmm::{KERNEL_OFFSET, STACK_TOP};
 use super::page_table::{
     alloc_frame_phys, assert_no_active_table_frame_is_pmm_free, entry_ptr, pd_index, pdp_index,
     phys_to_pfn, pml4_index, pt_index, resolve_phys_via_root, table_at, table_entry, write_cr3,
-    zero_phys_page, HUGE_PAGE_SIZE_2M, RECURSIVE_SLOT,
+    zero_phys_page, PageTable, HUGE_PAGE_SIZE_2M, PT_ENTRIES, RECURSIVE_SLOT,
 };
 
 /// Higher-half base (`KERNEL_VIRT_BASE` in `link.ld`): the kernel image is linked at
@@ -90,6 +90,13 @@ pub struct DirectMapStats {
     pub pdpt_frames_allocated: u64,
     pub pd_frames_allocated: u64,
     pub pt_frames_allocated: u64,
+    /// 2 MiB leaves broken into 512 × 4 KiB because a finer-grained mapping was needed
+    /// inside them (see [`split_huge_pd_entry`]). Non-zero means the input's regions do
+    /// not align to 2 MiB the way the bulk RAM map assumes — worth noticing, not an error.
+    pub huge_2m_split: u64,
+    /// 2 MiB windows mapped as 512 × 4 KiB because 4 KiB mappings already occupied them
+    /// (see [`build_direct_map`]'s huge-page branch).
+    pub huge_2m_downgraded: u64,
 }
 
 /// Errors [`build_direct_map`] can return. Never panics itself — the boot-time call
@@ -100,8 +107,16 @@ pub enum DirectMapError {
     OutOfScaffoldFrames,
     /// `region.start + region.size` overflowed `u64`.
     RegionOverflow { start: u64, size: u64 },
-    /// A 2 MiB/4 KiB leaf was requested where the opposite granularity already
-    /// occupies that slot (two input regions disagree about a shared PD window).
+    /// A leaf was requested at a granularity the existing tree cannot accommodate.
+    ///
+    /// Since #63 B1 the two *resolvable* granularity conflicts no longer surface here:
+    /// a 4 KiB request inside an existing 2 MiB leaf splits it
+    /// ([`split_huge_pd_entry`]), and a 2 MiB request over existing 4 KiB mappings is
+    /// downgraded to 4 KiB by [`build_direct_map`] — which consumes this variant as an
+    /// internal signal rather than propagating it. What still escapes is the case no
+    /// granularity choice can work around: a **1 GiB PDPT leaf** already covering the
+    /// address. This builder never creates those, so in practice it means the tree was
+    /// seeded from somewhere else.
     HugePageCollision { va: u64 },
     /// Two regions claim the same page with different physical targets.
     Overlap {
@@ -291,14 +306,37 @@ pub unsafe fn build_direct_map<'a>(
                 && cur.is_multiple_of(HUGE_PAGE_SIZE_2M)
                 && remaining >= HUGE_PAGE_SIZE_2M
             {
-                map_2m_page(pml4_phys, cur, alloc_frame, &mut stats)?;
-                stats.huge_2m_pages += 1;
-                cur += HUGE_PAGE_SIZE_2M;
-            } else {
-                map_4k_page(pml4_phys, cur, alloc_frame, &mut stats)?;
-                stats.small_4k_pages += 1;
-                cur += PAGE_SIZE_U64;
+                match map_2m_page(pml4_phys, cur, alloc_frame, &mut stats) {
+                    Ok(()) => {
+                        stats.huge_2m_pages += 1;
+                        cur += HUGE_PAGE_SIZE_2M;
+                        continue;
+                    }
+                    // An earlier pass already installed 4 KiB mappings somewhere in this
+                    // 2 MiB window, so a huge leaf cannot go here. Map the window at 4 KiB
+                    // instead of failing the whole build: the result is an equivalent
+                    // mapping that merely costs one page table, and whether two regions
+                    // share a 2 MiB window is a property of the firmware's memory map
+                    // rather than anything KAOS controls (#63 B1, the mirror image of
+                    // `split_huge_pd_entry`'s direction).
+                    Err(DirectMapError::HugePageCollision { .. }) => {
+                        let window_end = cur + HUGE_PAGE_SIZE_2M;
+                        while cur < window_end {
+                            // Propagates if the collision came from a 1 GiB PDPT leaf one
+                            // level up, which no granularity can work around.
+                            map_4k_page(pml4_phys, cur, alloc_frame, &mut stats)?;
+                            stats.small_4k_pages += 1;
+                            cur += PAGE_SIZE_U64;
+                        }
+                        stats.huge_2m_downgraded += 1;
+                        continue;
+                    }
+                    Err(e) => return Err(e),
+                }
             }
+            map_4k_page(pml4_phys, cur, alloc_frame, &mut stats)?;
+            stats.small_4k_pages += 1;
+            cur += PAGE_SIZE_U64;
         }
         stats.regions_mapped += 1;
     }
@@ -344,6 +382,11 @@ unsafe fn ensure_pd_table(
 }
 
 /// Maps one 2 MiB huge page at physical/virtual address `pa` (identity map: VA == PA).
+///
+/// Returns [`DirectMapError::HugePageCollision`] when a page table (4 KiB mappings) already
+/// occupies this PD slot. That is a *signal*, not a fatal error: [`build_direct_map`]
+/// catches it and re-maps the window at 4 KiB instead (#63 B1). Callers that cannot
+/// downgrade must treat it as an error.
 ///
 /// # Safety
 /// Same contract as [`build_direct_map`].
@@ -401,7 +444,9 @@ unsafe fn ensure_pt_table(
     let pd_idx = pd_index(va);
     let pde = table_entry(pd, pd_idx);
     if pde.present() && pde.huge() {
-        return Err(DirectMapError::HugePageCollision { va });
+        // A 2 MiB leaf already covers this window but a 4 KiB mapping is needed inside
+        // it. Split rather than fail — see `split_huge_pd_entry` (#63 B1).
+        return split_huge_pd_entry(pd, pd_idx, alloc_frame, stats);
     }
     if !pde.present() {
         let phys = alloc_frame().ok_or(DirectMapError::OutOfScaffoldFrames)?;
@@ -410,6 +455,75 @@ unsafe fn ensure_pt_table(
         stats.pt_frames_allocated += 1;
     }
     Ok(table_entry(pd, pd_idx).frame() * PAGE_SIZE_U64)
+}
+
+/// Replaces the 2 MiB huge leaf at `pd[pd_idx]` with a fresh page table holding the 512
+/// equivalent 4 KiB leaves, and returns that table's physical address (#63 B1).
+///
+/// Why split instead of returning [`DirectMapError::HugePageCollision`]: the bulk RAM map
+/// uses 2 MiB pages wherever a region is aligned, but four later passes need 4 KiB
+/// granularity inside arbitrary addresses — the MMIO pass ([`build_uc_direct_map`]), the
+/// framebuffer pass ([`map_wc_range`]), and the outward page rounding that can pull a
+/// device region's edge page into a RAM window. Whether those addresses happen to fall
+/// inside an aligned 2 MiB window is a property of the *firmware's* memory map, so failing
+/// on it made a successful boot depend on a layout KAOS does not control: a firmware that
+/// reports a GOP framebuffer inside a 2-MiB-aligned `EfiReservedMemoryType` region would
+/// have panicked the build with "Phase 4 framebuffer direct-map failed" on a machine that
+/// is otherwise fine.
+///
+/// Splitting is cheap and safe *here* specifically because this table is not yet in CR3:
+/// no TLB entry can exist for it, no other CPU is running (single-core boot), and the
+/// resulting mapping is bit-for-bit equivalent to the huge leaf. Every permission and
+/// caching bit is replicated onto all 512 leaves — writable/user/NX/PWT/PCD/global — so
+/// the other 511 pages keep exactly the memory type and rights they had. The intermediate
+/// PD entry is made writable because effective permissions AND across levels: the real
+/// restriction stays on the leaves.
+///
+/// Note the flags are copied through the typed accessors, not by cloning the raw entry: a
+/// PDE's PAT bit is bit 12 while a PTE's is bit 7 (a PDE's huge bit), so a raw copy would
+/// mistranslate the memory type. This builder never sets the PAT bit, but replicating by
+/// accessor keeps that from silently mattering later.
+///
+/// # Safety
+/// Same contract as [`build_direct_map`]; `pd` must be a valid PD whose entry `pd_idx` is a
+/// present 2 MiB huge leaf.
+unsafe fn split_huge_pd_entry(
+    pd: *mut PageTable,
+    pd_idx: usize,
+    alloc_frame: &mut dyn FnMut() -> Option<u64>,
+    stats: &mut DirectMapStats,
+) -> Result<u64, DirectMapError> {
+    let pde = table_entry(pd, pd_idx);
+    debug_assert!(pde.present() && pde.huge());
+
+    let base_pa = pde.frame() * PAGE_SIZE_U64;
+    let (writable, user, nx) = (pde.writable(), pde.user(), pde.no_execute());
+    let (pwt, pcd, global) = (pde.pwt(), pde.pcd(), pde.global());
+
+    let pt_phys = alloc_frame().ok_or(DirectMapError::OutOfScaffoldFrames)?;
+    zero_phys_page(pt_phys);
+    let pt = table_at(pt_phys);
+    for i in 0..PT_ENTRIES {
+        let leaf_pa = base_pa + i as u64 * PAGE_SIZE_U64;
+        let entry = &mut *entry_ptr(pt, i);
+        entry.set_mapping(phys_to_pfn(leaf_pa), true, writable, user);
+        entry.set_no_execute(nx);
+        entry.set_pwt(pwt);
+        entry.set_pcd(pcd);
+        entry.set_global(global);
+    }
+
+    // Swap the huge leaf for the table. `set_mapping` clears the huge bit implicitly by
+    // writing a fresh frame+flags combination, but be explicit: a PD entry that still had
+    // bit 7 set would be re-read as a leaf and alias the PT frame as 2 MiB of data.
+    let entry = &mut *entry_ptr(pd, pd_idx);
+    entry.set_mapping(phys_to_pfn(pt_phys), true, true, user);
+    entry.set_huge(false);
+    entry.set_no_execute(false);
+
+    stats.pt_frames_allocated += 1;
+    stats.huge_2m_split += 1;
+    Ok(pt_phys)
 }
 
 /// Maps one 4 KiB page at physical/virtual address `pa` (identity map: VA == PA).

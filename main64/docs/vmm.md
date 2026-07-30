@@ -255,7 +255,9 @@ the higher-half kernel image (PML4 slot 256) is rebuilt per-section by
 RW+NX — plus the VGA text page RW+NX. `CR0.WP` (`arch::cpu::enable_write_protect`, set in
 `KernelMain`) makes the RO `.text` enforced against ring-0 writes. Two residual items are left
 as future hardening: the low **identity alias** of the image (slot 0) is still RW (huge pages;
-a split would make it RO), and ring-3 user code is still mapped RW+X (a separate issue).
+a split would make it RO — `direct_map::split_huge_pd_entry` now provides exactly that
+primitive, see `todo_uefi_kernel_pagetables.md` §R7), and ring-3 user code is still mapped
+RW+X (a separate issue).
 
 ---
 

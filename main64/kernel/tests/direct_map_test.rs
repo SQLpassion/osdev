@@ -360,14 +360,15 @@ fn test_overlapping_identical_regions_is_idempotent() {
 /// has a present PT hanging off it in the encoded frame bits, orphaning that PT and
 /// corrupting every mapping it held.
 #[test_case]
-fn test_second_build_call_with_huge_page_collision_is_rejected() {
+fn test_huge_window_holding_4k_mappings_is_downgraded_not_rejected() {
+    const BASE: u64 = 2 * HUGE_PAGE_SIZE_2M;
     // SAFETY: single-threaded test context.
     unsafe {
         let pml4 = reset_pool();
         let mut alloc = bump_alloc_from_pool;
 
-        // First pass: map one 4 KiB page inside what will become a 2 MiB huge window.
-        let small_region = ram_entry(2 * HUGE_PAGE_SIZE_2M, PAGE_SIZE_U64);
+        // First pass: map one 4 KiB page inside what a later pass wants as a 2 MiB window.
+        let small_region = ram_entry(BASE, PAGE_SIZE_U64);
         build_direct_map(
             pml4,
             [small_region].iter(),
@@ -377,15 +378,34 @@ fn test_second_build_call_with_huge_page_collision_is_rejected() {
         )
         .unwrap();
 
-        // Second pass, same table: a huge-aligned region covering the same address.
-        let huge_region = ram_entry(2 * HUGE_PAGE_SIZE_2M, HUGE_PAGE_SIZE_2M);
-        let result = build_direct_map(pml4, [huge_region].iter(), is_phase1_ram, &mut alloc, true);
+        // Second pass, same table: a huge-aligned region covering the same address. A huge
+        // leaf cannot go here, so the window must be mapped at 4 KiB instead of failing.
+        let huge_region = ram_entry(BASE, HUGE_PAGE_SIZE_2M);
+        let stats =
+            build_direct_map(pml4, [huge_region].iter(), is_phase1_ram, &mut alloc, true).unwrap();
+
+        assert_eq!(stats.huge_2m_downgraded, 1, "window must be downgraded");
+        assert_eq!(stats.huge_2m_pages, 0, "no huge leaf can be installed here");
         assert_eq!(
-            result,
-            Err(DirectMapError::HugePageCollision {
-                va: 2 * HUGE_PAGE_SIZE_2M
-            })
+            stats.small_4k_pages, 512,
+            "the whole 2 MiB window is mapped at 4 KiB"
         );
+
+        // Every page of the window resolves identity at 4 KiB granularity, including the
+        // one the first pass had already installed (idempotent) and the last one.
+        for va in [
+            BASE,
+            BASE + PAGE_SIZE_U64,
+            BASE + HUGE_PAGE_SIZE_2M - PAGE_SIZE_U64,
+        ] {
+            assert_eq!(
+                resolve_phys_via_root(pml4, va),
+                Some((va, PAGE_SIZE_U64)),
+                "va {:#x} must resolve identity at 4 KiB",
+                va
+            );
+        }
+        assert!(validate_direct_map_coverage(pml4, [huge_region].iter(), is_phase1_ram).is_ok());
     }
 }
 
@@ -464,25 +484,102 @@ fn test_validate_direct_map_coverage_detects_mismatch() {
 /// Failure Impact: silently descending into a huge PD leaf as if it were a PT pointer
 /// would treat the huge frame's bits as a sub-table address and corrupt translation.
 #[test_case]
-fn test_four_kib_inside_existing_huge_page_is_rejected() {
+fn test_four_kib_inside_existing_huge_page_splits_it() {
+    const BASE: u64 = HUGE_PAGE_SIZE_2M;
     // SAFETY: single-threaded test context.
     unsafe {
         let pml4 = reset_pool();
         let mut alloc = bump_alloc_from_pool;
 
-        // First: a 2 MiB huge page at [2 MiB, 4 MiB).
-        let huge = ram_entry(HUGE_PAGE_SIZE_2M, HUGE_PAGE_SIZE_2M);
-        build_direct_map(pml4, [huge].iter(), is_phase1_ram, &mut alloc, true).unwrap();
-
-        // Then: a 4 KiB request at the huge page's base (use_huge_pages = false).
-        let inside = ram_entry(HUGE_PAGE_SIZE_2M, PAGE_SIZE_U64);
-        let result = build_direct_map(pml4, [inside].iter(), is_phase1_ram, &mut alloc, false);
+        // First: a 2 MiB huge page at [2 MiB, 4 MiB) — RW + NX, as map_2m_page installs it.
+        let huge = ram_entry(BASE, HUGE_PAGE_SIZE_2M);
+        let huge_stats =
+            build_direct_map(pml4, [huge].iter(), is_phase1_ram, &mut alloc, true).unwrap();
+        assert_eq!(huge_stats.huge_2m_pages, 1);
         assert_eq!(
-            result,
-            Err(DirectMapError::HugePageCollision {
-                va: HUGE_PAGE_SIZE_2M
-            })
+            resolve_phys_via_root(pml4, BASE),
+            Some((BASE, HUGE_PAGE_SIZE_2M)),
+            "precondition: the window is a huge leaf"
         );
+
+        // Then: a 4 KiB request at the huge page's base (use_huge_pages = false). The huge
+        // leaf must be split rather than reported as a collision.
+        let inside = ram_entry(BASE, PAGE_SIZE_U64);
+        let stats =
+            build_direct_map(pml4, [inside].iter(), is_phase1_ram, &mut alloc, false).unwrap();
+        assert_eq!(stats.huge_2m_split, 1, "the huge leaf must be split");
+
+        // The window now resolves at 4 KiB, and the split replicated the huge leaf's flags
+        // onto ALL 512 leaves — not just the one that was requested. Checking a page far
+        // from the requested one is the point: a split that lost the other 511 pages'
+        // permissions or memory type would be silent corruption.
+        for va in [
+            BASE,
+            BASE + 0x10_0000,
+            BASE + HUGE_PAGE_SIZE_2M - PAGE_SIZE_U64,
+        ] {
+            assert_eq!(
+                resolve_phys_via_root(pml4, va),
+                Some((va, PAGE_SIZE_U64)),
+                "va {:#x} must resolve identity at 4 KiB after the split",
+                va
+            );
+            let leaf = leaf_entry(pml4, va).expect("4 KiB leaf present after split");
+            assert!(leaf.writable(), "replicated leaf {:#x} stays writable", va);
+            assert!(leaf.no_execute(), "replicated leaf {:#x} stays NX", va);
+            assert!(!leaf.user(), "replicated leaf {:#x} stays supervisor", va);
+        }
+        assert!(validate_direct_map_coverage(pml4, [huge].iter(), is_phase1_ram).is_ok());
+    }
+}
+
+/// Contract: a write-combining range requested *inside* an existing 2 MiB write-back huge
+/// page splits that page and re-types only the requested leaves — the neighbours keep their
+/// original write-back caching.
+/// Failure Impact: this is the concrete scenario that made B1 worth fixing. A firmware that
+/// reports the GOP framebuffer inside a 2-MiB-aligned region the RAM or platform pass maps
+/// as a huge page would previously have panicked the whole kernel-owned table build with
+/// "Phase 4 framebuffer direct-map failed" — on a machine that is otherwise perfectly fine,
+/// and for a layout KAOS does not control. The neighbour assertions guard the other half:
+/// a split that re-typed the whole 2 MiB would silently make surrounding RAM
+/// write-combining.
+#[test_case]
+fn test_map_wc_range_inside_huge_page_splits_and_retypes_only_its_own_pages() {
+    const BASE: u64 = 4 * HUGE_PAGE_SIZE_2M;
+    const FB_OFFSET: u64 = 0x8_0000; // 512 KiB into the window
+                                     // SAFETY: single-threaded test context.
+    unsafe {
+        let pml4 = reset_pool();
+        let mut alloc = bump_alloc_from_pool;
+
+        // Bulk RAM pass installs a write-back 2 MiB huge page over the whole window.
+        let ram = ram_entry(BASE, HUGE_PAGE_SIZE_2M);
+        build_direct_map(pml4, [ram].iter(), is_phase1_ram, &mut alloc, true).unwrap();
+
+        // Framebuffer pass wants two write-combining 4 KiB pages inside it.
+        let fb_base = BASE + FB_OFFSET;
+        map_wc_range(pml4, fb_base, 2 * PAGE_SIZE_U64, &mut alloc).unwrap();
+
+        // The requested pages are write-combining: PWT set, PCD clear (PAT1).
+        for va in [fb_base, fb_base + PAGE_SIZE_U64] {
+            let leaf = leaf_entry(pml4, va).expect("WC leaf present");
+            assert_eq!(leaf.raw() & ENTRY_PWT, ENTRY_PWT, "PWT set at {:#x}", va);
+            assert_eq!(leaf.raw() & ENTRY_PCD, 0, "PCD clear at {:#x}", va);
+            assert_eq!(
+                resolve_phys_via_root(pml4, va),
+                Some((va, PAGE_SIZE_U64)),
+                "identity target preserved at {:#x}",
+                va
+            );
+        }
+
+        // Neighbours inside the same former huge page keep plain write-back caching.
+        for va in [BASE, fb_base - PAGE_SIZE_U64, fb_base + 2 * PAGE_SIZE_U64] {
+            let leaf = leaf_entry(pml4, va).expect("split neighbour leaf present");
+            assert_eq!(leaf.raw() & ENTRY_PWT, 0, "neighbour {:#x} stays WB", va);
+            assert_eq!(leaf.raw() & ENTRY_PCD, 0, "neighbour {:#x} stays WB", va);
+            assert!(leaf.no_execute(), "neighbour {:#x} stays NX", va);
+        }
     }
 }
 
@@ -1499,12 +1596,13 @@ fn test_build_full_kernel_pml4_maps_uefi_style_loader_data_metadata() {
 // responsibility" while no caller ever does it.
 // ============================================================================
 
-/// Synthetic framebuffer base for the test below. Deliberately a high, PCI-hole-style
-/// address that belongs to no region in `FB_TEST_REGIONS` rather than a static buffer in
-/// the test kernel's `.bss`: `build_full_kernel_pml4` maps RAM with 2 MiB huge pages, so a
-/// low-RAM "framebuffer" inside an already-huge-mapped 2 MiB window would make
-/// `map_wc_range` fail with `HugePageCollision` as soon as the test binary grew past
-/// `0x20_0000`. Nothing is ever written here — the test only asserts the mapping resolves.
+/// Synthetic framebuffer base for the test below: a high, PCI-hole-style address that
+/// belongs to no region in `FB_TEST_REGIONS`, which is where real GOP framebuffers live.
+/// Using that instead of a static buffer in the test kernel's `.bss` also keeps this test
+/// about *the framebuffer pass being wired up at all* rather than about huge-page
+/// interaction — the framebuffer-inside-a-huge-page case has its own dedicated test
+/// (`test_map_wc_range_inside_huge_page_splits_and_retypes_only_its_own_pages`).
+/// Nothing is ever written here; the test only asserts the mapping resolves.
 const FB_TEST_BASE: u64 = 0xE000_0000;
 
 static mut FB_TEST_REGIONS: [UnifiedMemoryEntry; 1] = [

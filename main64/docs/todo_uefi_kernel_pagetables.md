@@ -358,9 +358,48 @@ What was done for R6:
   proves the block is checked as a whole rather than incidentally covered).
 - The two synthetic `build_full_kernel_pml4` / `validate_essential_boot_addresses` tests now
   model the block, which a real boot always has. While doing so, the framebuffer test's fake
-  FB moved from a low `.bss` buffer to a synthetic PCI-hole address (`0xE000_0000`): a
-  low-RAM "framebuffer" inside an already-2-MiB-mapped window would make `map_wc_range`
-  fail with `HugePageCollision` as soon as the test binary grew past `0x20_0000`.
+  FB moved from a low `.bss` buffer to a synthetic PCI-hole address (`0xE000_0000`), which is
+  where real GOP framebuffers live. (At the time that also dodged a `HugePageCollision`
+  panic; §R7 below removed that failure mode.)
+
+### R7: granularity conflicts are resolved, not fatal (2026-07-30)
+
+The builder mixes granularities: the bulk RAM map uses 2 MiB pages wherever a region is
+aligned, while four later passes need 4 KiB granularity at addresses the firmware chooses —
+the MMIO pass (`build_uc_direct_map`), the framebuffer pass (`map_wc_range`), and the
+outward page rounding that can pull a device region's edge page into a RAM window. Both
+directions of the resulting conflict used to return `HugePageCollision`, which
+`build_full_kernel_pml4` turns into a panic.
+
+That made a successful boot depend on a memory-map layout KAOS does not control. Concretely:
+a firmware reporting the GOP framebuffer inside a 2-MiB-aligned `EfiReservedMemoryType`
+region would panic the build with *"Phase 4 framebuffer direct-map failed"* on a machine
+that is otherwise perfectly fine. Not reproducible on the validated AMD box or on QEMU, and
+invisible until the machine that has that layout shows up.
+
+Both directions are now resolved instead:
+- **4 KiB needed inside an existing 2 MiB leaf** → `split_huge_pd_entry` replaces the leaf
+  with a page table holding the 512 equivalent 4 KiB leaves. Every permission and caching
+  bit (writable/user/NX/PWT/PCD/global) is replicated onto all 512, so the other 511 pages
+  keep exactly the rights and memory type they had. Flags are copied through the typed
+  accessors, never by cloning the raw entry: a PDE's PAT bit is bit 12 while a PTE's is
+  bit 7 (a PDE's huge bit), so a raw copy would mistranslate the memory type.
+- **2 MiB requested where 4 KiB mappings already sit** → `build_direct_map` maps that window
+  at 4 KiB, costing one page table.
+
+Splitting is safe *here specifically* because the table is not yet in CR3: no TLB entry can
+exist for it, the boot is single-core, and the result is bit-for-bit equivalent to the huge
+leaf. `HugePageCollision` still escapes for the one case no granularity choice can work
+around — a 1 GiB PDPT leaf already covering the address, which this builder never creates.
+The `Overlap` error is untouched, so genuinely contradictory input (two regions claiming one
+page with different physical targets) still fails loudly.
+
+`DirectMapStats` gained `huge_2m_split` and `huge_2m_downgraded` so both events show up in
+the boot line rather than happening invisibly.
+
+Side benefit: the residual Phase 5 hardening item — the slot-0 *identity alias* of the kernel
+image is still RW because it is covered by huge pages — now has its enabler.
+`split_huge_pd_entry` is exactly the missing primitive for making that range RO.
 
 ---
 

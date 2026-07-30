@@ -93,6 +93,16 @@ impl PageTableEntry {
         }
     }
 
+    /// Returns whether the Page-Level Write-Through (PWT) bit is set.
+    ///
+    /// Together with [`pcd`](Self::pcd) this selects the PAT entry that decides the page's
+    /// memory type. Read when replicating a leaf's caching onto finer-grained leaves —
+    /// see `direct_map::split_huge_pd_entry`.
+    #[inline]
+    pub fn pwt(self) -> bool {
+        (self.0 & ENTRY_PWT) != 0
+    }
+
     /// Sets or clears the Page-Level Write-Through (PWT) bit.
     #[inline]
     pub fn set_pwt(&mut self, val: bool) {
@@ -101,6 +111,13 @@ impl PageTableEntry {
         } else {
             self.0 &= !ENTRY_PWT;
         }
+    }
+
+    /// Returns whether the Page-Level Cache Disable (PCD) bit is set.
+    /// See [`pwt`](Self::pwt) for why both are read together.
+    #[inline]
+    pub fn pcd(self) -> bool {
+        (self.0 & ENTRY_PCD) != 0
     }
 
     /// Sets or clears the Page-Level Cache Disable (PCD) bit.
