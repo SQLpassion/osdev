@@ -152,32 +152,79 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
     arch::msr::enable_no_execute();
     debugln!("EFER.NXE enabled (No-Execute paging active)");
 
-    // Initialize the Physical Memory Manager
-    pmm::init(true);
+    // Enable CR0.WP so the kernel's own read-only mappings are enforced against ring-0
+    // writes (#63 Phase 5 W^X). Without WP, ring 0 ignores the read/write bit, so the RO
+    // `.text`/`.rodata` mappings the kernel-owned table installs would not actually stop
+    // a kernel write. Harmless here (the pre-switch tables map `.text` RWX); it becomes
+    // load-bearing the instant `vmm::init` switches CR3 to the kernel-owned table.
+    arch::cpu::enable_write_protect();
+    debugln!("CR0.WP enabled (kernel W^X enforced)");
+
+    // Initialize the Physical Memory Manager.
+    //
+    // Debug logging OFF in production: `pmm`'s `log_alloc` emits a serial line per frame
+    // allocation. Since #63 Phase 5 the kernel heap is demand-paged, so a normal boot now
+    // allocates *thousands* of frames (e.g. the framebuffer console's multi-MB back
+    // buffer) — with logging on that was thousands of serial lines, adding ~10 s to boot.
+    // Pass `true` here only when specifically debugging the PMM.
+    pmm::init(false);
     debugln!("Physical Memory Manager initialized");
 
-    // Reserve the firmware-owned page-table frames before any significant allocation.
-    // `vmm::init` clones the firmware PML4's top-level entries, so those PDPT/PD/PT
-    // frames stay live under the kernel; reserve them now so the PMM never hands one
-    // out and corrupts the active page tables.
-    // SAFETY: the firmware identity map is still active (CR3 not yet switched) and the
-    // PMM is initialized, satisfying `reserve_firmware_page_tables`'s contract.
-    unsafe {
-        vmm::reserve_firmware_page_tables();
+    // Reserve the firmware-owned page-table frames before any significant allocation -
+    // but only on the firmware-clone fallback path (a boot with no `BootInfo`, e.g. a
+    // unit-test kernel). `vmm::init` clones the firmware PML4's top-level entries there,
+    // so those PDPT/PD/PT frames stay live under the kernel; reserve them now so the PMM
+    // never hands one out and corrupts the active page tables. On the standard
+    // kernel-owned-table path (a published `BootInfo`, i.e. every real boot) the new
+    // table references no firmware sub-table at all, so there is nothing left to protect
+    // and the call is skipped.
+    //
+    // Skipping it is not a memory win, though — it would be a no-op there anyway. By the
+    // R1 invariant below, firmware/loader table frames are never inside the PMM pool in
+    // the first place, and `mark_frame_used` on an untracked frame does nothing (see its
+    // doc). The original #63 plan expected the skip to *return* those frames to the
+    // allocatable pool (its problem "P3"); that premise was wrong — they were never in it.
+    //
+    // Why skipping the reservation is safe (#63 R1 invariant): the direct-map builder
+    // draws scaffold frames from the PMM and zeroes them *while the firmware/loader
+    // tables are still live in CR3*. That is only safe because the PMM pool and the
+    // active table frames are disjoint: the PMM pools *only* usable RAM at or above
+    // `KERNEL_OFFSET` (1 MiB) (see `pmm::manager`), whereas the active tables live
+    // outside that pool — on UEFI in firmware-owned, non-`EfiConventionalMemory` memory,
+    // and on BIOS in the loader's `0x9000..=0x15FFF` tables, all below 1 MiB. (Since #63
+    // Phase 5 nothing is borrowed from the firmware *after* the switch either: slot 256
+    // is rebuilt from fresh PMM frames by `direct_map::map_kernel_image_higher_half`
+    // instead of copying the firmware's low-RAM mirror verbatim.)
+    // `switch_to_direct_map` asserts exactly this (a live table frame is never a free
+    // PMM frame) via `page_table::assert_no_active_table_frame_is_pmm_free`, so a future
+    // regression of the invariant panics loudly instead of silently resetting the box.
+    let boot_info_published =
+        boot_info::BOOT_INFO_PTR.load(core::sync::atomic::Ordering::Acquire) != 0;
+    if !boot_info_published {
+        // SAFETY: the firmware identity map is still active (CR3 not yet switched) and
+        // the PMM is initialized, satisfying `reserve_firmware_page_tables`'s contract.
+        unsafe {
+            vmm::reserve_firmware_page_tables();
+        }
+        debugln!("Firmware page-table frames reserved (firmware-clone fallback)");
     }
-    debugln!("Firmware page-table frames reserved");
 
     // Prepare IDT/PIC so exception handlers are in place before the CR3 switch.
     interrupts::init();
     debugln!("Interrupt subsystem initialized");
 
-    // Initialize the Virtual Memory Manager. It switches CR3 to a kernel PML4 that is a
-    // SUPERSET of the firmware page tables (all firmware mappings + a recursive self-map).
-    vmm::init(true);
+    // Initialize the Virtual Memory Manager. On every real boot (a published `BootInfo`)
+    // it switches CR3 to a genuinely kernel-owned page-table hierarchy built from the
+    // boot memory map; a BootInfo-less boot falls back to a superset clone of the
+    // firmware page tables (all firmware mappings + a recursive self-map).
+    // Debug logging OFF in production (same reason as `pmm::init` above): the VMM logs a
+    // line per intermediate page-table allocation, which the demand-paged heap now
+    // triggers many times per boot.
+    vmm::init(false);
     debugln!("Virtual Memory Manager initialized");
 
-    // Initialize the Heap Manager
-    heap::init(true);
+    // Initialize the Heap Manager (debug logging OFF in production — logs per allocation).
+    heap::init(false);
     debugln!("Heap Manager initialized");
 
     // Dynamic console initialization based on the boot-time video mode.
@@ -291,6 +338,24 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
 
         io::vfs::read_file("shell.bin").expect("failed to load SHELL.BIN from FAT32")
     };
+
+    // #63 verification banner: surface the ACTIVE page-table model on the visible
+    // console (framebuffer/VGA) right before the shell starts, so a boot can be
+    // confirmed to run the kernel-owned tables without reading the serial log. Keyed on
+    // the same `BootInfo`-published fact `vmm::init` uses to pick its path.
+    crate::console::with_console(|console| {
+        if boot_info_published {
+            let _ = writeln!(
+                console,
+                ">> #63: KERNEL-OWNED page tables ACTIVE (CR3 switched to kernel-built direct map)"
+            );
+        } else {
+            let _ = writeln!(
+                console,
+                ">> #63: firmware-clone page tables (no BootInfo - fallback path)"
+            );
+        }
+    });
 
     // --- Shared scheduler bring-up (both boot paths) ---
 

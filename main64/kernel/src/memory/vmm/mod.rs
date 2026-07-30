@@ -29,6 +29,7 @@ use crate::console::KernelConsole;
 use crate::logging;
 
 pub mod diagnostics;
+pub mod direct_map;
 pub mod mapping;
 pub mod page_fault;
 pub mod page_table;
@@ -45,11 +46,12 @@ pub use diagnostics::{
 };
 #[allow(unused_imports)]
 pub use mapping::{
-    clone_kernel_pml4_for_user, configure_wc_mapping, destroy_user_address_space,
-    destroy_user_address_space_with_page_counts, map_user_page, map_virtual_to_physical,
-    map_virtual_to_physical_uc, map_virtual_to_physical_wc, populate_page_table_path,
-    switch_page_directory, try_map_virtual_to_physical, unmap_user_heap_region,
-    unmap_virtual_address, unmap_without_release, with_address_space, MapError,
+    clone_kernel_pml4_for_user, configure_uc_mapping, configure_wc_mapping,
+    destroy_user_address_space, destroy_user_address_space_with_page_counts, map_user_page,
+    map_virtual_to_physical, map_virtual_to_physical_uc, map_virtual_to_physical_wc,
+    populate_page_table_path, switch_page_directory, try_map_virtual_to_physical,
+    unmap_user_heap_region, unmap_virtual_address, unmap_without_release, with_address_space,
+    MapError,
 };
 #[allow(unused_imports)]
 pub use page_fault::{
@@ -280,25 +282,42 @@ pub fn init(debug_output: bool) {
         alloc_frame_phys_or_panic, build_kernel_pml4_from_firmware, table_at, zero_phys_page,
     };
 
-    // Allocate and zero a fresh frame for the kernel's own PML4.
-    let pml4 =
-        alloc_frame_phys_or_panic("VMM: out of physical memory while allocating kernel PML4");
-    zero_phys_page(pml4);
-
-    // Build it as a superset of the firmware PML4 (still active in CR3): copy all 512
-    // firmware entries, then install our recursive self-map at slot 511. Both PML4s are
-    // reachable here via the firmware identity map (physical address == virtual address).
     let fw_pml4 = read_cr3() & 0x000F_FFFF_FFFF_F000;
-    // SAFETY: firmware PML4 and our fresh PML4 are reachable via the active firmware
-    // identity map; `pml4` is the physical frame backing the destination table.
-    unsafe {
-        build_kernel_pml4_from_firmware(table_at(fw_pml4), table_at(pml4), pml4);
-    }
+
+    // #63 (kernel-owned page tables on the UEFI path): when a `BootInfo` has been
+    // published, build a genuinely kernel-owned page-table hierarchy from the boot
+    // memory map and switch CR3 to it instead of cloning the firmware's tables. This is
+    // the standard path for every real boot, since both the BIOS and UEFI loaders
+    // publish a `BootInfo`.
+    //
+    // With no `BootInfo` there is nothing to build the map from, so unit-test kernels
+    // (which call `vmm::init` without publishing one) fall back to the firmware clone
+    // here instead of tripping `switch_to_direct_map`'s BootInfo assertion.
+    let boot_info_published = crate::boot_info::BOOT_INFO_PTR.load(Ordering::Acquire) != 0;
+    let pml4 = if boot_info_published {
+        // SAFETY: the old firmware/BIOS-loader identity map is still active (this is
+        // the first and only CR3 write in this function on this path); `fw_pml4` is
+        // the physical address of the currently active PML4.
+        unsafe { direct_map::switch_to_direct_map(fw_pml4) }
+    } else {
+        // Allocate and zero a fresh frame for the kernel's own PML4.
+        let pml4 =
+            alloc_frame_phys_or_panic("VMM: out of physical memory while allocating kernel PML4");
+        zero_phys_page(pml4);
+
+        // Build it as a superset of the firmware PML4 (still active in CR3): copy all
+        // 512 firmware entries, then install our recursive self-map at slot 511. Both
+        // PML4s are reachable here via the firmware identity map (phys == virt).
+        // SAFETY: firmware PML4 and our fresh PML4 are reachable via the active
+        // firmware identity map; `pml4` is the physical frame backing the destination.
+        unsafe {
+            build_kernel_pml4_from_firmware(table_at(fw_pml4), table_at(pml4), pml4);
+        }
+        write_cr3(pml4);
+        pml4
+    };
 
     // Publish VMM state and mark it initialized for runtime APIs.
     set_vmm_state_unchecked(pml4, debug_output);
     VMM.initialized.store(true, Ordering::Release);
-
-    // Activate the new root and return to the boot sequence.
-    write_cr3(pml4);
 }

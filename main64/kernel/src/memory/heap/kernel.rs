@@ -14,7 +14,7 @@ use crate::logging;
 use crate::memory::pmm;
 use crate::sync::spinlock::SpinLock;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use super::generic::HeapEnvironment;
 use super::types::{
@@ -72,6 +72,15 @@ impl GlobalHeap {
 /// Process-wide heap instance.
 static HEAP: GlobalHeap = GlobalHeap::new();
 
+/// Lock-free cache of the heap arena ceiling (`state.max_heap_size`), published once by
+/// [`init`]. Read by [`is_kernel_heap_address`], which runs **inside the page-fault
+/// handler**: it must NOT take the heap spinlock (`with_heap`). The kernel heap is
+/// demand-paged, so `grow_heap` writes to not-yet-present pages *while holding the heap
+/// lock*; the resulting `#PF` re-enters `is_kernel_heap_address`, and reading the cap
+/// through `with_heap` there would deadlock on the already-held lock (this manifested as
+/// a boot hang the moment the heap stopped being mirror-backed — #63 Phase 5).
+static KERNEL_HEAP_MAX_CAP: AtomicUsize = AtomicUsize::new(0);
+
 /// Computes the heap cap strictly from current PMM free capacity.
 fn compute_system_heap_cap() -> usize {
     // Step 1: PMM may be unavailable in early bring-up contexts.
@@ -107,6 +116,12 @@ pub fn init(debug_output: bool) -> usize {
     let heap_start = HEAP_START_OFFSET;
     let heap_end = HEAP_START_OFFSET + INITIAL_HEAP_SIZE;
     let max_heap_size = compute_system_heap_cap();
+
+    // Publish the arena ceiling for the lock-free `is_kernel_heap_address` BEFORE the
+    // first heap write below: on the demand-paged kernel-owned table that `write_bytes`
+    // itself faults, and the page-fault handler gates on `is_kernel_heap_address` — which
+    // must see the real cap (not 0) to accept the fault. See `KERNEL_HEAP_MAX_CAP`.
+    KERNEL_HEAP_MAX_CAP.store(max_heap_size, Ordering::Release);
 
     // SAFETY:
     // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
@@ -199,9 +214,26 @@ pub fn max_heap_size() -> usize {
 }
 
 /// Returns whether the given virtual address falls within the kernel heap arena range.
+///
+/// **Must not take the heap spinlock**: this runs inside the page-fault handler while the
+/// heap lock may already be held (a demand-paged `grow_heap` write faults with the lock
+/// held), so reading the ceiling through `with_heap`/`max_heap_size()` there would
+/// deadlock (a boot hang, once the heap stopped being mirror-backed — #63 Phase 5).
+///
+/// After `init` it reads the fixed ceiling from the atomic [`KERNEL_HEAP_MAX_CAP`]
+/// (lock-free — this is the branch the `grow_heap` fault takes). Before `init` (e.g. the
+/// VMM diagnostics smoke test, which demand-maps higher-half test addresses via this gate
+/// without ever calling `heap::init`) it falls back to `compute_system_heap_cap()`, which
+/// takes only the PMM lock — never the heap lock — so it stays deadlock-free while
+/// preserving the pre-`init` behaviour the old `max_heap_size()` fallback had.
 pub fn is_kernel_heap_address(virtual_address: u64) -> bool {
     let start = HEAP_START_OFFSET as u64;
-    let cap = max_heap_size() as u64;
+    let cached = KERNEL_HEAP_MAX_CAP.load(Ordering::Acquire);
+    let cap = if cached != 0 {
+        cached
+    } else {
+        compute_system_heap_cap()
+    } as u64;
     let end = start.saturating_add(cap);
     virtual_address >= start && virtual_address < end
 }

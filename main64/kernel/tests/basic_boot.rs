@@ -87,11 +87,17 @@ fn test_boot_info_parsing() {
         UnifiedMemoryEntry {
             start: 0x1000,
             size: 0x1000,
+            memory_type: 7,
+            _pad: 0,
+            attribute: 0,
             is_usable: true,
         },
         UnifiedMemoryEntry {
             start: 0x2000,
             size: 0x2000,
+            memory_type: 0,
+            _pad: 0,
+            attribute: 0,
             is_usable: false,
         },
     ];

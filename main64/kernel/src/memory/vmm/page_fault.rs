@@ -6,8 +6,8 @@ use super::page_table::{
     zero_virt_page,
 };
 use super::{
-    classify_user_region, debug_alloc, debug_enabled, populate_page_table_path, vmm_logln,
-    UserRegion, USER_STACK_TOP,
+    classify_user_region, debug_enabled, populate_page_table_path, vmm_logln, UserRegion,
+    USER_STACK_TOP,
 };
 
 pub const PF_ERR_PRESENT: u64 = 1 << 0;
@@ -81,8 +81,14 @@ pub fn try_handle_page_fault(virtual_address: u64, error_code: u64) -> Result<()
     let fault_address_raw = virtual_address;
     let virtual_address = page_align_down(fault_address_raw);
 
-    // Optional structured debug trace for fault triage.
-    if debug_enabled() {
+    // Optional structured debug trace for fault triage — only for *protection* faults
+    // (P=1), which are rare and notable. Routine non-present demand faults (P=0) must NOT
+    // trace: since #63 Phase 5 the kernel heap is demand-paged, so a single multi-MB early
+    // allocation (e.g. the framebuffer console's back buffer) generates thousands of P=0
+    // faults; tracing each one (three serial lines) turned boot into a minutes-long crawl
+    // that looked like a hang. Refused/error faults still log their own dedicated messages
+    // below, so nothing diagnostic is lost for the cases that actually matter.
+    if debug_enabled() && (error_code & PF_ERR_PRESENT) != 0 {
         let cr3 = read_cr3();
 
         vmm_logln(format_args!(
@@ -153,13 +159,19 @@ pub fn try_handle_page_fault(virtual_address: u64, error_code: u64) -> Result<()
     //   USER_CODE  → read-only  (writable=false), executable  (no_execute=false)
     //   USER_STACK → writable   (writable=true),  non-executable (no_execute=true)
     //   USER_HEAP  → writable   (writable=true),  non-executable (no_execute=true)
-    //   kernel     → writable   (writable=true),  no NX applied (kernel code/data mixed)
-    // EFER.NXE is activated in kaosldr_16/longmode.asm; without it no_execute is ignored.
+    //   kernel     → writable   (writable=true),  non-executable (no_execute=true)
+    // The kernel case is `user_region.is_none()`, which the guard above has already
+    // restricted to the kernel heap arena — the kernel never executes from the heap, and
+    // heap-backed ring-3 task stacks must be NX, so these demand pages are RW+NX (#63
+    // Phase 5 W^X; before Phase 5 the heap was RWX-backed by the slot-256 mirror).
+    // EFER.NXE is activated in KernelMain (arch::msr::enable_no_execute); without it
+    // no_execute is ignored.
     let writable = !matches!(user_region, Some(UserRegion::Code));
-    let no_execute = matches!(
-        user_region,
-        Some(UserRegion::Stack) | Some(UserRegion::Heap)
-    );
+    let no_execute = user_region.is_none()
+        || matches!(
+            user_region,
+            Some(UserRegion::Stack) | Some(UserRegion::Heap)
+        );
 
     // Step 1: user-stack faults grow downward stack pages on demand.
     if matches!(user_region, Some(UserRegion::Stack)) {
@@ -234,7 +246,11 @@ pub fn demand_map_leaf_page(
             invlpg(virtual_address);
         }
 
-        debug_alloc("PT", pt_idx, table_entry(pt, pt_idx).frame());
+        // NOTE: intentionally no per-leaf `debug_alloc` trace here. Since #63 Phase 5 the
+        // kernel heap is demand-paged, so this runs once per mapped page — a multi-MB
+        // early allocation would emit thousands of serial lines and crawl the boot. The
+        // per-*table* traces in `populate_page_table_path` (rare: one per 512 pages) are
+        // kept for scaffold-allocation visibility.
     }
 
     Ok(())

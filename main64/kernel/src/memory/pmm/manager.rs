@@ -402,6 +402,52 @@ impl PhysicalMemoryManager {
         false
     }
 
+    /// Returns `true` iff `pfn` names a frame this PMM currently manages *and* has
+    /// marked free — i.e. one that `alloc_frame` could hand out. Returns `false` for a
+    /// PFN outside every managed region (firmware/loader memory the PMM never pools, or
+    /// low memory below `KERNEL_OFFSET`) and for a managed-but-used frame.
+    ///
+    /// Read-only counterpart to the bitmap inspection in [`mark_frame_used`](Self::mark_frame_used).
+    /// Used by the #63 kernel-owned-table switch guard
+    /// (`vmm::page_table::assert_no_active_table_frame_is_pmm_free`) to prove that no
+    /// live firmware/loader page-table frame is allocatable before the direct-map
+    /// builder starts drawing scaffold frames — see `docs/todo_uefi_kernel_pagetables.md`
+    /// §R1 and `docs/vmm.md` §4.4.
+    pub fn is_pfn_free(&self, pfn: u64) -> bool {
+        let frame_start = match pfn.checked_mul(PAGE_SIZE) {
+            Some(v) => v,
+            None => return false,
+        };
+
+        for r in self.regions_snapshot() {
+            let region_end = match r
+                .frames_total
+                .checked_mul(PAGE_SIZE)
+                .and_then(|len| r.start.checked_add(len))
+            {
+                Some(v) => v,
+                None => continue,
+            };
+            if frame_start < r.start || frame_start >= region_end {
+                continue;
+            }
+
+            let bit_idx = (frame_start - r.start) / PAGE_SIZE;
+            let bitmap = r.bitmap_start as *const u64;
+            let word_idx = (bit_idx / 64) as usize;
+            let bit_mask = 1u64 << (bit_idx % 64);
+
+            // SAFETY:
+            // - `bit_idx` derives from a frame proven inside this region, so
+            //   `word_idx` addresses a valid bitmap word.
+            // - `bitmap` points to readable PMM bitmap memory.
+            let word_val = unsafe { *bitmap.add(word_idx) };
+            return (word_val & bit_mask) == 0; // clear bit == free/allocatable
+        }
+
+        false
+    }
+
     /// Allocates a single page frame from the first available region.
     /// Returns `Some(PageFrame)` on success, or `None` if no free frames exist.
     pub fn alloc_frame(&mut self) -> Option<PageFrame> {

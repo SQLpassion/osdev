@@ -1,7 +1,41 @@
 # Implementation Plan: Kernel-Owned Page Tables on the UEFI Path
 
 > **Audience:** Coding AI, for step-by-step implementation.
-> **Status:** Plan, not yet implemented.
+> **Status:** Phases 0-5 implemented and now the **unconditional standard path**: on
+> every boot that publishes a `BootInfo` (i.e. every real boot), `vmm::init` builds a
+> kernel-owned page-table hierarchy and switches CR3 to it. **Phase 5 (W^X) done:** the
+> higher-half kernel image (PML4 slot 256) is rebuilt per-section — `.text` RO+X,
+> `.rodata` RO+NX, `.data`/`.bss` RW+NX — plus the VGA text page RW+NX
+> (`map_kernel_image_higher_half`); the kernel heap and heap-backed ring-3 task stacks are
+> demand-paged RW+NX; and `CR0.WP` is set (`arch::cpu::enable_write_protect`) so RO
+> `.text` is enforced against ring 0. Remaining hardening left as future work: the slot-0
+> *identity alias* of the image is still RW (a huge-page split would close it), and ring-3
+> user code is still mapped RW+X (a separate issue). Tracked in issue #63, branch
+> `feature/issue-63-uefi-kernel-pagetables`.
+> The kernel-owned table is validated end-to-end: QEMU/OVMF **and** the real AMD/UEFI
+> box boot to the ring-3 shell (all shell commands + `TUI.BIN`), and `cargo test` is
+> green. The firmware-clone path is kept only as the fallback for the no-`BootInfo`
+> case (`vmm::init` gates the switch on a published `BootInfo`).
+>
+> **Post-validation cleanup (2026-07-29):** now that the real-hardware boot is proven,
+> the `USE_DIRECT_MAP_TABLE` const kill-switch/rollout flag was removed (the switch is
+> no longer gated on a compile-time flag, only on `BootInfo` presence), and the
+> redundant Phase 1 boot canary (`run_boot_canary` + its `free_direct_map_tables`
+> helper — a build+validate+free pass that duplicated the coverage validation
+> `build_full_kernel_pml4` already performs before the CR3 switch) was removed. The
+> historical mentions of the flag/canary in §5 below are kept for context.
+>
+> **Review follow-ups, HW-validated (2026-07-30):** a review of the completed branch
+> produced six further fixes, all of them since **confirmed booting on the physical
+> AMD/UEFI box** (ring-3 shell, disk detected, `TUI.BIN`) as well as green under
+> `cargo test`. Three carried real-hardware risk that only that boot could clear: the
+> AHCI ABAR is now re-typed uncacheable unconditionally (**B4**, touches the storage
+> driver), the linker script places its previously-orphaned sections explicitly (**B5**,
+> changes the image layout), and page-granularity conflicts are resolved by splitting or
+> downgrading instead of panicking (**B1**, changes the emitted table in edge cases). The
+> other three are `[KERNEL_OFFSET, STACK_TOP)` added to the essential-address check
+> (**§R6**), MMIO leaves re-stamped over a write-back predecessor (**B3**), and a checked
+> page round-up (**B6**). See §R6 / §R7 and the `#63 B<n>` markers in the code.
 > **Predecessor context:** `docs/vmm.md` §4 (write_cr3 saga), `docs/boot_uefi.md`.
 
 ---
@@ -25,13 +59,27 @@ This yields five structural problems:
 |---|---------|-------------------|
 | P1 | **No W^X**: kernel text runs RWX (firmware maps identity as supervisor-RWX, huge pages cannot be split) | inherited map in slot 0/256 |
 | P2 | **Direct map depends on firmware coverage**: `virt_to_phys` is a pure offset (`pmm/types.rs:23`); unmapped RAM → silent `#PF` | `pmm/types.rs:13,23` |
-| P3 | **Firmware PT frames permanently blocked + fragile reservation** | `vmm::reserve_firmware_page_tables` (`main.rs:156`, `page_table.rs:455`) |
+| P3 | **Firmware PT frames permanently blocked + fragile reservation** — *the "permanently blocked" half turned out to be false, see the correction below* | `vmm::reserve_firmware_page_tables` (`main.rs:156`, `page_table.rs:455`) |
 | P4 | **Caching/MMIO inherited blindly**: no per-page override possible (no split) | huge pages in slot 0/256 |
 | P5 | **Two divergent memory models** (legacy builds its own, UEFI inherits) | entire VMM |
 
 **Goal:** Early in `KernelMain`, the kernel builds its **own, complete**
 page-table hierarchy from the UEFI memory map, switches CR3 to it, and frees the
 firmware sub-tables. This resolves P1–P5.
+
+> **Correction to P3 (2026-07-30).** The "firmware PT frames permanently blocked" half of P3
+> was a wrong premise, and the "memory win" it implied does not exist. The PMM pools **only**
+> usable RAM at or above `KERNEL_OFFSET`, the firmware/loader page tables live outside that
+> pool (that is exactly the §R1 invariant), and `mark_frame_used` on a frame the PMM does not
+> track is an explicit no-op — see its doc comment in `pmm/manager.rs`. So
+> `reserve_firmware_page_tables()` never cost a single allocatable frame, and skipping it
+> never returned one. Note the two claims are mutually exclusive: if a firmware table frame
+> *were* allocatable, §R1's guard would panic instead. What #63 actually delivers is
+> **P1, P2, P4 and P5** — W^X, kernel-controlled coverage, per-page cacheability, and one
+> memory model — plus the removal of a *structural* dependency on firmware-owned tables
+> (P3's "fragile reservation" half, which was real: the walk had to run at exactly the right
+> point in boot, before the first significant allocation). Every "memory win" / "frames
+> return to the PMM" phrasing below is superseded by this note.
 
 ---
 
@@ -91,6 +139,13 @@ tables **must** cover the following before the switch:
    `RuntimeServicesCode/Data`, `ACPIMemoryNVS`, `Reserved`, `MemoryMappedIO`, `PalCode`.
 6. **Higher-half kernel (PML4[256]) + recursive window (PML4[511])** — already
    kernel-owned, must be preserved.
+7. **The block the kernel is running on** — `[KERNEL_OFFSET, STACK_TOP)` =
+   `[0x10_0000, 0x40_0000)`: the kernel image's low identity alias plus the bootstrap
+   stack (both loaders set `RSP = STACK_TOP`; `pmm::manager` reserves the same block).
+   Formally a subset of item 1 on the BIOS path, but *not* on UEFI, where the loader
+   claims it as `EfiLoaderCode` rather than `EfiConventionalMemory`. Listed separately
+   because it is the only entry whose failure mode is an exception-less triple fault
+   instead of a diagnosable `#PF` — see §R6.
 
 **Safe to drop** (no longer referenced after the switch):
 firmware-owned PDPT/PD/PT frames; `BootServicesCode/Data`, `LoaderCode`, unused
@@ -127,6 +182,236 @@ Attribute bit: EFI_MEMORY_RUNTIME = 0x8000_0000_0000_0000  -> always map
 Each phase is independently buildable/testable. The order is **binding** (Phase 0 is a
 hard prerequisite). After each phase: `cargo build` + `cargo test` from `main64/` must be
 green; the QEMU boot must not regress.
+
+### Implementation status (2026-07-27, issue #63)
+
+All phases below are implemented on `feature/issue-63-uefi-kernel-pagetables`. Notable
+deviations from the plan as originally written:
+
+- **A third `UnifiedMemoryEntry` copy** (`kaosldr_64/src/boot_info.rs`, the BIOS loader)
+  was missing from this document's Phase 0 scope. The kernel reads the memory map
+  boot-path-agnostically, so leaving it at the old 24-byte layout would have silently
+  broken the BIOS boot path the moment the other two copies grew to 40 bytes. Fixed in
+  the same commit as the UEFI/kernel struct changes.
+- **Real file paths differ slightly** from this doc's references (mostly line-number
+  drift, plus `kernel/src/memory/pmm/types.rs`, not `kernel/src/pmm/types.rs`).
+- **A real bug was caught by `direct_map_full_switch_test.rs`** (a QEMU-only test that
+  calls the actual CR3-switch path directly): `build_direct_map` did not round each
+  memory-map region to page boundaries before mapping. QEMU/SeaBIOS's classic
+  `[0x0, 0x9FC00)` usable / `[0x9FC00, 0xA0000)` reserved split — both inside the same
+  4 KiB page — made `phys_to_pfn`'s implicit `>>12` truncate an unaligned region start,
+  which then mismatched against the untruncated address in the idempotency check and
+  raised a spurious `Overlap` error. Fixed by rounding each region outward to page
+  boundaries in `build_direct_map`; regression-tested in `direct_map_test.rs`.
+- **Phase 4's CR3 switch is implemented and ENABLED** (`direct_map::USE_DIRECT_MAP_TABLE
+  = true` since 2026-07-28) and validated on the real AMD/UEFI box (boots to the ring-3
+  shell; all shell commands and `TUI.BIN` work). QEMU cannot reproduce the SMM/SMI
+  regression class that motivated the firmware-clone approach (see §6), so the
+  real-hardware boot — not the QEMU pass — is what cleared it. `vmm::init` gates the
+  switch on a published `BootInfo`, falling back to the firmware clone otherwise (e.g.
+  unit-test kernels). (The `USE_DIRECT_MAP_TABLE` const kill-switch that guarded this at
+  the time was removed on 2026-07-29 once the real-hardware boot was proven — see the
+  post-validation cleanup note at the top of this document.)
+- **Phase 5 was partial at 2026-07-27** (NX on the identity/direct map done; kernel
+  `.text` RO+X not). **Completed 2026-07-29** — see the "Phase 5 (W^X) completion" note
+  below and §5 Phase 5.
+
+### Activation-path review follow-up (2026-07-28)
+
+A review of `USE_DIRECT_MAP_TABLE`'s activation path (run while it was still disabled,
+before the flip described in the next subsection) found five gaps, all now fixed:
+
+1. **`EfiLoaderCode`/`EfiLoaderData` (types 1/2) were unmapped** by either classifier —
+   on UEFI, `kaosldr_uefi` allocates the PMM-metadata region as `EfiLoaderData`
+   (`allocate_pages(0, 2, …)`), and the loader's own `BootInfo`/memory-map statics
+   typically live in one of these two types too. Fixed with a new `is_loader_owned`
+   classifier, wired as a third `build_direct_map` pass.
+2. **No independent sanity check** that the addresses the kernel actually dereferences
+   (`BootInfo` itself, its memory map, the PMM-metadata region) resolve, regardless of
+   classifier coverage. Fixed with `validate_essential_boot_addresses`, deliberately
+   redundant with the classifiers so a future classifier regression can't silently
+   reopen this exact gap.
+3. **No test exercised the UEFI-shaped memory layout** — `direct_map_full_switch_test.rs`
+   only ever boots via the BIOS loader, where the PMM-metadata region falls back to
+   plain usable RAM. Fixed with a synthetic-memory-map test
+   (`test_build_full_kernel_pml4_maps_uefi_style_loader_data_metadata`) that calls
+   `build_full_kernel_pml4` directly with an `EfiLoaderData`-typed metadata region,
+   without a real CR3 switch (an incomplete synthetic map doing a real switch could
+   crash the test kernel). A full UEFI-boot (OVMF/GPT) test harness remains a separate,
+   larger follow-up, not blocking for this issue.
+4. **The framebuffer was never actually mapped** by the switch path — `map_wc_range`
+   was implemented and unit-tested but the doc comment describing it as "the caller's
+   responsibility" was never acted on by the one production caller. Fixed:
+   `build_full_kernel_pml4` now calls it when a framebuffer is present.
+5. **MMIO (`EfiMemoryMappedIO`, 11) was mapped write-back**, not uncacheable — it went
+   through the same `is_phase2_platform`/`map_2m_page`/`map_4k_page` path as
+   Reserved/RuntimeServices/ACPI-NVS/PalCode, which only sets NX. Fixed by splitting
+   MMIO into its own `is_mmio` classifier mapped via a new `build_uc_direct_map`
+   (PCD set, PWT clear, 4 KiB-only, mirroring `map_wc_range`'s reasoning).
+
+6. **`EfiMemoryMappedIOPortSpace` (type 12) was classified nowhere** — not
+   `is_phase1_ram`, not `is_phase2_platform`, not `is_mmio` — so a region of this type
+   was silently left unmapped by every pass, rather than mapped as §4 requires. Found in
+   a follow-up review after the five points above. Fixed by widening `is_mmio` to accept
+   both 11 and 12: architecturally the same class of device-backed address-space window
+   as `EfiMemoryMappedIO`, so it goes through the same uncacheable `build_uc_direct_map`
+   path rather than getting a fourth classifier/pass.
+
+While wiring the point-3 test's cleanup, also found and fixed a latent bug in
+`free_direct_map_tables`: it walked every PML4 slot unconditionally, including slot 256
+(the higher-half mirror, borrowed verbatim from whatever table was active when
+`build_full_kernel_pml4` ran — freeing it would release frames a different, still-live
+table depends on) and slot 511 (the recursive self-map, misinterpreted as a regular
+PDPT entry one level down, plus a double-release of the PML4's own frame). Never
+triggered before because `free_direct_map_tables` had only ever been called on plain
+`build_direct_map`-only canary tables, which never populate either slot.
+
+### Activation on real hardware (2026-07-28)
+
+With the five gaps above fixed, `USE_DIRECT_MAP_TABLE` was flipped to `true` and the
+branch was validated on the physical AMD/UEFI box: it boots to the ring-3 shell and all
+shell commands work. Two further issues surfaced **only on real hardware** (both fixed):
+
+1. **`TUI.BIN` crashed at startup** — `page_fault.rs` "protection page fault at 0x100e".
+   The `GetBiosMemoryMapEntryCount`/`GetBiosMemoryMapEntry` syscalls read the BIOS
+   Information Block at the fixed low physical address `BIB_OFFSET` (0x1000; `0x100e` =
+   `+ offset_of(memory_map_entries)`), a BIOS-only structure. Harmless under the firmware
+   clone (the firmware identity-maps 0x1000, so the read returns garbage), but the
+   kernel-owned table does **not** map that low page on real UEFI firmware (it is a
+   dropped type there), so the read faulted. QEMU/OVMF maps 0x1000, so it reproduced only
+   on hardware; TUI-specific because only TUI issues that syscall at startup. Fixed: both
+   syscalls now read the loader's `UnifiedMemoryEntry` map when a `BootInfo` is present
+   (mirroring `drivers::time`'s guard), touching 0x1000 only on the legacy no-`BootInfo`
+   path. **General lesson:** kernel-owned tables expose *any* latent read of a hardcoded
+   low physical address that the firmware identity map used to satisfy silently — audit
+   for other such derefs.
+2. **`cargo test` went red** — ~20 test kernels call `vmm::init` without publishing a
+   `BootInfo`, tripping `switch_to_direct_map`'s BootInfo assertion. Fixed by gating the
+   switch on `USE_DIRECT_MAP_TABLE && BOOT_INFO_PTR != 0`; with no `BootInfo`, `vmm::init`
+   falls back to the firmware clone (identical to the `false` behavior). `cargo test` is
+   green again (401/401 across 39 test files).
+
+Branch commits: `57a2ce7` (MMIO/phase2 RUNTIME split), `e82329a` (enable flag + visible
+boot banner), `9c1d8d9` (BIOS-syscall fix), `5794b5c` (BootInfo-gate).
+
+### R1: firmware-table / PMM-pool disjointness invariant (2026-07-29)
+
+Skipping `reserve_firmware_page_tables()` on the kernel-owned-table path rests on a
+load-bearing invariant that was previously only implicit (the module doc argued that
+scaffold frames are *reachable*, but not that they can never *alias* a live table frame):
+
+> **Invariant.** No frame of the currently-active firmware/BIOS-loader page tables is
+> ever a frame the PMM can allocate.
+
+Why it matters: `switch_to_direct_map` draws scaffold frames from the PMM and zeroes them
+*while the firmware/loader tables are still live in CR3*. If the PMM could hand out one of
+those live frames, zeroing it mid-build would corrupt address translation under the running
+CPU and hard-reset the machine with no diagnostic (a real-hardware-only failure).
+
+> **Updated by Phase 5 (2026-07-30).** When R1 was written, `build_full_kernel_pml4` still
+> copied the higher-half mirror (PML4 slot 256) verbatim, so a firmware sub-tree stayed
+> referenced *after* the switch as well — a second reason the invariant had to hold. Phase 5
+> removed that: slot 256 is now rebuilt per-section from fresh PMM-allocated frames by
+> `map_kernel_image_higher_half`. The invariant is still load-bearing, but only for the build
+> window described above; the exposure ends at the CR3 switch.
+
+Why it holds by construction: the PMM pools **only** usable RAM at or above
+`KERNEL_OFFSET` (1 MiB), whereas the active tables live outside that pool — on UEFI in
+firmware-owned, non-`EfiConventionalMemory` memory; on BIOS in the loader's
+`0x9000..=0x15FFF` tables, all below 1 MiB.
+
+What was done for R1:
+- **Documented** the invariant (both facets) at the reserve-skip site in `main.rs` and in
+  `direct_map.rs`'s module doc.
+- **Guarded** it: `switch_to_direct_map` now calls
+  `page_table::assert_no_active_table_frame_is_pmm_free(old_pml4_phys)` before drawing
+  any scaffold frame. It walks the active tree and panics loudly (naming the invariant)
+  if any table frame is a free PMM frame, turning a future regression (a loader that
+  parks tables in usable RAM, or a PMM that pools more memory types) into a located
+  panic instead of a mystery reset. Backed by a new read-only PMM query
+  `PhysicalMemoryManager::is_pfn_free`.
+- **Tested**: `is_pfn_free` behaviour and the guard's no-false-positive path in
+  `pmm_test.rs`; the guard's panic-on-violation path in
+  `firmware_tables_pmm_pool_death_test.rs`.
+
+### R6: essential-address coverage for the running kernel stack (2026-07-30, HW-validated)
+
+A follow-up review found that `validate_essential_boot_addresses` — added for exactly the
+purpose of being *classifier-independent* (see point 2 of the activation-path review
+above) — covered the `BootInfo`, its memory map and the PMM-metadata region, but **not the
+low block the kernel is executing on while the switch happens**:
+`[KERNEL_OFFSET, STACK_TOP)` = `[0x10_0000, 0x40_0000)`, the kernel image's identity alias
+plus the bootstrap stack. Both loaders park `RSP` at exactly `STACK_TOP`
+(`kaosldr_16/longmode.asm`'s `MOV RSP, 0x400000`, `kaosldr_uefi`'s `mov rsp, 0x400000`),
+and `pmm::manager` reserves this same block as "kernel image + bootstrap stack", so every
+stack frame from `write_cr3` onwards lives there.
+
+Why this range is worse than every other gap: it is the one that **cannot report itself**.
+Any other unmapped range faults into the `#PF` handler and becomes a panic message. An
+unmapped stack page faults on the first push after `write_cr3` retires — with no usable
+stack to deliver the fault on, that is an immediate exception-less triple fault: no panic,
+no output, and before `console::init` no channel to print on even in principle. It is
+indistinguishable from the SMM-class hard reset this whole document is about (`vmm.md` §4),
+so it would have been misattributed to precisely the wrong cause.
+
+It resolved before this change too, but only through an implicit chain: `kaosldr_uefi`
+happens to claim `[0x100000, 0x400000)` as `EfiLoaderCode` (type 1) and `is_loader_owned`
+happens to map type 1 as well as type 2; on the BIOS path it falls out of plain usable RAM.
+Pinning it is what keeps a loader that allocates the block differently — or a narrowing of
+`is_loader_owned` to type 2 only, which its own doc comment explicitly contemplates — from
+turning into a silent reset instead of a located panic.
+
+What was done for R6:
+- **Checked**: `validate_essential_boot_addresses` now validates
+  `[KERNEL_OFFSET, STACK_TOP)` as a fourth range, appended last so the existing gap classes
+  keep reporting first.
+- **Tested**: `direct_map_test::test_validate_essential_boot_addresses_detects_unmapped_kernel_stack_block`
+  covers the block-unmapped path (with the `BootInfo` page deliberately mapped, so the test
+  proves the block is checked as a whole rather than incidentally covered).
+- The two synthetic `build_full_kernel_pml4` / `validate_essential_boot_addresses` tests now
+  model the block, which a real boot always has. While doing so, the framebuffer test's fake
+  FB moved from a low `.bss` buffer to a synthetic PCI-hole address (`0xE000_0000`), which is
+  where real GOP framebuffers live. (At the time that also dodged a `HugePageCollision`
+  panic; §R7 below removed that failure mode.)
+
+### R7: granularity conflicts are resolved, not fatal (2026-07-30, HW-validated)
+
+The builder mixes granularities: the bulk RAM map uses 2 MiB pages wherever a region is
+aligned, while four later passes need 4 KiB granularity at addresses the firmware chooses —
+the MMIO pass (`build_uc_direct_map`), the framebuffer pass (`map_wc_range`), and the
+outward page rounding that can pull a device region's edge page into a RAM window. Both
+directions of the resulting conflict used to return `HugePageCollision`, which
+`build_full_kernel_pml4` turns into a panic.
+
+That made a successful boot depend on a memory-map layout KAOS does not control. Concretely:
+a firmware reporting the GOP framebuffer inside a 2-MiB-aligned `EfiReservedMemoryType`
+region would panic the build with *"Phase 4 framebuffer direct-map failed"* on a machine
+that is otherwise perfectly fine. Not reproducible on the validated AMD box or on QEMU, and
+invisible until the machine that has that layout shows up.
+
+Both directions are now resolved instead:
+- **4 KiB needed inside an existing 2 MiB leaf** → `split_huge_pd_entry` replaces the leaf
+  with a page table holding the 512 equivalent 4 KiB leaves. Every permission and caching
+  bit (writable/user/NX/PWT/PCD/global) is replicated onto all 512, so the other 511 pages
+  keep exactly the rights and memory type they had. Flags are copied through the typed
+  accessors, never by cloning the raw entry: a PDE's PAT bit is bit 12 while a PTE's is
+  bit 7 (a PDE's huge bit), so a raw copy would mistranslate the memory type.
+- **2 MiB requested where 4 KiB mappings already sit** → `build_direct_map` maps that window
+  at 4 KiB, costing one page table.
+
+Splitting is safe *here specifically* because the table is not yet in CR3: no TLB entry can
+exist for it, the boot is single-core, and the result is bit-for-bit equivalent to the huge
+leaf. `HugePageCollision` still escapes for the one case no granularity choice can work
+around — a 1 GiB PDPT leaf already covering the address, which this builder never creates.
+The `Overlap` error is untouched, so genuinely contradictory input (two regions claiming one
+page with different physical targets) still fails loudly.
+
+`DirectMapStats` gained `huge_2m_split` and `huge_2m_downgraded` so both events show up in
+the boot line rather than happening invisibly.
+
+Side benefit: the residual Phase 5 hardening item — the slot-0 *identity alias* of the kernel
+image is still RW because it is covered by huge pages — now has its enabler.
+`split_huge_pd_entry` is exactly the missing primitive for making that range RO.
 
 ---
 
@@ -240,7 +525,10 @@ framebuffer (P3) + slot 511 + slot 256: `write_cr3` to the kernel-owned PML4.
    complete map instead of the superset.
 2. Firmware PDPT/PD/PT frames are no longer referenced →
    **remove** `reserve_firmware_page_tables()` (`main.rs:156`, `page_table.rs:455`);
-   those frames return to the PMM (memory win, resolves P3).
+   those frames return to the PMM (memory win, resolves P3). *(Both claims superseded: the
+   function is kept as the no-`BootInfo` fallback and merely **skipped** on the kernel-owned
+   path — see the Definition of Done — and no frames return to the PMM, since they were never
+   in its pool; see the P3 correction in §1.)*
 3. **Keep a fallback:** retain the old full-clone path (`build_kernel_pml4_from_firmware`)
    behind a `const`/build flag (e.g. `cfg!(feature = "uefi_full_clone")`) as a fallback,
    **until validated on real HW**.
@@ -264,6 +552,59 @@ region if needed (the rest of the direct map may stay huge).
 
 **Acceptance:** A write attempt to kernel `.text` → `#PF` (targeted death test in the
 style of `page_fault_death_test.rs`); boot stays green.
+
+#### Phase 5 (W^X) completion note (2026-07-29)
+
+Implemented as designed and **validated on the real AMD/UEFI box**: it boots to the
+ring-3 shell (all shell commands + `TUI.BIN`) with `.text` RO+X enforced. Summary of what
+shipped:
+
+- **`link.ld`**: each section is page-aligned (`. = ALIGN(4K)` between them) and delimited
+  by boundary symbols (`__text_start/__text_end`, `__rodata_start/__rodata_end`,
+  `__data_start`, `__kernel_start/__kernel_end`), so slot 256 can carry per-section rights.
+- **Slot 256 rebuilt** (not copied verbatim): `direct_map::map_kernel_image_higher_half`
+  maps the image per-section at 4 KiB — `.text` RO+X, `.rodata` RO+NX, `.data`/`.bss`
+  RW+NX — plus the **VGA text page** (`0xFFFF_8000_000B_8000` → phys `0xB8000`) RW+NX. The
+  VGA page must be *eager* because the fatal-exception/panic paths write it and the #PF
+  handler refuses non-heap higher-half faults.
+- **Heap/task-stacks demand-paged**: the kernel heap and heap-backed ring-3 task stacks
+  (also higher-half) are no longer mirror-backed; the page-fault handler serves them RW+NX
+  (`page_fault.rs`), which the rebuilt, non-huge slot-256 sub-tree lets it extend. This
+  also fixed a latent bug where those VAs aliased free PMM frames.
+- **`CR0.WP`**: `arch::cpu::enable_write_protect()` in `KernelMain` — without it ring-0
+  writes ignore the RO bit and `.text` RO would be unenforced.
+- **Tests**: `direct_map_test::test_map_kernel_image_higher_half_per_section_perms`
+  (per-section perms + non-huge slot 256), `kernel_text_wx_death_test` (ring-0 write to
+  `.text` → protection `#PF`), `kernel_owned_heap_runtime_test` (heap demand paging +
+  64 KiB block + VGA write through the rebuilt slot 256).
+- **Out of scope (future work):** the slot-0 *identity alias* of the image is still RW
+  (a huge-page split would make it RO); ring-3 user code is still RW+X (separate issue).
+
+##### Real-hardware activation findings (2026-07-29)
+
+Narrowing slot 256 made the kernel heap **demand-paged for the first time** (previously
+the verbatim slot-256 mirror satisfied every heap access, so the demand path never ran in
+production). That flushed out three latent problems on the real box — all fixed, all
+would have hung/crawled the boot on any demand-paged config:
+
+1. **Reentrancy deadlock (boot hang).** `malloc` holds the heap spinlock while `grow_heap`
+   writes a not-yet-present page; the resulting `#PF` re-entered
+   `is_kernel_heap_address → max_heap_size() → with_heap` on the already-held lock. Fixed:
+   `is_kernel_heap_address` is now lock-free, reading the arena ceiling from the
+   `KERNEL_HEAP_MAX_CAP` atomic published at `heap::init` (falling back to the lock-free
+   `compute_system_heap_cap()` before init). Regression-guarded by
+   `kernel_owned_heap_runtime_test`.
+2. **Per-fault debug-logging storm (~minutes, looked like a hang).** With VMM debug on,
+   the `#PF` handler emitted a verbose trace *and* a `debug_alloc("PT", …)` per demand-
+   mapped page; a single multi-MB early allocation (the framebuffer console back buffer)
+   faults thousands of times. Fixed in `page_fault.rs`: the verbose trace now fires only
+   for protection faults (P=1), and the per-leaf `debug_alloc` was removed (per-*table*
+   traces kept).
+3. **Per-frame PMM allocation logging (~10 s boot).** `pmm::log_alloc` emits a serial line
+   per frame allocation; the demand-paged heap allocates thousands of frames per boot.
+   Fixed by running production with debug logging **off**: `main.rs` now calls
+   `pmm::init(false)` / `vmm::init(false)` / `heap::init(false)` (pass `true` only when
+   specifically debugging those subsystems).
 
 ---
 
@@ -291,9 +632,32 @@ style of `page_fault_death_test.rs`); boot stays green.
 
 ## 7. Definition of Done
 
-- [ ] Phases 0–6 implemented, each green (`cargo build` + `cargo test` from `main64/`).
-- [ ] UEFI boot to the ring-3 shell on QEMU **and** on the AMD/UEFI HW.
-- [ ] `reserve_firmware_page_tables` removed; firmware PT frames back in the PMM.
-- [ ] Kernel `.text` is RO+X; data/direct-map/MMIO are NX (W^X verified).
-- [ ] Fallback path (full clone) documented behind a flag and disablable once HW-validated.
-- [ ] `docs/vmm.md` extended with the new model; this plan marked "implemented".
+Status as of the post-validation cleanup (2026-07-29). The only substantive item still
+open is kernel `.text` RO+X (the second half of Phase 5).
+
+- [x] **Phases 0–6, each green** — all implemented and green, including **Phase 5 (W^X)**
+  as of 2026-07-29 (see the Phase 5 completion note in §5).
+- [x] **UEFI boot to the ring-3 shell on QEMU and on the AMD/UEFI HW** — validated
+  end-to-end (all shell commands + `TUI.BIN`).
+- [x] **Firmware PT frames no longer referenced by the active table on the real path** —
+  done, but by *skipping* `reserve_firmware_page_tables` on the kernel-owned path rather
+  than *removing* it. The function is intentionally kept as the no-`BootInfo` fallback
+  (unit-test kernels / any BootInfo-less boot still clone and still need it). The skip is
+  made safe by the R1 guard `assert_no_active_table_frame_is_pmm_free` (see §R1). Removing
+  the function outright would break the fallback, so the original "removed" wording is
+  deliberately superseded. This item's original framing ("no longer *permanently reserved*")
+  is superseded too: the reservation never cost an allocatable frame — see the P3 correction
+  in §1. What is achieved is the removal of the *structural* dependency on firmware-owned
+  sub-tables, not a reclaim of memory.
+- [x] **Kernel `.text` is RO+X; data/direct-map/MMIO are NX (W^X)** — done (2026-07-29):
+  slot 256 rebuilt per-section (`.text` RO+X, `.rodata` RO+NX, `.data`/`.bss` RW+NX, VGA
+  RW+NX) via `map_kernel_image_higher_half`; heap/task-stacks demand-paged RW+NX; `CR0.WP`
+  set. Two residual hardening items remain as future work: the slot-0 *identity alias* of
+  the image is still RW (a huge-page split would close it), and ring-3 user code is still
+  RW+X (separate issue).
+- [x] **Fallback documented and disablable** — the `USE_DIRECT_MAP_TABLE` const flag was
+  *removed* after HW validation; the switch is now unconditional on a published
+  `BootInfo`, with the firmware clone kept as the no-`BootInfo` fallback. Reverting to
+  the clone path is a one-line change in `vmm::init`, documented in `docs/vmm.md` §4.4.
+- [x] **`docs/vmm.md` extended with the new model; this plan updated** — see `vmm.md`
+  §4.4 and this document's status header + §5 (including §R1).

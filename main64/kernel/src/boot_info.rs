@@ -74,6 +74,19 @@ pub struct UnifiedMemoryEntry {
     /// Size of the physical memory region in bytes.
     pub size: u64,
 
+    /// Raw EFI memory descriptor type (0..=14), e.g. `EfiConventionalMemory` = 7.
+    /// On the BIOS path this is derived from the E820 `region_type` (see
+    /// `kaosldr_64/src/main.rs`), since E820 has no equivalent classification.
+    pub memory_type: u32,
+
+    /// Explicit padding to keep `attribute` 8-byte aligned and the layout identical
+    /// across the three hand-duplicated copies of this struct.
+    pub _pad: u32,
+
+    /// Raw EFI memory descriptor attribute bits (e.g. `EFI_MEMORY_RUNTIME` =
+    /// `0x8000_0000_0000_0000`). Always 0 on the BIOS path.
+    pub attribute: u64,
+
     /// If true, this region is general-purpose usable RAM. If false, it is reserved
     /// by firmware, ACPI, memory-mapped I/O, or contains bad blocks.
     pub is_usable: bool,

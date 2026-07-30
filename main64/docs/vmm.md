@@ -206,14 +206,58 @@ This also fixes two latent bugs for free: the loader-provided **`BootInfo`** and
 **PMM-metadata region** (see [`pmm.md`](pmm.md)) both live in RAM that `PML4[0]` identity-maps, so
 they remain reachable after the switch — a hand-built 4 MiB map would have lost them.
 
-### 4.4 Known caveat (open follow-up)
+### 4.4 Known caveat — resolved by issue #63 (kernel-owned tables now enabled)
 
 The cloned sub-tables are **firmware-owned frames** that the PMM does **not** know are in use, so
-it could later hand them out and corrupt the page tables. For the current bring-up (boot to a
-stable idle/heartbeat) this has not bitten, but a future "clean" address space should either
-reserve those frames or rebuild kernel-owned tables as a *proper superset* that still covers the
-critical firmware/SMM/MMIO regions. Do not assume the firmware sub-tables are private to the
-kernel.
+in principle it could later hand them out and corrupt the page tables. On the clone path this is
+mitigated by `reserve_firmware_page_tables()`, which walks the cloned tree right after `pmm::init`
+and marks every firmware PDPT/PD/PT frame used so the PMM never reallocates one — belt-and-braces
+rather than a fix: it does not make the kernel stop depending on firmware-owned tables.
+
+> **Correction (2026-07-30).** Earlier revisions of this section and of
+> `todo_uefi_kernel_pagetables.md` claimed those reserved frames are "permanently lost from the
+> allocatable pool", i.e. that the reservation costs memory. It does not. The PMM pools only
+> usable RAM ≥ `KERNEL_OFFSET`, the firmware/loader tables live outside that pool, and
+> `mark_frame_used` on a frame it does not track is an explicit no-op (see its doc comment). So
+> the reservation is free, and removing it wins nothing — the #63 plan's problem "P3"
+> ("firmware PT frames permanently blocked") rested on a wrong premise. What #63 actually buys
+> is P1/P2/P4: W^X, kernel-controlled coverage, and per-page cacheability.
+
+**Issue #63** (`docs/todo_uefi_kernel_pagetables.md`, branch
+`feature/issue-63-uefi-kernel-pagetables`) implements the real fix: a new
+`kernel/src/memory/vmm/direct_map.rs` module builds a genuinely kernel-owned page-table
+hierarchy (own RAM/platform-region mappings, not cloned firmware sub-tables) and switches CR3
+to it (`direct_map::switch_to_direct_map`), after which the kernel no longer depends on any
+firmware sub-table and `reserve_firmware_page_tables()` becomes unnecessary (not a memory win —
+see the correction above). This is the **unconditional standard
+path** on every boot that publishes a `BootInfo` (i.e. every real boot), and is validated
+end-to-end on QEMU/OVMF **and on real AMD/UEFI hardware**: the kernel switches CR3 to its own
+table, `reserve_firmware_page_tables()` is skipped on that path, and the SMM/SMI hard reset this
+section's history is about did **not** occur on that box (building the *complete* region set —
+all RAM/platform/runtime/MMIO/loader regions — rather than a minimal map is what makes discarding
+the firmware tables safe). The firmware-clone path is kept only as the fallback when no
+`BootInfo` is published (`vmm::init` gates the switch on `BOOT_INFO_PTR != 0`, so unit-test
+kernels and any BootInfo-less boot still clone). If a different machine ever misbehaves, revert
+to the clone path in `vmm::init` (QEMU cannot reproduce the SMM/SMI class, so it can never clear
+a new machine on its own).
+
+Skipping the reservation on the kernel-owned path is safe only because the PMM pool and the
+active firmware/loader table frames are disjoint (the PMM pools only usable RAM ≥ `KERNEL_OFFSET`;
+firmware/loader tables live outside it). `switch_to_direct_map` asserts exactly this up front via
+`page_table::assert_no_active_table_frame_is_pmm_free`, so a future regression of that invariant
+panics loudly instead of silently resetting the box — see
+[`todo_uefi_kernel_pagetables.md`](todo_uefi_kernel_pagetables.md) §R1.
+
+**W^X (issue #63 Phase 5).** The kernel-owned table enforces write-XOR-execute. The RAM
+direct map, framebuffer, MMIO, and the kernel heap/task-stacks (demand-paged) are all **NX**;
+the higher-half kernel image (PML4 slot 256) is rebuilt per-section by
+`direct_map::map_kernel_image_higher_half` — `.text` **RO+X**, `.rodata` RO+NX, `.data`/`.bss`
+RW+NX — plus the VGA text page RW+NX. `CR0.WP` (`arch::cpu::enable_write_protect`, set in
+`KernelMain`) makes the RO `.text` enforced against ring-0 writes. Two residual items are left
+as future hardening: the low **identity alias** of the image (slot 0) is still RW (huge pages;
+a split would make it RO — `direct_map::split_huge_pd_entry` now provides exactly that
+primitive, see `todo_uefi_kernel_pagetables.md` §R7), and ring-3 user code is still mapped
+RW+X (a separate issue).
 
 ---
 

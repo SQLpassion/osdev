@@ -52,6 +52,9 @@ static mut META_BUF: PageAlignedBuf = PageAlignedBuf([0u8; 8192]);
 static mut MMAP: [UnifiedMemoryEntry; 4] = [UnifiedMemoryEntry {
     start: 0,
     size: 0,
+    memory_type: 0,
+    _pad: 0,
+    attribute: 0,
     is_usable: false,
 }; 4];
 
@@ -104,21 +107,33 @@ pub extern "C" fn KernelMain(_kernel_size: u64) -> ! {
         mmap[0] = UnifiedMemoryEntry {
             start: 0,
             size: KERNEL_OFFSET,
+            memory_type: 7,
+            _pad: 0,
+            attribute: 0,
             is_usable: true,
         };
         mmap[1] = UnifiedMemoryEntry {
             start: KERNEL_OFFSET,
             size: MAIN_REGION_SIZE,
+            memory_type: 7,
+            _pad: 0,
+            attribute: 0,
             is_usable: true,
         };
         mmap[2] = UnifiedMemoryEntry {
             start: KERNEL_OFFSET + MAIN_REGION_SIZE,
             size: 0x0010_0000,
+            memory_type: 0,
+            _pad: 0,
+            attribute: 0,
             is_usable: false,
         };
         mmap[3] = UnifiedMemoryEntry {
             start: meta_addr,
             size: META_REGION_SIZE,
+            memory_type: 7,
+            _pad: 0,
+            attribute: 0,
             is_usable: true,
         };
 

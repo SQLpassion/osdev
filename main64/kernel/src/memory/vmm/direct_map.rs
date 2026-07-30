@@ -1,0 +1,1163 @@
+//! Kernel-owned direct-map builder (Phase 1 of #63 — kernel-owned page tables on the
+//! UEFI path, see `docs/todo_uefi_kernel_pagetables.md`).
+//!
+//! On the UEFI boot path the kernel today *inherits* the firmware's page tables:
+//! `build_kernel_pml4_from_firmware` (`page_table.rs`) only clones the 512 top-level
+//! PML4 entries, so every PDPT/PD/PT sub-table below them stays firmware-owned (often
+//! huge pages covering all of RAM). This module builds a **kernel-owned** replacement
+//! hierarchy instead — one identity-mapped (VA == PA) PML4 covering every RAM region,
+//! using 2 MiB huge pages for the bulk and 4 KiB pages for unaligned edges.
+//!
+//! # Why this can safely allocate scaffold frames before it is active
+//!
+//! While this builder runs, CR3 still points at the *old*, currently-active superset
+//! PML4 (today's `build_kernel_pml4_from_firmware` output). Every frame the PMM can
+//! hand out is RAM the firmware itself described in its memory map — and the
+//! firmware's own (huge-page) tables, still active, already cover all such RAM (that is
+//! precisely problem P2 in the design doc, inverted into a guarantee here). So every
+//! freshly-allocated scaffold frame (a new PDPT/PD/PT frame for the table being built)
+//! is reachable through the *old*, still-active map, even while it is being populated
+//! with data for the *new* map. The new map only becomes load-bearing once
+//! `switch_to_direct_map` switches CR3 to it. If this reachability assumption were ever
+//! violated (a gap in the firmware's own map), the first `zero_phys_page`/write on that
+//! frame would page-fault immediately, at a well-understood point — not silently
+//! corrupt later.
+//!
+//! # Why a scaffold frame can never alias a *live* table frame (#63 R1)
+//!
+//! Reachability (above) is not enough: a scaffold frame the builder `zero_phys_page`s
+//! must also never *be* a frame the currently-active firmware/BIOS-loader tables are
+//! themselves built from — otherwise zeroing it would corrupt the live CR3 walk mid-
+//! build. It cannot, because the PMM pool and the active table frames are disjoint by
+//! construction: the PMM pools *only* usable RAM at or above `KERNEL_OFFSET` (1 MiB)
+//! (`pmm::manager`), whereas the active tables live outside that pool — on UEFI in
+//! firmware-owned, non-`EfiConventionalMemory` memory; on BIOS in the loader's
+//! `0x9000..=0x15FFF` tables, all below 1 MiB. (The higher-half kernel image at PML4
+//! slot 256 is itself rebuilt here from fresh PMM-allocated scaffold frames — see
+//! [`map_kernel_image_higher_half`] — not borrowed from the firmware, so it is just
+//! more of this same kernel-owned table and needs no special treatment.)
+//! `switch_to_direct_map` asserts this invariant up front via
+//! `page_table::assert_no_active_table_frame_is_pmm_free`, so a future regression (a
+//! loader that parks its tables in usable RAM, or a PMM that pools more memory types)
+//! panics loudly instead of silently resetting the machine.
+//!
+//! This module deliberately operates on explicit physical addresses via `table_at`
+//! (like `build_kernel_pml4_from_firmware` and `reserve_firmware_page_tables` already
+//! do), never through the recursive-mapping API in `mapping.rs` — that API only ever
+//! sees whatever PML4 is the *active* CR3, which this one is not (yet).
+
+use core::sync::atomic::Ordering;
+
+use crate::arch::constants::PAGE_SIZE_U64;
+use crate::boot_info::{UnifiedMemoryEntry, BOOT_INFO_PTR};
+use crate::memory::pmm::{KERNEL_OFFSET, STACK_TOP};
+
+use super::page_table::{
+    alloc_frame_phys, assert_no_active_table_frame_is_pmm_free, entry_ptr, pd_index, pdp_index,
+    phys_to_pfn, pml4_index, pt_index, resolve_phys_via_root, table_at, table_entry, write_cr3,
+    zero_phys_page, PageTable, HUGE_PAGE_SIZE_2M, PT_ENTRIES, RECURSIVE_SLOT,
+};
+
+/// Higher-half base (`KERNEL_VIRT_BASE` in `link.ld`): the kernel image is linked at
+/// `KERNEL_VIRT_BASE + 0x100000` and maps to physical `VA - KERNEL_VIRT_BASE`. Used by
+/// [`map_kernel_image_higher_half`] / [`kernel_image_layout`] to translate the linker's
+/// higher-half section symbols to their load-physical addresses.
+const KERNEL_VIRT_BASE: u64 = 0xFFFF_8000_0000_0000;
+
+/// Higher-half VA of the legacy VGA text buffer (physical `0xB8000`). It is written by
+/// the panic path (`panic.rs`), the fatal-exception handler
+/// (`arch/interrupts/handlers.rs`, on *every* boot), and the VGA console
+/// (`drivers/screen.rs`). The page-fault handler refuses non-heap higher-half faults
+/// (`page_fault.rs`), so — unlike the heap/task-stacks — this page cannot be
+/// demand-paged and MUST be mapped eagerly (RW+NX) when slot 256 is rebuilt (#63 Phase 5).
+const VGA_TEXT_VA: u64 = 0xFFFF_8000_000B_8000;
+
+/// EFI memory type 9 (`EfiACPIReclaimMemory`) — RAM that becomes usable after ACPI
+/// tables are parsed. Mapped by [`is_phase1_ram`] so a future ACPI parser does not
+/// depend on firmware coverage, matching the design doc's §4 type table.
+const EFI_ACPI_RECLAIM_MEMORY: u32 = 9;
+
+/// Aggregate counters returned by [`build_direct_map`]. Deliberately not a list of
+/// allocated frames: `heap::init` (and therefore `Vec`) has not run yet at the point in
+/// boot this builder runs, so it reports only aggregate statistics rather than a
+/// per-frame list.
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DirectMapStats {
+    pub regions_considered: u32,
+    pub regions_mapped: u32,
+    pub huge_2m_pages: u64,
+    pub small_4k_pages: u64,
+    pub pdpt_frames_allocated: u64,
+    pub pd_frames_allocated: u64,
+    pub pt_frames_allocated: u64,
+    /// 2 MiB leaves broken into 512 × 4 KiB because a finer-grained mapping was needed
+    /// inside them (see [`split_huge_pd_entry`]). Non-zero means the input's regions do
+    /// not align to 2 MiB the way the bulk RAM map assumes — worth noticing, not an error.
+    pub huge_2m_split: u64,
+    /// 2 MiB windows mapped as 512 × 4 KiB because 4 KiB mappings already occupied them
+    /// (see [`build_direct_map`]'s huge-page branch).
+    pub huge_2m_downgraded: u64,
+}
+
+/// Errors [`build_direct_map`] can return. Never panics itself — the boot-time call
+/// site decides whether a given error is fatal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DirectMapError {
+    /// The frame allocator returned `None` while a PDPT/PD/PT scaffold frame was needed.
+    OutOfScaffoldFrames,
+    /// `region.start + region.size` overflowed `u64`.
+    RegionOverflow { start: u64, size: u64 },
+    /// A leaf was requested at a granularity the existing tree cannot accommodate.
+    ///
+    /// Since #63 B1 the two *resolvable* granularity conflicts no longer surface here:
+    /// a 4 KiB request inside an existing 2 MiB leaf splits it
+    /// ([`split_huge_pd_entry`]), and a 2 MiB request over existing 4 KiB mappings is
+    /// downgraded to 4 KiB by [`build_direct_map`] — which consumes this variant as an
+    /// internal signal rather than propagating it. What still escapes is the case no
+    /// granularity choice can work around: a **1 GiB PDPT leaf** already covering the
+    /// address. This builder never creates those, so in practice it means the tree was
+    /// seeded from somewhere else.
+    HugePageCollision { va: u64 },
+    /// Two regions claim the same page with different physical targets.
+    Overlap {
+        va: u64,
+        expected_pa: u64,
+        existing_pa: u64,
+    },
+}
+
+/// Gap found by [`validate_direct_map_coverage`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoverageGap {
+    Unmapped {
+        va: u64,
+    },
+    Mismatch {
+        va: u64,
+        expected_pa: u64,
+        got_pa: u64,
+    },
+}
+
+/// Default Phase 1 classifier: general-purpose usable RAM (`is_usable`) plus
+/// ACPI-reclaimable memory (type 9). Phase 2 supplies a wider classifier (firmware
+/// runtime/NVS/MMIO/reserved regions) to the same [`build_direct_map`] — the builder
+/// itself has no opinion about which regions are RAM vs. platform-reserved.
+pub fn is_phase1_ram(entry: &UnifiedMemoryEntry) -> bool {
+    entry.is_usable || entry.memory_type == EFI_ACPI_RECLAIM_MEMORY
+}
+
+/// `EFI_MEMORY_RUNTIME` attribute bit (bit 63 of an EFI memory descriptor's
+/// `attribute` field): the region must stay mapped for `SetVirtualAddressMap`/runtime
+/// service calls. KAOS calls no runtime services today, but the design doc (§2, §4)
+/// keeps these regions mapped anyway, since platform/SMM code may still depend on them.
+const EFI_MEMORY_RUNTIME: u64 = 0x8000_0000_0000_0000;
+
+/// EFI memory types the design doc's §4 table marks "map" for firmware/platform
+/// reasons, independent of the `EFI_MEMORY_RUNTIME` attribute bit.
+const EFI_RESERVED_MEMORY_TYPE: u32 = 0;
+const EFI_RUNTIME_SERVICES_CODE: u32 = 5;
+const EFI_RUNTIME_SERVICES_DATA: u32 = 6;
+const EFI_ACPI_MEMORY_NVS: u32 = 10;
+const EFI_MEMORY_MAPPED_IO: u32 = 11;
+const EFI_MEMORY_MAPPED_IO_PORT_SPACE: u32 = 12;
+const EFI_PAL_CODE: u32 = 13;
+
+/// Phase 2 classifier: firmware/platform regions kept mapped explicitly instead of
+/// relying on inherited firmware coverage (design doc §2/§4) — any region with the
+/// `EFI_MEMORY_RUNTIME` attribute set, plus `RuntimeServicesCode`/`RuntimeServicesData`
+/// (5/6), `ACPIMemoryNVS` (10), `Reserved` (0), and `PalCode` (13). Disjoint from
+/// [`is_phase1_ram`] in normal memory maps (RAM vs. non-RAM types), but the builder
+/// tolerates either classifier being run first — see the
+/// `test_second_build_call_with_huge_page_collision_is_rejected`-style reuse pattern
+/// exercised in `direct_map_test.rs`.
+///
+/// **Deliberately excludes `MemoryMappedIO` (11) and `MemoryMappedIOPortSpace` (12)** —
+/// unconditionally, *including* when either carries the `EFI_MEMORY_RUNTIME` attribute.
+/// Both are handled exclusively by the uncacheable path ([`is_mmio`]/
+/// [`build_uc_direct_map`]): device memory needs uncacheable mappings, not the
+/// write-back default `map_2m_page`/`map_4k_page` apply here. Without the explicit
+/// `is_mmio` guard below, the `EFI_MEMORY_RUNTIME` clause would re-claim a
+/// runtime-flagged MMIO region (OVMF marks such regions on the UEFI path), map it
+/// write-back — as a 2 MiB huge page when aligned — and the later MMIO pass would then
+/// hit a [`DirectMapError::HugePageCollision`], panicking the kernel-owned table build
+/// in [`build_full_kernel_pml4`] (#63 activation-path review, point 5).
+pub fn is_phase2_platform(entry: &UnifiedMemoryEntry) -> bool {
+    if is_mmio(entry) {
+        return false;
+    }
+    (entry.attribute & EFI_MEMORY_RUNTIME) != 0
+        || matches!(
+            entry.memory_type,
+            EFI_RESERVED_MEMORY_TYPE
+                | EFI_RUNTIME_SERVICES_CODE
+                | EFI_RUNTIME_SERVICES_DATA
+                | EFI_ACPI_MEMORY_NVS
+                | EFI_PAL_CODE
+        )
+}
+
+/// `EfiMemoryMappedIO` (11) / `EfiMemoryMappedIOPortSpace` (12) classifier — split out
+/// of [`is_phase2_platform`] (#63 activation-path review, point 5) because both must be
+/// mapped uncacheable (PCD set), not the write-back default `map_2m_page`/`map_4k_page`
+/// apply to the rest of Phase 2. Type 12 (port-mapped I/O apertures, mainly relevant on
+/// IA-64 and rare on x86_64 UEFI) is grouped with type 11 here rather than given its own
+/// classifier: the design doc's §4 table gives it no distinct cacheability rule, and it
+/// is the same class of device-backed address-space window MMIO is. Mapped via
+/// [`build_uc_direct_map`] instead of [`build_direct_map`].
+pub fn is_mmio(entry: &UnifiedMemoryEntry) -> bool {
+    matches!(
+        entry.memory_type,
+        EFI_MEMORY_MAPPED_IO | EFI_MEMORY_MAPPED_IO_PORT_SPACE
+    )
+}
+
+const EFI_LOADER_CODE: u32 = 1;
+const EFI_LOADER_DATA: u32 = 2;
+
+/// Loader-owned classifier: `EfiLoaderCode` (1) and `EfiLoaderData` (2) — the design
+/// doc's §4 type table calls these out separately from Phase 2's firmware/platform
+/// reasons ("BootInfo/map/PMM-meta live here; keep explicitly" for type 2, "otherwise
+/// drop" for type 1). Kept as its own classifier rather than folded into
+/// [`is_phase2_platform`] because the *reason* to map it is different: this is about
+/// the loader's own allocations still being referenced by the kernel across the CR3
+/// switch, not about platform/SMM needs.
+///
+/// Both types are mapped unconditionally here, not just type 2: on the UEFI path
+/// `kaosldr_uefi` allocates the PMM-metadata region as `EfiLoaderData`
+/// (`kaosldr_uefi/src/main.rs`'s `allocate_pages(0, 2, …)` call), and the loader's own
+/// image (holding the `BootInfo`/memory-map statics) is typically allocated as one of
+/// these two types by firmware convention — at boot time there is no cheap way to
+/// prove nothing needed still lives in the `EfiLoaderCode` portion, and address space
+/// is far cheaper than a fault or, worse, silent corruption from a missing mapping.
+pub fn is_loader_owned(entry: &UnifiedMemoryEntry) -> bool {
+    matches!(entry.memory_type, EFI_LOADER_CODE | EFI_LOADER_DATA)
+}
+
+/// Rounds `[start, start + size)` outward to whole 4 KiB pages, returning the
+/// `(page_start, page_end)` pair every mapping loop in this module iterates over.
+///
+/// Rounding outward is required because real memory maps are not guaranteed page-aligned
+/// (e.g. QEMU/SeaBIOS reports the classic low-memory region as `[0x0, 0x9FC00)`, and
+/// `0x9FC00` is not a multiple of 4 KiB). A PTE can only ever address a page-aligned
+/// frame, so without this the truncation implicit in `phys_to_pfn`/`pt_index` (both
+/// `addr >> 12`) would silently alias an unaligned address onto the wrong page, and could
+/// misreport a spurious overlap against an adjacent region that rounds to the very same
+/// page.
+///
+/// Both the `start + size` sum and the round-up are checked: a region ending at (or within
+/// a page of) `u64::MAX` would otherwise wrap the round-up to 0, and the caller's
+/// `while cur < end` loop would then skip the region **silently** — the one failure mode
+/// here that produces no diagnostic at all. Firmware would have to report something
+/// nonsensical to trigger it, which is exactly why it should be a reported error rather
+/// than a quietly dropped region (#63 B6).
+fn page_range(start: u64, size: u64) -> Result<(u64, u64), DirectMapError> {
+    let raw_end = start
+        .checked_add(size)
+        .ok_or(DirectMapError::RegionOverflow { start, size })?;
+    let end = raw_end
+        .checked_add(PAGE_SIZE_U64 - 1)
+        .map(|e| e & !(PAGE_SIZE_U64 - 1))
+        .ok_or(DirectMapError::RegionOverflow { start, size })?;
+    Ok((start & !(PAGE_SIZE_U64 - 1), end))
+}
+
+/// Builds a direct (VA == PA) map of every region `classify` accepts into the PML4
+/// rooted at `pml4_phys`, using 2 MiB huge pages for 2-MiB-aligned bulk ranges when
+/// `use_huge_pages` (falling back to 4 KiB for any unaligned head/tail, and for
+/// everything when `use_huge_pages` is false).
+///
+/// Pure / host-testable: the only inputs are `regions`, `classify`, and `alloc_frame`.
+/// No global VMM state is touched. Production code passes
+/// [`super::page_table::alloc_frame_phys`] as `alloc_frame`; tests can pass a bump
+/// allocator over a static buffer instead.
+///
+/// `pml4_phys` must already be an allocated, zeroed 4 KiB frame — the caller owns its
+/// lifecycle, mirroring the existing `dst`/`dst_phys` split in
+/// `build_kernel_pml4_from_firmware`. This function does **not** install a recursive
+/// self-map slot: while this table is only being built and validated (not yet the
+/// active CR3), the recursive window is irrelevant.
+///
+/// # Safety
+/// `pml4_phys` and every physical address `alloc_frame` returns must be
+/// dereferenceable as an identical virtual address for the whole call — true while the
+/// original firmware/BIOS identity map is still active (i.e. before any CR3 switch away
+/// from it). See the module-level rationale above.
+pub unsafe fn build_direct_map<'a>(
+    pml4_phys: u64,
+    regions: impl IntoIterator<Item = &'a UnifiedMemoryEntry>,
+    classify: impl Fn(&UnifiedMemoryEntry) -> bool,
+    alloc_frame: &mut dyn FnMut() -> Option<u64>,
+    use_huge_pages: bool,
+) -> Result<DirectMapStats, DirectMapError> {
+    let mut stats = DirectMapStats::default();
+
+    for region in regions {
+        stats.regions_considered += 1;
+        if !classify(region) {
+            continue;
+        }
+        let (start, end) = page_range(region.start, region.size)?;
+
+        let mut cur = start;
+        while cur < end {
+            let remaining = end - cur;
+            if use_huge_pages
+                && cur.is_multiple_of(HUGE_PAGE_SIZE_2M)
+                && remaining >= HUGE_PAGE_SIZE_2M
+            {
+                match map_2m_page(pml4_phys, cur, alloc_frame, &mut stats) {
+                    Ok(()) => {
+                        stats.huge_2m_pages += 1;
+                        cur += HUGE_PAGE_SIZE_2M;
+                        continue;
+                    }
+                    // An earlier pass already installed 4 KiB mappings somewhere in this
+                    // 2 MiB window, so a huge leaf cannot go here. Map the window at 4 KiB
+                    // instead of failing the whole build: the result is an equivalent
+                    // mapping that merely costs one page table, and whether two regions
+                    // share a 2 MiB window is a property of the firmware's memory map
+                    // rather than anything KAOS controls (#63 B1, the mirror image of
+                    // `split_huge_pd_entry`'s direction).
+                    Err(DirectMapError::HugePageCollision { .. }) => {
+                        let window_end = cur + HUGE_PAGE_SIZE_2M;
+                        while cur < window_end {
+                            // Propagates if the collision came from a 1 GiB PDPT leaf one
+                            // level up, which no granularity can work around.
+                            map_4k_page(pml4_phys, cur, alloc_frame, &mut stats)?;
+                            stats.small_4k_pages += 1;
+                            cur += PAGE_SIZE_U64;
+                        }
+                        stats.huge_2m_downgraded += 1;
+                        continue;
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            map_4k_page(pml4_phys, cur, alloc_frame, &mut stats)?;
+            stats.small_4k_pages += 1;
+            cur += PAGE_SIZE_U64;
+        }
+        stats.regions_mapped += 1;
+    }
+
+    Ok(stats)
+}
+
+/// Ensures the PML4 -> PDPT -> PD path down to the PD table for `va` exists in the
+/// tree rooted at `pml4_phys`, allocating/zeroing missing PDPT/PD frames via
+/// `alloc_frame`. Returns the physical address of the PD table.
+///
+/// # Safety
+/// Same contract as [`build_direct_map`].
+unsafe fn ensure_pd_table(
+    pml4_phys: u64,
+    va: u64,
+    alloc_frame: &mut dyn FnMut() -> Option<u64>,
+    stats: &mut DirectMapStats,
+) -> Result<u64, DirectMapError> {
+    let pml4 = table_at(pml4_phys);
+    let idx = pml4_index(va);
+    if !table_entry(pml4, idx).present() {
+        let phys = alloc_frame().ok_or(DirectMapError::OutOfScaffoldFrames)?;
+        zero_phys_page(phys);
+        (*entry_ptr(pml4, idx)).set_mapping(phys_to_pfn(phys), true, true, false);
+        stats.pdpt_frames_allocated += 1;
+    }
+    let pdpt_phys = table_entry(pml4, idx).frame() * PAGE_SIZE_U64;
+
+    let pdpt = table_at(pdpt_phys);
+    let idx = pdp_index(va);
+    let pdpte = table_entry(pdpt, idx);
+    if pdpte.present() && pdpte.huge() {
+        return Err(DirectMapError::HugePageCollision { va });
+    }
+    if !pdpte.present() {
+        let phys = alloc_frame().ok_or(DirectMapError::OutOfScaffoldFrames)?;
+        zero_phys_page(phys);
+        (*entry_ptr(pdpt, idx)).set_mapping(phys_to_pfn(phys), true, true, false);
+        stats.pd_frames_allocated += 1;
+    }
+    Ok(table_entry(pdpt, idx).frame() * PAGE_SIZE_U64)
+}
+
+/// Maps one 2 MiB huge page at physical/virtual address `pa` (identity map: VA == PA).
+///
+/// Returns [`DirectMapError::HugePageCollision`] when a page table (4 KiB mappings) already
+/// occupies this PD slot. That is a *signal*, not a fatal error: [`build_direct_map`]
+/// catches it and re-maps the window at 4 KiB instead (#63 B1). Callers that cannot
+/// downgrade must treat it as an error.
+///
+/// # Safety
+/// Same contract as [`build_direct_map`].
+unsafe fn map_2m_page(
+    pml4_phys: u64,
+    pa: u64,
+    alloc_frame: &mut dyn FnMut() -> Option<u64>,
+    stats: &mut DirectMapStats,
+) -> Result<(), DirectMapError> {
+    let pd_phys = ensure_pd_table(pml4_phys, pa, alloc_frame, stats)?;
+    let pd = table_at(pd_phys);
+    let idx = pd_index(pa);
+    let existing = table_entry(pd, idx);
+    if existing.present() {
+        let existing_pa = existing.frame() * PAGE_SIZE_U64;
+        if !existing.huge() {
+            return Err(DirectMapError::HugePageCollision { va: pa });
+        }
+        if existing_pa != pa {
+            return Err(DirectMapError::Overlap {
+                va: pa,
+                expected_pa: pa,
+                existing_pa,
+            });
+        }
+        return Ok(()); // identical, already installed - idempotent.
+    }
+    // Phase 5 (#63): NX on the whole identity/direct map. Safe because the kernel's
+    // own code never executes through this identity mapping — it runs from the
+    // separate higher-half kernel image (PML4 slot 256), which maps `.text` through its
+    // own RO+X PTEs (see `map_kernel_image_higher_half`). Marking the identity copy NX
+    // cannot affect what the CPU fetches from.
+    let entry = &mut *entry_ptr(pd, idx);
+    entry.set_huge_mapping(pa, true, true, false);
+    entry.set_no_execute(true);
+    Ok(())
+}
+
+/// Ensures the PD -> PT path for `va` exists, allocating/zeroing a missing PT frame via
+/// `alloc_frame`. Returns the physical address of the PT table. Shared by
+/// [`map_4k_page`] and [`map_4k_wc_page`] — the only difference between a normal and a
+/// write-combining 4 KiB leaf is the flags on the final PTE, not how the path above it
+/// is built.
+///
+/// # Safety
+/// Same contract as [`build_direct_map`].
+unsafe fn ensure_pt_table(
+    pml4_phys: u64,
+    va: u64,
+    alloc_frame: &mut dyn FnMut() -> Option<u64>,
+    stats: &mut DirectMapStats,
+) -> Result<u64, DirectMapError> {
+    let pd_phys = ensure_pd_table(pml4_phys, va, alloc_frame, stats)?;
+    let pd = table_at(pd_phys);
+    let pd_idx = pd_index(va);
+    let pde = table_entry(pd, pd_idx);
+    if pde.present() && pde.huge() {
+        // A 2 MiB leaf already covers this window but a 4 KiB mapping is needed inside
+        // it. Split rather than fail — see `split_huge_pd_entry` (#63 B1).
+        return split_huge_pd_entry(pd, pd_idx, alloc_frame, stats);
+    }
+    if !pde.present() {
+        let phys = alloc_frame().ok_or(DirectMapError::OutOfScaffoldFrames)?;
+        zero_phys_page(phys);
+        (*entry_ptr(pd, pd_idx)).set_mapping(phys_to_pfn(phys), true, true, false);
+        stats.pt_frames_allocated += 1;
+    }
+    Ok(table_entry(pd, pd_idx).frame() * PAGE_SIZE_U64)
+}
+
+/// Replaces the 2 MiB huge leaf at `pd[pd_idx]` with a fresh page table holding the 512
+/// equivalent 4 KiB leaves, and returns that table's physical address (#63 B1).
+///
+/// Why split instead of returning [`DirectMapError::HugePageCollision`]: the bulk RAM map
+/// uses 2 MiB pages wherever a region is aligned, but four later passes need 4 KiB
+/// granularity inside arbitrary addresses — the MMIO pass ([`build_uc_direct_map`]), the
+/// framebuffer pass ([`map_wc_range`]), and the outward page rounding that can pull a
+/// device region's edge page into a RAM window. Whether those addresses happen to fall
+/// inside an aligned 2 MiB window is a property of the *firmware's* memory map, so failing
+/// on it made a successful boot depend on a layout KAOS does not control: a firmware that
+/// reports a GOP framebuffer inside a 2-MiB-aligned `EfiReservedMemoryType` region would
+/// have panicked the build with "Phase 4 framebuffer direct-map failed" on a machine that
+/// is otherwise fine.
+///
+/// Splitting is cheap and safe *here* specifically because this table is not yet in CR3:
+/// no TLB entry can exist for it, no other CPU is running (single-core boot), and the
+/// resulting mapping is bit-for-bit equivalent to the huge leaf. Every permission and
+/// caching bit is replicated onto all 512 leaves — writable/user/NX/PWT/PCD/global — so
+/// the other 511 pages keep exactly the memory type and rights they had. The intermediate
+/// PD entry is made writable because effective permissions AND across levels: the real
+/// restriction stays on the leaves.
+///
+/// Note the flags are copied through the typed accessors, not by cloning the raw entry: a
+/// PDE's PAT bit is bit 12 while a PTE's is bit 7 (a PDE's huge bit), so a raw copy would
+/// mistranslate the memory type. This builder never sets the PAT bit, but replicating by
+/// accessor keeps that from silently mattering later.
+///
+/// # Safety
+/// Same contract as [`build_direct_map`]; `pd` must be a valid PD whose entry `pd_idx` is a
+/// present 2 MiB huge leaf.
+unsafe fn split_huge_pd_entry(
+    pd: *mut PageTable,
+    pd_idx: usize,
+    alloc_frame: &mut dyn FnMut() -> Option<u64>,
+    stats: &mut DirectMapStats,
+) -> Result<u64, DirectMapError> {
+    let pde = table_entry(pd, pd_idx);
+    debug_assert!(pde.present() && pde.huge());
+
+    let base_pa = pde.frame() * PAGE_SIZE_U64;
+    let (writable, user, nx) = (pde.writable(), pde.user(), pde.no_execute());
+    let (pwt, pcd, global) = (pde.pwt(), pde.pcd(), pde.global());
+
+    let pt_phys = alloc_frame().ok_or(DirectMapError::OutOfScaffoldFrames)?;
+    zero_phys_page(pt_phys);
+    let pt = table_at(pt_phys);
+    for i in 0..PT_ENTRIES {
+        let leaf_pa = base_pa + i as u64 * PAGE_SIZE_U64;
+        let entry = &mut *entry_ptr(pt, i);
+        entry.set_mapping(phys_to_pfn(leaf_pa), true, writable, user);
+        entry.set_no_execute(nx);
+        entry.set_pwt(pwt);
+        entry.set_pcd(pcd);
+        entry.set_global(global);
+    }
+
+    // Swap the huge leaf for the table. `set_mapping` clears the huge bit implicitly by
+    // writing a fresh frame+flags combination, but be explicit: a PD entry that still had
+    // bit 7 set would be re-read as a leaf and alias the PT frame as 2 MiB of data.
+    let entry = &mut *entry_ptr(pd, pd_idx);
+    entry.set_mapping(phys_to_pfn(pt_phys), true, true, user);
+    entry.set_huge(false);
+    entry.set_no_execute(false);
+
+    stats.pt_frames_allocated += 1;
+    stats.huge_2m_split += 1;
+    Ok(pt_phys)
+}
+
+/// Maps one 4 KiB page at physical/virtual address `pa` (identity map: VA == PA).
+///
+/// # Safety
+/// Same contract as [`build_direct_map`].
+unsafe fn map_4k_page(
+    pml4_phys: u64,
+    pa: u64,
+    alloc_frame: &mut dyn FnMut() -> Option<u64>,
+    stats: &mut DirectMapStats,
+) -> Result<(), DirectMapError> {
+    let pt_phys = ensure_pt_table(pml4_phys, pa, alloc_frame, stats)?;
+    let pt = table_at(pt_phys);
+    let pt_idx = pt_index(pa);
+    let existing = table_entry(pt, pt_idx);
+    if existing.present() {
+        let existing_pa = existing.frame() * PAGE_SIZE_U64;
+        if existing_pa != pa {
+            return Err(DirectMapError::Overlap {
+                va: pa,
+                expected_pa: pa,
+                existing_pa,
+            });
+        }
+        return Ok(()); // identical, already installed - idempotent.
+    }
+    // Phase 5 (#63): NX on the whole identity/direct map — see map_2m_page's comment
+    // for why this cannot affect the kernel's own (higher-half) code execution.
+    let entry = &mut *entry_ptr(pt, pt_idx);
+    entry.set_mapping(phys_to_pfn(pa), true, true, false);
+    entry.set_no_execute(true);
+    Ok(())
+}
+
+/// Maps `[base, base + size)` identity (VA == PA) as write-combining, NX, 4 KiB pages
+/// into the tree rooted at `pml4_phys` — Phase 3 of #63: the GOP framebuffer must be
+/// mapped explicitly in the kernel-owned table instead of relying on inherited firmware
+/// coverage (design doc problem P4). `base` is rounded down and `size` up to page
+/// boundaries, matching `mapping.rs`'s existing `configure_wc_mapping` PAT1 convention
+/// (bit 3 = PWT, bit 4 = PCD; PAT1 is configured for Write-Combining by the PAT MSR
+/// setup in `main.rs`'s `map_framebuffer`) — this function assumes that PAT
+/// configuration is already in place, it only sets the PWT/PCD bits on each leaf.
+/// Always 4 KiB granularity: framebuffers are rarely 2 MiB-aligned, and — unlike bulk
+/// RAM — there is no benefit to huge pages for a single MMIO range mapped once at boot.
+///
+/// # Safety
+/// Same contract as [`build_direct_map`]: `pml4_phys` and every physical address
+/// `alloc_frame` returns must be dereferenceable as an identical virtual address for the
+/// whole call.
+pub unsafe fn map_wc_range(
+    pml4_phys: u64,
+    base: u64,
+    size: u64,
+    alloc_frame: &mut dyn FnMut() -> Option<u64>,
+) -> Result<(), DirectMapError> {
+    let (start, end) = page_range(base, size)?;
+
+    let mut stats = DirectMapStats::default();
+    let mut cur = start;
+    while cur < end {
+        map_4k_wc_page(pml4_phys, cur, alloc_frame, &mut stats)?;
+        cur += PAGE_SIZE_U64;
+    }
+    Ok(())
+}
+
+/// Maps one 4 KiB write-combining, NX leaf at physical/virtual address `pa` (identity
+/// map: VA == PA). See [`map_wc_range`] for the PAT/PWT/PCD convention.
+///
+/// # Safety
+/// Same contract as [`build_direct_map`].
+unsafe fn map_4k_wc_page(
+    pml4_phys: u64,
+    pa: u64,
+    alloc_frame: &mut dyn FnMut() -> Option<u64>,
+    stats: &mut DirectMapStats,
+) -> Result<(), DirectMapError> {
+    let pt_phys = ensure_pt_table(pml4_phys, pa, alloc_frame, stats)?;
+    let pt = table_at(pt_phys);
+    let pt_idx = pt_index(pa);
+    let existing = table_entry(pt, pt_idx);
+    if existing.present() && existing.frame() * PAGE_SIZE_U64 != pa {
+        return Err(DirectMapError::Overlap {
+            va: pa,
+            expected_pa: pa,
+            existing_pa: existing.frame() * PAGE_SIZE_U64,
+        });
+    }
+    // Stamp (or *re-stamp*) the leaf as write-combining + NX. Re-stamping matters when an
+    // earlier pass already mapped this exact identity page: the GOP framebuffer can fall
+    // inside an `EfiMemoryMappedIO` region that `build_uc_direct_map` mapped uncacheable
+    // first, and the framebuffer must end up write-combining (PWT set, PCD clear), not
+    // uncacheable. The physical-target check above deliberately does not early-return on
+    // an identical mapping the way `map_4k_page`/`map_4k_uc_page` do, because it only
+    // compares the frame, not the caching bits — a plain early-return would leave the
+    // wrong memory type in place (#63 R3).
+    let entry = &mut *entry_ptr(pt, pt_idx);
+    entry.set_mapping(phys_to_pfn(pa), true, true, false);
+    entry.set_pwt(true);
+    entry.set_pcd(false);
+    entry.set_no_execute(true);
+    Ok(())
+}
+
+/// Builds an uncacheable (PCD set, PWT clear), NX, 4 KiB-only direct map of every
+/// region `classify` accepts — the MMIO counterpart to [`map_wc_range`]'s
+/// write-combining framebuffer mapping (#63 activation-path review, point 5). Always
+/// 4 KiB granularity, for the same reason `map_wc_range` is: MMIO ranges are rarely
+/// 2 MiB-aligned and gain nothing from huge pages for what is usually a handful of
+/// mappings created once at boot.
+///
+/// # Safety
+/// `pml4_phys` and every physical address `alloc_frame` returns must be
+/// dereferenceable as an identical virtual address for the whole call — same contract
+/// as [`build_direct_map`].
+pub unsafe fn build_uc_direct_map<'a>(
+    pml4_phys: u64,
+    regions: impl IntoIterator<Item = &'a UnifiedMemoryEntry>,
+    classify: impl Fn(&UnifiedMemoryEntry) -> bool,
+    alloc_frame: &mut dyn FnMut() -> Option<u64>,
+) -> Result<DirectMapStats, DirectMapError> {
+    let mut stats = DirectMapStats::default();
+
+    for region in regions {
+        stats.regions_considered += 1;
+        if !classify(region) {
+            continue;
+        }
+        let (start, end) = page_range(region.start, region.size)?;
+
+        let mut cur = start;
+        while cur < end {
+            map_4k_uc_page(pml4_phys, cur, alloc_frame, &mut stats)?;
+            stats.small_4k_pages += 1;
+            cur += PAGE_SIZE_U64;
+        }
+        stats.regions_mapped += 1;
+    }
+
+    Ok(stats)
+}
+
+/// Maps one 4 KiB uncacheable, NX leaf at physical/virtual address `pa` (identity map:
+/// VA == PA). See [`build_uc_direct_map`] for the PCD/PWT convention.
+///
+/// # Safety
+/// Same contract as [`build_direct_map`].
+unsafe fn map_4k_uc_page(
+    pml4_phys: u64,
+    pa: u64,
+    alloc_frame: &mut dyn FnMut() -> Option<u64>,
+    stats: &mut DirectMapStats,
+) -> Result<(), DirectMapError> {
+    let pt_phys = ensure_pt_table(pml4_phys, pa, alloc_frame, stats)?;
+    let pt = table_at(pt_phys);
+    let pt_idx = pt_index(pa);
+    let existing = table_entry(pt, pt_idx);
+    if existing.present() && existing.frame() * PAGE_SIZE_U64 != pa {
+        return Err(DirectMapError::Overlap {
+            va: pa,
+            expected_pa: pa,
+            existing_pa: existing.frame() * PAGE_SIZE_U64,
+        });
+    }
+    // Stamp (or *re-stamp*) the leaf as uncacheable + NX. Like `map_4k_wc_page`, this
+    // deliberately does NOT early-return on an identical existing mapping the way
+    // `map_4k_page` does: the physical-target check above compares only the frame, not the
+    // caching bits, so a page an earlier pass already mapped write-back (the RAM /
+    // platform / loader passes all run before the MMIO pass in `build_full_kernel_pml4`)
+    // would keep the wrong memory type. Reachable when outward page rounding makes a
+    // device region share its first or last page with an adjacent RAM region — UEFI
+    // descriptors are always 4 KiB-aligned so it cannot happen there today, but a
+    // silently write-back-cached device page is not a failure mode worth leaving to a
+    // property of the input (#63 B3, mirroring the R3 fix for `map_4k_wc_page`).
+    //
+    // Uncacheable is the safe resolution for a page two classifiers disagree about:
+    // treating device memory as cacheable can drop or reorder writes, whereas treating
+    // RAM as uncacheable only costs performance.
+    let entry = &mut *entry_ptr(pt, pt_idx);
+    entry.set_mapping(phys_to_pfn(pa), true, true, false);
+    entry.set_pcd(true);
+    entry.set_pwt(false);
+    entry.set_no_execute(true);
+    Ok(())
+}
+
+/// Verifies every page of every region `classify` accepts resolves to its own
+/// physical address (VA == PA) in the table rooted at `pml4_phys`, stepping by
+/// whatever granularity is actually installed (2 MiB under a huge PD leaf, 4 KiB
+/// otherwise) so a large-RAM validation stays a fast loop.
+///
+/// Pulled forward from the design doc's Phase 6 into Phase 1 itself: running this
+/// immediately after [`build_direct_map`] turns a builder bug into a loud boot-time
+/// panic instead of a much-later, misleading "SMM reset" symptom once a future phase
+/// actually switches CR3 to this table.
+///
+/// # Safety
+/// Same reachability contract as [`build_direct_map`]: every physical address touched
+/// while walking must be dereferenceable as an identical virtual address.
+pub unsafe fn validate_direct_map_coverage<'a>(
+    pml4_phys: u64,
+    regions: impl IntoIterator<Item = &'a UnifiedMemoryEntry>,
+    classify: impl Fn(&UnifiedMemoryEntry) -> bool,
+) -> Result<(), CoverageGap> {
+    for region in regions {
+        if !classify(region) {
+            continue;
+        }
+        validate_byte_range_coverage(pml4_phys, region.start, region.size)?;
+    }
+    Ok(())
+}
+
+/// Verifies every page of `[start, start + size)` resolves to its own physical address
+/// (VA == PA) in the table rooted at `pml4_phys`. Shared stepping logic behind
+/// [`validate_direct_map_coverage`] (which iterates `UnifiedMemoryEntry` regions) and
+/// [`validate_essential_boot_addresses`] (which checks specific byte ranges that have
+/// no `UnifiedMemoryEntry` of their own to iterate).
+///
+/// # Safety
+/// Same reachability contract as [`build_direct_map`].
+unsafe fn validate_byte_range_coverage(
+    pml4_phys: u64,
+    start: u64,
+    size: u64,
+) -> Result<(), CoverageGap> {
+    let end = start.saturating_add(size);
+    let mut cur = start;
+    while cur < end {
+        match resolve_phys_via_root(pml4_phys, cur) {
+            None => return Err(CoverageGap::Unmapped { va: cur }),
+            Some((pa, _)) if pa != cur => {
+                return Err(CoverageGap::Mismatch {
+                    va: cur,
+                    expected_pa: cur,
+                    got_pa: pa,
+                })
+            }
+            Some((_, step)) => cur += step,
+        }
+    }
+    Ok(())
+}
+
+/// Validates that a handful of addresses the kernel unconditionally dereferences after
+/// a CR3 switch — the `BootInfo` structure itself, its memory-map array, (if present)
+/// the PMM-metadata region, and the low identity block the kernel is *running on*
+/// (`[KERNEL_OFFSET, STACK_TOP)`, see below) — resolve correctly in the table rooted at
+/// `pml4_phys`.
+///
+/// Deliberately independent of [`is_phase1_ram`]/[`is_phase2_platform`]/
+/// [`is_loader_owned`]/[`is_mmio`]: those classify by EFI memory *type*, and a future bug
+/// or change in one of them should not silently reopen a gap in exactly the addresses
+/// that matter most — this check does not care which classifier (if any) covers them,
+/// only whether they resolve.
+///
+/// # Safety
+/// Same reachability contract as [`build_direct_map`]; `boot_info` must be the
+/// currently published `BootInfo` (still reachable via the old identity map).
+pub unsafe fn validate_essential_boot_addresses(
+    pml4_phys: u64,
+    boot_info: &crate::boot_info::BootInfo,
+) -> Result<(), CoverageGap> {
+    validate_byte_range_coverage(
+        pml4_phys,
+        boot_info as *const _ as u64,
+        core::mem::size_of::<crate::boot_info::BootInfo>() as u64,
+    )?;
+
+    validate_byte_range_coverage(
+        pml4_phys,
+        boot_info.memory_map_addr,
+        boot_info.memory_map_len as u64 * core::mem::size_of::<UnifiedMemoryEntry>() as u64,
+    )?;
+
+    if boot_info.pmm_metadata_base != 0 {
+        validate_byte_range_coverage(
+            pml4_phys,
+            boot_info.pmm_metadata_base,
+            boot_info.pmm_metadata_size,
+        )?;
+    }
+
+    // The low identity block the kernel is executing on *while* the switch happens:
+    // `[KERNEL_OFFSET, STACK_TOP)` = the kernel image's identity alias plus the
+    // bootstrap stack that grows down from `STACK_TOP`. Both boot paths park RSP at
+    // exactly `STACK_TOP` (`kaosldr_16/longmode.asm`'s `MOV RSP, 0x400000` and
+    // `kaosldr_uefi`'s `mov rsp, 0x400000`), and `pmm::manager` reserves this same
+    // block as "kernel image + bootstrap stack", so every stack frame from `write_cr3`
+    // onwards lives here.
+    //
+    // Why this range deserves its own check rather than trusting the classifiers: its
+    // failure mode is uniquely undiagnosable. Every *other* coverage gap surfaces as a
+    // `#PF` the handler turns into a panic, i.e. a message. An unmapped stack page
+    // faults on the first push after `write_cr3` retires — with no usable stack to
+    // deliver the fault on, that is an immediate exception-less triple fault: no panic,
+    // no output, and (before `console::init`) no channel to print on even in principle.
+    // It is indistinguishable from the SMM-class hard reset `docs/vmm.md` §4 is about,
+    // so it would be misattributed to exactly the wrong cause.
+    //
+    // It resolves today, but only via an implicit chain: `kaosldr_uefi` happens to claim
+    // `[0x100000, 0x400000)` as `EfiLoaderCode` (type 1) and [`is_loader_owned`] happens
+    // to map type 1 as well as type 2; on the BIOS path it falls out of plain usable RAM.
+    // Pinning it here is what keeps a loader that allocates this block differently — or a
+    // narrowing of `is_loader_owned` to type 2 only, which its own doc comment
+    // contemplates — from turning into a silent reset instead of a located panic.
+    validate_byte_range_coverage(pml4_phys, KERNEL_OFFSET, STACK_TOP - KERNEL_OFFSET)?;
+
+    Ok(())
+}
+
+/// One contiguous, page-aligned higher-half kernel-image section and the permissions its
+/// pages must carry (#63 Phase 5). `execute == true` leaves the NX bit clear.
+#[derive(Clone, Copy)]
+pub struct KernelSection {
+    /// Page-aligned higher-half start VA.
+    pub virt_start: u64,
+    /// Page-aligned, exclusive higher-half end VA.
+    pub virt_end: u64,
+    /// Leaf writable bit (`.text`/`.rodata` = false; `.data`/`.bss` = true).
+    pub writable: bool,
+    /// Leaf executable (`.text` = true → NX clear; everything else = false → NX set).
+    pub execute: bool,
+}
+
+/// Per-section W^X layout of the higher-half kernel image, plus the VGA text page. The
+/// three sections carry `.text` RO+X, `.rodata` RO+NX, `.data`/`.bss` RW+NX; the VGA page
+/// is RW+NX. Produced by [`kernel_image_layout`] from the `link.ld` boundary symbols.
+#[derive(Clone, Copy)]
+pub struct KernelImageLayout {
+    pub text: KernelSection,
+    pub rodata: KernelSection,
+    pub data_bss: KernelSection,
+    pub vga_text_va: u64,
+}
+
+/// Rebuilds PML4 slot 256 as a precise per-section W^X map of the higher-half kernel
+/// image at 4 KiB granularity (`.text` RO+X, `.rodata` RO+NX, `.data`/`.bss` RW+NX) plus
+/// the VGA text page (RW+NX) — #63 Phase 5. Replaces the previous verbatim slot-256 copy
+/// of the firmware's low-RAM huge-page mirror (which left `.text` RWX, problem P1).
+///
+/// Everything else that lives in slot 256 — the kernel heap, heap-allocated ring-3 task
+/// stacks, the VMM diagnostics test window — is deliberately left *unmapped* here and
+/// served on demand by the page-fault handler (`page_fault.rs`'s kernel-heap-arena path).
+/// That works because this builder always creates real, non-huge PDPT/PD/PT tables via
+/// [`ensure_pt_table`]: after the switch, `populate_page_table_path` can walk
+/// `PML4[256] → PDPT[0] → PD` through the recursive window and extend the sub-tree for
+/// those faulting VAs. It also removes the old mirror's latent aliasing of heap/stack VAs
+/// onto free PMM frames (the demand pager now hands them properly-allocated frames).
+///
+/// Identity-map note: the same physical `.text` frames are also reachable through the
+/// slot-0 identity direct map, which is RW+NX (2 MiB huge pages) — so no *single* mapping
+/// is W+X, and the kernel only ever fetches code through this higher-half RO+X mapping.
+/// Making the low identity alias RO for the image range (a huge-page split) is a separate,
+/// larger hardening left as future work.
+///
+/// # Safety
+/// Same reachability contract as [`build_direct_map`]: `pml4_phys` and every frame
+/// `alloc_frame` returns must be dereferenceable as an identical virtual address for the
+/// whole call — true while the original identity map is still active (before the CR3
+/// switch). The `pa` computed per leaf (`va - KERNEL_VIRT_BASE`) must be the image's true
+/// load-physical address, which holds because `link.ld` maps every section
+/// `LMA = VMA - KERNEL_VIRT_BASE`.
+pub unsafe fn map_kernel_image_higher_half(
+    pml4_phys: u64,
+    layout: &KernelImageLayout,
+    alloc_frame: &mut dyn FnMut() -> Option<u64>,
+) -> Result<(), DirectMapError> {
+    for sec in [layout.text, layout.rodata, layout.data_bss] {
+        let mut va = sec.virt_start & !(PAGE_SIZE_U64 - 1);
+        let end = (sec.virt_end + PAGE_SIZE_U64 - 1) & !(PAGE_SIZE_U64 - 1);
+        while va < end {
+            map_higher_half_leaf(
+                pml4_phys,
+                va,
+                va - KERNEL_VIRT_BASE,
+                sec.writable,
+                sec.execute,
+                alloc_frame,
+            )?;
+            va += PAGE_SIZE_U64;
+        }
+    }
+
+    // VGA text page: phys 0xB8000, RW + NX (see VGA_TEXT_VA's doc for why it must be eager).
+    map_higher_half_leaf(
+        pml4_phys,
+        layout.vga_text_va,
+        layout.vga_text_va - KERNEL_VIRT_BASE,
+        true,
+        false,
+        alloc_frame,
+    )
+}
+
+/// Stamps one 4 KiB higher-half leaf `va -> pa` with explicit writable/execute bits,
+/// allocating any missing PDPT/PD/PT frames via the shared [`ensure_pt_table`]. Unlike
+/// [`map_4k_page`] this is NOT identity (VA != PA) and does not force NX.
+///
+/// # Safety
+/// Same contract as [`map_kernel_image_higher_half`].
+unsafe fn map_higher_half_leaf(
+    pml4_phys: u64,
+    va: u64,
+    pa: u64,
+    writable: bool,
+    execute: bool,
+    alloc_frame: &mut dyn FnMut() -> Option<u64>,
+) -> Result<(), DirectMapError> {
+    let mut stats = DirectMapStats::default();
+    let pt_phys = ensure_pt_table(pml4_phys, va, alloc_frame, &mut stats)?;
+    let entry = &mut *entry_ptr(table_at(pt_phys), pt_index(va));
+    entry.set_mapping(phys_to_pfn(pa), true, writable, false);
+    entry.set_no_execute(!execute);
+    Ok(())
+}
+
+/// Production kernel-image layout, read from the `link.ld` boundary symbols (#63 Phase 5).
+///
+/// The extent runs from `__text_start` to `__kernel_end` and **includes `.bss`** — it must
+/// NOT be derived from `BootInfo.kernel_size`, which is the flat-binary file size and
+/// excludes `.bss` (NOBITS). `.data` and `.bss` share one RW+NX range (`__data_start ..
+/// __kernel_end`). All symbol addresses are already 4 KiB-aligned by the linker.
+pub fn kernel_image_layout() -> KernelImageLayout {
+    extern "C" {
+        static __text_start: u8;
+        static __text_end: u8;
+        static __rodata_start: u8;
+        static __rodata_end: u8;
+        static __data_start: u8;
+        static __kernel_end: u8;
+    }
+
+    // SAFETY: these are linker-defined symbols with static lifetime; we only take their
+    // addresses (never dereference), exactly like `main.rs`/`pmm::manager`'s __bss_* use.
+    unsafe {
+        let addr = |s: &u8| s as *const u8 as u64;
+        KernelImageLayout {
+            text: KernelSection {
+                virt_start: addr(&__text_start),
+                virt_end: addr(&__text_end),
+                writable: false,
+                execute: true,
+            },
+            rodata: KernelSection {
+                virt_start: addr(&__rodata_start),
+                virt_end: addr(&__rodata_end),
+                writable: false,
+                execute: false,
+            },
+            data_bss: KernelSection {
+                virt_start: addr(&__data_start),
+                virt_end: addr(&__kernel_end),
+                writable: true,
+                execute: false,
+            },
+            vga_text_va: VGA_TEXT_VA,
+        }
+    }
+}
+
+/// Builds a genuinely kernel-owned PML4: Phase 1 (RAM) + Phase 2 (firmware/platform) +
+/// loader-owned (EfiLoaderCode/EfiLoaderData — see [`is_loader_owned`]) regions mapped
+/// explicitly (RAM/platform both NX — Phase 5's "data + direct map: NX", see
+/// `map_2m_page`/`map_4k_page`), the GOP framebuffer mapped write-combining + NX via
+/// [`map_wc_range`] when one is present (Phase 3), the higher-half kernel image (PML4
+/// slot 256) rebuilt per-section as a W^X map via [`map_kernel_image_higher_half`]
+/// (`.text` RO+X, `.rodata` RO+NX, `.data`/`.bss` RW+NX, plus the VGA text page RW+NX —
+/// Phase 5), and the recursive self-map installed at slot 511. Matches the design doc's
+/// Phase 4/5 checklist ("P1 + P2 + P3 + slot 511 + slot 256, W^X" — see
+/// `docs/todo_uefi_kernel_pagetables.md`).
+///
+/// Slot 256 no longer borrows the firmware's low-RAM mirror: the kernel heap and
+/// heap-allocated ring-3 task stacks (also higher-half) are now served by the page-fault
+/// demand pager — see [`map_kernel_image_higher_half`] for why that is safe under the
+/// rebuilt sub-tree. CR0.WP (`arch::cpu::enable_write_protect`, set in `KernelMain`) is
+/// what makes the RO `.text`/`.rodata` enforced against ring-0 writes.
+///
+/// Does **not** switch CR3 — see [`switch_to_direct_map`] for that.
+///
+/// # Safety
+/// Same reachability contract as [`build_direct_map`].
+pub unsafe fn build_full_kernel_pml4(
+    regions: &[UnifiedMemoryEntry],
+    boot_info: &crate::boot_info::BootInfo,
+    alloc_frame: &mut dyn FnMut() -> Option<u64>,
+) -> Result<
+    (
+        u64,
+        DirectMapStats,
+        DirectMapStats,
+        DirectMapStats,
+        DirectMapStats,
+    ),
+    DirectMapError,
+> {
+    let new_pml4 = alloc_frame().ok_or(DirectMapError::OutOfScaffoldFrames)?;
+    zero_phys_page(new_pml4);
+
+    let ram_stats = build_direct_map(new_pml4, regions.iter(), is_phase1_ram, alloc_frame, true)?;
+    validate_direct_map_coverage(new_pml4, regions.iter(), is_phase1_ram)
+        .unwrap_or_else(|e| panic!("Phase 4 direct-map RAM coverage gap: {:?}", e));
+
+    let platform_stats = build_direct_map(
+        new_pml4,
+        regions.iter(),
+        is_phase2_platform,
+        alloc_frame,
+        true,
+    )?;
+    validate_direct_map_coverage(new_pml4, regions.iter(), is_phase2_platform)
+        .unwrap_or_else(|e| panic!("Phase 4 direct-map platform coverage gap: {:?}", e));
+
+    // Loader-owned regions (EfiLoaderCode/EfiLoaderData) — see is_loader_owned's doc:
+    // on the UEFI path the PMM-metadata region and the loader's own BootInfo/memory-map
+    // statics typically live here, and neither classifier above covers it.
+    let loader_stats =
+        build_direct_map(new_pml4, regions.iter(), is_loader_owned, alloc_frame, true)?;
+    validate_direct_map_coverage(new_pml4, regions.iter(), is_loader_owned)
+        .unwrap_or_else(|e| panic!("Phase 4 loader-owned direct-map coverage gap: {:?}", e));
+
+    // MMIO (EfiMemoryMappedIO 11 / EfiMemoryMappedIOPortSpace 12): mapped
+    // uncacheable via its own builder, split out of the Phase 2 pass above — see
+    // is_mmio's doc.
+    let mmio_stats = build_uc_direct_map(new_pml4, regions.iter(), is_mmio, alloc_frame)?;
+    validate_direct_map_coverage(new_pml4, regions.iter(), is_mmio)
+        .unwrap_or_else(|e| panic!("Phase 4 MMIO direct-map coverage gap: {:?}", e));
+
+    // Independent of the four classifier passes above: confirm the specific addresses
+    // the kernel actually dereferences after the switch resolve, regardless of which (if
+    // any) classifier happens to cover them today — including the low block the kernel's
+    // own stack lives in, whose failure mode is an exception-less triple fault rather
+    // than a diagnosable panic.
+    validate_essential_boot_addresses(new_pml4, boot_info)
+        .unwrap_or_else(|e| panic!("Phase 4 essential boot address coverage gap: {:?}", e));
+
+    // Phase 3: map the GOP framebuffer explicitly (write-combining + NX), instead of
+    // relying on inherited firmware coverage — design doc problem P4. Only present on
+    // a graphics-mode boot (BIOS text-mode/no-framebuffer boots leave `base_address`
+    // at 0). This was previously documented as "the caller's responsibility" but never
+    // actually wired in anywhere — fixed here, the only production call site.
+    if boot_info.video_type == crate::boot_info::VideoModeType::Framebuffer
+        && boot_info.fb_info.base_address != 0
+    {
+        map_wc_range(
+            new_pml4,
+            boot_info.fb_info.base_address,
+            boot_info.fb_info.size as u64,
+            alloc_frame,
+        )
+        .unwrap_or_else(|e| panic!("Phase 4 framebuffer direct-map failed: {:?}", e));
+    }
+
+    // Phase 5 (#63): rebuild the higher-half kernel image (slot 256) as a per-section
+    // W^X map (.text RO+X / .rodata RO+NX / .data+.bss RW+NX) + the VGA text page (RW+NX),
+    // instead of copying the firmware's low-RAM RWX huge-page mirror verbatim. Heap/task
+    // stacks are served on demand afterwards — see map_kernel_image_higher_half's doc.
+    map_kernel_image_higher_half(new_pml4, &kernel_image_layout(), alloc_frame)
+        .unwrap_or_else(|e| panic!("Phase 5 kernel-image higher-half map failed: {:?}", e));
+
+    // Recursive self-map, exactly like `build_kernel_pml4_from_firmware`'s slot 511.
+    let new_pml4_table = table_at(new_pml4);
+    (*entry_ptr(new_pml4_table, RECURSIVE_SLOT)).set_mapping(
+        phys_to_pfn(new_pml4),
+        true,
+        true,
+        false,
+    );
+
+    Ok((
+        new_pml4,
+        ram_stats,
+        platform_stats,
+        loader_stats,
+        mmio_stats,
+    ))
+}
+
+/// Builds a full kernel-owned PML4 from the current boot memory map (see
+/// [`build_full_kernel_pml4`]) and switches CR3 to it, returning the new PML4's
+/// physical address.
+///
+/// After this returns, firmware/BIOS-loader sub-tables are no longer referenced by the
+/// active table, so the caller has no reason to reserve them from the PMM
+/// (`reserve_firmware_page_tables`) — and no way to gain memory by not doing so either:
+/// those frames are outside the PMM pool to begin with (that is the R1 invariant asserted
+/// below), which makes the reservation a no-op rather than a cost.
+///
+/// `vmm::init` is the only call site, taken whenever a `BootInfo` has been published
+/// (every real boot); a BootInfo-less boot (e.g. unit-test kernels) falls back to the
+/// firmware clone instead.
+///
+/// # Safety
+/// Must run before any other write to CR3 in this boot, with the same reachability
+/// contract as [`build_direct_map`] (the old identity map must still be active while
+/// this builds the new table). `old_pml4_phys` must be the physical address of the
+/// currently active PML4.
+pub unsafe fn switch_to_direct_map(old_pml4_phys: u64) -> u64 {
+    let boot_info_raw = BOOT_INFO_PTR.load(Ordering::Acquire);
+    assert_ne!(
+        boot_info_raw, 0,
+        "switch_to_direct_map requires a published BootInfo"
+    );
+
+    // SAFETY: `boot_info_raw` is the validated BootInfo pointer published by
+    // `KernelMain` after checking its magic; the memory map it references is valid,
+    // aligned, loader-populated memory (mirrors the access pattern in `pmm::manager`).
+    let boot_info = &*(boot_info_raw as *const crate::boot_info::BootInfo);
+    let regions = core::slice::from_raw_parts(
+        boot_info.memory_map_addr as *const UnifiedMemoryEntry,
+        boot_info.memory_map_len as usize,
+    );
+
+    // #63 R1 guard: before drawing a single scaffold frame from the PMM, prove that no
+    // frame of the currently-active firmware/BIOS-loader table tree is allocatable.
+    // `reserve_firmware_page_tables` is skipped on this path, so this is the check that
+    // upholds the "PMM never hands out a live page-table frame" invariant the skip
+    // relies on. See `page_table::assert_no_active_table_frame_is_pmm_free`.
+    assert_no_active_table_frame_is_pmm_free(old_pml4_phys);
+
+    let mut alloc = alloc_frame_phys;
+    let (new_pml4, ram_stats, platform_stats, loader_stats, mmio_stats) =
+        build_full_kernel_pml4(regions, boot_info, &mut alloc)
+            .unwrap_or_else(|e| panic!("Phase 4 direct-map build failed: {:?}", e));
+
+    crate::debugln!(
+        "VMM: Phase 4 switching CR3 to kernel-owned direct map: RAM={:?} platform={:?} loader={:?} mmio={:?}",
+        ram_stats,
+        platform_stats,
+        loader_stats,
+        mmio_stats
+    );
+
+    write_cr3(new_pml4);
+    new_pml4
+}

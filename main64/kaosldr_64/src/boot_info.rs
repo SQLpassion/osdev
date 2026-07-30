@@ -70,9 +70,37 @@ pub struct UnifiedMemoryEntry {
     /// Size of the physical memory region in bytes.
     pub size: u64,
 
+    /// EFI-style memory classification derived from the E820 `region_type`, so the
+    /// kernel's boot-path-agnostic memory-map reader sees a consistent value
+    /// regardless of loader. Layout must stay byte-identical to
+    /// `kernel::boot_info::UnifiedMemoryEntry` / `kaosldr_uefi::UnifiedMemoryEntry`
+    /// (see `kernel/tests/boot_layout_test.rs`). See `kaosldr_64/src/main.rs` for the
+    /// E820-type -> this mapping.
+    pub memory_type: u32,
+
+    /// Explicit padding for `attribute`'s 8-byte alignment.
+    pub _pad: u32,
+
+    /// E820 has no equivalent attribute bitfield; always 0 on this (BIOS) path.
+    pub attribute: u64,
+
     /// If true, this region is general-purpose usable RAM. If false, it is reserved.
     pub is_usable: bool,
 }
+
+// Compile-time layout guard (#63 R5): this struct is hand-duplicated in three crates
+// (`kernel::boot_info`, `kaosldr_uefi`, and here). `kernel/tests/boot_layout_test.rs`
+// can only pin the *kernel's* copy at runtime; these asserts fail *this* crate's build
+// the moment its copy drifts, so the three cannot silently diverge.
+const _: () = {
+    assert!(core::mem::size_of::<UnifiedMemoryEntry>() == 40);
+    assert!(core::mem::align_of::<UnifiedMemoryEntry>() == 8);
+    assert!(core::mem::offset_of!(UnifiedMemoryEntry, start) == 0);
+    assert!(core::mem::offset_of!(UnifiedMemoryEntry, size) == 8);
+    assert!(core::mem::offset_of!(UnifiedMemoryEntry, memory_type) == 16);
+    assert!(core::mem::offset_of!(UnifiedMemoryEntry, attribute) == 24);
+    assert!(core::mem::offset_of!(UnifiedMemoryEntry, is_usable) == 32);
+};
 
 /// The root Boot Information structure passed from the bootloader to the kernel.
 ///

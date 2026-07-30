@@ -396,13 +396,36 @@ pub struct FramebufferInfo {
 }
 
 /// Simplified memory map entries for the kernel physical memory manager.
+///
+/// Layout must stay byte-identical to `kernel::boot_info::UnifiedMemoryEntry` and
+/// `kaosldr_64::boot_info::UnifiedMemoryEntry` (see `kernel/tests/boot_layout_test.rs`).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct UnifiedMemoryEntry {
     pub start: u64,
     pub size: u64,
+    /// Raw EFI memory descriptor type (see `EfiMemoryDescriptor::memory_type`).
+    pub memory_type: u32,
+    /// Explicit padding for `attribute`'s 8-byte alignment.
+    pub _pad: u32,
+    /// Raw EFI memory descriptor attribute bits (e.g. `EFI_MEMORY_RUNTIME`).
+    pub attribute: u64,
     pub is_usable: bool,
 }
+
+// Compile-time layout guard (#63 R5): this struct is hand-duplicated in three crates
+// (`kernel::boot_info`, `kaosldr_64::boot_info`, and here). `kernel/tests/boot_layout_test.rs`
+// can only pin the *kernel's* copy at runtime; these asserts fail *this* crate's build the
+// moment its copy drifts, so the three cannot silently diverge.
+const _: () = {
+    assert!(core::mem::size_of::<UnifiedMemoryEntry>() == 40);
+    assert!(core::mem::align_of::<UnifiedMemoryEntry>() == 8);
+    assert!(core::mem::offset_of!(UnifiedMemoryEntry, start) == 0);
+    assert!(core::mem::offset_of!(UnifiedMemoryEntry, size) == 8);
+    assert!(core::mem::offset_of!(UnifiedMemoryEntry, memory_type) == 16);
+    assert!(core::mem::offset_of!(UnifiedMemoryEntry, attribute) == 24);
+    assert!(core::mem::offset_of!(UnifiedMemoryEntry, is_usable) == 32);
+};
 
 /// Master BootInfo structure containing all system diagnostic tables.
 #[repr(C)]
@@ -425,12 +448,24 @@ pub struct BootInfo {
     pub boot_timezone: i16,
 }
 
+/// Capacity of the statically allocated unified memory map handed to the kernel.
+///
+/// UEFI maps are often fragmented (well over a hundred descriptors on real firmware), so
+/// this is sized with generous headroom; a map that still overflows it is truncated, and
+/// [`efi_main`] emits a loud serial warning rather than dropping regions silently
+/// (#63 R4).
+const MAX_UNIFIED_MEM_ENTRIES: usize = 512;
+
 /// Statically allocated memory map buffer passed to the kernel.
-static mut UNIFIED_MEM_MAP: [UnifiedMemoryEntry; 256] = [UnifiedMemoryEntry {
+static mut UNIFIED_MEM_MAP: [UnifiedMemoryEntry; MAX_UNIFIED_MEM_ENTRIES] = [UnifiedMemoryEntry {
     start: 0,
     size: 0,
+    memory_type: 0,
+    _pad: 0,
+    attribute: 0,
     is_usable: false,
-}; 256];
+};
+    MAX_UNIFIED_MEM_ENTRIES];
 
 /// Statically allocated BootInfo table initialized at boot time.
 static mut BOOT_INFO: BootInfo = BootInfo {
@@ -859,14 +894,29 @@ pub unsafe extern "efiapi" fn efi_main(
             // EfiConventionalMemory = 7
             let is_usable = desc.memory_type == 7;
 
-            if usable_entry_count < 256 {
+            if (usable_entry_count as usize) < MAX_UNIFIED_MEM_ENTRIES {
                 UNIFIED_MEM_MAP[usable_entry_count as usize] = UnifiedMemoryEntry {
                     start: desc.physical_start,
                     size: desc.number_of_pages * 4096,
+                    memory_type: desc.memory_type,
+                    _pad: 0,
+                    attribute: desc.attribute,
                     is_usable,
                 };
                 usable_entry_count += 1;
             }
+        }
+
+        // #63 R4: never drop memory-map regions silently. If the firmware map has more
+        // descriptors than the static buffer holds, the kernel's later coverage
+        // validation could still pass (it only checks the regions it *was* handed),
+        // hiding an unmapped RUNTIME/MMIO region that an SMI might touch. Boot Services
+        // are gone here, so ConOut is dead — warn on the serial port, which is still up.
+        if num_descriptors > MAX_UNIFIED_MEM_ENTRIES {
+            serial::write_str(
+                "WARNING: UEFI memory map exceeds UNIFIED_MEM_MAP capacity; \
+                 trailing descriptors were dropped (see #63 R4)\r\n",
+            );
         }
 
         BOOT_INFO.memory_map_addr = &raw const UNIFIED_MEM_MAP[0] as u64;

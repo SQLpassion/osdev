@@ -427,6 +427,17 @@ all SMM/ACPI/MMIO/runtime regions — and adds the recursive window the VMM need
 mechanics, the bisection that proved it, and the remaining caveats are documented in
 [`vmm.md`](vmm.md).
 
+> **Update (issue #63):** the kernel now builds its *own* complete page-table hierarchy
+> (all RAM + platform/runtime/MMIO/loader regions + the higher-half mirror + the recursive
+> window) and switches `CR3` to it on every boot that publishes a `BootInfo` (i.e. every
+> real boot). This was validated on the real AMD/UEFI box **without** the reset described
+> above — building the *complete* region set, rather than the minimal map that reset the
+> machine, is exactly what makes discarding the firmware tables safe. The firmware-clone
+> path in this section is kept only as the fallback when no `BootInfo` is published (e.g.
+> unit-test kernels; `vmm::init` gates the switch on `BOOT_INFO_PTR != 0`). If a different
+> machine ever misbehaves, revert to the clone path in `vmm::init`. See
+> [`todo_uefi_kernel_pagetables.md`](todo_uefi_kernel_pagetables.md) and `vmm.md` §4.4.
+
 #### Background: what are SMM and SMIs?
 
 If "SMM/SMI" means nothing to you, here is the minimum needed to understand the reset above.

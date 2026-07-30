@@ -12,6 +12,7 @@
 use core::panic::PanicInfo;
 use kaos_kernel::memory::pmm;
 use kaos_kernel::memory::pmm::manager::{check_metadata_fits, select_metadata_base};
+use kaos_kernel::memory::vmm::page_table::{self, PageTable};
 
 /// Entry point for the PMM integration test kernel
 #[no_mangle]
@@ -421,6 +422,82 @@ fn test_pmm_inc_refcount_rejects_unallocated_or_out_of_range_pfn() {
             !mgr.inc_refcount(u64::MAX / 2),
             "inc_refcount must reject a PFN outside every known region"
         );
+    });
+}
+
+// ============================================================================
+// #63 R1: `is_pfn_free` query + `assert_no_active_table_frame_is_pmm_free` guard.
+//
+// These back the invariant that makes skipping `reserve_firmware_page_tables` on the
+// kernel-owned-table path safe (no live firmware/loader page-table frame may be a free
+// PMM frame). See `docs/todo_uefi_kernel_pagetables.md` §R1. The *panic* case lives in
+// `firmware_tables_pmm_pool_death_test.rs`.
+// ============================================================================
+
+/// Contract: `is_pfn_free` mirrors the allocation bitmap for managed frames and reports
+/// `false` for PFNs outside every managed region.
+/// Failure Impact: the R1 guard is built on this query; a wrong answer would either make
+/// the guard miss a real violation or abort every boot with a false positive.
+#[test_case]
+fn test_is_pfn_free_tracks_bitmap_and_range() {
+    pmm::with_pmm(|mgr| {
+        // A just-allocated frame is used -> not free.
+        let frame = mgr.alloc_frame().expect("allocation should succeed");
+        assert!(
+            !mgr.is_pfn_free(frame.pfn),
+            "an allocated frame must not report free"
+        );
+
+        // Releasing it returns the very same PFN to the free pool.
+        assert!(mgr.release_pfn(frame.pfn), "release must succeed");
+        assert!(
+            mgr.is_pfn_free(frame.pfn),
+            "a released frame must report free again"
+        );
+
+        // PFN 0 is below KERNEL_OFFSET (1 MiB) and thus outside every managed region.
+        assert!(
+            !mgr.is_pfn_free(0),
+            "an unmanaged low PFN must not report free"
+        );
+
+        // A PFN far past any RAM region is likewise unmanaged.
+        assert!(
+            !mgr.is_pfn_free(u64::MAX / 2),
+            "an out-of-range PFN must not report free"
+        );
+    });
+}
+
+/// Contract: the #63 R1 guard walks a small table whose every frame is an allocated
+/// (hence used) PMM frame and returns without panicking — it must not false-positive on
+/// the common case (which is exactly what happens on every real boot, where the live
+/// firmware tree's frames are all outside the PMM pool).
+/// Failure Impact: a spurious panic here would abort every real boot, since the guard
+/// runs on the live firmware tree in `switch_to_direct_map`. Release-blocking.
+#[test_case]
+fn test_r1_guard_passes_when_no_table_frame_is_free() {
+    // Two allocated (used), zeroed frames: a root and one sub-table it points at, so the
+    // guard actually descends a level rather than only checking the root.
+    let root = page_table::alloc_frame_phys_or_panic("test: R1 guard root");
+    let sub = page_table::alloc_frame_phys_or_panic("test: R1 guard sub");
+    page_table::zero_phys_page(root);
+    page_table::zero_phys_page(sub);
+
+    // Point root[0] at the sub-table (present, non-huge).
+    // SAFETY: `root` is a freshly allocated, identity-mapped low frame; writing its
+    // first entry through the identity map is the same trick the direct-map tests use.
+    unsafe {
+        (*(root as *mut PageTable)).entries[0].set_mapping(sub >> 12, true, true, false);
+    }
+
+    // Both frames are used, so the guard must complete without panicking.
+    // SAFETY: `root` and every frame reachable from it is identity-mapped and live.
+    unsafe { page_table::assert_no_active_table_frame_is_pmm_free(root) };
+
+    pmm::with_pmm(|mgr| {
+        assert!(mgr.release_pfn(root >> 12), "root release must succeed");
+        assert!(mgr.release_pfn(sub >> 12), "sub release must succeed");
     });
 }
 
