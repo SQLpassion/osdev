@@ -250,6 +250,7 @@ fn try_init_controller(dev: &pci::PciDevice) -> bool {
 
     // Identity-map the ABAR MMIO region. The registers for 32 ports fit well
     // within two 4KB pages.
+    const ABAR_MAPPED_SIZE: u64 = 2 * 4096;
     let virt_base = phys_base;
     for i in 0..2 {
         let page_addr = virt_base + (i * 4096);
@@ -257,6 +258,20 @@ fn try_init_controller(dev: &pci::PciDevice) -> bool {
             vmm::map_virtual_to_physical_uc(page_addr, page_addr);
         }
     }
+
+    // `is_va_mapped` above only answers "is there *a* mapping", not "is it uncacheable",
+    // so a pre-existing mapping has to be re-typed explicitly (#63 B4). This matters since
+    // the kernel-owned page table maps `EfiReservedMemoryType` / `EFI_MEMORY_RUNTIME`
+    // regions write-back — design doc §4 prescribes no cacheability for those — so a
+    // firmware that describes this device aperture as Reserved rather than
+    // `EfiMemoryMappedIO` would leave the ABAR *cached*, and MMIO register writes could be
+    // held in a cache line instead of reaching the HBA. Cheap and idempotent: on the common
+    // path the loop above just created the mapping uncacheable and this re-stamps the same
+    // bits. Note this is deliberately NOT done for the per-port DMA frames below: those are
+    // ordinary PMM RAM sitting inside a 2 MiB write-back huge page shared with unrelated
+    // frames, AHCI DMA is cache-coherent on x86, and re-typing that huge page would make
+    // 2 MiB of normal RAM uncacheable.
+    vmm::configure_uc_mapping(virt_base, ABAR_MAPPED_SIZE);
 
     let hba_mem = virt_base as *mut HbaMem;
 

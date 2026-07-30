@@ -564,6 +564,104 @@ fn test_region_overflow_is_reported_by_all_builders() {
     }
 }
 
+/// Contract: a region whose `start + size` fits in a `u64` but whose *round-up to the next
+/// page* would not is reported as `RegionOverflow` by all three builders, rather than
+/// silently skipped.
+/// Failure Impact: without the checked round-up, `raw_end + 0xFFF` wraps to a small value,
+/// the round-down then yields `end == 0`, and every mapping loop here (`while cur < end`)
+/// exits immediately — the region is dropped with no error and no log. That is the only
+/// failure mode in this module that produces no diagnostic whatsoever, so it must fail
+/// loudly even though it takes nonsensical firmware input to reach (#63 B6).
+#[test_case]
+fn test_page_roundup_overflow_is_reported_not_silently_skipped() {
+    // SAFETY: single-threaded test context.
+    unsafe {
+        let pml4 = reset_pool();
+        let mut alloc = bump_alloc_from_pool;
+
+        // start + size == u64::MAX exactly: the sum does NOT overflow (so the older
+        // `checked_add` on its own would pass this through), but rounding the end up to the
+        // next page boundary does.
+        let start = u64::MAX - 0x1FFF;
+        let size = 0x1FFF;
+        assert_eq!(start.checked_add(size), Some(u64::MAX));
+
+        let ram = ram_entry(start, size);
+        assert_eq!(
+            build_direct_map(pml4, [ram].iter(), is_phase1_ram, &mut alloc, true),
+            Err(DirectMapError::RegionOverflow { start, size })
+        );
+
+        let mmio = UnifiedMemoryEntry {
+            start,
+            size,
+            memory_type: 11, // EfiMemoryMappedIO
+            _pad: 0,
+            attribute: 0,
+            is_usable: false,
+        };
+        assert_eq!(
+            build_uc_direct_map(pml4, [mmio].iter(), is_mmio, &mut alloc),
+            Err(DirectMapError::RegionOverflow { start, size })
+        );
+
+        assert_eq!(
+            map_wc_range(pml4, start, size, &mut alloc),
+            Err(DirectMapError::RegionOverflow { start, size })
+        );
+    }
+}
+
+/// Contract: `build_uc_direct_map` re-stamps the caching bits of a page an earlier
+/// write-back pass already mapped, instead of early-returning because the physical target
+/// matches.
+/// Failure Impact: the RAM / platform / loader passes all run *before* the MMIO pass in
+/// `build_full_kernel_pml4`, so a device page they touched first (reachable when outward
+/// page rounding makes a device region share its edge page with an adjacent RAM region)
+/// would stay write-back — MMIO register writes could then sit in a cache line instead of
+/// reaching the device. This is the same defect class the R3 fix closed for
+/// `map_4k_wc_page`, which was not mirrored here (#63 B3).
+#[test_case]
+fn test_build_uc_direct_map_restamps_over_existing_write_back_page() {
+    const SHARED: u64 = 0x0064_0000;
+    // SAFETY: single-threaded test context; POOL reset before use.
+    unsafe {
+        let pml4 = reset_pool();
+        let mut alloc = bump_alloc_from_pool;
+
+        // Pass 1: ordinary RAM, mapped write-back (no PCD/PWT) at 4 KiB.
+        let ram = ram_entry(SHARED, PAGE_SIZE_U64);
+        build_direct_map(pml4, [ram].iter(), is_phase1_ram, &mut alloc, false).unwrap();
+        let before = leaf_entry(pml4, SHARED).expect("RAM leaf present");
+        assert_eq!(before.raw() & ENTRY_PCD, 0, "RAM page starts write-back");
+
+        // Pass 2: the MMIO classifier claims the very same page.
+        let mmio = UnifiedMemoryEntry {
+            start: SHARED,
+            size: PAGE_SIZE_U64,
+            memory_type: 11, // EfiMemoryMappedIO
+            _pad: 0,
+            attribute: 0,
+            is_usable: false,
+        };
+        build_uc_direct_map(pml4, [mmio].iter(), is_mmio, &mut alloc).unwrap();
+
+        let after = leaf_entry(pml4, SHARED).expect("leaf still present");
+        assert_eq!(
+            after.raw() & ENTRY_PCD,
+            ENTRY_PCD,
+            "MMIO pass must re-stamp PCD over the existing write-back mapping"
+        );
+        assert_eq!(after.raw() & ENTRY_PWT, 0, "PWT must be clear for MMIO");
+        assert!(after.no_execute(), "MMIO mapping must stay NX");
+        // Still the same identity target — re-stamping must not move the frame.
+        assert_eq!(
+            resolve_phys_via_root(pml4, SHARED),
+            Some((SHARED, PAGE_SIZE_U64))
+        );
+    }
+}
+
 // ============================================================================
 // Phase 2 classifier tests (`is_phase2_platform`) — part of #63, Phase 2.
 // ============================================================================

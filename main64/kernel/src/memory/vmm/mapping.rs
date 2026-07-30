@@ -937,9 +937,46 @@ pub fn map_user_page(virtual_address: u64, pfn: u64, writable: bool) -> Result<(
 /// Configures existing page table entries covering the given virtual address range to use
 /// Write-Combining (WC) via PAT1 (PWT=1, PCD=0).
 ///
-/// This correctly handles both 4 KiB and 2 MiB / 1 GiB huge pages by setting the PWT bit
-/// at the appropriate leaf level, modifying existing mappings (such as UEFI GOP mappings).
+/// This correctly handles both 4 KiB and 2 MiB / 1 GiB huge pages by stamping the PWT/PCD
+/// bits at the appropriate leaf level, modifying existing mappings (such as UEFI GOP
+/// mappings). PCD is stamped *clear* rather than left alone, so a range an earlier pass
+/// (or the firmware) mapped uncacheable really ends up write-combining and not UC (#63).
 pub fn configure_wc_mapping(start_va: u64, size: u64) {
+    configure_cache_bits(start_va, size, true, false);
+}
+
+/// Configures existing page table entries covering the given virtual address range to be
+/// strongly uncacheable (PWT=1, PCD=1 → PAT3, which is UC in the default PAT) — the
+/// counterpart to [`configure_wc_mapping`], for device MMIO that must never be cached.
+/// Deliberately the same memory type [`map_virtual_to_physical_uc`] installs, so a caller
+/// that creates the mapping on one boot and re-types an inherited one on the next ends up
+/// with identical caching either way. (`direct_map::map_4k_uc_page` uses PCD=1/PWT=0 → UC-
+/// instead; both are uncacheable here, since KAOS programs no MTRRs for UC- to be weakened
+/// by, but strong UC is the safer default for a device aperture.)
+///
+/// Unlike [`map_virtual_to_physical_uc`], which *creates* a mapping, this fixes up the
+/// memory type of whatever mapping already exists, at whatever granularity it exists — a
+/// 4 KiB leaf the kernel made itself, or an inherited/kernel-built 2 MiB / 1 GiB huge page.
+/// A caller that only skips work when `is_va_mapped` reports the range as mapped otherwise
+/// has no way to tell a correctly-uncacheable mapping from a write-back one: the #63
+/// kernel-owned table maps `EfiReservedMemoryType` and `EFI_MEMORY_RUNTIME` regions
+/// write-back (design doc §4 prescribes no cacheability for those), so a device aperture a
+/// firmware happens to describe as Reserved rather than `EfiMemoryMappedIO` would end up
+/// cached (#63 B4).
+///
+/// Note the granularity caveat: re-stamping a huge leaf changes the memory type of the
+/// whole 2 MiB / 1 GiB it covers. For a device aperture that is the intent — such a page
+/// covers device space, not RAM — and it is the same trade-off `configure_wc_mapping`
+/// already makes for the framebuffer.
+pub fn configure_uc_mapping(start_va: u64, size: u64) {
+    configure_cache_bits(start_va, size, true, true);
+}
+
+/// Shared walk behind [`configure_wc_mapping`] / [`configure_uc_mapping`]: stamps `pwt`/
+/// `pcd` onto every existing leaf covering `[start_va, start_va + size)`, at whatever
+/// granularity that leaf has, and invalidates each touched translation. Non-present levels
+/// are skipped rather than created — this only ever *re-types* mappings that already exist.
+fn configure_cache_bits(start_va: u64, size: u64, pwt: bool, pcd: bool) {
     // Note: single-core, IF-disabled
     use super::page_table::*;
 
@@ -947,12 +984,12 @@ pub fn configure_wc_mapping(start_va: u64, size: u64) {
     let end = page_align_down(start_va + size + PAGE_SIZE_U64 - 1);
 
     while addr < end {
-        // Dispatch on the shared walk to decide which level (if any) holds
-        // the mapping for `addr`, then apply the PWT bit at exactly that
+        // Dispatch on the shared walk (#58) to decide which level (if any) holds
+        // the mapping for `addr`, then apply the PWT/PCD bits at exactly that
         // level. Missing entries at any level are skipped one page at a
         // time (matching this function's original per-call behavior);
         // that is a smaller skip than `reclaim_user_range`'s jump-by-region
-        // logic, but WC ranges (framebuffer/MMIO) are typically small
+        // logic, but WC/UC ranges (framebuffer/MMIO) are typically small
         // contiguous windows, so this was never a hot path worth widening
         // here, and preserving it avoids an unrelated behavior change.
         match walk_levels(addr) {
@@ -966,7 +1003,9 @@ pub fn configure_wc_mapping(start_va: u64, size: u64) {
                 let pdp_idx = pdp_index(addr);
                 // SAFETY: Modifying cache bits of mapped memory in Ring 0 is safe.
                 unsafe {
-                    (*entry_ptr(pdp, pdp_idx)).set_pwt(true);
+                    let e = entry_ptr(pdp, pdp_idx);
+                    (*e).set_pwt(pwt);
+                    (*e).set_pcd(pcd);
                 }
                 invlpg(addr);
                 addr = (addr + 0x4000_0000) & !0x3FFF_FFFF; // Advance by 1GiB
@@ -976,7 +1015,9 @@ pub fn configure_wc_mapping(start_va: u64, size: u64) {
                 let pd_idx = pd_index(addr);
                 // SAFETY: Modifying cache bits of mapped memory in Ring 0 is safe.
                 unsafe {
-                    (*entry_ptr(pd, pd_idx)).set_pwt(true);
+                    let e = entry_ptr(pd, pd_idx);
+                    (*e).set_pwt(pwt);
+                    (*e).set_pcd(pcd);
                 }
                 invlpg(addr);
                 addr = (addr + 0x20_0000) & !0x1F_FFFF; // Advance by 2MiB
@@ -986,7 +1027,9 @@ pub fn configure_wc_mapping(start_va: u64, size: u64) {
                 if table_entry(pt, pt_idx).present() {
                     // SAFETY: Modifying cache bits of mapped memory in Ring 0 is safe.
                     unsafe {
-                        (*entry_ptr(pt, pt_idx)).set_pwt(true);
+                        let e = entry_ptr(pt, pt_idx);
+                        (*e).set_pwt(pwt);
+                        (*e).set_pcd(pcd);
                     }
                     invlpg(addr);
                 }

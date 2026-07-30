@@ -1437,3 +1437,54 @@ fn test_destroy_user_address_space_reclaims_sparse_out_of_window_mappings() {
         });
     }
 }
+
+/// Contract: `configure_uc_mapping` re-types an already-mapped page to strongly
+/// uncacheable (PWT=1 + PCD=1) without disturbing its frame or its presence.
+/// Failure Impact: this is the only way a driver can make an *already existing* mapping
+/// uncacheable. `is_va_mapped` answers "is there a mapping", not "is it uncacheable", so
+/// `drivers::ahci`'s ABAR setup depends on this to avoid driving its MMIO registers
+/// write-back-cached when the #63 kernel-owned table mapped the aperture's region as
+/// `EfiReservedMemoryType` (write-back, per design doc §4). Cached MMIO register writes can
+/// sit in a cache line instead of reaching the device (#63 B4).
+#[test_case]
+fn test_configure_uc_mapping_retypes_existing_leaf() {
+    use kaos_kernel::memory::vmm::page_table::{pt_table_addr, ENTRY_PCD, ENTRY_PWT};
+
+    const TEST_VA: u64 = 0xFFFF_8000_0200_4000;
+
+    // Start from a clean slate, then demand-map the page (write-back by default).
+    vmm::unmap_virtual_address(TEST_VA);
+    vmm::try_handle_page_fault(TEST_VA, 0).expect("demand mapping of TEST_VA must succeed");
+
+    // Reads the leaf PTE through the recursive window; the fault above populated the
+    // whole path, so every level exists.
+    // SAFETY: `pt_table_addr(TEST_VA)` is the recursive-window VA of that leaf table, which
+    // is mapped as long as TEST_VA is; entries are only read, never written.
+    let leaf = |va: u64| unsafe {
+        let pt = &*(pt_table_addr(va) as *const PageTable);
+        pt.entries[pt_index(va)]
+    };
+
+    let before = leaf(TEST_VA);
+    assert!(before.present(), "demand-mapped page must be present");
+    assert_eq!(before.raw() & ENTRY_PCD, 0, "starts cacheable (PCD clear)");
+    let frame_before = before.frame();
+
+    vmm::configure_uc_mapping(TEST_VA, 4096);
+
+    let after = leaf(TEST_VA);
+    assert!(after.present(), "re-typing must not unmap the page");
+    assert_eq!(
+        after.frame(),
+        frame_before,
+        "re-typing must not move the frame"
+    );
+    assert_eq!(after.raw() & ENTRY_PCD, ENTRY_PCD, "PCD must be set");
+    assert_eq!(
+        after.raw() & ENTRY_PWT,
+        ENTRY_PWT,
+        "PWT must be set (strong UC, matching map_virtual_to_physical_uc)"
+    );
+
+    vmm::unmap_virtual_address(TEST_VA);
+}

@@ -55,6 +55,19 @@ SECTIONS
         __data_start = .;
         *(.data .data.*)
         *(.ldata .ldata.*)
+        /*
+         * #63 B5: place the relocation-related sections explicitly. Without these lines
+         * they are ORPHAN sections, and ld drops orphans wherever its own heuristic
+         * prefers - in practice right after .rodata, i.e. *inside* the
+         * [__rodata_start, __rodata_end) window, which the kernel-owned page table maps
+         * RO+NX. That happens to be harmless today (relocation-model=static, so nothing
+         * writes the GOT at runtime), but nothing pins it: the moment a codegen or target
+         * change makes one of them need a write, CR0.WP turns it into a #PF that only
+         * shows up at runtime, far from this file. Naming them here puts them in the
+         * RW+NX range where relocation data belongs, independent of ld's heuristic.
+         */
+        *(.got .got.plt)
+        *(.data.rel.ro .data.rel.ro.*)
     }
 
     /* Align to page boundary before BSS */
@@ -76,6 +89,13 @@ SECTIONS
     /DISCARD/ :
     {
         *(.eh_frame)
+        /*
+         * .eh_frame_hdr is the lookup index *for* .eh_frame, so it is dead weight once
+         * .eh_frame is gone (the workspace builds with panic = "abort", so nothing
+         * unwinds). Discarding it explicitly rather than leaving it an orphan is the
+         * same #63 B5 reasoning as the .got placement above.
+         */
+        *(.eh_frame_hdr)
         *(.comment)
     }
 }

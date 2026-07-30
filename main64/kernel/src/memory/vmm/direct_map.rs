@@ -219,6 +219,34 @@ pub fn is_loader_owned(entry: &UnifiedMemoryEntry) -> bool {
     matches!(entry.memory_type, EFI_LOADER_CODE | EFI_LOADER_DATA)
 }
 
+/// Rounds `[start, start + size)` outward to whole 4 KiB pages, returning the
+/// `(page_start, page_end)` pair every mapping loop in this module iterates over.
+///
+/// Rounding outward is required because real memory maps are not guaranteed page-aligned
+/// (e.g. QEMU/SeaBIOS reports the classic low-memory region as `[0x0, 0x9FC00)`, and
+/// `0x9FC00` is not a multiple of 4 KiB). A PTE can only ever address a page-aligned
+/// frame, so without this the truncation implicit in `phys_to_pfn`/`pt_index` (both
+/// `addr >> 12`) would silently alias an unaligned address onto the wrong page, and could
+/// misreport a spurious overlap against an adjacent region that rounds to the very same
+/// page.
+///
+/// Both the `start + size` sum and the round-up are checked: a region ending at (or within
+/// a page of) `u64::MAX` would otherwise wrap the round-up to 0, and the caller's
+/// `while cur < end` loop would then skip the region **silently** — the one failure mode
+/// here that produces no diagnostic at all. Firmware would have to report something
+/// nonsensical to trigger it, which is exactly why it should be a reported error rather
+/// than a quietly dropped region (#63 B6).
+fn page_range(start: u64, size: u64) -> Result<(u64, u64), DirectMapError> {
+    let raw_end = start
+        .checked_add(size)
+        .ok_or(DirectMapError::RegionOverflow { start, size })?;
+    let end = raw_end
+        .checked_add(PAGE_SIZE_U64 - 1)
+        .map(|e| e & !(PAGE_SIZE_U64 - 1))
+        .ok_or(DirectMapError::RegionOverflow { start, size })?;
+    Ok((start & !(PAGE_SIZE_U64 - 1), end))
+}
+
 /// Builds a direct (VA == PA) map of every region `classify` accepts into the PML4
 /// rooted at `pml4_phys`, using 2 MiB huge pages for 2-MiB-aligned bulk ranges when
 /// `use_huge_pages` (falling back to 4 KiB for any unaligned head/tail, and for
@@ -254,23 +282,7 @@ pub unsafe fn build_direct_map<'a>(
         if !classify(region) {
             continue;
         }
-        let raw_end =
-            region
-                .start
-                .checked_add(region.size)
-                .ok_or(DirectMapError::RegionOverflow {
-                    start: region.start,
-                    size: region.size,
-                })?;
-        // Real memory maps are not guaranteed page-aligned (e.g. QEMU/SeaBIOS reports
-        // the classic low-memory region as [0x0, 0x9FC00) — 0x9FC00 is not a multiple
-        // of 4 KiB). A PTE can only ever address a page-aligned frame, so round the
-        // range outward to whole pages before mapping; otherwise the truncation
-        // implicit in `phys_to_pfn`/`pt_index` (both `addr >> 12`) would silently
-        // alias an unaligned `cur` onto the wrong page and could misreport a spurious
-        // overlap against an adjacent region that rounds to the very same page.
-        let start = region.start & !(PAGE_SIZE_U64 - 1);
-        let end = (raw_end + PAGE_SIZE_U64 - 1) & !(PAGE_SIZE_U64 - 1);
+        let (start, end) = page_range(region.start, region.size)?;
 
         let mut cur = start;
         while cur < end {
@@ -454,11 +466,7 @@ pub unsafe fn map_wc_range(
     size: u64,
     alloc_frame: &mut dyn FnMut() -> Option<u64>,
 ) -> Result<(), DirectMapError> {
-    let start = base & !(PAGE_SIZE_U64 - 1);
-    let end = base
-        .checked_add(size)
-        .map(|end| (end + PAGE_SIZE_U64 - 1) & !(PAGE_SIZE_U64 - 1))
-        .ok_or(DirectMapError::RegionOverflow { start: base, size })?;
+    let (start, end) = page_range(base, size)?;
 
     let mut stats = DirectMapStats::default();
     let mut cur = start;
@@ -531,18 +539,7 @@ pub unsafe fn build_uc_direct_map<'a>(
         if !classify(region) {
             continue;
         }
-        let raw_end =
-            region
-                .start
-                .checked_add(region.size)
-                .ok_or(DirectMapError::RegionOverflow {
-                    start: region.start,
-                    size: region.size,
-                })?;
-        // Round outward to page boundaries — see build_direct_map's identical comment
-        // for why (real memory-map regions are not guaranteed page-aligned).
-        let start = region.start & !(PAGE_SIZE_U64 - 1);
-        let end = (raw_end + PAGE_SIZE_U64 - 1) & !(PAGE_SIZE_U64 - 1);
+        let (start, end) = page_range(region.start, region.size)?;
 
         let mut cur = start;
         while cur < end {
@@ -571,20 +568,31 @@ unsafe fn map_4k_uc_page(
     let pt = table_at(pt_phys);
     let pt_idx = pt_index(pa);
     let existing = table_entry(pt, pt_idx);
-    if existing.present() {
-        let existing_pa = existing.frame() * PAGE_SIZE_U64;
-        if existing_pa != pa {
-            return Err(DirectMapError::Overlap {
-                va: pa,
-                expected_pa: pa,
-                existing_pa,
-            });
-        }
-        return Ok(()); // identical, already installed - idempotent.
+    if existing.present() && existing.frame() * PAGE_SIZE_U64 != pa {
+        return Err(DirectMapError::Overlap {
+            va: pa,
+            expected_pa: pa,
+            existing_pa: existing.frame() * PAGE_SIZE_U64,
+        });
     }
+    // Stamp (or *re-stamp*) the leaf as uncacheable + NX. Like `map_4k_wc_page`, this
+    // deliberately does NOT early-return on an identical existing mapping the way
+    // `map_4k_page` does: the physical-target check above compares only the frame, not the
+    // caching bits, so a page an earlier pass already mapped write-back (the RAM /
+    // platform / loader passes all run before the MMIO pass in `build_full_kernel_pml4`)
+    // would keep the wrong memory type. Reachable when outward page rounding makes a
+    // device region share its first or last page with an adjacent RAM region — UEFI
+    // descriptors are always 4 KiB-aligned so it cannot happen there today, but a
+    // silently write-back-cached device page is not a failure mode worth leaving to a
+    // property of the input (#63 B3, mirroring the R3 fix for `map_4k_wc_page`).
+    //
+    // Uncacheable is the safe resolution for a page two classifiers disagree about:
+    // treating device memory as cacheable can drop or reorder writes, whereas treating
+    // RAM as uncacheable only costs performance.
     let entry = &mut *entry_ptr(pt, pt_idx);
     entry.set_mapping(phys_to_pfn(pa), true, true, false);
     entry.set_pcd(true);
+    entry.set_pwt(false);
     entry.set_no_execute(true);
     Ok(())
 }
