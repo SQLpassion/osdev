@@ -24,6 +24,18 @@
 > helper — a build+validate+free pass that duplicated the coverage validation
 > `build_full_kernel_pml4` already performs before the CR3 switch) was removed. The
 > historical mentions of the flag/canary in §5 below are kept for context.
+>
+> **Review follow-ups, HW-validated (2026-07-30):** a review of the completed branch
+> produced six further fixes, all of them since **confirmed booting on the physical
+> AMD/UEFI box** (ring-3 shell, disk detected, `TUI.BIN`) as well as green under
+> `cargo test`. Three carried real-hardware risk that only that boot could clear: the
+> AHCI ABAR is now re-typed uncacheable unconditionally (**B4**, touches the storage
+> driver), the linker script places its previously-orphaned sections explicitly (**B5**,
+> changes the image layout), and page-granularity conflicts are resolved by splitting or
+> downgrading instead of panicking (**B1**, changes the emitted table in edge cases). The
+> other three are `[KERNEL_OFFSET, STACK_TOP)` added to the essential-address check
+> (**§R6**), MMIO leaves re-stamped over a write-back predecessor (**B3**), and a checked
+> page round-up (**B6**). See §R6 / §R7 and the `#63 B<n>` markers in the code.
 > **Predecessor context:** `docs/vmm.md` §4 (write_cr3 saga), `docs/boot_uefi.md`.
 
 ---
@@ -322,7 +334,7 @@ What was done for R1:
   `pmm_test.rs`; the guard's panic-on-violation path in
   `firmware_tables_pmm_pool_death_test.rs`.
 
-### R6: essential-address coverage for the running kernel stack (2026-07-30)
+### R6: essential-address coverage for the running kernel stack (2026-07-30, HW-validated)
 
 A follow-up review found that `validate_essential_boot_addresses` — added for exactly the
 purpose of being *classifier-independent* (see point 2 of the activation-path review
@@ -362,7 +374,7 @@ What was done for R6:
   where real GOP framebuffers live. (At the time that also dodged a `HugePageCollision`
   panic; §R7 below removed that failure mode.)
 
-### R7: granularity conflicts are resolved, not fatal (2026-07-30)
+### R7: granularity conflicts are resolved, not fatal (2026-07-30, HW-validated)
 
 The builder mixes granularities: the bulk RAM map uses 2 MiB pages wherever a region is
 aligned, while four later passes need 4 KiB granularity at addresses the firmware chooses —
