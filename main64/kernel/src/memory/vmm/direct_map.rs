@@ -986,11 +986,14 @@ pub unsafe fn build_full_kernel_pml4(
 /// physical address.
 ///
 /// After this returns, firmware/BIOS-loader sub-tables are no longer referenced by the
-/// active table — the caller must not also reserve them from the PMM
-/// (`reserve_firmware_page_tables`), since they should return to the pool of usable
-/// frames instead of staying permanently reserved. `vmm::init` is the only call site,
-/// taken whenever a `BootInfo` has been published (every real boot); a BootInfo-less
-/// boot (e.g. unit-test kernels) falls back to the firmware clone instead.
+/// active table, so the caller has no reason to reserve them from the PMM
+/// (`reserve_firmware_page_tables`) — and no way to gain memory by not doing so either:
+/// those frames are outside the PMM pool to begin with (that is the R1 invariant asserted
+/// below), which makes the reservation a no-op rather than a cost.
+///
+/// `vmm::init` is the only call site, taken whenever a `BootInfo` has been published
+/// (every real boot); a BootInfo-less boot (e.g. unit-test kernels) falls back to the
+/// firmware clone instead.
 ///
 /// # Safety
 /// Must run before any other write to CR3 in this boot, with the same reachability

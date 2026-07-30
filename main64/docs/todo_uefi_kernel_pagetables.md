@@ -47,13 +47,27 @@ This yields five structural problems:
 |---|---------|-------------------|
 | P1 | **No W^X**: kernel text runs RWX (firmware maps identity as supervisor-RWX, huge pages cannot be split) | inherited map in slot 0/256 |
 | P2 | **Direct map depends on firmware coverage**: `virt_to_phys` is a pure offset (`pmm/types.rs:23`); unmapped RAM → silent `#PF` | `pmm/types.rs:13,23` |
-| P3 | **Firmware PT frames permanently blocked + fragile reservation** | `vmm::reserve_firmware_page_tables` (`main.rs:156`, `page_table.rs:455`) |
+| P3 | **Firmware PT frames permanently blocked + fragile reservation** — *the "permanently blocked" half turned out to be false, see the correction below* | `vmm::reserve_firmware_page_tables` (`main.rs:156`, `page_table.rs:455`) |
 | P4 | **Caching/MMIO inherited blindly**: no per-page override possible (no split) | huge pages in slot 0/256 |
 | P5 | **Two divergent memory models** (legacy builds its own, UEFI inherits) | entire VMM |
 
 **Goal:** Early in `KernelMain`, the kernel builds its **own, complete**
 page-table hierarchy from the UEFI memory map, switches CR3 to it, and frees the
 firmware sub-tables. This resolves P1–P5.
+
+> **Correction to P3 (2026-07-30).** The "firmware PT frames permanently blocked" half of P3
+> was a wrong premise, and the "memory win" it implied does not exist. The PMM pools **only**
+> usable RAM at or above `KERNEL_OFFSET`, the firmware/loader page tables live outside that
+> pool (that is exactly the §R1 invariant), and `mark_frame_used` on a frame the PMM does not
+> track is an explicit no-op — see its doc comment in `pmm/manager.rs`. So
+> `reserve_firmware_page_tables()` never cost a single allocatable frame, and skipping it
+> never returned one. Note the two claims are mutually exclusive: if a firmware table frame
+> *were* allocatable, §R1's guard would panic instead. What #63 actually delivers is
+> **P1, P2, P4 and P5** — W^X, kernel-controlled coverage, per-page cacheability, and one
+> memory model — plus the removal of a *structural* dependency on firmware-owned tables
+> (P3's "fragile reservation" half, which was real: the walk had to run at exactly the right
+> point in boot, before the first significant allocation). Every "memory win" / "frames
+> return to the PMM" phrasing below is superseded by this note.
 
 ---
 
@@ -277,12 +291,17 @@ scaffold frames are *reachable*, but not that they can never *alias* a live tabl
 > **Invariant.** No frame of the currently-active firmware/BIOS-loader page tables is
 > ever a frame the PMM can allocate.
 
-Why it matters: `switch_to_direct_map` draws scaffold frames from the PMM *while the
-firmware/loader tables are still live in CR3*, and `build_full_kernel_pml4` copies the
-higher-half mirror (PML4 slot 256) verbatim, so a firmware sub-tree stays referenced
-*after* the switch too. If the PMM could hand out one of those live frames, zeroing it
-during the build — or reusing it at runtime — would corrupt address translation and
-hard-reset the machine with no diagnostic (a real-hardware-only failure).
+Why it matters: `switch_to_direct_map` draws scaffold frames from the PMM and zeroes them
+*while the firmware/loader tables are still live in CR3*. If the PMM could hand out one of
+those live frames, zeroing it mid-build would corrupt address translation under the running
+CPU and hard-reset the machine with no diagnostic (a real-hardware-only failure).
+
+> **Updated by Phase 5 (2026-07-30).** When R1 was written, `build_full_kernel_pml4` still
+> copied the higher-half mirror (PML4 slot 256) verbatim, so a firmware sub-tree stayed
+> referenced *after* the switch as well — a second reason the invariant had to hold. Phase 5
+> removed that: slot 256 is now rebuilt per-section from fresh PMM-allocated frames by
+> `map_kernel_image_higher_half`. The invariant is still load-bearing, but only for the build
+> window described above; the exposure ends at the CR3 switch.
 
 Why it holds by construction: the PMM pools **only** usable RAM at or above
 `KERNEL_OFFSET` (1 MiB), whereas the active tables live outside that pool — on UEFI in
@@ -455,7 +474,10 @@ framebuffer (P3) + slot 511 + slot 256: `write_cr3` to the kernel-owned PML4.
    complete map instead of the superset.
 2. Firmware PDPT/PD/PT frames are no longer referenced →
    **remove** `reserve_firmware_page_tables()` (`main.rs:156`, `page_table.rs:455`);
-   those frames return to the PMM (memory win, resolves P3).
+   those frames return to the PMM (memory win, resolves P3). *(Both claims superseded: the
+   function is kept as the no-`BootInfo` fallback and merely **skipped** on the kernel-owned
+   path — see the Definition of Done — and no frames return to the PMM, since they were never
+   in its pool; see the P3 correction in §1.)*
 3. **Keep a fallback:** retain the old full-clone path (`build_kernel_pml4_from_firmware`)
    behind a `const`/build flag (e.g. `cfg!(feature = "uefi_full_clone")`) as a fallback,
    **until validated on real HW**.
@@ -566,13 +588,16 @@ open is kernel `.text` RO+X (the second half of Phase 5).
   as of 2026-07-29 (see the Phase 5 completion note in §5).
 - [x] **UEFI boot to the ring-3 shell on QEMU and on the AMD/UEFI HW** — validated
   end-to-end (all shell commands + `TUI.BIN`).
-- [x] **Firmware PT frames no longer permanently reserved on the real path** — done, but
-  by *skipping* `reserve_firmware_page_tables` on the kernel-owned path rather than
-  *removing* it. The function is intentionally kept as the no-`BootInfo` fallback (unit-
-  test kernels / any BootInfo-less boot still clone and still need it). The skip is made
-  safe by the R1 guard `assert_no_active_table_frame_is_pmm_free` (see §R1). Removing the
-  function outright would break the fallback, so the original "removed" wording is
-  deliberately superseded.
+- [x] **Firmware PT frames no longer referenced by the active table on the real path** —
+  done, but by *skipping* `reserve_firmware_page_tables` on the kernel-owned path rather
+  than *removing* it. The function is intentionally kept as the no-`BootInfo` fallback
+  (unit-test kernels / any BootInfo-less boot still clone and still need it). The skip is
+  made safe by the R1 guard `assert_no_active_table_frame_is_pmm_free` (see §R1). Removing
+  the function outright would break the fallback, so the original "removed" wording is
+  deliberately superseded. This item's original framing ("no longer *permanently reserved*")
+  is superseded too: the reservation never cost an allocatable frame — see the P3 correction
+  in §1. What is achieved is the removal of the *structural* dependency on firmware-owned
+  sub-tables, not a reclaim of memory.
 - [x] **Kernel `.text` is RO+X; data/direct-map/MMIO are NX (W^X)** — done (2026-07-29):
   slot 256 rebuilt per-section (`.text` RO+X, `.rodata` RO+NX, `.data`/`.bss` RW+NX, VGA
   RW+NX) via `map_kernel_image_higher_half`; heap/task-stacks demand-paged RW+NX; `CR0.WP`

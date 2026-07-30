@@ -544,12 +544,14 @@ pub unsafe fn reserve_firmware_page_tables() {
 /// table frame it reaches is currently a free, allocatable PMM frame.
 ///
 /// This is the invariant that makes skipping [`reserve_firmware_page_tables`] on the
-/// kernel-owned-table path safe. `direct_map::switch_to_direct_map` draws scaffold
-/// frames from the PMM *while these tables are still live in CR3* (and after the switch
-/// the higher-half mirror in PML4 slot 256 keeps borrowing a firmware sub-tree). If the
-/// PMM could ever hand one of these live table frames out, zeroing it during the build
-/// — or reusing it at runtime — would corrupt address translation and hard-reset the
-/// machine with no diagnostic. By construction the firmware/loader tables live outside
+/// kernel-owned-table path safe. `direct_map::switch_to_direct_map` draws scaffold frames
+/// from the PMM and zeroes them *while these tables are still live in CR3*. If the PMM
+/// could ever hand one of these live table frames out, zeroing it mid-build would corrupt
+/// address translation under the running CPU and hard-reset the machine with no
+/// diagnostic. (The window closes at the switch: since #63 Phase 5 the new table borrows
+/// nothing from the firmware afterwards either — slot 256 is rebuilt from fresh PMM frames
+/// by `direct_map::map_kernel_image_higher_half`, not copied from the firmware's low-RAM
+/// mirror.) By construction the firmware/loader tables live outside
 /// the PMM pool (UEFI: firmware-owned, non-`EfiConventionalMemory` memory; BIOS: the
 /// `0x9000..=0x15FFF` loader tables, all below `KERNEL_OFFSET`), so this never fires —
 /// it exists to turn a future regression of that invariant (a loader that parks its

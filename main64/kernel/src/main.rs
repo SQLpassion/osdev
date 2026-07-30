@@ -175,18 +175,26 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
     // unit-test kernel). `vmm::init` clones the firmware PML4's top-level entries there,
     // so those PDPT/PD/PT frames stay live under the kernel; reserve them now so the PMM
     // never hands one out and corrupts the active page tables. On the standard
-    // kernel-owned-table path (a published `BootInfo`, i.e. every real boot) those
-    // sub-tables are never referenced by the new table at all, so reserving them would
-    // just leak memory forever instead of letting the PMM reclaim it after the switch.
+    // kernel-owned-table path (a published `BootInfo`, i.e. every real boot) the new
+    // table references no firmware sub-table at all, so there is nothing left to protect
+    // and the call is skipped.
     //
-    // Why skipping the reservation there is safe (#63 R1 invariant): the direct-map
-    // builder draws scaffold frames from the PMM while the firmware/loader tables are
-    // still live in CR3, and after the switch the higher-half mirror (PML4 slot 256)
-    // keeps borrowing a firmware sub-tree. Both are only safe because the PMM pool and
-    // the active table frames are disjoint: the PMM pools *only* usable RAM at or above
-    // `KERNEL_OFFSET` (1 MiB) (see `pmm::manager`), whereas the firmware/loader tables
-    // live outside that pool — on UEFI in firmware-owned, non-`EfiConventionalMemory`
-    // memory, and on BIOS in the loader's `0x9000..=0x15FFF` tables, all below 1 MiB.
+    // Skipping it is not a memory win, though — it would be a no-op there anyway. By the
+    // R1 invariant below, firmware/loader table frames are never inside the PMM pool in
+    // the first place, and `mark_frame_used` on an untracked frame does nothing (see its
+    // doc). The original #63 plan expected the skip to *return* those frames to the
+    // allocatable pool (its problem "P3"); that premise was wrong — they were never in it.
+    //
+    // Why skipping the reservation is safe (#63 R1 invariant): the direct-map builder
+    // draws scaffold frames from the PMM and zeroes them *while the firmware/loader
+    // tables are still live in CR3*. That is only safe because the PMM pool and the
+    // active table frames are disjoint: the PMM pools *only* usable RAM at or above
+    // `KERNEL_OFFSET` (1 MiB) (see `pmm::manager`), whereas the active tables live
+    // outside that pool — on UEFI in firmware-owned, non-`EfiConventionalMemory` memory,
+    // and on BIOS in the loader's `0x9000..=0x15FFF` tables, all below 1 MiB. (Since #63
+    // Phase 5 nothing is borrowed from the firmware *after* the switch either: slot 256
+    // is rebuilt from fresh PMM frames by `direct_map::map_kernel_image_higher_half`
+    // instead of copying the firmware's low-RAM mirror verbatim.)
     // `switch_to_direct_map` asserts exactly this (a live table frame is never a free
     // PMM frame) via `page_table::assert_no_active_table_frame_is_pmm_free`, so a future
     // regression of the invariant panics loudly instead of silently resetting the box.

@@ -209,17 +209,27 @@ they remain reachable after the switch — a hand-built 4 MiB map would have los
 ### 4.4 Known caveat — resolved by issue #63 (kernel-owned tables now enabled)
 
 The cloned sub-tables are **firmware-owned frames** that the PMM does **not** know are in use, so
-it could later hand them out and corrupt the page tables. Today this is mitigated by
-`reserve_firmware_page_tables()`, which walks the cloned tree right after `pmm::init` and marks
-every firmware PDPT/PD/PT frame used so the PMM never reallocates one — a workaround, not a fix
-(those frames are permanently lost from the allocatable pool).
+in principle it could later hand them out and corrupt the page tables. On the clone path this is
+mitigated by `reserve_firmware_page_tables()`, which walks the cloned tree right after `pmm::init`
+and marks every firmware PDPT/PD/PT frame used so the PMM never reallocates one — belt-and-braces
+rather than a fix: it does not make the kernel stop depending on firmware-owned tables.
+
+> **Correction (2026-07-30).** Earlier revisions of this section and of
+> `todo_uefi_kernel_pagetables.md` claimed those reserved frames are "permanently lost from the
+> allocatable pool", i.e. that the reservation costs memory. It does not. The PMM pools only
+> usable RAM ≥ `KERNEL_OFFSET`, the firmware/loader tables live outside that pool, and
+> `mark_frame_used` on a frame it does not track is an explicit no-op (see its doc comment). So
+> the reservation is free, and removing it wins nothing — the #63 plan's problem "P3"
+> ("firmware PT frames permanently blocked") rested on a wrong premise. What #63 actually buys
+> is P1/P2/P4: W^X, kernel-controlled coverage, and per-page cacheability.
 
 **Issue #63** (`docs/todo_uefi_kernel_pagetables.md`, branch
 `feature/issue-63-uefi-kernel-pagetables`) implements the real fix: a new
 `kernel/src/memory/vmm/direct_map.rs` module builds a genuinely kernel-owned page-table
 hierarchy (own RAM/platform-region mappings, not cloned firmware sub-tables) and switches CR3
-to it (`direct_map::switch_to_direct_map`), after which `reserve_firmware_page_tables()` becomes
-unnecessary and the firmware frames return to the PMM. This is the **unconditional standard
+to it (`direct_map::switch_to_direct_map`), after which the kernel no longer depends on any
+firmware sub-table and `reserve_firmware_page_tables()` becomes unnecessary (not a memory win —
+see the correction above). This is the **unconditional standard
 path** on every boot that publishes a `BootInfo` (i.e. every real boot), and is validated
 end-to-end on QEMU/OVMF **and on real AMD/UEFI hardware**: the kernel switches CR3 to its own
 table, `reserve_firmware_page_tables()` is skipped on that path, and the SMM/SMI hard reset this
