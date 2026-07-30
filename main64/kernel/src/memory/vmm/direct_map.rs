@@ -50,6 +50,7 @@ use core::sync::atomic::Ordering;
 
 use crate::arch::constants::PAGE_SIZE_U64;
 use crate::boot_info::{UnifiedMemoryEntry, BOOT_INFO_PTR};
+use crate::memory::pmm::{KERNEL_OFFSET, STACK_TOP};
 
 use super::page_table::{
     alloc_frame_phys, assert_no_active_table_frame_is_pmm_free, entry_ptr, pd_index, pdp_index,
@@ -647,13 +648,14 @@ unsafe fn validate_byte_range_coverage(
 }
 
 /// Validates that a handful of addresses the kernel unconditionally dereferences after
-/// a CR3 switch — the `BootInfo` structure itself, its memory-map array, and (if
-/// present) the PMM-metadata region — resolve correctly in the table rooted at
+/// a CR3 switch — the `BootInfo` structure itself, its memory-map array, (if present)
+/// the PMM-metadata region, and the low identity block the kernel is *running on*
+/// (`[KERNEL_OFFSET, STACK_TOP)`, see below) — resolve correctly in the table rooted at
 /// `pml4_phys`.
 ///
 /// Deliberately independent of [`is_phase1_ram`]/[`is_phase2_platform`]/
-/// [`is_loader_owned`]: those classify by EFI memory *type*, and a future bug or
-/// change in one of them should not silently reopen a gap in exactly the addresses
+/// [`is_loader_owned`]/[`is_mmio`]: those classify by EFI memory *type*, and a future bug
+/// or change in one of them should not silently reopen a gap in exactly the addresses
 /// that matter most — this check does not care which classifier (if any) covers them,
 /// only whether they resolve.
 ///
@@ -683,6 +685,31 @@ pub unsafe fn validate_essential_boot_addresses(
             boot_info.pmm_metadata_size,
         )?;
     }
+
+    // The low identity block the kernel is executing on *while* the switch happens:
+    // `[KERNEL_OFFSET, STACK_TOP)` = the kernel image's identity alias plus the
+    // bootstrap stack that grows down from `STACK_TOP`. Both boot paths park RSP at
+    // exactly `STACK_TOP` (`kaosldr_16/longmode.asm`'s `MOV RSP, 0x400000` and
+    // `kaosldr_uefi`'s `mov rsp, 0x400000`), and `pmm::manager` reserves this same
+    // block as "kernel image + bootstrap stack", so every stack frame from `write_cr3`
+    // onwards lives here.
+    //
+    // Why this range deserves its own check rather than trusting the classifiers: its
+    // failure mode is uniquely undiagnosable. Every *other* coverage gap surfaces as a
+    // `#PF` the handler turns into a panic, i.e. a message. An unmapped stack page
+    // faults on the first push after `write_cr3` retires — with no usable stack to
+    // deliver the fault on, that is an immediate exception-less triple fault: no panic,
+    // no output, and (before `console::init`) no channel to print on even in principle.
+    // It is indistinguishable from the SMM-class hard reset `docs/vmm.md` §4 is about,
+    // so it would be misattributed to exactly the wrong cause.
+    //
+    // It resolves today, but only via an implicit chain: `kaosldr_uefi` happens to claim
+    // `[0x100000, 0x400000)` as `EfiLoaderCode` (type 1) and [`is_loader_owned`] happens
+    // to map type 1 as well as type 2; on the BIOS path it falls out of plain usable RAM.
+    // Pinning it here is what keeps a loader that allocates this block differently — or a
+    // narrowing of `is_loader_owned` to type 2 only, which its own doc comment
+    // contemplates — from turning into a silent reset instead of a located panic.
+    validate_byte_range_coverage(pml4_phys, KERNEL_OFFSET, STACK_TOP - KERNEL_OFFSET)?;
 
     Ok(())
 }
@@ -904,9 +931,11 @@ pub unsafe fn build_full_kernel_pml4(
     validate_direct_map_coverage(new_pml4, regions.iter(), is_mmio)
         .unwrap_or_else(|e| panic!("Phase 4 MMIO direct-map coverage gap: {:?}", e));
 
-    // Independent of the three classifiers above: confirm the specific addresses the
-    // kernel actually dereferences after the switch resolve, regardless of which (if
-    // any) classifier happens to cover them today.
+    // Independent of the four classifier passes above: confirm the specific addresses
+    // the kernel actually dereferences after the switch resolve, regardless of which (if
+    // any) classifier happens to cover them today — including the low block the kernel's
+    // own stack lives in, whose failure mode is an exception-less triple fault rather
+    // than a diagnosable panic.
     validate_essential_boot_addresses(new_pml4, boot_info)
         .unwrap_or_else(|e| panic!("Phase 4 essential boot address coverage gap: {:?}", e));
 

@@ -26,7 +26,7 @@ use kaos_kernel::arch::constants::PAGE_SIZE_U64;
 use kaos_kernel::boot_info::{
     BootInfo, FramebufferInfo, PixelFormat, UnifiedMemoryEntry, VideoModeType,
 };
-use kaos_kernel::memory::pmm::{self, types::virt_to_phys};
+use kaos_kernel::memory::pmm::{self, types::virt_to_phys, KERNEL_OFFSET, STACK_TOP};
 use kaos_kernel::memory::vmm::direct_map::{
     build_direct_map, build_full_kernel_pml4, build_uc_direct_map, is_loader_owned, is_mmio,
     is_phase1_ram, is_phase2_platform, map_kernel_image_higher_half, map_wc_range,
@@ -1152,7 +1152,19 @@ fn test_validate_essential_boot_addresses_passes_when_covered() {
             boot_info_phys & !(PAGE_SIZE_U64 - 1),
             PAGE_SIZE_U64 * 2, // generous: covers the struct regardless of page straddling
         );
-        build_direct_map(pml4, [region].iter(), is_phase1_ram, &mut alloc, false).unwrap();
+        // The check also requires `[KERNEL_OFFSET, STACK_TOP)` — the kernel-image identity
+        // alias plus the bootstrap stack — to resolve, so a synthetic map has to model that
+        // block too. A real boot always covers it (plain usable RAM on the BIOS path,
+        // `EfiLoaderCode` on the UEFI path).
+        let kernel_stack_block = ram_entry(KERNEL_OFFSET, STACK_TOP - KERNEL_OFFSET);
+        build_direct_map(
+            pml4,
+            [region, kernel_stack_block].iter(),
+            is_phase1_ram,
+            &mut alloc,
+            false,
+        )
+        .unwrap();
 
         let boot_info_ref = &*(boot_info_phys as *const BootInfo);
         assert!(validate_essential_boot_addresses(pml4, boot_info_ref).is_ok());
@@ -1192,6 +1204,52 @@ fn test_validate_essential_boot_addresses_detects_unmapped_bootinfo() {
         assert_eq!(
             validate_essential_boot_addresses(pml4, boot_info_ref),
             Err(CoverageGap::Unmapped { va: boot_info_phys })
+        );
+    }
+}
+
+/// Contract: `validate_essential_boot_addresses` reports a gap when the low block the
+/// kernel is *running on* — `[KERNEL_OFFSET, STACK_TOP)`, i.e. the kernel-image identity
+/// alias plus the bootstrap stack both loaders park `RSP` at — is not covered, even when
+/// every `BootInfo`-derived address resolves fine.
+/// Failure Impact: this is the one coverage gap that cannot report itself. Every other
+/// unmapped range faults into the `#PF` handler and becomes a panic message; an unmapped
+/// stack page faults on the first push after `write_cr3` retires, with no usable stack to
+/// deliver the fault on — an exception-less triple fault, indistinguishable from the
+/// SMM-class hard reset of `docs/vmm.md` §4 and therefore certain to be misattributed.
+#[test_case]
+fn test_validate_essential_boot_addresses_detects_unmapped_kernel_stack_block() {
+    // SAFETY: single-threaded test context.
+    unsafe {
+        let pml4 = reset_pool();
+        let mut alloc = bump_alloc_from_pool;
+
+        // Cover the BootInfo struct itself (its memory map / PMM metadata are both zero
+        // in this static, so those two checks are trivially satisfied), but deliberately
+        // NOT the `[KERNEL_OFFSET, STACK_TOP)` block. The BootInfo static lives in the
+        // test kernel's `.bss`, i.e. *inside* that block — mapping its single page is
+        // what makes this test prove the block is checked as a whole rather than
+        // incidentally covered by the BootInfo page.
+        let boot_info_phys = virt_to_phys(addr_of!(ESSENTIAL_TEST_BOOT_INFO) as u64);
+        let boot_info_page = ram_entry(
+            boot_info_phys & !(PAGE_SIZE_U64 - 1),
+            PAGE_SIZE_U64 * 2, // covers the struct even if it straddles a page boundary
+        );
+        build_direct_map(
+            pml4,
+            [boot_info_page].iter(),
+            is_phase1_ram,
+            &mut alloc,
+            false,
+        )
+        .unwrap();
+
+        let boot_info_ref = &*(boot_info_phys as *const BootInfo);
+        // The block is walked from its start, so the first unmapped page it hits — and
+        // thus the reported gap — is `KERNEL_OFFSET` itself.
+        assert_eq!(
+            validate_essential_boot_addresses(pml4, boot_info_ref),
+            Err(CoverageGap::Unmapped { va: KERNEL_OFFSET })
         );
     }
 }
@@ -1343,22 +1401,22 @@ fn test_build_full_kernel_pml4_maps_uefi_style_loader_data_metadata() {
 // responsibility" while no caller ever does it.
 // ============================================================================
 
-#[repr(C, align(4096))]
-struct FbBuf([u8; 3 * PAGE_SIZE_U64 as usize]);
-static mut FB_TEST_BUF: FbBuf = FbBuf([0u8; 3 * PAGE_SIZE_U64 as usize]);
+/// Synthetic framebuffer base for the test below. Deliberately a high, PCI-hole-style
+/// address that belongs to no region in `FB_TEST_REGIONS` rather than a static buffer in
+/// the test kernel's `.bss`: `build_full_kernel_pml4` maps RAM with 2 MiB huge pages, so a
+/// low-RAM "framebuffer" inside an already-huge-mapped 2 MiB window would make
+/// `map_wc_range` fail with `HugePageCollision` as soon as the test binary grew past
+/// `0x20_0000`. Nothing is ever written here — the test only asserts the mapping resolves.
+const FB_TEST_BASE: u64 = 0xE000_0000;
 
-static mut FB_TEST_REGIONS: [UnifiedMemoryEntry; 2] = [
+static mut FB_TEST_REGIONS: [UnifiedMemoryEntry; 1] = [
+    // `[KERNEL_OFFSET, STACK_TOP)`: the kernel-image identity alias plus the bootstrap
+    // stack, which `validate_essential_boot_addresses` requires. It also covers this
+    // test's own `BootInfo` and region-array statics, since both live in the test
+    // kernel's `.bss` and the whole image necessarily fits below the stack top.
     UnifiedMemoryEntry {
-        start: 0, // filled in at test time: BootInfo's own page
-        size: PAGE_SIZE_U64 * 2,
-        memory_type: 7,
-        _pad: 0,
-        attribute: 0,
-        is_usable: true,
-    },
-    UnifiedMemoryEntry {
-        start: 0, // filled in at test time: the regions array's own page
-        size: PAGE_SIZE_U64 * 2,
+        start: KERNEL_OFFSET,
+        size: STACK_TOP - KERNEL_OFFSET,
         memory_type: 7,
         _pad: 0,
         attribute: 0,
@@ -1378,7 +1436,7 @@ static mut FB_TEST_BOOT_INFO: BootInfo = BootInfo {
         pixel_format: PixelFormat::Bgr,
     },
     memory_map_addr: 0,
-    memory_map_len: 2,
+    memory_map_len: 1,
     kernel_size: 0,
     pmm_metadata_base: 0,
     pmm_metadata_size: 0,
@@ -1411,16 +1469,14 @@ fn test_build_full_kernel_pml4_maps_framebuffer_when_present() {
     unsafe {
         let boot_info_phys = virt_to_phys(addr_of!(FB_TEST_BOOT_INFO) as u64);
         let regions_phys = virt_to_phys(addr_of!(FB_TEST_REGIONS) as u64);
-        let fb_phys = virt_to_phys(addr_of!(FB_TEST_BUF) as u64);
+        let fb_phys = FB_TEST_BASE;
 
-        FB_TEST_REGIONS[0].start = boot_info_phys & !(PAGE_SIZE_U64 - 1);
-        FB_TEST_REGIONS[1].start = regions_phys & !(PAGE_SIZE_U64 - 1);
         FB_TEST_BOOT_INFO.memory_map_addr = regions_phys;
         FB_TEST_BOOT_INFO.fb_info.base_address = fb_phys;
         FB_TEST_BOOT_INFO.fb_info.size = 3 * PAGE_SIZE_U64 as usize;
 
         let boot_info_ref = &*(boot_info_phys as *const BootInfo);
-        let regions_ref = &*(regions_phys as *const [UnifiedMemoryEntry; 2]);
+        let regions_ref = &*(regions_phys as *const [UnifiedMemoryEntry; 1]);
         let mut alloc = page_table::alloc_frame_phys;
 
         let (new_pml4, ..) =

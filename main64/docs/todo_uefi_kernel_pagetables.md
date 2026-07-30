@@ -113,6 +113,13 @@ tables **must** cover the following before the switch:
    `RuntimeServicesCode/Data`, `ACPIMemoryNVS`, `Reserved`, `MemoryMappedIO`, `PalCode`.
 6. **Higher-half kernel (PML4[256]) + recursive window (PML4[511])** — already
    kernel-owned, must be preserved.
+7. **The block the kernel is running on** — `[KERNEL_OFFSET, STACK_TOP)` =
+   `[0x10_0000, 0x40_0000)`: the kernel image's low identity alias plus the bootstrap
+   stack (both loaders set `RSP = STACK_TOP`; `pmm::manager` reserves the same block).
+   Formally a subset of item 1 on the BIOS path, but *not* on UEFI, where the loader
+   claims it as `EfiLoaderCode` rather than `EfiConventionalMemory`. Listed separately
+   because it is the only entry whose failure mode is an exception-less triple fault
+   instead of a diagnosable `#PF` — see §R6.
 
 **Safe to drop** (no longer referenced after the switch):
 firmware-owned PDPT/PD/PT frames; `BootServicesCode/Data`, `LoaderCode`, unused
@@ -295,6 +302,46 @@ What was done for R1:
 - **Tested**: `is_pfn_free` behaviour and the guard's no-false-positive path in
   `pmm_test.rs`; the guard's panic-on-violation path in
   `firmware_tables_pmm_pool_death_test.rs`.
+
+### R6: essential-address coverage for the running kernel stack (2026-07-30)
+
+A follow-up review found that `validate_essential_boot_addresses` — added for exactly the
+purpose of being *classifier-independent* (see point 2 of the activation-path review
+above) — covered the `BootInfo`, its memory map and the PMM-metadata region, but **not the
+low block the kernel is executing on while the switch happens**:
+`[KERNEL_OFFSET, STACK_TOP)` = `[0x10_0000, 0x40_0000)`, the kernel image's identity alias
+plus the bootstrap stack. Both loaders park `RSP` at exactly `STACK_TOP`
+(`kaosldr_16/longmode.asm`'s `MOV RSP, 0x400000`, `kaosldr_uefi`'s `mov rsp, 0x400000`),
+and `pmm::manager` reserves this same block as "kernel image + bootstrap stack", so every
+stack frame from `write_cr3` onwards lives there.
+
+Why this range is worse than every other gap: it is the one that **cannot report itself**.
+Any other unmapped range faults into the `#PF` handler and becomes a panic message. An
+unmapped stack page faults on the first push after `write_cr3` retires — with no usable
+stack to deliver the fault on, that is an immediate exception-less triple fault: no panic,
+no output, and before `console::init` no channel to print on even in principle. It is
+indistinguishable from the SMM-class hard reset this whole document is about (`vmm.md` §4),
+so it would have been misattributed to precisely the wrong cause.
+
+It resolved before this change too, but only through an implicit chain: `kaosldr_uefi`
+happens to claim `[0x100000, 0x400000)` as `EfiLoaderCode` (type 1) and `is_loader_owned`
+happens to map type 1 as well as type 2; on the BIOS path it falls out of plain usable RAM.
+Pinning it is what keeps a loader that allocates the block differently — or a narrowing of
+`is_loader_owned` to type 2 only, which its own doc comment explicitly contemplates — from
+turning into a silent reset instead of a located panic.
+
+What was done for R6:
+- **Checked**: `validate_essential_boot_addresses` now validates
+  `[KERNEL_OFFSET, STACK_TOP)` as a fourth range, appended last so the existing gap classes
+  keep reporting first.
+- **Tested**: `direct_map_test::test_validate_essential_boot_addresses_detects_unmapped_kernel_stack_block`
+  covers the block-unmapped path (with the `BootInfo` page deliberately mapped, so the test
+  proves the block is checked as a whole rather than incidentally covered).
+- The two synthetic `build_full_kernel_pml4` / `validate_essential_boot_addresses` tests now
+  model the block, which a real boot always has. While doing so, the framebuffer test's fake
+  FB moved from a low `.bss` buffer to a synthetic PCI-hole address (`0xE000_0000`): a
+  low-RAM "framebuffer" inside an already-2-MiB-mapped window would make `map_wc_range`
+  fail with `HugePageCollision` as soon as the test binary grew past `0x20_0000`.
 
 ---
 
