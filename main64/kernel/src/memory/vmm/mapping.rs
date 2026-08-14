@@ -870,6 +870,13 @@ pub fn map_user_page(virtual_address: u64, pfn: u64, writable: bool) -> Result<(
     //   - HEAP  → no_execute = true
     // EFER.NXE is enabled early in the kernel (arch::msr::enable_no_execute, called
     // from KernelMain); without it bit 63 is reserved and faults on real hardware.
+    //
+    // Note: the CODE case predates per-segment ELF permissions and is kept only
+    // for callers that map a single flat code page (none remain in-tree since
+    // the ELF loader migration, but the fallback stays conservative). ELF
+    // segment pages that need write-without-execute or read-only-without-write
+    // must go through [`map_user_code_page`] instead, which takes an explicit
+    // per-segment `writable`/`executable` pair derived from `p_flags`.
     let no_execute = match classify_user_region(virtual_address) {
         Some(UserRegion::Code) => false,
         Some(UserRegion::Stack) => true,
@@ -882,6 +889,54 @@ pub fn map_user_page(virtual_address: u64, pfn: u64, writable: bool) -> Result<(
         }
     };
 
+    map_user_leaf(virtual_address, pfn, writable, no_execute)
+}
+
+/// Maps one user virtual page inside the code window with explicit per-segment
+/// permissions derived from an ELF `PT_LOAD` segment's `p_flags`.
+///
+/// Unlike [`map_user_page`], which derives a single fixed NX policy for the
+/// whole code window, this takes `writable`/`executable` explicitly so the
+/// ELF loader can give a R-X `.text` segment and a RW- `.data`/`.bss` segment
+/// different permissions within the same code window.
+///
+/// # Safety
+/// Same contract as [`map_user_page`]: callers must run this only inside
+/// [`with_address_space`] (or an equivalent critical section) with interrupts
+/// disabled for the full duration and a stable `CR3`.
+pub fn map_user_code_page(
+    virtual_address: u64,
+    pfn: u64,
+    writable: bool,
+    executable: bool,
+) -> Result<(), MapError> {
+    // Note: single-core, IF-disabled
+    let virtual_address = page_align_down(virtual_address);
+
+    match classify_user_region(virtual_address) {
+        Some(UserRegion::Code) => {}
+        Some(UserRegion::Guard) => {
+            return Err(MapError::UserGuardPage { virtual_address });
+        }
+        _ => {
+            return Err(MapError::NotUserRegion { virtual_address });
+        }
+    }
+
+    map_user_leaf(virtual_address, pfn, writable, !executable)
+}
+
+/// Shared leaf-mapping body behind [`map_user_page`] and [`map_user_code_page`]:
+/// installs (or idempotently updates) a page-aligned user leaf mapping with the
+/// given writable/no-execute flags once the caller has already validated the
+/// target region.
+fn map_user_leaf(
+    virtual_address: u64,
+    pfn: u64,
+    writable: bool,
+    no_execute: bool,
+) -> Result<(), MapError> {
+    // Note: single-core, IF-disabled
     // Ensure all intermediate levels exist and are marked user-accessible.
     populate_page_table_path(virtual_address, true)?;
     let pt = table_at(pt_table_addr(virtual_address));
@@ -906,7 +961,6 @@ pub fn map_user_page(virtual_address: u64, pfn: u64, writable: bool) -> Result<(
             let e = entry_ptr(pt, pt_idx);
             (*e).set_writable(writable);
             (*e).set_user(true);
-            // Propagate NX policy: stack pages become non-executable, code pages stay executable.
             (*e).set_no_execute(no_execute);
         }
 
@@ -923,8 +977,6 @@ pub fn map_user_page(virtual_address: u64, pfn: u64, writable: bool) -> Result<(
     unsafe {
         let e = entry_ptr(pt, pt_idx);
         (*e).set_mapping(pfn, true, writable, true);
-
-        // Apply NX policy: stack pages are non-executable, code pages are executable.
         (*e).set_no_execute(no_execute);
     }
 
