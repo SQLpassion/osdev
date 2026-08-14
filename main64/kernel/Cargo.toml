@@ -92,6 +92,9 @@ name = "process_contract_test"
 name = "elf_test"
 
 [[test]]
+name = "elf_loader_test"
+
+[[test]]
 name = "pmm_uefi_test"
 
 [[test]]

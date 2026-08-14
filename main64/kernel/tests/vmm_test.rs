@@ -114,13 +114,16 @@ fn test_non_present_fault_allocates_and_maps_page() {
     vmm::unmap_virtual_address(TEST_VA);
 }
 
-/// Contract: user fault mappings keep user path bits set and code leaf read-only.
+/// Contract: user stack fault mappings keep user path bits set and a writable
+/// leaf; a code-region fault is rejected rather than demand-mapped (the ELF
+/// loader pre-maps every segment with its final permissions, so a fault
+/// landing in the code window is a real bug, not a hole to backfill).
 /// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
 /// When: The exact operation sequence in this function is executed against that state.
-/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "user fault mappings keep user path bits set and code leaf read-only".
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "code faults are rejected, stack faults keep user path bits set with a writable leaf".
 /// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
-fn test_user_fault_mapping_sets_user_bits_and_code_readonly_leaf() {
+fn test_user_fault_mapping_rejects_code_and_maps_stack_writable() {
     let code_va = vmm::USER_CODE_BASE + 0x0011_5000;
     let stack_va = vmm::USER_STACK_TOP - 4096;
 
@@ -128,17 +131,21 @@ fn test_user_fault_mapping_sets_user_bits_and_code_readonly_leaf() {
     vmm::unmap_virtual_address(stack_va);
 
     // Simulate non-present user faults (`U=1`, `P=0` -> error code 0x4).
-    vmm::try_handle_page_fault(code_va, 0x4)
-        .expect("user code non-present fault should be demand-mapped");
+    let code_result = vmm::try_handle_page_fault(code_va, 0x4);
+    assert!(
+        matches!(
+            code_result,
+            Err(vmm::PageFaultError::InvalidUserAccess { .. })
+        ),
+        "non-present code-region fault must be rejected, not demand-mapped"
+    );
+    assert!(
+        vmm::debug_mapping_flags_for_va(code_va).is_none(),
+        "rejected code-region fault must not install any mapping"
+    );
+
     vmm::try_handle_page_fault(stack_va, 0x4)
         .expect("user stack non-present fault should be demand-mapped");
-
-    let code_flags = vmm::debug_mapping_flags_for_va(code_va)
-        .expect("code VA should have present mapping flags");
-    assert!(
-        code_flags == (true, true, true, true, false),
-        "code VA must have user path bits set and read-only leaf"
-    );
 
     let stack_flags = vmm::debug_mapping_flags_for_va(stack_va)
         .expect("stack VA should have present mapping flags");
@@ -147,7 +154,6 @@ fn test_user_fault_mapping_sets_user_bits_and_code_readonly_leaf() {
         "stack VA must have user path bits set and writable leaf"
     );
 
-    vmm::unmap_virtual_address(code_va);
     vmm::unmap_virtual_address(stack_va);
 }
 
@@ -872,27 +878,30 @@ fn test_user_stack_fault_grows_contiguous_pages_up_to_mapped_top() {
     vmm::unmap_virtual_address(top_page_va);
 }
 
-/// Contract: fault mapped code page has no execute bit clear.
+/// Contract: a non-present code-region fault is rejected at any offset inside
+/// the code window, not just the one exercised by
+/// `test_user_fault_mapping_rejects_code_and_maps_stack_writable`. The ELF
+/// loader pre-maps every `PT_LOAD` segment with its final permissions before
+/// the task runs, so there is no legitimate hole left anywhere in the code
+/// window for the page-fault handler to backfill.
 /// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
 /// When: The exact operation sequence in this function is executed against that state.
-/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "fault mapped code page has no execute bit clear".
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "a non-present code-region fault is rejected, not demand-mapped, at any offset".
 /// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
-fn test_fault_mapped_code_page_has_no_execute_bit_clear() {
-    // Code page demand-mapped via the page-fault handler path.
+fn test_code_region_fault_is_rejected_at_any_offset() {
     let code_va = vmm::USER_CODE_BASE + 0x1000;
     vmm::unmap_virtual_address(code_va);
 
     // Simulate a non-present user-mode code fault (U=1, P=0 → error_code = 0x4).
-    vmm::try_handle_page_fault(code_va, 0x4)
-        .expect("user code non-present fault should be demand-mapped");
-
-    // Code pages must remain executable: No-Execute bit must NOT be set.
-    let nx = vmm::debug_no_execute_flag_for_va(code_va)
-        .expect("demand-mapped code VA must have a present leaf PTE");
+    let result = vmm::try_handle_page_fault(code_va, 0x4);
     assert!(
-        !nx,
-        "demand-mapped code leaf PTE must not have No-Execute bit set"
+        matches!(result, Err(vmm::PageFaultError::InvalidUserAccess { .. })),
+        "non-present code-region fault must be rejected regardless of offset"
+    );
+    assert!(
+        vmm::debug_mapping_flags_for_va(code_va).is_none(),
+        "rejected code-region fault must not install any mapping"
     );
 
     vmm::unmap_virtual_address(code_va);

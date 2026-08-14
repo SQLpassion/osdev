@@ -280,6 +280,7 @@ pub fn syscall_exec_impl(name_ptr: *const u8) -> SyscallResult<u64> {
         ExecError::IsDirectory => SyscallError::InvalidArg,
         ExecError::EmptyImage => SyscallError::InvalidArg,
         ExecError::FileTooLarge => SyscallError::InvalidArg,
+        ExecError::InvalidElfImage => SyscallError::InvalidArg,
         ExecError::OutOfMemory => SyscallError::OutOfMemory,
         ExecError::MappingFailed => SyscallError::OutOfMemory,
         ExecError::SpawnFailed => SyscallError::Io,
