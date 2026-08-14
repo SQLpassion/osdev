@@ -273,11 +273,22 @@ fn test_map_program_image_into_user_address_space_enforces_image_bounds() {
     );
 }
 
+/// Synthetic non-ELF image for exercising the legacy flat-binary mapping path
+/// directly (see `docs/todo_elf.md` -- `map_program_image_into_user_address_space`
+/// dispatches to the flat path for anything that doesn't start with the ELF
+/// magic). Real on-disk programs (`hello.bin` etc.) are ELF since the build
+/// pipeline migration, so these white-box map/copy/permission checks -- which
+/// specifically pin the flat path's "everything stays writable, one
+/// contiguous region" contract -- must not depend on their current on-disk
+/// format to keep exercising that path.
+fn synthetic_flat_image() -> Vec<u8> {
+    (0..200u32).map(|i| i as u8).collect()
+}
+
 /// Contract: image mapper creates dedicated user mappings and copies bytes.
 #[test_case]
 fn test_map_program_image_into_user_address_space_maps_copy_and_permissions() {
-    let image = process::load_program_image("hello.bin")
-        .expect("hello.bin must be loadable before map/copy integration step");
+    let image = synthetic_flat_image();
     let loaded = process::map_program_image_into_user_address_space(&image)
         .expect("valid user image must map/copy into fresh user CR3");
 
@@ -362,8 +373,7 @@ fn test_map_program_image_into_user_address_space_maps_copy_and_permissions() {
 /// Contract: loader zero-initializes bootstrap user stack page.
 #[test_case]
 fn test_map_program_image_into_user_address_space_zeroes_bootstrap_stack_page() {
-    let image = process::load_program_image("hello.bin")
-        .expect("hello.bin must be loadable before stack-zeroing check");
+    let image = synthetic_flat_image();
     let loaded = process::map_program_image_into_user_address_space(&image)
         .expect("valid user image must map into fresh user CR3");
 
