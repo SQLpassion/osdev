@@ -4,12 +4,16 @@ use core::fmt;
 
 use crate::memory::vmm;
 
-/// Fixed ring-3 entry point for legacy flat user binaries.
+/// Base address of the user code window (alias of [`vmm::USER_CODE_BASE`]).
 ///
-/// ELF images (the default since the loader migration in `docs/todo_elf.md`)
-/// use `e_entry` from the file header instead — see
-/// [`crate::process::elf::ElfImage::entry`]. This constant remains the entry
-/// point for the legacy flat-binary path and as a test fixture value.
+/// The loader no longer uses this as an entry point: every program is ELF, so
+/// `entry_rip` always comes from the image's own `e_entry` (see
+/// [`crate::process::elf::ElfImage::entry`]). This constant remains as a
+/// fixed reference value for tests and for `LoadedProgram` construction
+/// sites that need a valid in-window address; it happens to still equal every
+/// in-tree program's `e_entry` today because each program's linker script
+/// places `_start` first at the window base, but that is a per-program linker
+/// convention, not a loader guarantee.
 pub const USER_PROGRAM_ENTRY_RIP: u64 = vmm::USER_CODE_BASE;
 
 /// User stack alignment used by scheduler/user task bootstrap frames.
@@ -21,10 +25,10 @@ pub const USER_PROGRAM_STACK_ALIGNMENT: u64 = 16;
 /// preserves ABI expectations for function prologues in user binaries.
 pub const USER_PROGRAM_INITIAL_RSP: u64 = vmm::USER_STACK_TOP - USER_PROGRAM_STACK_ALIGNMENT;
 
-/// Maximum executable image size accepted by the phase-1 flat loader.
+/// Maximum executable image size accepted by the ELF loader.
 pub const USER_PROGRAM_MAX_IMAGE_SIZE: usize = vmm::USER_CODE_SIZE as usize;
 
-/// Returns whether a flat image length fits inside the configured user code window.
+/// Returns whether a program image length fits inside the configured user code window.
 #[inline]
 pub const fn image_fits_user_code(image_len: usize) -> bool {
     image_len <= USER_PROGRAM_MAX_IMAGE_SIZE
@@ -102,8 +106,7 @@ pub struct LoadedProgram {
     pub image_len: usize,
 
     /// Total number of mapped pages inside the user code window backing this
-    /// program: the whole flat image for the legacy path, or the sum of every
-    /// `PT_LOAD` segment's page count for the ELF path.
+    /// program: the sum of every `PT_LOAD` segment's page count.
     ///
     /// This is only a fast-path hint for the first phase of
     /// [`vmm::destroy_user_address_space_with_page_counts`]'s teardown; that

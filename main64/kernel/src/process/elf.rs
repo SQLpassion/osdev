@@ -193,16 +193,6 @@ fn read_u64(data: &[u8], offset: usize) -> u64 {
     ])
 }
 
-/// Returns whether `data` starts with a plausible ELF64 header, without
-/// validating anything beyond the magic bytes and length.
-///
-/// Used by the loader to decide between the ELF path and the legacy flat-binary
-/// path during the gradual per-program migration (see `docs/todo_elf.md` §6).
-#[inline]
-pub fn looks_like_elf(data: &[u8]) -> bool {
-    data.len() >= EHDR_SIZE && data[0..4] == [0x7F, b'E', b'L', b'F']
-}
-
 /// Parses and fully validates a static `ET_EXEC` x86_64 ELF64 image.
 ///
 /// On success, every returned [`ElfSegment`] is guaranteed to:
