@@ -2,10 +2,11 @@
 # helper_build_user_programs.sh - Build KAOS user-mode programs (hello, readline, filedemo, exception test, shell, tui, kbasic).
 #
 # This script compiles all user-mode applications located in the user_programs/ subdirectories
-# for the x86_64-unknown-none target (using debug or release profiles) and extracts their flat
-# binaries via llvm-objcopy/rust-objcopy for filesystem inclusion.
+# for the x86_64-unknown-none target (using debug or release profiles) and copies the resulting
+# ELF64 static executable directly for filesystem inclusion (see docs/todo_elf.md -- the kernel's
+# loader reads ELF program headers directly, so the former objcopy-to-flat-binary step is gone).
 #
-# Required tools: cargo (Rust nightly target x86_64-unknown-none), llvm-objcopy / rust-objcopy.
+# Required tools: cargo (Rust nightly target x86_64-unknown-none).
 
 set -e
 
@@ -17,6 +18,18 @@ if [ "$PROFILE" != "debug" ] && [ "$PROFILE" != "release" ]; then
     echo "Usage: $0 [debug|release]"
     exit 1
 fi
+
+# Strips DWARF debug info from a copied ELF binary in place. Debug builds can
+# otherwise easily approach the 2 MiB USER_CODE window (process::
+# USER_PROGRAM_MAX_IMAGE_SIZE) once every program ships its full ELF instead
+# of an objcopy'd flat blob; PT_LOAD segments (the only thing the kernel's
+# loader reads) are untouched by --strip-debug, only the non-allocated debug
+# sections are removed (docs/todo_elf.md SS10).
+strip_debug_info() {
+    llvm-strip --strip-debug "$1" 2>/dev/null || \
+        rust-strip --strip-debug "$1" 2>/dev/null || \
+        strip --strip-debug "$1"
+}
 
 HELLO_DIR="$PROJECT_ROOT/user_programs/hello"
 READLINE_DIR="$PROJECT_ROOT/user_programs/readline"
@@ -37,9 +50,8 @@ else
     INPUT_ELF="$PROJECT_ROOT/target/x86_64-unknown-none/debug/hello"
 fi
 
-llvm-objcopy -O binary "$INPUT_ELF" hello.bin 2>/dev/null || \
-    rust-objcopy -O binary "$INPUT_ELF" hello.bin 2>/dev/null || \
-    objcopy -O binary "$INPUT_ELF" hello.bin
+cp "$INPUT_ELF" hello.bin
+strip_debug_info hello.bin
 
 echo "-> Built: $HELLO_DIR/hello.bin"
 ls -la hello.bin
@@ -57,9 +69,8 @@ else
     INPUT_ELF="$PROJECT_ROOT/target/x86_64-unknown-none/debug/readline"
 fi
 
-llvm-objcopy -O binary "$INPUT_ELF" readline.bin 2>/dev/null || \
-    rust-objcopy -O binary "$INPUT_ELF" readline.bin 2>/dev/null || \
-    objcopy -O binary "$INPUT_ELF" readline.bin
+cp "$INPUT_ELF" readline.bin
+strip_debug_info readline.bin
 
 echo "-> Built: $READLINE_DIR/readline.bin"
 ls -la readline.bin
@@ -78,9 +89,8 @@ else
     INPUT_ELF="$PROJECT_ROOT/target/x86_64-unknown-none/debug/filedemo"
 fi
 
-llvm-objcopy -O binary "$INPUT_ELF" filedemo.bin 2>/dev/null || \
-    rust-objcopy -O binary "$INPUT_ELF" filedemo.bin 2>/dev/null || \
-    objcopy -O binary "$INPUT_ELF" filedemo.bin
+cp "$INPUT_ELF" filedemo.bin
+strip_debug_info filedemo.bin
 
 echo "-> Built: $FILEDEMO_DIR/filedemo.bin"
 ls -la filedemo.bin
@@ -99,9 +109,8 @@ else
     INPUT_ELF="$PROJECT_ROOT/target/x86_64-unknown-none/debug/except"
 fi
 
-llvm-objcopy -O binary "$INPUT_ELF" except.bin 2>/dev/null || \
-    rust-objcopy -O binary "$INPUT_ELF" except.bin 2>/dev/null || \
-    objcopy -O binary "$INPUT_ELF" except.bin
+cp "$INPUT_ELF" except.bin
+strip_debug_info except.bin
 
 echo "-> Built: $EXCEPTION_TEST_DIR/except.bin"
 ls -la except.bin
@@ -120,9 +129,8 @@ else
     INPUT_ELF="$PROJECT_ROOT/target/x86_64-unknown-none/debug/shell"
 fi
 
-llvm-objcopy -O binary "$INPUT_ELF" shell.bin 2>/dev/null || \
-    rust-objcopy -O binary "$INPUT_ELF" shell.bin 2>/dev/null || \
-    objcopy -O binary "$INPUT_ELF" shell.bin
+cp "$INPUT_ELF" shell.bin
+strip_debug_info shell.bin
 
 echo "-> Built: $SHELL_DIR/shell.bin"
 ls -la shell.bin
@@ -141,9 +149,8 @@ else
     INPUT_ELF="$PROJECT_ROOT/target/x86_64-unknown-none/debug/tui"
 fi
 
-llvm-objcopy -O binary "$INPUT_ELF" tui.bin 2>/dev/null || \
-    rust-objcopy -O binary "$INPUT_ELF" tui.bin 2>/dev/null || \
-    objcopy -O binary "$INPUT_ELF" tui.bin
+cp "$INPUT_ELF" tui.bin
+strip_debug_info tui.bin
 
 echo "-> Built: $TUI_DIR/tui.bin"
 ls -la tui.bin
@@ -163,9 +170,8 @@ else
     INPUT_ELF="$PROJECT_ROOT/target/x86_64-unknown-none/debug/kbasic"
 fi
 
-llvm-objcopy -O binary "$INPUT_ELF" kbasic.bin 2>/dev/null || \
-    rust-objcopy -O binary "$INPUT_ELF" kbasic.bin 2>/dev/null || \
-    objcopy -O binary "$INPUT_ELF" kbasic.bin
+cp "$INPUT_ELF" kbasic.bin
+strip_debug_info kbasic.bin
 
 echo "-> Built: $KBASIC_DIR/kbasic.bin"
 ls -la kbasic.bin
