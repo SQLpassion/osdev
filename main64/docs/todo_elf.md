@@ -267,6 +267,15 @@ If gradual rollout is wanted, the loader can sniff the file header:
 
 This lets you migrate user programs one at a time.
 
+> **Status (post-migration):** this dual-path fallback was implemented and
+> used exactly as described above while the 7 in-tree programs (hello,
+> readline, filedemo, exception_test, shell, tui_app, kbasic) migrated to ELF
+> one at a time. Once all of them shipped as ELF, the fallback — `loader.rs`'s
+> `map_flat_program_image`/`try_map_flat_program_image`/`FlatMapState` and
+> friends — was removed. A non-ELF image is now rejected outright with
+> `ExecError::InvalidElfImage`; there is no `map_flat_program_image` to find
+> in the current loader.
+
 ---
 
 ## 7. Linker Scripts: Allowed Simplifications

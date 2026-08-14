@@ -557,9 +557,17 @@ that exercises MMIO **and** DMA (and thus motivates the IOMMU work).
 ## 9. Build integration
 
 Drivers are built like user programs (`helper_build_user_programs.sh`):
-`cargo build --target x86_64-unknown-none` → `objcopy -O binary` → copy `*.DRV`
-to the FAT32 disk. Because of FAT32 8.3, driver files must live flat in the root
-and have short names (e.g. `RTL8139.DRV`).
+`cargo build --target x86_64-unknown-none` → copy `*.DRV` to the FAT32 disk.
+Because of FAT32 8.3, driver files must live flat in the root and have short
+names (e.g. `RTL8139.DRV`).
+
+> **Note:** the `objcopy -O binary` step this section originally described is
+> gone from `helper_build_user_programs.sh` — the kernel's loader now reads
+> ELF directly (`docs/todo_elf.md`), so the script ships the (stripped) ELF
+> binary as-is. Drivers built the same way as other user programs will ship
+> as ELF too; this does not change anything else in this plan (§2's "no ELF
+> loader needed" argument is about *dynamic linking/relocation*, which the
+> static `ET_EXEC` loader still does not support).
 
 ---
 
