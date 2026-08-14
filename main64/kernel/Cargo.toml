@@ -89,6 +89,9 @@ name = "syscall_dispatch_test"
 name = "process_contract_test"
 
 [[test]]
+name = "elf_test"
+
+[[test]]
 name = "pmm_uefi_test"
 
 [[test]]

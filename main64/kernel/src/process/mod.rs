@@ -3,6 +3,7 @@
 //! Provides end-to-end exec wiring (load image via the VFS, map into a user
 //! address space, spawn a scheduler user task).
 
+pub mod elf;
 mod loader;
 mod types;
 
