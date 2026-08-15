@@ -123,3 +123,6 @@ name = "test_framework_panic_message_test"
 
 [[test]]
 name = "scroll_dirty_range_test"
+
+[[test]]
+name = "logging_capture_snapshot_test"
