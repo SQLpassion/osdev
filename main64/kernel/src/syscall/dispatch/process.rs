@@ -339,8 +339,10 @@ pub fn syscall_exec_impl(name_ptr: *const u8) -> SyscallResult<u64> {
 /// fingerprint which ids are currently alive (an existence side-channel),
 /// since a live target blocks the caller while an absent one returns
 /// immediately. To close this, a caller without the `privileged` capability
-/// may only `Wait` on a task it actually spawned via `Exec` (tracked by
-/// `TaskEntry::parent`, set in `syscall_exec_impl`); every other target is
+/// may only `Wait` on a task it actually spawned via `Exec` (tracked in
+/// `SchedulerMetadata::parent_log`, recorded via `set_task_parent` in
+/// `syscall_exec_impl` and queried through
+/// [`is_parent_of`](crate::scheduler::is_parent_of)); every other target is
 /// rejected with [`SyscallError::PermissionDenied`] *before* the target's
 /// existence is ever checked, so the response does not depend on whether
 /// `task_id` is alive, exited, or was never valid.
