@@ -1,17 +1,16 @@
 //! VFS-backed loader for user-mode programs.
 //!
-//! Every on-disk program is a static `ET_EXEC`/`EM_X86_64` ELF64 executable
-//! (see `docs/todo_elf.md`), parsed by [`super::elf::parse_elf64`] and mapped
-//! one `PT_LOAD` segment at a time, each with its own `writable`/`no_execute`
-//! permissions derived from `p_flags`.
+//! Every on-disk program is a static `ET_EXEC`/`EM_X86_64` ELF64 executable,
+//! parsed by [`super::elf::parse_elf64`] and mapped one `PT_LOAD` segment at
+//! a time, each with its own `writable`/`no_execute` permissions derived from
+//! `p_flags`.
 //!
 //! A prior revision of this loader also supported a legacy flat-binary format
 //! (pre-migration `objcopy -O binary` output) as a gradual-rollout fallback
-//! while individual programs migrated one at a time (`docs/todo_elf.md` §6).
-//! That fallback was removed once all in-tree programs shipped as ELF; any
-//! image that fails ELF64 validation is now rejected with
-//! [`ExecError::InvalidElfImage`] instead of falling back to a different
-//! loading strategy.
+//! while individual programs migrated one at a time. That fallback was
+//! removed once all in-tree programs shipped as ELF; any image that fails
+//! ELF64 validation is now rejected with [`ExecError::InvalidElfImage`]
+//! instead of falling back to a different loading strategy.
 
 use alloc::vec::Vec;
 

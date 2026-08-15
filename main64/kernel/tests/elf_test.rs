@@ -2,8 +2,11 @@
 //!
 //! Pure parsing/validation logic over synthetic in-memory ELF64 byte buffers
 //! (built by the `builder` helpers below) — no VFS, no address-space
-//! mapping. This pins the validation rules `docs/todo_elf.md` §3.1 requires
-//! before the loader is allowed to trust a `PT_LOAD` segment list.
+//! mapping. This pins the validation rules the loader requires before it is
+//! allowed to trust a `PT_LOAD` segment list: correct magic/class/endianness/
+//! machine/type, `p_filesz <= p_memsz`, the segment's file range and virtual
+//! range both falling inside the user code window, and no two segments
+//! overlapping.
 
 #![no_std]
 #![no_main]

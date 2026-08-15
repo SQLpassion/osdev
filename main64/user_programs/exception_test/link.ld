@@ -1,6 +1,6 @@
 /* Interactive exception exerciser linker script.
  * Groups sections into two page-aligned, non-overlapping PT_LOAD segments
- * (R-X text+rodata, RW- data+bss) via explicit PHDRS -- see docs/todo_elf.md.
+ * (R-X text+rodata, RW- data+bss) via explicit PHDRS.
  */
 ENTRY(_start)
 

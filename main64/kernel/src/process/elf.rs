@@ -4,8 +4,8 @@
 //! x86_64 executable into a fresh user address space, so this module reads
 //! just the ELF64 file header and the `PT_LOAD` program headers. There is no
 //! support for relocations, dynamic linking (`PT_INTERP`/`PT_DYNAMIC`),
-//! section headers, or symbol tables — see `docs/todo_elf.md` §10 for the
-//! full list of what is intentionally out of scope.
+//! section headers, or symbol tables — none of that is needed to map a
+//! statically linked `ET_EXEC` binary, so it is intentionally out of scope.
 //!
 //! No external crate is used (`goblin` requires `std`); the header layouts
 //! below are the fixed-size ELF64 structures from the System V ABI spec.

@@ -5,7 +5,7 @@
  * - groups sections into exactly two page-aligned, non-overlapping PT_LOAD
  *   segments (R-X text+rodata, RW- data+bss) via explicit PHDRS, so the
  *   kernel's ELF loader (process/elf.rs, process/loader.rs) can map each
- *   segment with its own permissions -- see docs/todo_elf.md
+ *   segment with its own permissions
  */
 ENTRY(_start)
 

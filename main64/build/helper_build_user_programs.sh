@@ -3,8 +3,8 @@
 #
 # This script compiles all user-mode applications located in the user_programs/ subdirectories
 # for the x86_64-unknown-none target (using debug or release profiles) and copies the resulting
-# ELF64 static executable directly for filesystem inclusion (see docs/todo_elf.md -- the kernel's
-# loader reads ELF program headers directly, so the former objcopy-to-flat-binary step is gone).
+# ELF64 static executable directly for filesystem inclusion -- the kernel's loader reads ELF
+# program headers directly, so the former objcopy-to-flat-binary step is gone.
 #
 # Required tools: cargo (Rust nightly target x86_64-unknown-none).
 
@@ -24,7 +24,7 @@ fi
 # USER_PROGRAM_MAX_IMAGE_SIZE) once every program ships its full ELF instead
 # of an objcopy'd flat blob; PT_LOAD segments (the only thing the kernel's
 # loader reads) are untouched by --strip-debug, only the non-allocated debug
-# sections are removed (docs/todo_elf.md SS10).
+# sections are removed (debug info, symbol tables -- neither is read by the loader).
 strip_debug_info() {
     llvm-strip --strip-debug "$1" 2>/dev/null || \
         rust-strip --strip-debug "$1" 2>/dev/null || \

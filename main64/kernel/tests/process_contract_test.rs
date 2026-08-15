@@ -326,7 +326,7 @@ fn minimal_elf_image() -> Vec<u8> {
 /// Contract: a non-ELF byte blob is rejected outright -- there is no fallback
 /// to a different loading strategy for input that fails ELF64 validation
 /// (the legacy flat-binary path was removed once every in-tree program
-/// migrated to ELF; see the status note in `docs/todo_elf.md` §6).
+/// migrated to ELF).
 #[test_case]
 fn test_map_program_image_into_user_address_space_rejects_non_elf_image() {
     let image: Vec<u8> = (0..200u32).map(|i| i as u8).collect();

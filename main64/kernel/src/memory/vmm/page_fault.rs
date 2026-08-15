@@ -136,10 +136,10 @@ pub fn try_handle_page_fault(virtual_address: u64, error_code: u64) -> Result<()
         });
     }
 
-    // Code-region faults are never demand-paged. Since the ELF loader migration
-    // (docs/todo_elf.md), every `PT_LOAD` segment is mapped with its final
-    // per-segment permissions (from `p_flags`) before the task ever runs — there
-    // is no "hole" in the code window left for a fault to legitimately backfill.
+    // Code-region faults are never demand-paged. Since the ELF loader migration,
+    // every `PT_LOAD` segment is mapped with its final per-segment permissions
+    // (from `p_flags`) before the task ever runs — there is no "hole" in the
+    // code window left for a fault to legitimately backfill.
     // A non-present fault landing here means a real bug (stale TLB, use-after-unmap,
     // or a stack overflow spilling into the code region), so it is rejected the
     // same way a protection fault would be, instead of silently allocating a

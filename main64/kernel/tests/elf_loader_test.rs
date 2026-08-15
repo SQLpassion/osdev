@@ -1,9 +1,9 @@
 //! ELF loader integration tests: `process::map_program_image_into_user_address_space`
 //! end-to-end for a synthetic two-segment ELF64 image.
 //!
-//! Pins the per-segment mapping contract `docs/todo_elf.md` requires: a R-X
-//! text segment, a RW- data segment with a zero-filled BSS tail, and
-//! `entry_rip` sourced from `e_entry` rather than the legacy fixed
+//! Pins the per-segment mapping contract the loader requires: a R-X text
+//! segment, a RW- data segment with a zero-filled BSS tail, and `entry_rip`
+//! sourced from `e_entry` rather than the legacy fixed
 //! `USER_PROGRAM_ENTRY_RIP` constant.
 
 #![no_std]
