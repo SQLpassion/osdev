@@ -152,7 +152,10 @@ pub fn try_handle_page_fault(virtual_address: u64, error_code: u64) -> Result<()
         });
     }
 
-    let user_access = matches!(user_region, Some(UserRegion::Stack) | Some(UserRegion::Heap));
+    let user_access = matches!(
+        user_region,
+        Some(UserRegion::Stack) | Some(UserRegion::Heap)
+    );
 
     // Non-present faults in kernel space (outside user regions) must be restricted
     // strictly to the kernel heap arena range (`HEAP_START_OFFSET` range / heap boundaries).

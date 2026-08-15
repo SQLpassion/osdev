@@ -208,7 +208,8 @@ fn try_map_elf_program_image(
     // Step 1: Allocate every segment's frames plus the stack frame in a single
     // PMM lock scope, to avoid repeated lock/unlock overhead in the hot
     // allocation loop.
-    let segment_page_counts: Vec<usize> = elf_image.segments.iter().map(|s| s.page_count()).collect();
+    let segment_page_counts: Vec<usize> =
+        elf_image.segments.iter().map(|s| s.page_count()).collect();
     let (segment_pfns, stack_pfn) = alloc_elf_frames(&segment_page_counts)?;
 
     // Wire allocated PFNs into `state` up front so a mapping failure below can

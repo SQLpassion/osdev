@@ -290,7 +290,7 @@ pub fn parse_elf64(image: &[u8]) -> Result<ElfImage, ElfError> {
         }
 
         let page_size = crate::arch::constants::PAGE_SIZE_U64;
-        if p_vaddr % page_size != 0 {
+        if !p_vaddr.is_multiple_of(page_size) {
             return Err(ElfError::SegmentOutsideCodeWindow { index: i });
         }
 
@@ -322,7 +322,10 @@ pub fn parse_elf64(image: &[u8]) -> Result<ElfImage, ElfError> {
             let (seg_a, seg_b) = (&segments[a], &segments[b]);
             let overlap = seg_a.vaddr < seg_b.mapped_end() && seg_b.vaddr < seg_a.mapped_end();
             if overlap {
-                return Err(ElfError::SegmentsOverlap { first: a, second: b });
+                return Err(ElfError::SegmentsOverlap {
+                    first: a,
+                    second: b,
+                });
             }
         }
     }

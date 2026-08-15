@@ -287,7 +287,11 @@ fn test_overlapping_segments_rejected() {
         ],
     );
     assert!(
-        parse_elf64(&image).err() == Some(ElfError::SegmentsOverlap { first: 0, second: 1 }),
+        parse_elf64(&image).err()
+            == Some(ElfError::SegmentsOverlap {
+                first: 0,
+                second: 1
+            }),
         "page-rounded overlapping segments must be rejected"
     );
 }

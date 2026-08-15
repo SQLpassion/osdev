@@ -144,7 +144,10 @@ fn test_elf_program_maps_with_entry_from_e_entry() {
     let loaded = process::map_program_image_into_user_address_space(&image)
         .expect("well-formed two-segment ELF must map");
 
-    assert!(loaded.cr3 != 0, "mapped ELF program must return non-zero CR3");
+    assert!(
+        loaded.cr3 != 0,
+        "mapped ELF program must return non-zero CR3"
+    );
     assert!(
         loaded.entry_rip == expected_entry,
         "entry_rip must come from e_entry, not the fixed flat-path constant"
@@ -210,7 +213,10 @@ fn test_elf_data_segment_is_writable_non_executable_with_zeroed_bss() {
 
         let no_execute = vmm::debug_no_execute_flag_for_va(data_vaddr)
             .expect("mapped data page must expose NX bit");
-        assert!(no_execute, "data page must be non-executable (PF_X not set)");
+        assert!(
+            no_execute,
+            "data page must be non-executable (PF_X not set)"
+        );
 
         // SAFETY:
         // - Loader mapped the data segment's page in this address space and
