@@ -1,14 +1,14 @@
 # VFS User-Program Loader: Deep Technical Walkthrough
 
-> **Status note:** this document predates the ELF-loader migration
-> (`docs/todo_elf.md`) and describes the original flat-`.bin`-only loader.
-> That description is now out of date: the loader parses ELF64 `PT_LOAD`
-> segments with per-segment permissions, and the legacy flat-binary path
-> (including its gradual-rollout fallback) has since been removed entirely —
-> a non-ELF image is rejected with `ExecError::InvalidElfImage`. The
-> high-level architecture below (VFS → loader → scheduler layering, ownership
-> /rollback contracts) still holds; the parts that describe flat-binary
-> mapping mechanics do not. See `docs/todo_elf.md` for the current design.
+> **Status note:** this document predates the ELF-loader migration and
+> describes the original flat-`.bin`-only loader. That description is now out
+> of date: the loader parses ELF64 `PT_LOAD` segments with per-segment
+> permissions, and the legacy flat-binary path (including its gradual-rollout
+> fallback) has since been removed entirely — a non-ELF image is rejected with
+> `ExecError::InvalidElfImage`. The high-level architecture below (VFS →
+> loader → scheduler layering, ownership/rollback contracts) still holds; the
+> parts that describe flat-binary mapping mechanics do not — see
+> `src/process/elf.rs` and `src/process/loader.rs` for the current design.
 
 This document explains, in implementation-level detail, how the current Rust kernel loads a user-mode program from the VFS (Virtual File System) backed by the FAT32 partition, maps it into a dedicated user address space, starts it as a schedulable ring-3 task, and reclaims all resources again when the task exits.
 

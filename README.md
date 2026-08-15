@@ -187,7 +187,6 @@ Detailed, implementation-level documentation for each subsystem lives in
 |---|---|
 | [todo_drivers.md](main64/docs/todo_drivers.md) | *(Planned)* dynamic, loadable Ring-3 user-space driver infrastructure |
 | [todo_uefi_kernel_pagetables.md](main64/docs/todo_uefi_kernel_pagetables.md) | Plan for kernel-owned page tables on the UEFI path |
-| [todo_elf.md](main64/docs/todo_elf.md) | Plan for ELF program loading |
 
 ---
 
