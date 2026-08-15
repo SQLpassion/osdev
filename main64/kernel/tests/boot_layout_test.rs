@@ -162,14 +162,23 @@ fn test_boot_info_pointer_rejects_low_boundary() {
     assert!(!is_plausible_boot_info_pointer(0x0FF8));
 }
 
-/// Contract: `is_plausible_boot_info_pointer` accepts an aligned address strictly
-/// between the low guard and the 16 MiB upper bound.
-/// Failure Impact: a genuine `BootInfo` pointer published by the loader would be
-/// rejected, silently falling back to legacy `kernel_size` handling. Release-blocking.
+/// Contract: `is_plausible_boot_info_pointer` accepts any aligned address above the
+/// low guard, including addresses well above the BIOS loader's 16 MiB low identity
+/// map — this is where a genuine UEFI `BootInfo` pointer typically lives (the
+/// firmware's PE loader places `kaosldr_uefi`'s image, and therefore its `BootInfo`
+/// static, wherever it chooses; UEFI's own page tables identity-map all of physical
+/// RAM, so such an address is always safely dereferenceable).
+/// Failure Impact: rejecting a high address here silently diverts a UEFI boot into
+/// the legacy BIOS/ATA branch, which finds no disk under UEFI/AHCI — this is the
+/// regression fixed after issue #44 broke the UEFI boot path.
 #[test_case]
 fn test_boot_info_pointer_accepts_in_range_address() {
     assert!(is_plausible_boot_info_pointer(0x1008));
     assert!(is_plausible_boot_info_pointer(0x0080_0000));
+    // Representative of a real UEFI-placed BootInfo address, well above the
+    // BIOS-only 16 MiB low identity map.
+    assert!(is_plausible_boot_info_pointer(0x0500_0000));
+    assert!(is_plausible_boot_info_pointer(0x1_0000_0000));
 }
 
 /// Contract: `is_plausible_boot_info_pointer` rejects misaligned addresses, even
@@ -181,24 +190,6 @@ fn test_boot_info_pointer_accepts_in_range_address() {
 fn test_boot_info_pointer_rejects_misaligned_address() {
     assert!(!is_plausible_boot_info_pointer(0x1001));
     assert!(!is_plausible_boot_info_pointer(0x0080_0004));
-}
-
-/// Contract: `is_plausible_boot_info_pointer` rejects the 16 MiB upper bound itself
-/// and everything above it — this is the exact bug fixed by issue #44, where the
-/// original check (`addr > 0x1000 && addr.is_multiple_of(8)`) had no upper bound at
-/// all and would accept any large, 8-byte-aligned `kernel_size` value a legacy
-/// loader might pass, dereferencing it as a raw pointer before any `#PF` handler is
-/// installed.
-/// Failure Impact: an out-of-range address would be dereferenced against
-/// potentially unmapped physical memory, triple-faulting the CPU with zero
-/// diagnostic output. Release-blocking (issue #44).
-#[test_case]
-fn test_boot_info_pointer_rejects_above_identity_map_limit() {
-    assert!(!is_plausible_boot_info_pointer(0x0100_0000));
-    assert!(!is_plausible_boot_info_pointer(0x0100_0008));
-    // A page/sector-aligned "legacy kernel_size" value large enough to plausibly be
-    // mistaken for a real-world kernel binary size, per the issue's failure scenario.
-    assert!(!is_plausible_boot_info_pointer(0x0500_0000));
 }
 
 // ============================================================================

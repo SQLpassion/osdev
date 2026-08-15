@@ -154,36 +154,38 @@ pub struct BootInfo {
 /// never treated as a `BootInfo` pointer.
 ///
 /// Guards against null/near-null values (e.g. a legacy loader passing a tiny or zero
-/// `kernel_size`) that would otherwise pass the alignment/upper-bound checks below.
+/// `kernel_size`) that would otherwise pass the alignment check below.
 const BOOT_INFO_PTR_MIN: u64 = 0x1000;
-
-/// Upper bound (exclusive) above which `KernelMain`'s raw `boot_info_raw` argument is
-/// never treated as a `BootInfo` pointer.
-///
-/// The bootstrap loaders (`kaosldr_64`/`kaosldr_uefi`) only identity-map the low 16 MiB
-/// of physical memory before the kernel's own `vmm::init()` runs, and `KernelMain` has
-/// not yet called `interrupts::init()` at the point this check runs — there is no `#PF`
-/// handler installed to survive a wild dereference of an address outside that window.
-/// Bounding the candidate pointer to this range keeps the pre-magic-check dereference
-/// genuinely confined to memory the loader guarantees is mapped.
-const BOOT_INFO_PTR_MAX: u64 = 0x0100_0000;
 
 /// Decides whether `addr` (the raw value `KernelMain` receives in RDI) is plausibly a
 /// pointer to a `BootInfo` structure, as opposed to a legacy loader's raw `kernel_size`
 /// integer.
 ///
 /// This is a purely syntactic pre-check performed *before* any dereference happens: it
-/// confirms `addr` is non-null, 8-byte aligned (required to safely read the leading
-/// `u64` magic field), and falls within the bootstrap loader's low 16 MiB identity map
-/// — see [`BOOT_INFO_PTR_MAX`] for why that specific bound. It does **not** confirm a
-/// real `BootInfo` block actually lives there; that is only established once the caller
-/// has read the address and compared it against the expected magic constant.
+/// confirms `addr` is non-null and 8-byte aligned (required to safely read the leading
+/// `u64` magic field). It does **not** confirm a real `BootInfo` block actually lives
+/// there; that is only established once the caller has read the address and compared
+/// it against the expected magic constant.
+///
+/// No upper bound is applied here. Issue #44 originally added one (`addr < 0x0100_0000`,
+/// reasoning that the bootstrap loaders only identity-map the low 16 MiB before
+/// `interrupts::init()` runs), but that assumption only holds for the BIOS loader chain
+/// (`kaosldr_16`/`kaosldr_64`, which places its `BootInfo` static at a fixed low address
+/// per its linker script). Under UEFI, the firmware's own page tables identity-map *all*
+/// of physical RAM (see `docs/boot_uefi.md`), and `kaosldr_uefi` places its `BootInfo`
+/// static wherever the firmware's PE loader placed the `.efi` image — an address that is
+/// legitimately, and often, above 16 MiB. The 16 MiB bound rejected genuine UEFI
+/// `BootInfo` pointers outright, silently diverting the kernel into the legacy
+/// BIOS/ATA boot branch on every UEFI boot (no disk found there under UEFI/AHCI — the
+/// kernel never got a working console or filesystem). Fixed as a regression after #44;
+/// do not reintroduce a fixed upper bound without a way to distinguish the boot-mode
+/// identity-map extent (BIOS vs. UEFI) *before* this check runs.
 ///
 /// Kept as a free function (rather than inlined at the call site) so it has a single,
 /// directly testable seam: the arithmetic here is what stands between a legacy loader's
 /// large `kernel_size` value and an unguarded raw pointer dereference (see issue #44).
 pub fn is_plausible_boot_info_pointer(addr: u64) -> bool {
-    addr > BOOT_INFO_PTR_MIN && addr < BOOT_INFO_PTR_MAX && addr.is_multiple_of(8)
+    addr > BOOT_INFO_PTR_MIN && addr.is_multiple_of(8)
 }
 
 /// Global atomic pointer to the active BootInfo structure.
