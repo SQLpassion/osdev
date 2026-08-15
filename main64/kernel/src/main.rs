@@ -105,13 +105,18 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
     //    fault. Checking the magic ensures safe fallback to legacy size handling.
     //
     // SAFETY:
-    // - We check if the address is aligned and non-null to avoid invalid dereferencing.
+    // - We check if the address is aligned, non-null, and bounded to the loader's
+    //   low 16 MiB identity map (see `boot_info::is_plausible_boot_info_pointer`)
+    //   to avoid invalid dereferencing.
     // - Low physical memory is identity mapped at boot.
     let mut kernel_size = boot_info_raw;
     let mut has_boot_info = false;
-    if boot_info_raw > 0x1000 && boot_info_raw.is_multiple_of(8) {
+    if boot_info::is_plausible_boot_info_pointer(boot_info_raw) {
         // SAFETY:
-        // - `boot_info_raw` is non-null, aligned, and within low memory space.
+        // - `is_plausible_boot_info_pointer` confirmed `boot_info_raw` is non-null,
+        //   8-byte aligned, and strictly below the loader's low 16 MiB identity-map
+        //   limit — i.e. genuinely within the memory range the loader guarantees is
+        //   mapped this early (before `interrupts::init()` installs a `#PF` handler).
         // - We check the magic header at this address before dereferencing any other fields.
         let magic = unsafe { *(boot_info_raw as *const u64) };
         if magic == 0x4B414F535F424F4F {

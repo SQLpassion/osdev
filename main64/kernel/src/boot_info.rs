@@ -150,6 +150,42 @@ pub struct BootInfo {
     pub boot_timezone: i16,
 }
 
+/// Lower bound (exclusive) below which `KernelMain`'s raw `boot_info_raw` argument is
+/// never treated as a `BootInfo` pointer.
+///
+/// Guards against null/near-null values (e.g. a legacy loader passing a tiny or zero
+/// `kernel_size`) that would otherwise pass the alignment/upper-bound checks below.
+const BOOT_INFO_PTR_MIN: u64 = 0x1000;
+
+/// Upper bound (exclusive) above which `KernelMain`'s raw `boot_info_raw` argument is
+/// never treated as a `BootInfo` pointer.
+///
+/// The bootstrap loaders (`kaosldr_64`/`kaosldr_uefi`) only identity-map the low 16 MiB
+/// of physical memory before the kernel's own `vmm::init()` runs, and `KernelMain` has
+/// not yet called `interrupts::init()` at the point this check runs — there is no `#PF`
+/// handler installed to survive a wild dereference of an address outside that window.
+/// Bounding the candidate pointer to this range keeps the pre-magic-check dereference
+/// genuinely confined to memory the loader guarantees is mapped.
+const BOOT_INFO_PTR_MAX: u64 = 0x0100_0000;
+
+/// Decides whether `addr` (the raw value `KernelMain` receives in RDI) is plausibly a
+/// pointer to a `BootInfo` structure, as opposed to a legacy loader's raw `kernel_size`
+/// integer.
+///
+/// This is a purely syntactic pre-check performed *before* any dereference happens: it
+/// confirms `addr` is non-null, 8-byte aligned (required to safely read the leading
+/// `u64` magic field), and falls within the bootstrap loader's low 16 MiB identity map
+/// — see [`BOOT_INFO_PTR_MAX`] for why that specific bound. It does **not** confirm a
+/// real `BootInfo` block actually lives there; that is only established once the caller
+/// has read the address and compared it against the expected magic constant.
+///
+/// Kept as a free function (rather than inlined at the call site) so it has a single,
+/// directly testable seam: the arithmetic here is what stands between a legacy loader's
+/// large `kernel_size` value and an unguarded raw pointer dereference (see issue #44).
+pub fn is_plausible_boot_info_pointer(addr: u64) -> bool {
+    addr > BOOT_INFO_PTR_MIN && addr < BOOT_INFO_PTR_MAX && addr.is_multiple_of(8)
+}
+
 /// Global atomic pointer to the active BootInfo structure.
 ///
 /// Initialized during early boot in `KernelMain` once a valid `BootInfo` block has

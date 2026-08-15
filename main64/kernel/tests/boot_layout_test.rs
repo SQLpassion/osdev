@@ -23,7 +23,9 @@ use core::mem::{align_of, offset_of, size_of};
 use core::panic::PanicInfo;
 
 use kaos_kernel::arch::gdt;
-use kaos_kernel::boot_info::{BootInfo, FramebufferInfo, UnifiedMemoryEntry, VideoModeType};
+use kaos_kernel::boot_info::{
+    is_plausible_boot_info_pointer, BootInfo, FramebufferInfo, UnifiedMemoryEntry, VideoModeType,
+};
 
 #[no_mangle]
 #[link_section = ".text.boot"]
@@ -147,6 +149,56 @@ fn test_bios_information_block_layout() {
     assert_eq!(offset_of!(BiosInformationBlock, fb_pixels_per_scanline), 64);
     assert_eq!(size_of::<BiosInformationBlock>(), 72);
     assert_eq!(align_of::<BiosInformationBlock>(), 8);
+}
+
+/// Contract: `is_plausible_boot_info_pointer` rejects the low guard address (0x1000)
+/// and everything at or below it, even when 8-byte aligned.
+/// Failure Impact: a near-null legacy `kernel_size` value would be misread as a
+/// `BootInfo` pointer and dereferenced. Release-blocking (issue #44).
+#[test_case]
+fn test_boot_info_pointer_rejects_low_boundary() {
+    assert!(!is_plausible_boot_info_pointer(0));
+    assert!(!is_plausible_boot_info_pointer(0x1000));
+    assert!(!is_plausible_boot_info_pointer(0x0FF8));
+}
+
+/// Contract: `is_plausible_boot_info_pointer` accepts an aligned address strictly
+/// between the low guard and the 16 MiB upper bound.
+/// Failure Impact: a genuine `BootInfo` pointer published by the loader would be
+/// rejected, silently falling back to legacy `kernel_size` handling. Release-blocking.
+#[test_case]
+fn test_boot_info_pointer_accepts_in_range_address() {
+    assert!(is_plausible_boot_info_pointer(0x1008));
+    assert!(is_plausible_boot_info_pointer(0x0080_0000));
+}
+
+/// Contract: `is_plausible_boot_info_pointer` rejects misaligned addresses, even
+/// when they otherwise fall within the valid range.
+/// Failure Impact: reading the `u64` magic field at a misaligned address is still
+/// well-defined on x86_64, but the check exists to only ever accept genuinely
+/// `#[repr(C)]`-aligned `BootInfo` pointers. Release-blocking.
+#[test_case]
+fn test_boot_info_pointer_rejects_misaligned_address() {
+    assert!(!is_plausible_boot_info_pointer(0x1001));
+    assert!(!is_plausible_boot_info_pointer(0x0080_0004));
+}
+
+/// Contract: `is_plausible_boot_info_pointer` rejects the 16 MiB upper bound itself
+/// and everything above it — this is the exact bug fixed by issue #44, where the
+/// original check (`addr > 0x1000 && addr.is_multiple_of(8)`) had no upper bound at
+/// all and would accept any large, 8-byte-aligned `kernel_size` value a legacy
+/// loader might pass, dereferencing it as a raw pointer before any `#PF` handler is
+/// installed.
+/// Failure Impact: an out-of-range address would be dereferenced against
+/// potentially unmapped physical memory, triple-faulting the CPU with zero
+/// diagnostic output. Release-blocking (issue #44).
+#[test_case]
+fn test_boot_info_pointer_rejects_above_identity_map_limit() {
+    assert!(!is_plausible_boot_info_pointer(0x0100_0000));
+    assert!(!is_plausible_boot_info_pointer(0x0100_0008));
+    // A page/sector-aligned "legacy kernel_size" value large enough to plausibly be
+    // mistaken for a real-world kernel binary size, per the issue's failure scenario.
+    assert!(!is_plausible_boot_info_pointer(0x0500_0000));
 }
 
 // ============================================================================
