@@ -8,6 +8,20 @@ use crate::syscall::types::{
 /// Implements `GetPciDeviceCount()`.
 ///
 /// Returns the total count of discovered PCI devices on the bus scan.
+///
+/// # Authorization (M10, `docs/CODE_REVIEW_2026-07-26.md`)
+/// This syscall is deliberately **not** gated behind `TaskEntry::privileged`,
+/// unlike `Shutdown`. Gating it would restrict PCI enumeration to the boot
+/// shell alone: every `Exec`-spawned task (including the shipped `TUI.BIN`
+/// hardware-inspection screen, `user_programs/tui_app`) is always
+/// unprivileged (see M6, `docs/CODE_REVIEW_2026-07-23.md`), so a privilege
+/// gate here would break that shipped feature rather than mitigate a real
+/// trust-boundary crossing. This kernel has no multi-user/multi-tenant
+/// isolation model — every ring-3 task already belongs to the same operator
+/// — so PCI topology/BAR data read here is not a secret relative to the
+/// existing threat model. The DoS/information-leak risk this syscall poses
+/// (M10) is judged low enough that the correct stopgap is "no change" rather
+/// than a gate that regresses shipped functionality.
 pub fn syscall_get_pci_device_count_impl() -> SyscallResult<u64> {
     // Step 1: Query the boot-time cached PCI device registry.
     let count = pci::get_devices().len();

@@ -219,6 +219,110 @@ pub fn set_current_user_heap_top(new_top: u64) -> bool {
     })
 }
 
+/// Attempts to record one more `Exec`-spawned child for `task_id`, enforcing
+/// a per-task cap.
+///
+/// Returns `true` and increments the task's `exec_count` when the task is a
+/// live slot whose current count is still below `max`. Returns `false`
+/// (without mutating state) when the slot is unused/unknown or the cap has
+/// already been reached.
+///
+/// Stopgap denial-of-service guard (M10, `docs/CODE_REVIEW_2026-07-26.md`):
+/// `syscall_exec_impl` calls this before spawning a child so an unprivileged
+/// ring-3 task cannot loop `Exec` to exhaust scheduler slots or PMM frames.
+///
+/// `task_id` is a packed task identifier (slot + generation) as returned by
+/// the spawn functions; the generation portion is ignored by this mutation.
+pub fn try_increment_exec_count(task_id: usize, max: u32) -> bool {
+    let slot = task_id_slot(task_id);
+    with_scheduler(|meta| {
+        if slot >= meta.slots.len() || !meta.slots[slot].used {
+            return false;
+        }
+
+        let entry = &mut meta.slots[slot];
+        if entry.exec_count >= max {
+            return false;
+        }
+
+        entry.exec_count += 1;
+        true
+    })
+}
+
+/// Maximum number of `(child, parent)` `Exec`-spawn relationships retained in
+/// [`SchedulerMetadata::parent_log`](super::types::SchedulerMetadata) for
+/// `is_parent_of` authorization checks.
+///
+/// Bounded so a sustained stream of `Exec` calls across many different tasks
+/// (each individually capped by `MAX_CHILD_EXECS` in
+/// `syscall::dispatch::process`) cannot grow scheduler memory without bound;
+/// the oldest record is evicted once the cap is reached.
+const PARENT_LOG_CAPACITY: usize = 256;
+
+/// Records `parent_task_id` as the spawning parent of `task_id`.
+///
+/// Returns `false` (without mutating state) if `task_id`'s slot is unused.
+///
+/// Stopgap authorization mechanism for `Wait` (M10,
+/// `docs/CODE_REVIEW_2026-07-26.md`): `syscall_exec_impl` calls this right
+/// after a successful spawn so `is_parent_of` can later scope which tasks the
+/// caller is authorized to `Wait` on. The record is appended to
+/// `SchedulerMetadata::parent_log` rather than stored on `TaskEntry`, so it
+/// remains queryable after the child exits and its slot is reaped (the
+/// common case: a parent typically calls `Wait` after, or racing, the
+/// child's exit).
+///
+/// `task_id` is a packed task identifier (slot + generation) as returned by
+/// the spawn functions; the generation portion is ignored by this mutation.
+/// `parent_task_id` is stored verbatim as the full packed identifier of the
+/// caller at spawn time.
+pub fn set_task_parent(task_id: usize, parent_task_id: usize) -> bool {
+    let slot = task_id_slot(task_id);
+    with_scheduler(|meta| {
+        if slot >= meta.slots.len() || !meta.slots[slot].used {
+            return false;
+        }
+
+        // Step 1: Evict the oldest record once the log is at capacity so it
+        // cannot grow without bound (M10). `remove(0)` is O(n), but n is
+        // capped at `PARENT_LOG_CAPACITY`, so this stays cheap.
+        if meta.parent_log.len() >= PARENT_LOG_CAPACITY {
+            meta.parent_log.remove(0);
+        }
+
+        // Step 2: Best-effort append. If the reservation fails, the spawn
+        // itself already succeeded; simply not recording lineage here just
+        // means `is_parent_of` later falls back to its safe default (deny),
+        // rather than this call failing the already-completed spawn.
+        if meta.parent_log.try_reserve(1).is_ok() {
+            meta.parent_log.push((task_id, parent_task_id));
+        }
+
+        true
+    })
+}
+
+/// Returns whether `parent_task_id` is a recorded `Exec`-spawning parent of
+/// `child_task_id`.
+///
+/// Both arguments are compared as full packed task identifiers (slot +
+/// generation), so a coincidental slot reuse cannot be mistaken for a live
+/// parent/child relationship (R-18): a reused slot's current generation no
+/// longer matches the stale `child_task_id` used to record the original
+/// relationship.
+///
+/// Looks up `SchedulerMetadata::parent_log` rather than live `TaskEntry`
+/// state, so this remains accurate even after `child_task_id` has already
+/// exited and been reaped -- see `set_task_parent`.
+pub fn is_parent_of(parent_task_id: usize, child_task_id: usize) -> bool {
+    with_scheduler(|meta| {
+        meta.parent_log
+            .iter()
+            .any(|&(child, parent)| child == child_task_id && parent == parent_task_id)
+    })
+}
+
 /// Resets the scheduler initialization state to `false`.
 ///
 /// This is a test-only helper to simulate initialization failure.
