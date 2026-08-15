@@ -15,6 +15,13 @@ const MAX_SECTORS_PER_CMD: u32 = 255;
 /// Highest LBA addressable by 28-bit ATA PIO.
 const ATA_MAX_LBA: u64 = 0x0FFF_FFFF;
 
+/// Highest LBA addressable by AHCI's 48-bit LBA FIS fields (`lba0..lba5`,
+/// see `ahci::FisRegH2D`/`do_transfer`). Without this clamp `chunked()` would
+/// accept any `u64` LBA, letting an out-of-range value (e.g. a corrupted GPT
+/// `StartingLBA`, which is read as a raw unclamped `u64`) silently truncate
+/// to 48 bits inside the FIS instead of being rejected up front.
+const AHCI_MAX_LBA: u64 = 0xFFFF_FFFF_FFFF;
+
 /// Error variants for block device operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockError {
@@ -92,8 +99,9 @@ impl BlockDevice for AhciBlockDevice {
         // Step 1: Validate buffer size before requesting I/O.
         check_buf(buf.len(), count)?;
 
-        // Step 2: Chunk the request and forward to the AHCI driver.
-        chunked(lba, count, u64::MAX, |chunk_lba, chunk_cnt, off| {
+        // Step 2: Chunk the request and forward to the AHCI driver, clamping to
+        // the 48-bit LBA the FIS can actually encode.
+        chunked(lba, count, AHCI_MAX_LBA, |chunk_lba, chunk_cnt, off| {
             let bytes = chunk_cnt as usize * SECTOR_SIZE;
             ahci::read_sectors(&mut buf[off..off + bytes], chunk_lba, chunk_cnt)
                 .map_err(|_| BlockError::Device)
@@ -104,8 +112,9 @@ impl BlockDevice for AhciBlockDevice {
         // Step 1: Validate buffer size before requesting I/O.
         check_buf(buf.len(), count)?;
 
-        // Step 2: Chunk the request and forward to the AHCI driver.
-        chunked(lba, count, u64::MAX, |chunk_lba, chunk_cnt, off| {
+        // Step 2: Chunk the request and forward to the AHCI driver, clamping to
+        // the 48-bit LBA the FIS can actually encode.
+        chunked(lba, count, AHCI_MAX_LBA, |chunk_lba, chunk_cnt, off| {
             let bytes = chunk_cnt as usize * SECTOR_SIZE;
             ahci::write_sectors(&buf[off..off + bytes], chunk_lba, chunk_cnt)
                 .map_err(|_| BlockError::Device)
