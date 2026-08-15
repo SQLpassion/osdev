@@ -239,25 +239,58 @@ pub fn syscall_mmap_impl(addr: u64, length: usize) -> SyscallResult<u64> {
     Ok(current_heap_top)
 }
 
+/// Maximum number of children a single task may spawn via `Exec` before
+/// further attempts are rejected with [`SyscallError::PermissionDenied`].
+///
+/// Stopgap denial-of-service guard (M10, `docs/CODE_REVIEW_2026-07-26.md`):
+/// without a cap, a malicious or buggy unprivileged ring-3 task can loop
+/// `Exec` to exhaust scheduler slots or PMM physical frames. The value is
+/// deliberately generous for legitimate usage (a shell/script launching a
+/// handful of programs per session) while still bounding a runaway loop to a
+/// small, recoverable number of tasks rather than "until the machine falls
+/// over".
+const MAX_CHILD_EXECS: u32 = 32;
+
 /// Implements `Exec(name_ptr)`: load and spawn a new user task from the filesystem.
 ///
 /// Reads the name string from user space safely and invokes the file loader.
 /// Each `ExecError` variant is mapped to the most appropriate `SyscallError`
 /// so user-space callers can distinguish file-not-found from spawn failures.
+///
+/// # Authorization (M10, `docs/CODE_REVIEW_2026-07-26.md`)
+/// Every calling task is rate-limited to [`MAX_CHILD_EXECS`] successful *and*
+/// unsuccessful `Exec` attempts via
+/// [`try_increment_exec_count`](crate::scheduler::try_increment_exec_count):
+/// once the cap is reached the syscall is denied outright, before user memory
+/// or the filesystem are ever touched. On a successful spawn, the new task's
+/// `parent` is recorded as the caller so `Wait` can later scope which task
+/// ids the caller is authorized to wait on (see `syscall_wait_impl`).
 pub fn syscall_exec_impl(name_ptr: *const u8) -> SyscallResult<u64> {
     use crate::process::ExecError;
 
     // Step 1: Clear global keyboard buffers so that any leftover shell keystrokes
     // or enter press from spawning do not bleed into the newly executed process.
+    // This happens unconditionally, even when the call is later rejected below,
+    // matching the pre-existing contract that `Exec` always clears stale input.
     keyboard::clear_buffers();
 
-    // Step 2: Decode the null-terminated string from user-space memory.
+    // Step 2: Identify the calling task and enforce the per-task Exec rate
+    // limit up front, before user memory or the filesystem are touched. A
+    // missing task context (e.g. called outside a scheduled task) has no
+    // counter to rate-limit, so treat it the same way `read_user_string`
+    // already treats a null pointer below.
+    let task_id = scheduler::current_task_id().ok_or(SyscallError::InvalidArg)?;
+    if !scheduler::try_increment_exec_count(task_id, MAX_CHILD_EXECS) {
+        return Err(SyscallError::PermissionDenied);
+    }
+
+    // Step 3: Decode the null-terminated string from user-space memory.
     let name = super::fs::read_user_string(name_ptr, 128)?;
 
-    // Step 3: Attempt to load the program image and spawn a user task.
+    // Step 4: Attempt to load the program image and spawn a user task.
     let result = crate::process::exec_from_vfs(&name);
 
-    // Step 4: Log the outcome to serial so failures are visible without a debugger.
+    // Step 5: Log the outcome to serial so failures are visible without a debugger.
     match &result {
         Ok(tid) => {
             crate::logging::logln(
@@ -273,7 +306,18 @@ pub fn syscall_exec_impl(name_ptr: *const u8) -> SyscallResult<u64> {
         }
     }
 
-    // Step 5: Map ExecError variants to distinct SyscallError codes.
+    // Step 6: On success, record the spawning task as the new task's parent
+    // so `syscall_wait_impl` can later authorize the caller (and only the
+    // caller) to `Wait` on it. Best-effort: if the newly spawned task has
+    // already exited and been reaped by the time this runs (implausible on
+    // a single-CPU cooperative scheduler, but not structurally impossible),
+    // `set_task_parent` simply reports `false` and there is nothing left to
+    // annotate.
+    if let Ok(tid) = result {
+        scheduler::set_task_parent(tid, task_id);
+    }
+
+    // Step 7: Map ExecError variants to distinct SyscallError codes.
     result.map(|tid| tid as u64).map_err(|e| match e {
         ExecError::InvalidName => SyscallError::InvalidArg,
         ExecError::NotFound => SyscallError::InvalidArg,
@@ -289,9 +333,38 @@ pub fn syscall_exec_impl(name_ptr: *const u8) -> SyscallResult<u64> {
 }
 
 /// Implements `Wait(task_id)`: block current task until target task exits.
+///
+/// # Authorization (M10, `docs/CODE_REVIEW_2026-07-26.md`)
+/// Looping `Wait` over a range of task ids lets an unprivileged caller
+/// fingerprint which ids are currently alive (an existence side-channel),
+/// since a live target blocks the caller while an absent one returns
+/// immediately. To close this, a caller without the `privileged` capability
+/// may only `Wait` on a task it actually spawned via `Exec` (tracked in
+/// `SchedulerMetadata::parent_log`, recorded via `set_task_parent` in
+/// `syscall_exec_impl` and queried through
+/// [`is_parent_of`](crate::scheduler::is_parent_of)); every other target is
+/// rejected with [`SyscallError::PermissionDenied`] *before* the target's
+/// existence is ever checked, so the response does not depend on whether
+/// `task_id` is alive, exited, or was never valid.
+///
+/// A missing caller task context (e.g. this syscall dispatched directly from
+/// kernel/bootstrap/test code rather than through a real ring-3 `int 0x80`)
+/// has no capability to authorize against and is treated as trusted — this
+/// path is unreachable from actual ring-3 callers, since real syscalls are
+/// only ever dispatched while a task is current.
 pub fn syscall_wait_impl(task_id: u64) -> SyscallResult<u64> {
-    // Step 1: Delegate task wait to the scheduler exit queue.
-    scheduler::wait_for_task_exit(task_id as usize);
+    let target = task_id as usize;
+
+    // Step 1: Authorize the caller, if one exists, before touching the
+    // target's liveness state at all.
+    if let Some(caller) = scheduler::current_task_id() {
+        if !scheduler::is_task_privileged(caller) && !scheduler::is_parent_of(caller, target) {
+            return Err(SyscallError::PermissionDenied);
+        }
+    }
+
+    // Step 2: Delegate task wait to the scheduler exit queue.
+    scheduler::wait_for_task_exit(target);
 
     Ok(SYSCALL_OK)
 }

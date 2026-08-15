@@ -77,6 +77,9 @@ name = "ata_panic_contract_test"
 name = "page_fault_death_test"
 
 [[test]]
+name = "map_user_page_interrupts_death_test"
+
+[[test]]
 name = "user_mode_iretq_smoke_test"
 
 [[test]]
@@ -123,3 +126,6 @@ name = "test_framework_panic_message_test"
 
 [[test]]
 name = "scroll_dirty_range_test"
+
+[[test]]
+name = "logging_capture_snapshot_test"

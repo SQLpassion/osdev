@@ -105,13 +105,23 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
     //    fault. Checking the magic ensures safe fallback to legacy size handling.
     //
     // SAFETY:
-    // - We check if the address is aligned and non-null to avoid invalid dereferencing.
+    // - We check if the address is aligned and non-null (see
+    //   `boot_info::is_plausible_boot_info_pointer`) to avoid an obviously-invalid
+    //   dereference. This is a plausibility check only: under the BIOS loader chain,
+    //   only the low 16 MiB are identity-mapped this early, but under UEFI the
+    //   firmware's own page tables identity-map all of physical RAM, so no fixed
+    //   upper bound on the address is safe to apply to both boot paths (see
+    //   `is_plausible_boot_info_pointer`'s doc comment for the regression this caused).
     // - Low physical memory is identity mapped at boot.
     let mut kernel_size = boot_info_raw;
     let mut has_boot_info = false;
-    if boot_info_raw > 0x1000 && boot_info_raw.is_multiple_of(8) {
+    if boot_info::is_plausible_boot_info_pointer(boot_info_raw) {
         // SAFETY:
-        // - `boot_info_raw` is non-null, aligned, and within low memory space.
+        // - `is_plausible_boot_info_pointer` confirmed `boot_info_raw` is non-null and
+        //   8-byte aligned. Under the BIOS loader chain this address is guaranteed
+        //   mapped (low identity map); under UEFI the firmware's page tables identity-
+        //   map all of physical RAM, so any address the firmware itself handed us here
+        //   is mapped too.
         // - We check the magic header at this address before dereferencing any other fields.
         let magic = unsafe { *(boot_info_raw as *const u64) };
         if magic == 0x4B414F535F424F4F {

@@ -23,7 +23,9 @@ use core::mem::{align_of, offset_of, size_of};
 use core::panic::PanicInfo;
 
 use kaos_kernel::arch::gdt;
-use kaos_kernel::boot_info::{BootInfo, FramebufferInfo, UnifiedMemoryEntry, VideoModeType};
+use kaos_kernel::boot_info::{
+    is_plausible_boot_info_pointer, BootInfo, FramebufferInfo, UnifiedMemoryEntry, VideoModeType,
+};
 
 #[no_mangle]
 #[link_section = ".text.boot"]
@@ -147,6 +149,47 @@ fn test_bios_information_block_layout() {
     assert_eq!(offset_of!(BiosInformationBlock, fb_pixels_per_scanline), 64);
     assert_eq!(size_of::<BiosInformationBlock>(), 72);
     assert_eq!(align_of::<BiosInformationBlock>(), 8);
+}
+
+/// Contract: `is_plausible_boot_info_pointer` rejects the low guard address (0x1000)
+/// and everything at or below it, even when 8-byte aligned.
+/// Failure Impact: a near-null legacy `kernel_size` value would be misread as a
+/// `BootInfo` pointer and dereferenced. Release-blocking (issue #44).
+#[test_case]
+fn test_boot_info_pointer_rejects_low_boundary() {
+    assert!(!is_plausible_boot_info_pointer(0));
+    assert!(!is_plausible_boot_info_pointer(0x1000));
+    assert!(!is_plausible_boot_info_pointer(0x0FF8));
+}
+
+/// Contract: `is_plausible_boot_info_pointer` accepts any aligned address above the
+/// low guard, including addresses well above the BIOS loader's 16 MiB low identity
+/// map — this is where a genuine UEFI `BootInfo` pointer typically lives (the
+/// firmware's PE loader places `kaosldr_uefi`'s image, and therefore its `BootInfo`
+/// static, wherever it chooses; UEFI's own page tables identity-map all of physical
+/// RAM, so such an address is always safely dereferenceable).
+/// Failure Impact: rejecting a high address here silently diverts a UEFI boot into
+/// the legacy BIOS/ATA branch, which finds no disk under UEFI/AHCI — this is the
+/// regression fixed after issue #44 broke the UEFI boot path.
+#[test_case]
+fn test_boot_info_pointer_accepts_in_range_address() {
+    assert!(is_plausible_boot_info_pointer(0x1008));
+    assert!(is_plausible_boot_info_pointer(0x0080_0000));
+    // Representative of a real UEFI-placed BootInfo address, well above the
+    // BIOS-only 16 MiB low identity map.
+    assert!(is_plausible_boot_info_pointer(0x0500_0000));
+    assert!(is_plausible_boot_info_pointer(0x1_0000_0000));
+}
+
+/// Contract: `is_plausible_boot_info_pointer` rejects misaligned addresses, even
+/// when they otherwise fall within the valid range.
+/// Failure Impact: reading the `u64` magic field at a misaligned address is still
+/// well-defined on x86_64, but the check exists to only ever accept genuinely
+/// `#[repr(C)]`-aligned `BootInfo` pointers. Release-blocking.
+#[test_case]
+fn test_boot_info_pointer_rejects_misaligned_address() {
+    assert!(!is_plausible_boot_info_pointer(0x1001));
+    assert!(!is_plausible_boot_info_pointer(0x0080_0004));
 }
 
 // ============================================================================

@@ -182,6 +182,12 @@ fn spawn_internal(kind: SpawnKind) -> Result<usize, SpawnError> {
             kernel_rsp_top,
             is_user,
             privileged,
+            // The Exec child-rate-limit counter always starts at zero for a
+            // freshly (re)used slot (M10); parent/child lineage for `Wait`
+            // authorization is tracked separately in
+            // `SchedulerMetadata::parent_log`, not on `TaskEntry`, so it
+            // survives this task's eventual reap (see `set_task_parent`).
+            exec_count: 0,
             stack_base: stack_ptr,
             stack_size: TASK_STACK_SIZE,
             fpu_state: fpu_ptr,

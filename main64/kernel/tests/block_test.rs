@@ -95,6 +95,36 @@ fn test_block_lba_bounds_checking() {
     );
 }
 
+/// Contract: AHCI block device LBA validation logic (issue #50).
+/// Given: AHCI block device is selected as active.
+/// When: read_sectors is called with an LBA beyond AHCI's 48-bit FIS limit
+///   (0xFFFF_FFFF_FFFF), e.g. as could result from an unclamped, corrupted
+///   GPT `StartingLBA` read as a raw `u64`.
+/// Then: The function must return BlockError::OutOfRange *before* any
+///   hardware/driver call is attempted (chunked()'s range check runs first),
+///   rather than silently truncating the LBA to 48 bits inside the FIS.
+#[test_case]
+fn test_ahci_block_lba_bounds_checking() {
+    // Step 1: Initialize AHCI device registration in block facade.
+    block::init_ahci();
+
+    // Step 2: Attempt to read one sector at the first LBA that overflows
+    // AHCI's 48-bit addressable range.
+    let mut buf = [0u8; 512];
+    let result = block::read_sectors(0x1_0000_0000_0000, 1, &mut buf);
+    assert!(
+        matches!(result, Err(BlockError::OutOfRange)),
+        "read_sectors must reject LBA exceeding AHCI's 48-bit FIS limit"
+    );
+
+    // Step 3: Same contract must hold for writes.
+    let write_result = block::write_sectors(0x1_0000_0000_0000, 1, &buf);
+    assert!(
+        matches!(write_result, Err(BlockError::OutOfRange)),
+        "write_sectors must reject LBA exceeding AHCI's 48-bit FIS limit"
+    );
+}
+
 /// Contract: AHCI block device write policy.
 /// Given: AHCI block device is selected as active but hardware is not initialized.
 /// When: write_sectors is invoked.

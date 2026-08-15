@@ -56,6 +56,18 @@ fn unified_memory_map() -> Option<&'static [crate::boot_info::UnifiedMemoryEntry
 /// unified map published by the loader; only falls back to the low BIOS Information
 /// Block when no `BootInfo` is present. See [`unified_memory_map`] for why the low
 /// read must not be unconditional.
+///
+/// # Authorization (M10, `docs/CODE_REVIEW_2026-07-26.md`)
+/// Like `GetPciDeviceCount`/`GetPciDevice` (`syscall/dispatch/pci.rs`), this
+/// syscall is deliberately **not** gated behind `TaskEntry::privileged`. The
+/// shipped `TUI.BIN` hardware-inspection screen (`user_programs/tui_app`) is
+/// an unprivileged `Exec`-spawned task and relies on this syscall to display
+/// the memory map; a privilege gate would break that shipped feature. This
+/// single-tenant kernel has no isolation boundary between ring-3 tasks that
+/// the E820/UEFI memory map would need to be kept secret across, so the
+/// M10 stopgap decision here is "no change" rather than a gate. See
+/// `syscall/dispatch/pci.rs`'s `GetPciDeviceCount` doc for the full
+/// rationale, which applies identically here.
 pub fn syscall_get_bios_memory_map_entry_count_impl() -> SyscallResult<u64> {
     if let Some(map) = unified_memory_map() {
         return Ok(map.len() as u64);

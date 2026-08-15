@@ -172,6 +172,16 @@ pub struct TaskEntry {
     /// tasks and defaults to `false` for everyone except the boot shell.
     pub privileged: bool,
 
+    /// Number of child tasks this task has spawned via the `Exec` syscall.
+    ///
+    /// Stopgap denial-of-service guard (M10, `docs/CODE_REVIEW_2026-07-26.md`):
+    /// bounds how many times a single task may successfully call `Exec`
+    /// before `syscall_exec_impl` starts rejecting further attempts with
+    /// `SyscallError::PermissionDenied`. Without this, an unprivileged
+    /// ring-3 task could loop `Exec` to exhaust scheduler slots or PMM
+    /// frames. See `try_increment_exec_count` in `scheduler::api`.
+    pub exec_count: u32,
+
     /// Base address of this task's heap-allocated kernel stack.
     pub stack_base: *mut u8,
 
@@ -204,6 +214,7 @@ impl TaskEntry {
             kernel_rsp_top: 0,
             is_user: false,
             privileged: false,
+            exec_count: 0,
             stack_base: ptr::null_mut(),
             stack_size: 0,
             fpu_state: ptr::null_mut(),
@@ -300,6 +311,22 @@ pub struct SchedulerMetadata {
     /// restores a task's state.  Cleared to `None` by `select_next_task`
     /// after saving the outgoing owner's state via `FXSAVE64`.
     pub fpu_owner: Option<usize>,
+
+    /// Ring log of recent `Exec`-spawn parent/child relationships, recorded
+    /// as full packed task identifiers `(child_task_id, parent_task_id)`.
+    ///
+    /// Stopgap authorization record for the `Wait` syscall (M10,
+    /// `docs/CODE_REVIEW_2026-07-26.md`): unlike a field on `TaskEntry`,
+    /// entries here intentionally **survive** `remove_task` reaping the
+    /// child's slot (which wholesale-resets the slot to `TaskEntry::empty()`
+    /// for reuse), so a parent remains authorized to `Wait` on a child that
+    /// has already exited — the common case, since `Wait` is typically
+    /// called after, or racing, the child's exit. Bounded to
+    /// `PARENT_LOG_CAPACITY` entries (see `scheduler::api`) with FIFO
+    /// eviction of the oldest record once full, so this cannot grow without
+    /// bound even under a sustained `Exec` loop (itself separately capped
+    /// per-task by `MAX_CHILD_EXECS` in `syscall::dispatch::process`).
+    pub parent_log: Vec<(usize, usize)>,
 }
 
 impl SchedulerMetadata {
@@ -320,6 +347,7 @@ impl SchedulerMetadata {
             pending_free_stacks: Vec::new(),
             pending_free_address_spaces: Vec::new(),
             fpu_owner: None,
+            parent_log: Vec::new(),
         }
     }
 }

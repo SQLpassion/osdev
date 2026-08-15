@@ -646,6 +646,203 @@ fn test_privileged_running_task_passes_shutdown_authorization_check() {
     );
 }
 
+// ── M10: Exec rate limit / Wait scoping authorization (issue #53) ──
+
+/// Contract: a task's `Exec` calls are rejected once it has already spawned
+/// `MAX_CHILD_EXECS` (32) children.
+///
+/// This is the concrete fix for issue #53 (M10 — no per-syscall
+/// authorization for `Exec`): previously any ring-3 task could loop `Exec`
+/// without bound, spawning unprivileged children until scheduler slots or
+/// PMM frames exhausted. `syscall_exec_impl` now increments a per-task
+/// counter *before* touching user memory or the filesystem, so once the cap
+/// is reached every further attempt is denied with
+/// `SYSCALL_ERR_PERMISSION_DENIED` instead of `SYSCALL_ERR_INVALID_ARG` --
+/// this test drives the syscall with a null name pointer (which would
+/// otherwise always fail with `SYSCALL_ERR_INVALID_ARG`) so the distinct
+/// error code observed at the cap boundary can only come from the rate
+/// limiter, not from `read_user_string`.
+#[test_case]
+fn test_exec_denied_after_child_exec_cap_reached() {
+    scheduler::init();
+    scheduler::set_kernel_address_space_cr3(vmm::get_pml4_address());
+
+    // Step 1: Spawn a task and select it as the scheduler's current task, so
+    // `syscall_exec_impl`'s `scheduler::current_task_id()` resolves to it
+    // for every dispatch below.
+    let task_id =
+        process::exec_from_vfs("hello.bin").expect("caller task must spawn for this contract");
+
+    scheduler::start();
+    let mut bootstrap = SavedRegisters::default();
+    let selected = scheduler::on_timer_tick(&mut bootstrap as *mut SavedRegisters);
+    assert_eq!(
+        selected,
+        scheduler::task_frame_ptr(task_id).expect("spawned task must expose a frame pointer"),
+        "first tick must select the freshly spawned task"
+    );
+
+    // Step 2: Exhaust the per-task Exec quota. Every call uses a null name
+    // pointer, so calls that pass the rate-limit check still fail --
+    // deterministically with SYSCALL_ERR_INVALID_ARG -- inside
+    // `read_user_string`, without spawning any further tasks to clean up.
+    for attempt in 0..32 {
+        let ret = syscall::dispatch(SyscallId::Exec as u64, 0, 0, 0, 0);
+        assert_eq!(
+            ret,
+            syscall::SYSCALL_ERR_INVALID_ARG,
+            "attempt {} must still pass the rate limiter and fail on the null pointer",
+            attempt
+        );
+    }
+
+    // Step 3: The next attempt must be denied by the rate limiter itself --
+    // observable because the error code changes from InvalidArg to
+    // PermissionDenied despite passing the exact same (null) arguments.
+    let ret = syscall::dispatch(SyscallId::Exec as u64, 0, 0, 0, 0);
+    assert_eq!(
+        ret,
+        syscall::SYSCALL_ERR_PERMISSION_DENIED,
+        "Exec must be denied once the per-task child cap is reached"
+    );
+
+    assert!(
+        scheduler::terminate_task(task_id),
+        "spawned caller task must be terminatable for test cleanup"
+    );
+}
+
+/// Contract: an unprivileged task may `Wait` on a task it recorded as its own
+/// `Exec`-spawned child.
+///
+/// `syscall_exec_impl` records the caller as `parent` on every successful
+/// spawn; `syscall_wait_impl` must authorize a caller against exactly that
+/// recording. The child is terminated before `Wait` is dispatched so the
+/// call returns immediately via `wait_for_task_exit`'s already-absent fast
+/// path instead of blocking the single-threaded test.
+#[test_case]
+fn test_wait_allowed_for_recorded_parent() {
+    scheduler::init();
+    scheduler::set_kernel_address_space_cr3(vmm::get_pml4_address());
+
+    // Step 1: Spawn and select the parent task as current.
+    let parent_id =
+        process::exec_from_vfs("hello.bin").expect("parent task must spawn for this contract");
+
+    scheduler::start();
+    let mut bootstrap = SavedRegisters::default();
+    let selected = scheduler::on_timer_tick(&mut bootstrap as *mut SavedRegisters);
+    assert_eq!(
+        selected,
+        scheduler::task_frame_ptr(parent_id).expect("spawned task must expose a frame pointer"),
+        "first tick must select the freshly spawned parent task"
+    );
+
+    // Step 2: Spawn a second task and record the parent/child link exactly
+    // as `syscall_exec_impl` would after a successful spawn. Spawning after
+    // the tick above keeps `parent_id` the scheduler's current task.
+    let child_id =
+        process::exec_from_vfs("hello.bin").expect("child task must spawn for this contract");
+    assert!(
+        scheduler::set_task_parent(child_id, parent_id),
+        "parent link must be recorded on a live child slot"
+    );
+    assert!(
+        scheduler::is_parent_of(parent_id, child_id),
+        "precondition: parent link must be observable via is_parent_of"
+    );
+
+    // Step 3: Terminate the child so `Wait` resolves immediately without
+    // blocking this single-threaded test.
+    assert!(
+        scheduler::terminate_task(child_id),
+        "child task must be terminatable ahead of the Wait call"
+    );
+
+    // Step 4: The recorded parent's Wait call must pass authorization and
+    // reach `wait_for_task_exit`, returning success for the now-absent
+    // child.
+    let ret = syscall::dispatch(SyscallId::Wait as u64, child_id as u64, 0, 0, 0);
+    assert_eq!(
+        ret,
+        syscall::SYSCALL_OK,
+        "recorded parent must be authorized to Wait on its own child"
+    );
+
+    assert!(
+        scheduler::terminate_task(parent_id),
+        "parent task must be terminatable for test cleanup"
+    );
+}
+
+/// Contract: `Wait` is denied for an unprivileged task that is not the
+/// recorded parent of the target -- closing the M10 existence side-channel.
+///
+/// Before this fix, any ring-3 task could loop `Wait` over arbitrary task
+/// ids to fingerprint which ids are currently alive (a live target blocks,
+/// an absent one returns immediately). The target here is deliberately left
+/// alive (never terminated) to prove the denial happens purely from the
+/// authorization check, before `wait_for_task_exit` would ever distinguish
+/// "alive" from "absent" -- an unauthorized caller gets the exact same
+/// `SYSCALL_ERR_PERMISSION_DENIED` regardless of the target's true liveness.
+#[test_case]
+fn test_wait_denied_for_non_parent_unprivileged_task() {
+    scheduler::init();
+    scheduler::set_kernel_address_space_cr3(vmm::get_pml4_address());
+
+    // Step 1: Spawn and select the attacker task as current.
+    let attacker_id =
+        process::exec_from_vfs("hello.bin").expect("attacker task must spawn for this contract");
+
+    scheduler::start();
+    let mut bootstrap = SavedRegisters::default();
+    let selected = scheduler::on_timer_tick(&mut bootstrap as *mut SavedRegisters);
+    assert_eq!(
+        selected,
+        scheduler::task_frame_ptr(attacker_id).expect("spawned task must expose a frame pointer"),
+        "first tick must select the freshly spawned attacker task"
+    );
+
+    // Step 2: Spawn an unrelated target task after the tick above, so the
+    // attacker remains the scheduler's current task. No parent link is ever
+    // recorded between the two.
+    let target_id =
+        process::exec_from_vfs("hello.bin").expect("target task must spawn for this contract");
+
+    assert!(
+        !scheduler::is_task_privileged(attacker_id),
+        "precondition: exec-spawned attacker task must be unprivileged"
+    );
+    assert!(
+        !scheduler::is_parent_of(attacker_id, target_id),
+        "precondition: attacker must not be recorded as the target's parent"
+    );
+
+    // Step 3: The unauthorized Wait must be denied without ever consulting
+    // the target's liveness -- the target is still alive at this point.
+    let ret = syscall::dispatch(SyscallId::Wait as u64, target_id as u64, 0, 0, 0);
+    assert_eq!(
+        ret,
+        syscall::SYSCALL_ERR_PERMISSION_DENIED,
+        "non-parent unprivileged task must not be authorized to Wait on an unrelated task id"
+    );
+    assert_eq!(
+        scheduler::task_state(target_id),
+        Some(TaskState::Ready),
+        "a denied Wait call must not alter the target task's lifecycle state"
+    );
+
+    // Cleanup.
+    assert!(
+        scheduler::terminate_task(target_id),
+        "target task must be terminatable for test cleanup"
+    );
+    assert!(
+        scheduler::terminate_task(attacker_id),
+        "attacker task must be terminatable for test cleanup"
+    );
+}
+
 /// Contract: user-program linker scripts place `.text._start` at image base.
 #[test_case]
 fn test_user_program_linker_scripts_prioritize_start_section() {
