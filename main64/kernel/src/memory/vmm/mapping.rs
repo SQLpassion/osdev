@@ -845,18 +845,19 @@ fn reclaim_user_range(scan_start: u64, scan_end: u64) {
 /// `virtual_address` must be within configured user code/stack regions and
 /// must not target the configured guard page.
 ///
-/// # Safety
 /// This function mutates page tables via recursive mapping and therefore
-/// requires a stable active address space while it runs.
-///
-/// Callers must execute it only inside `with_address_space` (or an equivalent
-/// critical section) that:
+/// requires a stable active address space while it runs. Callers must execute
+/// it only inside [`with_address_space`] (or an equivalent critical section)
+/// that:
 /// - disables interrupts for the full duration, and
 /// - guarantees `CR3` does not change until the function returns.
 ///
 /// If this precondition is violated, a context switch can switch to a different
 /// `CR3` while recursive addresses are being resolved, which can race and write
-/// into the wrong page-table hierarchy.
+/// into the wrong page-table hierarchy. This is not `unsafe fn` (no raw pointer
+/// or memory-layout invariant is handed to the caller to uphold), but the
+/// precondition is still checked in debug builds via a cheap `debug_assert!` in
+/// the shared [`map_user_leaf`] body — see issue #51.
 pub fn map_user_page(virtual_address: u64, pfn: u64, writable: bool) -> Result<(), MapError> {
     // Note: single-core, IF-disabled
     // Normalize to 4 KiB page granularity; callers may pass any address
@@ -900,10 +901,10 @@ pub fn map_user_page(virtual_address: u64, pfn: u64, writable: bool) -> Result<(
 /// ELF loader can give a R-X `.text` segment and a RW- `.data`/`.bss` segment
 /// different permissions within the same code window.
 ///
-/// # Safety
-/// Same contract as [`map_user_page`]: callers must run this only inside
+/// Same precondition as [`map_user_page`]: callers must run this only inside
 /// [`with_address_space`] (or an equivalent critical section) with interrupts
-/// disabled for the full duration and a stable `CR3`.
+/// disabled for the full duration and a stable `CR3` (checked via
+/// `debug_assert!` in the shared [`map_user_leaf`] body — see issue #51).
 pub fn map_user_code_page(
     virtual_address: u64,
     pfn: u64,
@@ -937,6 +938,22 @@ fn map_user_leaf(
     no_execute: bool,
 ) -> Result<(), MapError> {
     // Note: single-core, IF-disabled
+    //
+    // Debug-only precondition guard (issue #51): this function is deliberately a
+    // safe `fn`, not `unsafe fn`, because no raw pointer/layout invariant is
+    // handed to the caller — but it still relies on recursive-mapping addresses
+    // staying valid across every page-table write below, which only holds if
+    // the active address space cannot change mid-call. `with_address_space`
+    // (the only sanctioned entry point) always disables interrupts for its
+    // whole critical section, so "interrupts enabled here" is a cheap, reliable
+    // proxy for "precondition violated" without needing to track CR3 stability
+    // directly. This does nothing in release builds.
+    debug_assert!(
+        !interrupts::are_enabled(),
+        "map_user_leaf: must run with interrupts disabled (inside with_address_space); \
+         see map_user_page/map_user_code_page preconditions"
+    );
+
     // Ensure all intermediate levels exist and are marked user-accessible.
     populate_page_table_path(virtual_address, true)?;
     let pt = table_at(pt_table_addr(virtual_address));
