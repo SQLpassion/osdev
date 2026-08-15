@@ -136,9 +136,25 @@ pub fn try_handle_page_fault(virtual_address: u64, error_code: u64) -> Result<()
         });
     }
 
+    // Code-region faults are never demand-paged. Since the ELF loader migration,
+    // every `PT_LOAD` segment is mapped with its final per-segment permissions
+    // (from `p_flags`) before the task ever runs — there is no "hole" in the
+    // code window left for a fault to legitimately backfill.
+    // A non-present fault landing here means a real bug (stale TLB, use-after-unmap,
+    // or a stack overflow spilling into the code region), so it is rejected the
+    // same way a protection fault would be, instead of silently allocating a
+    // read-only zero page the way the pre-ELF flat loader's uniform code window
+    // used to require.
+    if matches!(user_region, Some(UserRegion::Code)) {
+        return Err(PageFaultError::InvalidUserAccess {
+            virtual_address: fault_address_raw,
+            error_code,
+        });
+    }
+
     let user_access = matches!(
         user_region,
-        Some(UserRegion::Code) | Some(UserRegion::Stack) | Some(UserRegion::Heap)
+        Some(UserRegion::Stack) | Some(UserRegion::Heap)
     );
 
     // Non-present faults in kernel space (outside user regions) must be restricted
@@ -155,23 +171,14 @@ pub fn try_handle_page_fault(virtual_address: u64, error_code: u64) -> Result<()
         });
     }
 
-    // Derive final permissions from the region:
-    //   USER_CODE  → read-only  (writable=false), executable  (no_execute=false)
-    //   USER_STACK → writable   (writable=true),  non-executable (no_execute=true)
-    //   USER_HEAP  → writable   (writable=true),  non-executable (no_execute=true)
-    //   kernel     → writable   (writable=true),  non-executable (no_execute=true)
-    // The kernel case is `user_region.is_none()`, which the guard above has already
-    // restricted to the kernel heap arena — the kernel never executes from the heap, and
-    // heap-backed ring-3 task stacks must be NX, so these demand pages are RW+NX (#63
-    // Phase 5 W^X; before Phase 5 the heap was RWX-backed by the slot-256 mirror).
-    // EFER.NXE is activated in KernelMain (arch::msr::enable_no_execute); without it
-    // no_execute is ignored.
-    let writable = !matches!(user_region, Some(UserRegion::Code));
-    let no_execute = user_region.is_none()
-        || matches!(
-            user_region,
-            Some(UserRegion::Stack) | Some(UserRegion::Heap)
-        );
+    // Every case reaching this point (USER_STACK, USER_HEAP, or the kernel heap
+    // arena) is writable and non-executable: heap-backed ring-3 task stacks must
+    // be NX (#63 Phase 5 W^X; before Phase 5 the heap was RWX-backed by the
+    // slot-256 mirror), and the kernel never executes from its heap either.
+    // EFER.NXE is activated in KernelMain (arch::msr::enable_no_execute); without
+    // it no_execute is ignored.
+    let writable = true;
+    let no_execute = true;
 
     // Step 1: user-stack faults grow downward stack pages on demand.
     if matches!(user_region, Some(UserRegion::Stack)) {

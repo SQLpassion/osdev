@@ -273,99 +273,77 @@ fn test_map_program_image_into_user_address_space_enforces_image_bounds() {
     );
 }
 
-/// Contract: image mapper creates dedicated user mappings and copies bytes.
-#[test_case]
-fn test_map_program_image_into_user_address_space_maps_copy_and_permissions() {
-    let image = process::load_program_image("hello.bin")
-        .expect("hello.bin must be loadable before map/copy integration step");
-    let loaded = process::map_program_image_into_user_address_space(&image)
-        .expect("valid user image must map/copy into fresh user CR3");
+/// Minimal single-`PT_LOAD`-segment ELF64 image, used below to exercise the
+/// loader's bootstrap-stack setup through the real (ELF-only) mapping path.
+///
+/// Deliberately not shared with `elf_test.rs`/`elf_loader_test.rs`'s builders:
+/// each `kernel/tests/*.rs` file is a standalone test binary in this harness,
+/// so there is no shared support module to pull a common builder from.
+fn minimal_elf_image() -> Vec<u8> {
+    const EHDR_SIZE: usize = 64;
+    const PHDR_SIZE: usize = 56;
+    const PAGE_SIZE_U64: u64 = 4096;
+    const PF_X: u32 = 1;
+    const PF_W: u32 = 2;
+    const PF_R: u32 = 4;
 
-    assert!(loaded.cr3 != 0, "mapped program must return non-zero CR3");
-    assert!(
-        loaded.entry_rip == process::USER_PROGRAM_ENTRY_RIP,
-        "mapped program entry rip must match process contract"
-    );
-    assert!(
-        loaded.user_rsp == process::USER_PROGRAM_INITIAL_RSP,
-        "mapped program rsp must match process contract"
-    );
-    assert!(
-        loaded.image_len == image.len(),
-        "mapped program descriptor must preserve source image length"
-    );
+    let vaddr = process::USER_PROGRAM_ENTRY_RIP; // page-aligned, inside the user code window
+    let file_bytes: Vec<u8> = (0..64u32).map(|i| i as u8).collect();
+    let memsz = PAGE_SIZE_U64; // one full page; the tail past file_bytes is in-segment BSS
 
-    let code_page_count = loaded.image_len.div_ceil(pmm::PAGE_SIZE as usize);
-    assert!(
-        loaded.code_page_count == code_page_count,
-        "loaded descriptor must preserve precomputed code page count"
-    );
+    let phoff = EHDR_SIZE as u64;
+    let file_offset = phoff + PHDR_SIZE as u64;
+    let mut image = vec![0u8; file_offset as usize + file_bytes.len()];
 
-    let mut code_pfns = Vec::with_capacity(code_page_count);
-    let mut stack_pfn = 0u64;
-    vmm::with_address_space(loaded.cr3, || {
-        for idx in 0..code_page_count {
-            let code_page_va = process::USER_PROGRAM_ENTRY_RIP + idx as u64 * pmm::PAGE_SIZE;
-            let code_flags = vmm::debug_mapping_flags_for_va(code_page_va)
-                .expect("mapped code page must expose mapping flags");
-            assert!(
-                code_flags == (true, true, true, true, true),
-                "code page must be user-accessible and writable after copy"
-            );
+    image[0..4].copy_from_slice(&[0x7F, b'E', b'L', b'F']);
+    image[4] = 2; // ELFCLASS64
+    image[5] = 1; // ELFDATA2LSB
+    image[6] = 1; // EV_CURRENT
+    image[16..18].copy_from_slice(&2u16.to_le_bytes()); // e_type = ET_EXEC
+    image[18..20].copy_from_slice(&62u16.to_le_bytes()); // e_machine = EM_X86_64
+    image[20..24].copy_from_slice(&1u32.to_le_bytes()); // e_version
+    image[24..32].copy_from_slice(&vaddr.to_le_bytes()); // e_entry == segment base
+    image[32..40].copy_from_slice(&phoff.to_le_bytes()); // e_phoff
+    image[54..56].copy_from_slice(&(PHDR_SIZE as u16).to_le_bytes()); // e_phentsize
+    image[56..58].copy_from_slice(&1u16.to_le_bytes()); // e_phnum
 
-            let mapped_pfn = vmm::debug_mapped_pfn_for_va(code_page_va)
-                .expect("mapped code page must expose leaf PFN");
-            code_pfns.push(mapped_pfn);
-        }
+    let ph = phoff as usize;
+    image[ph..ph + 4].copy_from_slice(&1u32.to_le_bytes()); // p_type = PT_LOAD
+    image[ph + 4..ph + 8].copy_from_slice(&(PF_R | PF_W | PF_X).to_le_bytes());
+    image[ph + 8..ph + 16].copy_from_slice(&file_offset.to_le_bytes());
+    image[ph + 16..ph + 24].copy_from_slice(&vaddr.to_le_bytes());
+    image[ph + 24..ph + 32].copy_from_slice(&vaddr.to_le_bytes()); // p_paddr (ignored)
+    image[ph + 32..ph + 40].copy_from_slice(&(file_bytes.len() as u64).to_le_bytes());
+    image[ph + 40..ph + 48].copy_from_slice(&memsz.to_le_bytes());
+    image[ph + 48..ph + 56].copy_from_slice(&PAGE_SIZE_U64.to_le_bytes());
 
-        let stack_page_va = vmm::USER_STACK_TOP - pmm::PAGE_SIZE;
-        let stack_flags = vmm::debug_mapping_flags_for_va(stack_page_va)
-            .expect("mapped bootstrap stack page must expose mapping flags");
-        assert!(
-            stack_flags == (true, true, true, true, true),
-            "bootstrap stack page must be user-accessible and writable"
-        );
-        stack_pfn = vmm::debug_mapped_pfn_for_va(stack_page_va)
-            .expect("mapped bootstrap stack page must expose leaf PFN");
+    let start = file_offset as usize;
+    image[start..start + file_bytes.len()].copy_from_slice(&file_bytes);
 
-        // SAFETY:
-        // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
-        // - Loader mapped code pages in this address space and copied `image` bytes.
-        // - Reading `image.len()` bytes from `USER_PROGRAM_ENTRY_RIP` is valid.
-        unsafe {
-            let code_base = process::USER_PROGRAM_ENTRY_RIP as *const u8;
-            for (idx, expected) in image.iter().enumerate() {
-                let actual = core::ptr::read_volatile(code_base.add(idx));
-                assert!(
-                    actual == *expected,
-                    "mapped image byte mismatch at offset {}: expected 0x{:02x}, got 0x{:02x}",
-                    idx,
-                    *expected,
-                    actual
-                );
-            }
-        }
-    });
-
-    vmm::destroy_user_address_space(loaded.cr3);
-
-    // Release code PFNs explicitly because current VMM teardown keeps USER_CODE
-    // leaf PFNs reserved to support temporary kernel-text alias mappings.
-    pmm::with_pmm(|mgr| {
-        for pfn in code_pfns {
-            let _ = mgr.release_pfn(pfn);
-        }
-        let _ = mgr.release_pfn(stack_pfn);
-    });
+    image
 }
 
-/// Contract: loader zero-initializes bootstrap user stack page.
+/// Contract: a non-ELF byte blob is rejected outright -- there is no fallback
+/// to a different loading strategy for input that fails ELF64 validation
+/// (the legacy flat-binary path was removed once every in-tree program
+/// migrated to ELF).
+#[test_case]
+fn test_map_program_image_into_user_address_space_rejects_non_elf_image() {
+    let image: Vec<u8> = (0..200u32).map(|i| i as u8).collect();
+    let result = process::map_program_image_into_user_address_space(&image);
+    assert!(
+        matches!(result, Err(process::ExecError::InvalidElfImage)),
+        "non-ELF image must be rejected with InvalidElfImage, not silently mapped"
+    );
+}
+
+/// Contract: loader maps a real ELF image's bootstrap user stack page as
+/// user-accessible + writable, and zero-initializes it.
 #[test_case]
 fn test_map_program_image_into_user_address_space_zeroes_bootstrap_stack_page() {
-    let image = process::load_program_image("hello.bin")
-        .expect("hello.bin must be loadable before stack-zeroing check");
+    let image = minimal_elf_image();
     let loaded = process::map_program_image_into_user_address_space(&image)
-        .expect("valid user image must map into fresh user CR3");
+        .expect("valid ELF image must map into fresh user CR3");
 
     let mut code_pfns = Vec::with_capacity(loaded.code_page_count);
     let mut stack_pfn = 0u64;
@@ -379,6 +357,12 @@ fn test_map_program_image_into_user_address_space_zeroes_bootstrap_stack_page() 
         }
 
         let stack_page_va = vmm::USER_STACK_TOP - pmm::PAGE_SIZE;
+        let stack_flags = vmm::debug_mapping_flags_for_va(stack_page_va)
+            .expect("mapped bootstrap stack page must expose mapping flags");
+        assert!(
+            stack_flags == (true, true, true, true, true),
+            "bootstrap stack page must be user-accessible and writable"
+        );
         stack_pfn = vmm::debug_mapped_pfn_for_va(stack_page_va)
             .expect("mapped bootstrap stack page must expose leaf PFN");
 

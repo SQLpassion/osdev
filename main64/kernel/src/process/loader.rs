@@ -1,4 +1,16 @@
-//! VFS-backed loader for flat user-mode binaries.
+//! VFS-backed loader for user-mode programs.
+//!
+//! Every on-disk program is a static `ET_EXEC`/`EM_X86_64` ELF64 executable,
+//! parsed by [`super::elf::parse_elf64`] and mapped one `PT_LOAD` segment at
+//! a time, each with its own `writable`/`no_execute` permissions derived from
+//! `p_flags`.
+//!
+//! A prior revision of this loader also supported a legacy flat-binary format
+//! (pre-migration `objcopy -O binary` output) as a gradual-rollout fallback
+//! while individual programs migrated one at a time. That fallback was
+//! removed once all in-tree programs shipped as ELF; any image that fails
+//! ELF64 validation is now rejected with [`ExecError::InvalidElfImage`]
+//! instead of falling back to a different loading strategy.
 
 use alloc::vec::Vec;
 
@@ -6,9 +18,9 @@ use crate::io::vfs::{self, FsError};
 use crate::memory::{pmm, vmm};
 use crate::scheduler;
 
+use super::elf::{self, ElfImage};
 use super::types::{
-    image_fits_user_code, ExecError, ExecResult, LoadedProgram, USER_PROGRAM_ENTRY_RIP,
-    USER_PROGRAM_INITIAL_RSP,
+    image_fits_user_code, ExecError, ExecResult, LoadedProgram, USER_PROGRAM_INITIAL_RSP,
 };
 
 /// Page size used for program-image pagination and copy window sizing.
@@ -32,19 +44,31 @@ const PAGE_SIZE_BYTES: usize = pmm::PAGE_SIZE as usize;
 /// downward — not yet implemented; this single page is all that exists today.
 const USER_STACK_BOOTSTRAP_PAGE_VA: u64 = vmm::USER_STACK_TOP - pmm::PAGE_SIZE;
 
-/// Transaction state for user-image mapping.
+/// Per-segment transaction state for the ELF mapping path.
 ///
-/// This structure persists allocation/mapping progress across the fallible
-/// mapping helper so rollback can release exactly the resources that are still
-/// owned by the loader when an error occurs.
-struct MapState {
-    code_pfns: Vec<u64>,
+/// One entry per validated `PT_LOAD` segment, tracking which physical frames
+/// are allocated and how many have actually been inserted into page tables so
+/// far, so a failure partway through mapping can be unwound precisely.
+struct ElfSegmentState {
+    /// Physical frames backing this segment, one per page, in VA order.
+    pfns: Vec<u64>,
+    /// How many of `pfns` (from the front) have been inserted into page tables.
+    mapped_pages: usize,
+    /// Final `writable` permission derived from `p_flags` (`PF_W`).
+    writable: bool,
+    /// Final `executable` permission derived from `p_flags` (`PF_X`).
+    executable: bool,
+}
+
+/// Transaction state for the ELF mapping path: one [`ElfSegmentState`] per
+/// `PT_LOAD` segment plus the shared bootstrap stack page.
+struct ElfMapState {
+    segments: Vec<ElfSegmentState>,
     stack_pfn: Option<u64>,
-    mapped_code_pages: usize,
     stack_mapped: bool,
 }
 
-/// Loads a flat user program from the mounted filesystem and validates its image length.
+/// Loads a user program from the mounted filesystem and validates its image length.
 ///
 /// Scope:
 /// - read file content through the VFS facade (FAT32 on both boot paths)
@@ -64,7 +88,7 @@ pub fn load_program_image(file_name_8_3: &str) -> ExecResult<Vec<u8>> {
     Ok(image)
 }
 
-/// Loads a flat user program from the filesystem and maps/copies it into a fresh user CR3.
+/// Loads a user program from the filesystem and maps/copies it into a fresh user CR3.
 ///
 /// This function performs load + map/copy only and intentionally does not spawn
 /// a scheduler task yet.
@@ -73,7 +97,7 @@ pub fn load_program_into_user_address_space(file_name_8_3: &str) -> ExecResult<L
     map_program_image_into_user_address_space(&image)
 }
 
-/// End-to-end process exec path that reads a flat user binary by name from the VFS.
+/// End-to-end process exec path that reads a user binary by name from the VFS.
 ///
 /// Flow:
 /// 1. read + validate image through the VFS facade (FAT32 on both boot paths)
@@ -91,7 +115,7 @@ pub fn exec_from_vfs(file_name_8_3: &str) -> ExecResult<usize> {
     spawn_loaded_program(loaded, false)
 }
 
-/// End-to-end process exec path for an already-loaded flat user binary.
+/// End-to-end process exec path for an already-loaded user binary.
 ///
 /// Unlike [`exec_from_vfs`], this takes the program bytes from the caller
 /// instead of reading them from the filesystem.  It is used by the boot path to
@@ -114,12 +138,13 @@ pub fn exec_from_image(image: &[u8], privileged: bool) -> ExecResult<usize> {
     spawn_loaded_program(loaded, privileged)
 }
 
-/// Maps a validated flat image into a fresh user address space and copies bytes.
+/// Maps a validated program image into a fresh user address space and copies bytes.
 ///
-/// Mapping policy:
-/// - code pages start at [`USER_PROGRAM_ENTRY_RIP`] and are finalized read-only
-/// - one bootstrap stack page is mapped at the top of user stack as writable
-/// - returned descriptor contains CR3/RIP/RSP + image length for follow-up spawn
+/// The image is parsed as ELF64 and mapped one `PT_LOAD` segment at a time
+/// (see [`map_elf_program_image`]). Any image that fails ELF64 validation —
+/// including one that isn't ELF at all — is rejected with
+/// [`ExecError::InvalidElfImage`]; there is no fallback to a different
+/// loading strategy.
 ///
 /// # Preconditions
 /// - `image` must be non-empty and satisfy `image_fits_user_code(image.len())`.
@@ -130,150 +155,291 @@ pub fn map_program_image_into_user_address_space(image: &[u8]) -> ExecResult<Loa
     // the non-empty / size-bounded image contract in all build profiles.
     validate_program_image_len(image.len())?;
 
+    map_elf_program_image(image)
+}
+
+/// Parses and maps a validated ELF64 image, one `PT_LOAD` segment at a time.
+///
+/// Mapping policy:
+/// - every segment is mapped writable+executable first so copy/zero is valid
+///   regardless of its final permissions, then tightened to `p_flags`
+///   (`writable = PF_W`, `executable = PF_X`) once initialized
+/// - one bootstrap stack page is mapped at the top of user stack as writable
+/// - returned descriptor's `entry_rip` comes from `e_entry`, already validated
+///   by [`elf::parse_elf64`] to fall inside an executable segment
+fn map_elf_program_image(image: &[u8]) -> ExecResult<LoadedProgram> {
+    let elf_image = elf::parse_elf64(image).map_err(|_| ExecError::InvalidElfImage)?;
+
     // Each process gets its own CR3 root cloned from the current kernel baseline.
     // The clone helper panics on OOM and never returns 0.
     let user_cr3 = vmm::clone_kernel_pml4_for_user();
 
-    // Keep rollback-relevant ownership state in one place.
-    let mut state = MapState {
-        code_pfns: Vec::with_capacity(page_count_for_len(image.len())),
+    let mut state = ElfMapState {
+        segments: elf_image
+            .segments
+            .iter()
+            .map(|seg| ElfSegmentState {
+                pfns: Vec::new(),
+                mapped_pages: 0,
+                writable: seg.writable(),
+                executable: seg.executable(),
+            })
+            .collect(),
         stack_pfn: None,
-        mapped_code_pages: 0,
         stack_mapped: false,
     };
 
-    // Transaction-style setup:
-    // - success returns a fully initialized descriptor
-    // - failure triggers explicit cleanup below using `state`.
-    let result = try_map_program_image(user_cr3, image, &mut state);
+    let result = try_map_elf_program_image(user_cr3, image, &elf_image, &mut state);
 
     if result.is_err() {
-        // Roll back page-table state and release still-unmapped physical frames.
-        cleanup_failed_program_mapping(user_cr3, &state);
+        cleanup_failed_elf_mapping(user_cr3, &state);
     }
 
     result
 }
 
-/// Performs the fallible map/copy transaction for a validated user image.
-///
-/// All progress is tracked in `state` so caller-side rollback can precisely
-/// release only the resources that are still loader-owned on error.
-fn try_map_program_image(
+/// Performs the fallible per-segment map/copy transaction for a validated ELF image.
+fn try_map_elf_program_image(
     user_cr3: u64,
     image: &[u8],
-    state: &mut MapState,
+    elf_image: &ElfImage,
+    state: &mut ElfMapState,
 ) -> ExecResult<LoadedProgram> {
-    let code_page_count = page_count_for_len(image.len());
+    // Step 1: Allocate every segment's frames plus the stack frame in a single
+    // PMM lock scope, to avoid repeated lock/unlock overhead in the hot
+    // allocation loop.
+    let segment_page_counts: Vec<usize> =
+        elf_image.segments.iter().map(|s| s.page_count()).collect();
+    let (segment_pfns, stack_pfn) = alloc_elf_frames(&segment_page_counts)?;
 
-    // Step 1: Allocate all code frames + stack frame in a single PMM lock scope.
-    // This avoids repeated lock/unlock overhead in the hot allocation loop.
-    let (allocated_code_pfns, allocated_stack_pfn) = alloc_program_frames(code_page_count)?;
-    state.code_pfns = allocated_code_pfns;
-    state.stack_pfn = Some(allocated_stack_pfn);
+    // Wire allocated PFNs into `state` up front so a mapping failure below can
+    // still see exactly which frames this transaction owns.
+    for (seg_state, pfns) in state.segments.iter_mut().zip(segment_pfns) {
+        seg_state.pfns = pfns;
+    }
+    state.stack_pfn = Some(stack_pfn);
 
     // Step 2: Activate target CR3 and perform map/copy/remap sequence.
     vmm::with_address_space(user_cr3, || -> ExecResult<()> {
-        // Step 2a: Map all code pages writable so copy + tail-zero is valid.
-        for (idx, pfn) in state.code_pfns.iter().copied().enumerate() {
-            let page_va = USER_PROGRAM_ENTRY_RIP + idx as u64 * pmm::PAGE_SIZE;
-            vmm::map_user_page(page_va, pfn, true).map_err(|e| {
-                crate::logging::logln(
-                    "loader",
-                    format_args!(
-                        "LOADER: map_user_page(code page {}, va={:#x}, pfn={:#x}, writable=true) failed: {:?}",
-                        idx, page_va, pfn, e
-                    ),
-                );
-                ExecError::MappingFailed
-            })?;
+        for (seg_idx, seg) in elf_image.segments.iter().enumerate() {
+            let seg_state = &mut state.segments[seg_idx];
 
-            // Track successful writable code-page mappings for partial rollback.
-            state.mapped_code_pages += 1;
+            // Step 2a: map every page in this segment writable+executable so
+            // the copy/zero step below is valid regardless of the segment's
+            // final permissions ("map writable first, tighten after"). Safe
+            // because this whole closure runs with interrupts disabled (see
+            // `with_address_space`), so no user code can observe the
+            // transient over-permissive mapping.
+            for (page_idx, &pfn) in seg_state.pfns.iter().enumerate() {
+                let page_va = seg.vaddr + page_idx as u64 * pmm::PAGE_SIZE;
+                vmm::map_user_code_page(page_va, pfn, true, true).map_err(|e| {
+                    crate::logging::logln(
+                        "loader",
+                        format_args!(
+                            "LOADER: map_user_code_page(segment {}, page {}, va={:#x}, pfn={:#x}) failed: {:?}",
+                            seg_idx, page_idx, page_va, pfn, e
+                        ),
+                    );
+                    ExecError::MappingFailed
+                })?;
+
+                // Track successful mappings for partial rollback.
+                seg_state.mapped_pages += 1;
+            }
+
+            // Step 2b: copy `p_filesz` bytes, then zero from the end of the
+            // copied bytes through the page-rounded segment end in a single
+            // pass. This one write covers both the in-segment BSS tail
+            // (`p_filesz..p_memsz`) and the page padding beyond `p_memsz`,
+            // since both ranges are contiguous and already validated by
+            // `parse_elf64` to lie inside this segment's mapped pages.
+            let file_start = seg.offset as usize;
+            let file_end = file_start + seg.filesz as usize;
+
+            // SAFETY:
+            // - `image[file_start..file_end]` was bounds-checked by `parse_elf64`
+            //   (`SegmentFileRangeOutOfBounds` is rejected there).
+            // - Destination `seg.vaddr` is mapped writable for `seg.filesz` bytes
+            //   by the loop in step 2a.
+            // - Source (kernel image buffer) and destination (user VA) do not overlap.
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    image[file_start..file_end].as_ptr(),
+                    seg.vaddr as *mut u8,
+                    seg.filesz as usize,
+                );
+            }
+
+            let zero_start = seg.vaddr + seg.filesz;
+            let zero_len = (seg.mapped_end() - zero_start) as usize;
+            if zero_len > 0 {
+                // SAFETY:
+                // - `[zero_start, seg.mapped_end())` is mapped writable by step 2a.
+                // - This is the segment's declared BSS (`p_filesz..p_memsz`) plus the
+                //   page-tail padding beyond `p_memsz`, contiguous with no gap.
+                unsafe {
+                    core::ptr::write_bytes(zero_start as *mut u8, 0, zero_len);
+                }
+            }
+
+            // Step 2c: tighten every page in this segment to its final ELF
+            // permissions now that copy/zero is done.
+            for (page_idx, &pfn) in seg_state.pfns.iter().enumerate() {
+                let page_va = seg.vaddr + page_idx as u64 * pmm::PAGE_SIZE;
+                vmm::map_user_code_page(page_va, pfn, seg_state.writable, seg_state.executable)
+                    .map_err(|e| {
+                        crate::logging::logln(
+                            "loader",
+                            format_args!(
+                                "LOADER: map_user_code_page(finalize segment {}, page {}, va={:#x}) failed: {:?}",
+                                seg_idx, page_idx, page_va, e
+                            ),
+                        );
+                        ExecError::MappingFailed
+                    })?;
+            }
         }
 
-        // Step 2b: Map writable bootstrap stack page for initial ring-3 entry.
-        vmm::map_user_page(USER_STACK_BOOTSTRAP_PAGE_VA, allocated_stack_pfn, true).map_err(
-            |e| {
-                crate::logging::logln(
-                    "loader",
-                    format_args!(
+        // Step 2d: map writable bootstrap stack page for initial ring-3 entry.
+        vmm::map_user_page(USER_STACK_BOOTSTRAP_PAGE_VA, stack_pfn, true).map_err(|e| {
+            crate::logging::logln(
+                "loader",
+                format_args!(
                     "LOADER: map_user_page(stack, va={:#x}, pfn={:#x}, writable=true) failed: {:?}",
-                    USER_STACK_BOOTSTRAP_PAGE_VA, allocated_stack_pfn, e
+                    USER_STACK_BOOTSTRAP_PAGE_VA, stack_pfn, e
                 ),
-                );
-                ExecError::MappingFailed
-            },
-        )?;
+            );
+            ExecError::MappingFailed
+        })?;
 
         // Mark stack as mapped so rollback delegates release to VMM teardown.
         state.stack_mapped = true;
 
-        // Step 2c: Zero the bootstrap stack page before first ring-3 use.
-        // This prevents user tasks from observing stale data from recycled
-        // physical frames previously used by kernel allocations.
+        // Step 2e: zero the bootstrap stack page before first ring-3 use.
+        // SAFETY:
+        // - This requires `unsafe` because it writes bytes through a raw virtual-address pointer.
+        // - `USER_STACK_BOOTSTRAP_PAGE_VA` is mapped writable in current CR3.
+        // - Exactly one page (`PAGE_SIZE_BYTES`) is mapped for bootstrap stack.
         unsafe {
-            // SAFETY:
-            // - This requires `unsafe` because it writes bytes through a raw virtual-address pointer.
-            // - `USER_STACK_BOOTSTRAP_PAGE_VA` is mapped writable in current CR3.
-            // - Exactly one page (`PAGE_SIZE_BYTES`) is mapped for bootstrap stack.
             core::ptr::write_bytes(USER_STACK_BOOTSTRAP_PAGE_VA as *mut u8, 0, PAGE_SIZE_BYTES);
         }
-
-        // Step 2d: Copy image bytes and clear the remainder of the last code page.
-        debug_assert!(
-            code_page_count > 0,
-            "validated image must allocate at least one code page"
-        );
-        let mapped_code_bytes = code_page_count * PAGE_SIZE_BYTES;
-
-        // SAFETY:
-        // - This requires `unsafe` because raw memory copy operations require manually proving non-overlap and valid ranges.
-        // - Source slice `image` is valid for `image.len()` bytes.
-        // - Destination starts at `USER_PROGRAM_ENTRY_RIP` and remains writable
-        //   for at least `image.len()` bytes in current CR3.
-        // - Source and destination do not overlap (kernel image vs. user VA range).
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                image.as_ptr(),
-                USER_PROGRAM_ENTRY_RIP as *mut u8,
-                image.len(),
-            );
-        }
-
-        // Zero only tail bytes not overwritten by the image payload.
-        let tail_len = mapped_code_bytes - image.len();
-        if tail_len > 0 {
-            // SAFETY:
-            // - This requires `unsafe` because raw pointer memory access is performed directly and Rust cannot verify pointer validity.
-            // - Writable mapping covers `[USER_PROGRAM_ENTRY_RIP, +mapped_code_bytes)`.
-            // - Start address points exactly to first tail byte after copied image.
-            unsafe {
-                core::ptr::write_bytes(
-                    (USER_PROGRAM_ENTRY_RIP as usize + image.len()) as *mut u8,
-                    0,
-                    tail_len,
-                );
-            }
-        }
-
-        // Note: flat binaries mix code and data in the same page range with no
-        // ELF segment headers to distinguish them.  Re-protecting pages as
-        // read-only would silently break any mutable static in the .data or
-        // .bss sections.  When ELF loading is introduced the writable flag can
-        // be derived from PT_LOAD segment flags instead.
 
         Ok(())
     })?;
 
     // Step 3: Return finalized process descriptor for scheduler spawn step.
+    // `code_page_count` is the sum of every segment's mapped pages -- see its
+    // doc comment on `LoadedProgram` for why an approximate value here is safe.
+    let total_pages: usize = state.segments.iter().map(|s| s.pfns.len()).sum();
+
     Ok(LoadedProgram::new(
         user_cr3,
-        USER_PROGRAM_ENTRY_RIP,
+        elf_image.entry,
         USER_PROGRAM_INITIAL_RSP,
         image.len(),
-        code_page_count,
+        total_pages,
     ))
+}
+
+/// Allocates physical frames for every ELF segment plus one bootstrap stack
+/// frame, in a single PMM lock scope.
+///
+/// On partial allocation failure, all already-allocated PFNs in this
+/// transaction are released before returning, so the caller receives
+/// all-or-nothing behavior.
+fn alloc_elf_frames(segment_page_counts: &[usize]) -> ExecResult<(Vec<Vec<u64>>, u64)> {
+    // Allocate the outer/inner Vecs on the kernel heap before acquiring the PMM
+    // lock, avoiding lock-ordering inversion deadlocks (PMM lock -> HEAP lock).
+    let mut segment_pfns: Vec<Vec<u64>> = segment_page_counts
+        .iter()
+        .map(|&n| Vec::with_capacity(n))
+        .collect();
+
+    let stack_pfn = pmm::with_pmm(|mgr| {
+        for seg_idx in 0..segment_pfns.len() {
+            for _ in 0..segment_page_counts[seg_idx] {
+                let pfn = match mgr.alloc_frame().map(|frame| frame.pfn) {
+                    Some(pfn) => pfn,
+                    None => {
+                        release_elf_pfns(mgr, &segment_pfns);
+                        return Err(ExecError::OutOfMemory);
+                    }
+                };
+
+                // PFN 0 maps to physical address 0x0 (IVT/BIOS Data Area). Mapping
+                // user pages there would corrupt low memory and be a security
+                // vulnerability. Treat this as a hard PMM invariant violation.
+                assert!(pfn != 0, "PMM returned PFN 0 (reserved low memory)");
+
+                segment_pfns[seg_idx].push(pfn);
+            }
+        }
+
+        let stack_pfn = match mgr.alloc_frame().map(|frame| frame.pfn) {
+            Some(pfn) => pfn,
+            None => {
+                release_elf_pfns(mgr, &segment_pfns);
+                return Err(ExecError::OutOfMemory);
+            }
+        };
+
+        assert!(
+            stack_pfn != 0,
+            "PMM returned PFN 0 (reserved low memory) for stack frame"
+        );
+
+        Ok(stack_pfn)
+    })?;
+
+    Ok((segment_pfns, stack_pfn))
+}
+
+/// Releases every PFN across all segments back to the PMM.
+///
+/// Used only on allocation failure inside [`alloc_elf_frames`], while still
+/// holding the PMM lock passed in as `mgr`.
+fn release_elf_pfns(mgr: &mut pmm::PhysicalMemoryManager, segment_pfns: &[Vec<u64>]) {
+    for pfns in segment_pfns {
+        for &pfn in pfns {
+            let _ = mgr.release_pfn(pfn);
+        }
+    }
+}
+
+/// Best-effort rollback for a partially created ELF user mapping.
+///
+/// Tears down the mapped prefix of each segment (plus the stack, if mapped)
+/// through the normal VMM teardown path, then releases any frames that were
+/// allocated but never inserted into page tables.
+fn cleanup_failed_elf_mapping(user_cr3: u64, state: &ElfMapState) {
+    // `destroy_user_address_space_with_page_counts`'s catch-all scan (see its
+    // doc comment) reclaims any present mapping in the whole code window
+    // regardless of this count, so summing `mapped_pages` here is a fast-path
+    // hint, not a correctness requirement.
+    let total_mapped_pages: usize = state.segments.iter().map(|s| s.mapped_pages).sum();
+    let stack_pages_mapped = if state.stack_mapped { 1 } else { 0 };
+    vmm::destroy_user_address_space_with_page_counts(
+        user_cr3,
+        total_mapped_pages,
+        stack_pages_mapped,
+    );
+
+    pmm::with_pmm(|mgr| {
+        for seg_state in &state.segments {
+            // Any frame beyond `mapped_pages` was never inserted into page
+            // tables and therefore is not covered by VMM teardown.
+            for &pfn in seg_state.pfns.iter().skip(seg_state.mapped_pages) {
+                let _ = mgr.release_pfn(pfn);
+            }
+        }
+
+        // Apply the same rule to the optional bootstrap stack frame.
+        if !state.stack_mapped {
+            if let Some(pfn) = state.stack_pfn {
+                let _ = mgr.release_pfn(pfn);
+            }
+        }
+    });
 }
 
 /// Validates that a program image length is non-empty and fits inside the user
@@ -312,110 +478,6 @@ fn map_fs_error(error: FsError) -> ExecError {
         | FsError::BadChain
         | FsError::TooLarge => ExecError::Io,
     }
-}
-
-/// Returns the number of pages required to hold `image_len` bytes.
-///
-/// Uses ceil-division and returns `0` for an empty image.
-#[inline]
-const fn page_count_for_len(image_len: usize) -> usize {
-    image_len.div_ceil(PAGE_SIZE_BYTES)
-}
-
-/// Allocates code + stack physical frames for one user-image mapping transaction.
-///
-/// Allocation is performed under one PMM lock scope and returns:
-/// - one PFN per code page
-/// - one PFN for the bootstrap stack page
-///
-/// On partial allocation failure, all already-allocated PFNs in this transaction
-/// are released before returning, so the caller receives all-or-nothing behavior.
-fn alloc_program_frames(code_page_count: usize) -> ExecResult<(Vec<u64>, u64)> {
-    // Allocate the code PFNs vector on the kernel heap before acquiring the PMM lock.
-    // This avoids lock-ordering inversion deadlocks (PMM lock -> HEAP lock).
-    let mut code_pfns = Vec::with_capacity(code_page_count);
-
-    let stack_pfn = pmm::with_pmm(|mgr| {
-        // Step 1: Reserve code-page backing frames.
-        for _ in 0..code_page_count {
-            let pfn = match mgr.alloc_frame().map(|frame| frame.pfn) {
-                Some(pfn) => pfn,
-                None => {
-                    release_allocated_code_pfns(mgr, &code_pfns);
-                    return Err(ExecError::OutOfMemory);
-                }
-            };
-
-            // PFN 0 maps to physical address 0x0 (IVT/BIOS Data Area). Mapping user
-            // pages there would corrupt low memory and be a security vulnerability.
-            // Treat this as a hard PMM invariant violation in all build profiles.
-            assert!(pfn != 0, "PMM returned PFN 0 (reserved low memory)");
-
-            code_pfns.push(pfn);
-        }
-
-        // Step 2: Reserve the bootstrap stack frame.
-        let stack_pfn = match mgr.alloc_frame().map(|frame| frame.pfn) {
-            Some(pfn) => pfn,
-            None => {
-                release_allocated_code_pfns(mgr, &code_pfns);
-                return Err(ExecError::OutOfMemory);
-            }
-        };
-
-        assert!(
-            stack_pfn != 0,
-            "PMM returned PFN 0 (reserved low memory) for stack frame"
-        );
-
-        Ok(stack_pfn)
-    })?;
-
-    Ok((code_pfns, stack_pfn))
-}
-
-fn release_allocated_code_pfns(mgr: &mut pmm::PhysicalMemoryManager, code_pfns: &[u64]) {
-    for allocated_pfn in code_pfns.iter().copied() {
-        let _ = mgr.release_pfn(allocated_pfn);
-    }
-}
-
-/// Best-effort rollback for partially created user mappings.
-///
-/// Uses the same teardown path as normal process exit (which always releases
-/// mapped leaf frames back to PMM via the refcounted `release_pfn`) and then
-/// releases only frames that were allocated but never mapped.
-fn cleanup_failed_program_mapping(user_cr3: u64, state: &MapState) {
-    // Teardown only the mapped ranges:
-    // - `mapped_code_pages` tracks successful code-leaf mappings,
-    // - stack teardown only runs when bootstrap page mapping succeeded,
-    // - page-table hierarchy + CR3 root are released afterwards by VMM.
-    let stack_pages_mapped = if state.stack_mapped { 1 } else { 0 };
-    vmm::destroy_user_address_space_with_page_counts(
-        user_cr3,
-        state.mapped_code_pages,
-        stack_pages_mapped,
-    );
-
-    pmm::with_pmm(|mgr| {
-        // Any frames beyond `state.mapped_code_pages` were never inserted into page
-        // tables and therefore are not covered by VMM teardown.
-        for pfn in state
-            .code_pfns
-            .iter()
-            .copied()
-            .skip(state.mapped_code_pages)
-        {
-            let _ = mgr.release_pfn(pfn);
-        }
-
-        // Apply the same rule to the optional bootstrap stack frame.
-        if !state.stack_mapped {
-            if let Some(pfn) = state.stack_pfn {
-                let _ = mgr.release_pfn(pfn);
-            }
-        }
-    });
 }
 
 /// Spawns a scheduler user task from an already prepared loaded-program descriptor.

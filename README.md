@@ -151,6 +151,7 @@ Detailed, implementation-level documentation for each subsystem lives in
 | [boot_bios.md](main64/docs/boot_bios.md) | Three-stage BIOS boot process (real → protected → long mode) |
 | [boot_uefi.md](main64/docs/boot_uefi.md) | UEFI loader, the PE/COFF format, and the boot pipeline |
 | [loader.md](main64/docs/loader.md) | Loading a Ring-3 user program from FAT32 into its own address space |
+| [elf.md](main64/docs/elf.md) | The ELF64 file format from scratch, and the kernel's ELF program loader |
 | [gdt.md](main64/docs/gdt.md) | GDT/TSS, privilege transitions, and why they matter in long mode |
 
 ### Memory
@@ -187,7 +188,6 @@ Detailed, implementation-level documentation for each subsystem lives in
 |---|---|
 | [todo_drivers.md](main64/docs/todo_drivers.md) | *(Planned)* dynamic, loadable Ring-3 user-space driver infrastructure |
 | [todo_uefi_kernel_pagetables.md](main64/docs/todo_uefi_kernel_pagetables.md) | Plan for kernel-owned page tables on the UEFI path |
-| [todo_elf.md](main64/docs/todo_elf.md) | Plan for ELF program loading |
 
 ---
 

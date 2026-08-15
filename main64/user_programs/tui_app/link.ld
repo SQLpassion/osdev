@@ -2,17 +2,27 @@
  * - fixes the virtual load base to the kernel's user-code window
  * - enforces `_start` as entry symbol
  * - places `_start` at image offset 0 so exec can jump to base RIP
+ * - groups sections into exactly two page-aligned, non-overlapping PT_LOAD
+ *   segments (R-X text+rodata, RW- data+bss) via explicit PHDRS, so the
+ *   kernel's ELF loader (process/elf.rs, process/loader.rs) can map each
+ *   segment with its own permissions
  */
 ENTRY(_start)
 
+PHDRS
+{
+    text PT_LOAD FLAGS(5); /* R-X */
+    data PT_LOAD FLAGS(6); /* RW- */
+}
+
 SECTIONS
 {
-    /* User virtual base address where flat binaries are mapped by the kernel loader. */
+    /* User virtual base address where the kernel's ELF loader maps this program. */
     . = 0x0000700000000000;
 
     .text : AT(ADDR(.text))
     {
-        /* Keep startup section first: kernel exec jumps to image base. */
+        /* Keep startup section first: kernel exec jumps to e_entry. */
         *(.ltext._start)
         *(.text._start)
 
@@ -26,33 +36,14 @@ SECTIONS
          */
         *(.rodata .rodata.*)
         *(.lrodata .lrodata.*)
+    } :text
 
-        /* Page-align code/rodata boundary for paging-friendly layout. */
-        . = ALIGN(4K);
-    }
+    /* Force the next PT_LOAD to start on a fresh page: without this, lld may
+     * pack the data segment's first bytes into the same page as the text
+     * segment's tail, which the kernel's page-granularity ELF loader would
+     * reject as an overlapping PT_LOAD (see elf::ElfError::SegmentsOverlap). */
+    . = ALIGN(4K);
 
-    /* Writable globals.
-     *
-     * BSS sections are intentionally merged into the `.data` output section
-     * instead of living in their own `.bss` output section. Reason:
-     *
-     * - The kernel loader (process/loader.rs) consumes a flat binary and
-     *   maps `ceil(image.len() / PAGE_SIZE)` user-code pages. Anything past
-     *   `image.len()` is not pre-mapped and falls into the page-fault path.
-     * - `objcopy -O binary` strips SHT_NOBITS sections from the produced
-     *   `.bin` file. If `.bss` is its own output section it stays NOBITS,
-     *   the BSS bytes never reach disk, and `image.len()` underestimates
-     *   the writable footprint of the program.
-     * - When BSS input is placed inside an output section that already
-     *   contains PROGBITS input (`.data`), the output section becomes
-     *   PROGBITS, and lld emits zero-filled bytes for the BSS region into
-     *   the binary. The loader then pre-maps those pages as writable user
-     *   code pages — matching the policy described in loader.rs for flat
-     *   binaries that mix code/data.
-     * - `.lbss.*` is emitted by rustc under code-model=large; without an
-     *   explicit match the BSS would otherwise drift back into an orphan
-     *   `.bss` output section (and therefore back to SHT_NOBITS).
-     */
     .data : AT(ADDR(.data))
     {
         /* Force section to be PROGBITS by keeping the dummy static from lib_kaos */
@@ -61,17 +52,20 @@ SECTIONS
         /* Initialized writable globals. */
         *(.data .data.*)
         *(.ldata .ldata.*)
+    } :data
 
-        /* Zero-initialized writable globals — see comment above for why
-         * these are placed here instead of in a separate `.bss` section.
-         */
+    /* `.bss` is a normal SHT_NOBITS output section again: the kernel's ELF
+     * loader reads `p_filesz`/`p_memsz` from the program header and
+     * zero-fills the BSS tail itself (process/loader.rs), so there is no
+     * longer any need to merge BSS input into `.data` to force it into the
+     * file as explicit zero bytes -- that workaround (and the objcopy/flat-
+     * binary limitation it existed for) predates the ELF loader migration.
+     * `.lbss.*` is emitted by rustc under code-model=large.
+     */
+    .bss : AT(ADDR(.bss))
+    {
         *(.bss .bss.*)
         *(.lbss .lbss.*)
         *(COMMON)
-
-        /* Round up to a full page so the loader's page-rounded mapping
-         * never leaves a partial last page short of the BSS end.
-         */
-        . = ALIGN(4K);
-    }
+    } :data
 }
