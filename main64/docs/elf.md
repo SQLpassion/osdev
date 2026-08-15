@@ -12,10 +12,13 @@ This document explains two things, in order:
    — the parser and loader that turn an ELF64 file sitting on the FAT32 disk
    into a running ring-3 task.
 
-The historical motivation for building this loader — and the bug in the old
-flat-binary loader that made it necessary — is recorded in
-`docs/todo_elf.md` §1. This document does not repeat that history; it
-documents the resulting design as it exists today.
+Before this loader existed, KAOS ran user programs as raw flat binaries
+(`objcopy -O binary` output — no headers, no segments, just bytes mapped
+starting at a fixed address). That approach has a fundamental limitation
+around zero-initialized data (explained in full in §1.4–1.5) that eventually
+became a real, reproducible kernel panic. This document doesn't dwell on
+that history — it documents the ELF-based design that replaced it, as it
+exists today.
 
 ---
 
@@ -188,9 +191,11 @@ vaddr 0x...2008   Segment 2, continued:   COUNTER = 0x0000000000000000  ← zero
 If a loader naively computed "how many pages do I need" from the *file
 length* instead of from `p_memsz`, the `COUNTER` page would never get
 mapped at all — and the first write to it would page-fault. This is
-precisely the bug described in `docs/todo_elf.md` §1 that the old
-flat-binary loader had, and it is why `p_memsz` (not file length) drives
-every allocation decision in the loader described in §2 below.
+exactly the bug KAOS's old flat-binary loader had (it computed
+`ceil(file_length / PAGE_SIZE)` pages, since a flat binary has no `p_memsz`
+to consult at all — see §2.9 for how it was worked around), and it is why
+`p_memsz` (not file length) drives every allocation decision in the loader
+described in §2 below.
 
 ### 1.5 The rest of the ELF file (and why KAOS ignores most of it)
 
@@ -257,9 +262,8 @@ exactly one process on the system at a time occupying the fixed user-code
 window (`USER_CODE_BASE`, §2.3), each with its own address space (its own
 page tables / CR3), so there's no address-space collision to avoid by
 randomizing load addresses, and there's no dynamic linker to write. This
-also means the following ELF concepts are **explicitly out of scope** and
-KAOS's parser will reject a file that needs them (see `docs/todo_elf.md`
-§10 for the authoritative list):
+also means the following ELF concepts are **explicitly out of scope**, and
+KAOS's parser will reject a file that needs them:
 
 - **Dynamic linking / relocations** (`PT_DYNAMIC`, `PT_INTERP`) — not
   needed for static `ET_EXEC` binaries; `parse_elf64` rejects any `e_type`
@@ -316,11 +320,15 @@ path on any mid-way failure).
 | User-program linker scripts (produce the two `PT_LOAD` segments) | `main64/user_programs/*/link.ld` |
 | Build pipeline (compiles + ships the ELF file, no more `objcopy`) | `main64/build/helper_build_user_programs.sh` |
 
-The design this code implements was planned in `docs/todo_elf.md`; that
-document also records what was deliberately deferred (§1.6 above) and the
-now-removed gradual-rollout dual-path (ELF *or* legacy flat binary) that
-existed transiently while the seven in-tree programs were migrated one at a
-time.
+While the seven in-tree programs (`hello`, `readline`, `filedemo`,
+`exception_test`, `shell`, `tui_app`, `kbasic`) were migrated from the old
+flat-binary format one at a time, the loader briefly supported both formats
+side by side — sniffing the ELF magic and falling back to the old
+flat-mapping path for anything that didn't have it. That fallback (and the
+flat-mapping code path itself) was removed once all seven programs shipped
+as ELF; a non-ELF image is now rejected outright with
+`ExecError::InvalidElfImage` (§2.4), with no fallback to any other loading
+strategy.
 
 ### 2.2 End-to-end call flow
 
@@ -463,8 +471,8 @@ impl ElfSegment {
 
 Note this is computed from `memsz` (the in-memory footprint, BSS included),
 never from `filesz` (the on-disk footprint) — this is the exact fix for the
-bug described in `docs/todo_elf.md` §1: a page holding only BSS bytes still
-gets a `page_count` entry and therefore still gets allocated and mapped.
+flat-binary-era bug from §1.4: a page holding only BSS bytes still gets a
+`page_count` entry and therefore still gets allocated and mapped.
 
 ### 2.6 The loader: `process/loader.rs`
 
@@ -563,7 +571,7 @@ undifferentiated region: the page-fault handler in
 fresh page, read-only" — i.e. it demand-paged code pages into existence
 lazily, uniformly read-only, because the old flat-binary loader had no way
 to know per-page whether a given byte was meant to be code or writable data
-(that was the whole problem `docs/todo_elf.md` describes).
+(see §1.4/§2.9 for why that's exactly the problem BSS creates).
 
 Now that every segment is mapped up front with its own final permissions
 (§2.6, step D), a page fault *landing inside the code window* can no longer
@@ -653,8 +661,8 @@ Two details here directly correspond to validation rules from §2.4:
   Before this loader existed, every program's linker script merged `.bss`
   into `.data` as a workaround: the old flat-binary loader only pre-mapped
   `ceil(file_length / PAGE_SIZE)` pages, so any BSS page living past the
-  end of the file was silently left unmapped (`docs/todo_elf.md` §1's
-  motivating bug). Forcing `.bss` bytes to physically exist in the file (by
+  end of the file was silently left unmapped (the motivating bug from
+  §1.4). Forcing `.bss` bytes to physically exist in the file (by
   making the output section `SHT_PROGBITS`) was a workaround for a loader
   limitation, not a real requirement of the format. Now that the kernel
   reads `p_memsz` and zero-fills the tail itself (§2.6, step C), `.bss` can
