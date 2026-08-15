@@ -425,6 +425,88 @@ fn test_pmm_inc_refcount_rejects_unallocated_or_out_of_range_pfn() {
     });
 }
 
+/// Test that `mark_range_used` (exercised via the debug-only
+/// `mark_range_used_for_test` accessor) is idempotent against overlapping and
+/// repeated ranges — issue #52. Before the fix, every frame covered by more
+/// than one reserved range had `frames_free` decremented once per covering
+/// call, silently corrupting the free-frame count and, given enough overlap,
+/// eventually underflowing it (`checked_sub().unwrap()` panic).
+///
+/// The range used here is chosen deep inside the first managed region (far
+/// past `KERNEL_OFFSET`/`STACK_TOP` and any low-PFN churn from earlier tests
+/// in this binary), so it is guaranteed to start out free regardless of test
+/// execution order.
+/// Contract: pmm mark_range_used is idempotent against overlapping ranges.
+/// Given: A range of frames known to start out free.
+/// When: The range is marked used, then an overlapping range is marked used,
+///       then the original range is marked used again.
+/// Then: `frames_free` drops by exactly the number of *distinct* frames ever
+///       covered — never more, regardless of how many times a frame is
+///       re-covered by a later call.
+/// Failure Impact: Silent free-frame accounting corruption and an eventual
+///        `checked_sub().unwrap()` panic if a future change (or a bootloader
+///        supplying an overlapping metadata range) causes `mark_range_used`
+///        to be called with overlapping ranges. Release-blocking per #52.
+#[test_case]
+fn test_mark_range_used_is_idempotent_for_overlapping_ranges() {
+    pmm::with_pmm(|mgr| {
+        let region_start = mgr
+            .regions_snapshot()
+            .first()
+            .expect("PMM must have at least one region")
+            .start;
+
+        // Frame offsets A, B, C, D deep inside the region; A..C is the first
+        // reservation, C..E is a second reservation overlapping it at frame C.
+        let range_a_c_start = region_start + 5000 * pmm::PAGE_SIZE;
+        let range_a_c_end = range_a_c_start + 3 * pmm::PAGE_SIZE; // covers A, B, C
+        let range_c_e_start = range_a_c_start + 2 * pmm::PAGE_SIZE; // frame C
+        let range_c_e_end = range_c_e_start + 2 * pmm::PAGE_SIZE; // covers C, D
+
+        let free_before = mgr.total_free_frames();
+
+        // First call: marks 3 new frames (A, B, C) used.
+        mgr.mark_range_used_for_test(range_a_c_start, range_a_c_end);
+        assert_eq!(
+            mgr.total_free_frames(),
+            free_before - 3,
+            "first reservation must decrement frames_free by exactly the frames it covers"
+        );
+
+        // Second call overlaps at frame C: only D is a genuinely new frame,
+        // so frames_free must drop by 1, not 2.
+        mgr.mark_range_used_for_test(range_c_e_start, range_c_e_end);
+        assert_eq!(
+            mgr.total_free_frames(),
+            free_before - 4,
+            "an overlapping reservation must not double-decrement the shared frame"
+        );
+
+        // Repeating the very first range again must be a complete no-op: every
+        // frame it covers (A, B, C) is already marked used.
+        mgr.mark_range_used_for_test(range_a_c_start, range_a_c_end);
+        assert_eq!(
+            mgr.total_free_frames(),
+            free_before - 4,
+            "re-marking an already-reserved range must not change frames_free"
+        );
+
+        // Cleanup: these frames were never handed out via alloc_frame, so their
+        // refcount byte is still 0. release_pfn's documented refcount==0
+        // fallback treats a bitmap-set/refcount-0 frame as the "actually free"
+        // case, clearing the bit and restoring frames_free.
+        let start_pfn = range_a_c_start / pmm::PAGE_SIZE;
+        for pfn in start_pfn..start_pfn + 4 {
+            assert!(mgr.release_pfn(pfn), "cleanup release must succeed");
+        }
+        assert_eq!(
+            mgr.total_free_frames(),
+            free_before,
+            "cleanup must restore the original free-frame baseline"
+        );
+    });
+}
+
 // ============================================================================
 // #63 R1: `is_pfn_free` query + `assert_no_active_table_frame_is_pmm_free` guard.
 //

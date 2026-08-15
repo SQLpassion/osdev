@@ -318,8 +318,16 @@ impl PhysicalMemoryManager {
     }
 
     /// Marks every page frame in the physical range `[range_start, range_end)`
-    /// as used by directly setting the corresponding bitmap bits.
+    /// as used by directly setting the corresponding bitmap bits, idempotently.
     /// This does not depend on the allocation order of `alloc_frame()`.
+    ///
+    /// Like [`mark_frame_used`](Self::mark_frame_used), each bit is inspected
+    /// before it is flipped: a frame that is already marked used (e.g. because
+    /// it falls inside a previously reserved range that overlaps this one) is
+    /// left untouched and `frames_free` is not decremented again for it. This
+    /// makes the function safe to call with ranges that overlap each other, or
+    /// a second time over the same range, without double-decrementing
+    /// `frames_free` and eventually underflowing it.
     fn mark_range_used(&mut self, range_start: u64, range_end: u64) {
         let regions = self.regions();
 
@@ -342,6 +350,20 @@ impl PhysicalMemoryManager {
             let bitmap = r.bitmap_start as *mut u64;
 
             for bit in first_bit..end_bit {
+                let word_idx = (bit / 64) as usize;
+                let bit_mask = 1u64 << (bit % 64);
+
+                // SAFETY:
+                // - `bit` is within the region bitmap bounds derived from overlap.
+                // - `bitmap` points to readable/writable PMM bitmap memory.
+                let word_val = unsafe { *bitmap.add(word_idx) };
+                if (word_val & bit_mask) != 0 {
+                    // Already marked used by an earlier (possibly overlapping)
+                    // call: skip it so `frames_free` is not decremented twice
+                    // for the same frame.
+                    continue;
+                }
+
                 // SAFETY:
                 // - `bit` is within the region bitmap bounds derived from overlap.
                 // - `bitmap` points to writable PMM bitmap memory.
@@ -349,6 +371,21 @@ impl PhysicalMemoryManager {
                 r.frames_free = r.frames_free.checked_sub(1).unwrap();
             }
         }
+    }
+
+    /// Test-only accessor for [`mark_range_used`](Self::mark_range_used).
+    ///
+    /// Hidden from public docs; lets integration tests under `tests/*.rs` exercise the
+    /// idempotency of this otherwise-private range-reservation path directly. Not gated
+    /// behind `#[cfg(test)]`: this crate builds with `[lib] test = false`, and integration
+    /// tests link `kaos_kernel` as an ordinary (non-`--cfg test`) dependency, so
+    /// `#[cfg(test)]` items in `src/` are never visible to them. Gated behind
+    /// `#[cfg(debug_assertions)]` instead — all test binaries build in the debug profile —
+    /// matching the existing `pic::EOI_COUNT`/`eoi_count_for_test` convention.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn mark_range_used_for_test(&mut self, range_start: u64, range_end: u64) {
+        self.mark_range_used(range_start, range_end);
     }
 
     /// Marks the single page frame containing `phys_addr` as used, idempotently.
