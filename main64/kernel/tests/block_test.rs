@@ -280,3 +280,92 @@ fn test_ahci_prdt_overflow_guard_condition_trips_for_oversized_transfer() {
         "guard condition must trip for a transfer that cannot fit in the PRDT"
     );
 }
+
+/// Contract (issue #48): `do_transfer`'s request-slot primitive enforces
+/// "only one AHCI transfer in flight at a time".
+///
+/// Given: Before issue #48, `AHCI_LOCK` was held (and interrupts disabled)
+///   across the *entire* `do_transfer` call, including both busy-poll waits.
+///   On this single-core kernel that incidentally also prevented any other
+///   task from ever reaching `do_transfer` concurrently, since disabling
+///   interrupts disables preemption. Issue #48 narrows `AHCI_LOCK` to only
+///   the brief register snapshots/writes, which on its own would reopen a
+///   window for two tasks to race on reprogramming command slot 0 (the only
+///   slot this driver uses). `do_transfer`'s new `_request` guard
+///   (`acquire_transfer_slot`/`AHCI_REQUEST_IN_FLIGHT`) is what closes that
+///   window instead.
+/// When: The request slot is claimed via the test-only
+///   `try_acquire_transfer_slot_for_test` seam (exposed because, like
+///   `max_prdt_entries_for` above, `do_transfer`'s hardware path cannot be
+///   driven end-to-end without a mapped AHCI port, which is not present in
+///   this test environment), and a second claim is attempted while the
+///   first is still outstanding.
+/// Then: The first claim must succeed, the second must fail while the first
+///   is outstanding, and a claim after releasing the first must succeed
+///   again.
+/// Failure Impact: If this mutual-exclusion primitive were missing or
+///   broken, two tasks could concurrently reprogram AHCI command slot 0
+///   mid-transfer once `AHCI_LOCK` no longer disables interrupts across the
+///   whole call, corrupting in-flight disk I/O.
+#[test_case]
+fn test_ahci_request_slot_enforces_mutual_exclusion() {
+    // First claim of a free slot must succeed.
+    assert!(
+        ahci::try_acquire_transfer_slot_for_test(),
+        "first claim of a free request slot must succeed"
+    );
+
+    // A second claim while the first is outstanding must fail - this is
+    // exactly the invariant `do_transfer`'s `_request` guard relies on.
+    assert!(
+        !ahci::try_acquire_transfer_slot_for_test(),
+        "a second claim must not succeed while the first is outstanding"
+    );
+
+    // Releasing the first claim must make the slot claimable again.
+    ahci::release_transfer_slot_for_test();
+    assert!(
+        ahci::try_acquire_transfer_slot_for_test(),
+        "the slot must become claimable again after being released"
+    );
+
+    // Clean up so later tests in this binary see a free slot.
+    ahci::release_transfer_slot_for_test();
+}
+
+/// Contract (issue #48): the request-slot guard never leaks across repeated
+/// `do_transfer` calls, even on the early-return "AHCI not initialized"
+/// path exercised by this test environment (no `-device ahci` in the QEMU
+/// test harness).
+///
+/// Given: AHCI is not initialized (default QEMU test environment), so every
+///   `read_sectors` call returns via `do_transfer`'s early
+///   `AhciError::NotInitialized` return, which happens *after* `_request`
+///   (the request-slot guard) is constructed.
+/// When: `read_sectors` is called many times back-to-back.
+/// Then: Every call must return promptly - if the request-slot guard ever
+///   failed to run on an early-return path, `AHCI_REQUEST_IN_FLIGHT` would
+///   stay stuck `true` and every subsequent call would hang forever waiting
+///   for a slot that will never be released (there is no scheduler running
+///   in this test binary to preempt out of the fallback spin-wait).
+/// Failure Impact: A regression here would deadlock every task doing AHCI
+///   I/O after the first call, rather than failing a single call cleanly.
+#[test_case]
+fn test_ahci_request_slot_does_not_leak_across_repeated_calls() {
+    let mut buf = [0u8; 512];
+
+    for lba in 0..200u64 {
+        let result = ahci::read_sectors(&mut buf, lba, 1);
+
+        // In this test environment AHCI is never initialized, so every call
+        // is expected to fail fast with NotInitialized; tolerate `Ok` too in
+        // case a future test environment does provide a mapped AHCI port
+        // (mirrors `test_ahci_concurrent_readers_and_multi_sector` above).
+        assert!(
+            matches!(result, Err(ahci::AhciError::NotInitialized)) || result.is_ok(),
+            "unexpected AHCI error on iteration {}: {:?}",
+            lba,
+            result
+        );
+    }
+}
