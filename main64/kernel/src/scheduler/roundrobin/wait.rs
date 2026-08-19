@@ -62,7 +62,16 @@ pub fn unblock_task(task_id: usize) {
 /// Returns `true` if the task existed and was removed.
 pub fn terminate_task(task_id: usize) -> bool {
     let slot = task_id_slot(task_id);
-    crate::io::vfs::close_task_fds(slot);
+
+    // `Fat32OpenFile::owner` (and VFS file-descriptor ownership in general) is
+    // recorded as the *packed* task id returned by `current_task_id()`, not a
+    // bare slot index (see `exit_current_task`, which gets this right by
+    // passing `current_task_id()` straight through). Passing the bare `slot`
+    // here would silently never match any of this task's open descriptors --
+    // `close_task_fds`'s retain predicate compares against whatever is
+    // passed in -- leaking the descriptors (and, for FAT32, the cached
+    // whole-file contents backing them) instead of freeing them.
+    crate::io::vfs::close_task_fds(task_id);
 
     // Snapshot callbacks before entering the scheduler lock to avoid
     // nested lock acquisition (`SCHED` -> `SCHED_ARCH_CALLBACKS`).

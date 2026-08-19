@@ -113,6 +113,9 @@ name = "block_test"
 name = "vfs_test"
 
 [[test]]
+name = "terminate_task_fd_leak_test"
+
+[[test]]
 name = "fat32_concurrent_test"
 
 [[test]]
