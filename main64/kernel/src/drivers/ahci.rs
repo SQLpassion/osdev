@@ -842,6 +842,12 @@ fn do_transfer(
     // - `ACTIVE_PORT` is written exactly once, in `init_ports`, before the
     //   scheduler (and therefore any other caller of `do_transfer`) can run;
     //   after boot it is read-only, so reading it here cannot race a writer.
+    // - When `Some`, the pointer is `&mut (*hba).ports[i]` taken from the
+    //   live `HbaMem` that `try_init_controller` identity-mapped
+    //   uncacheable (`vmm::map_virtual_to_physical_uc`/`configure_uc_mapping`)
+    //   over the ABAR MMIO region reported by BAR5, so it is always non-null
+    //   and points at a live, UC-mapped `HbaPort` register block for as long
+    //   as the kernel runs (this driver never unmaps or reuses that region).
     // - The `is` clear below only clears status bits and does not touch any
     //   state `_request` above doesn't already serialize against other
     //   in-flight transfers.
