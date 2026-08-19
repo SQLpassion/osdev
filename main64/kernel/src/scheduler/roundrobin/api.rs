@@ -46,12 +46,12 @@ pub fn task_iret_frame(task_id: usize) -> Option<InterruptStackFrame> {
     })
 }
 
-/// Returns the slot index of the currently running task, if any.
+/// Returns the packed task identifier of the currently running task, if any.
 ///
-/// This is the raw slot index used internally by the scheduler.  It is *not*
-/// a packed task identifier and should not be compared directly with values
-/// returned by the spawn functions; use `task_id_slot` to extract the slot
-/// portion of a packed identifier when necessary.
+/// This is a *packed* task identifier (slot + generation), in the same format
+/// returned by the spawn functions -- it is *not* a bare slot index. Callers
+/// that need to compare it against a bare slot (for example a self-wait
+/// check) must first extract the slot portion via `task_id_slot`.
 pub fn current_task_id() -> Option<usize> {
     with_scheduler(|meta| {
         meta.running_slot

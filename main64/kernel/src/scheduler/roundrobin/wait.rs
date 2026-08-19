@@ -123,7 +123,15 @@ pub fn wait_for_task_exit(task_id: usize) {
             // Self-wait cannot make progress through blocking because the target
             // would be the currently blocked task itself. Keep the historical
             // cooperative poll behavior for this edge case.
-            if waiter_task_id == slot {
+            //
+            // `current_task_id()` returns a *packed* id (slot + generation),
+            // while `slot` above is the bare slot of the wait target. Extract
+            // the slot portion of `waiter_task_id` before comparing, otherwise
+            // this never matches (the generation bits make the packed value
+            // differ from the bare slot even for a genuine self-wait), and a
+            // task waiting on itself would fall through to the blocking-queue
+            // path and never be woken.
+            if task_id_slot(waiter_task_id) == slot {
                 wait_for_task_exit_with(slot, |_| is_target_alive(), yield_now);
                 return;
             }
