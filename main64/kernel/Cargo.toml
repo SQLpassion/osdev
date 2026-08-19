@@ -47,6 +47,9 @@ name = "boot_layout_test"
 name = "scheduler_rr_test"
 
 [[test]]
+name = "scheduler_self_wait_test"
+
+[[test]]
 name = "scheduler_nm_deadlock_test"
 
 [[test]]
@@ -111,6 +114,9 @@ name = "block_test"
 
 [[test]]
 name = "vfs_test"
+
+[[test]]
+name = "terminate_task_fd_leak_test"
 
 [[test]]
 name = "fat32_concurrent_test"

@@ -5,7 +5,10 @@
 use crate::debugln;
 use crate::drivers::pci;
 use crate::memory::{pmm, vmm};
+use crate::scheduler;
 use crate::sync::spinlock::SpinLock;
+use crate::sync::waitqueue::WaitQueue;
+use crate::sync::waitqueue_adapter;
 use core::sync::atomic;
 
 /// AHCI Command bits (PxCMD)
@@ -172,6 +175,120 @@ pub struct HbaPort {
 static mut ACTIVE_PORT: Option<*mut HbaPort> = None;
 
 static AHCI_LOCK: SpinLock<()> = SpinLock::new(());
+
+/// True while one caller owns the AHCI transfer request slot end-to-end,
+/// i.e. from claiming command slot 0 in `do_transfer` through observing its
+/// completion.
+///
+/// This driver only ever uses command slot 0, and (since issue #48)
+/// `AHCI_LOCK` itself is held only for brief register snapshots/writes
+/// rather than across an entire transfer - so, on this single-core kernel,
+/// interrupts (and therefore task preemption) are no longer disabled for
+/// the whole duration of a transfer. Without a separate exclusion
+/// mechanism, a second task could be scheduled in while a first transfer is
+/// still mid-flight and start its own `do_transfer` call, and both would
+/// race to (re)program the same slot-0 command header/table/FIS. This flag
+/// (with `AHCI_REQUEST_WAITQUEUE` below) restores "only one transfer in
+/// flight at a time" without requiring interrupts to stay disabled while a
+/// task waits its turn - mirrors `ata.rs`'s `REQUEST_IN_FLIGHT`.
+static AHCI_REQUEST_IN_FLIGHT: atomic::AtomicBool = atomic::AtomicBool::new(false);
+
+/// Waiters blocked while another task owns the AHCI transfer request slot.
+static AHCI_REQUEST_WAITQUEUE: WaitQueue = WaitQueue::new();
+
+/// RAII token for exclusive ownership of the AHCI transfer request slot.
+struct AhciRequestSlotGuard;
+
+impl Drop for AhciRequestSlotGuard {
+    fn drop(&mut self) {
+        // Step 1: release the in-flight marker so a waiting request can
+        // claim the slot.
+        AHCI_REQUEST_IN_FLIGHT.store(false, atomic::Ordering::Release);
+
+        // Step 2: wake request waiters outside of any lock so blocked tasks
+        // can re-contend for the request slot.
+        waitqueue_adapter::wake_all_multi(&AHCI_REQUEST_WAITQUEUE);
+    }
+}
+
+/// Acquires exclusive ownership of the AHCI transfer request slot.
+///
+/// Mirrors `ata.rs`'s `acquire_request_slot`: in scheduler context this
+/// blocks cooperatively on a wait queue so other tasks keep running while
+/// waiting; in early-boot/test contexts (no scheduler yet) it falls back to
+/// brief spin-waiting instead, since there is nothing else to yield to.
+fn acquire_transfer_slot() -> AhciRequestSlotGuard {
+    loop {
+        // Step 1: fast path - try to claim exclusive ownership.
+        if AHCI_REQUEST_IN_FLIGHT
+            .compare_exchange(
+                false,
+                true,
+                atomic::Ordering::AcqRel,
+                atomic::Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            return AhciRequestSlotGuard;
+        }
+
+        // Step 2: decide whether cooperative sleeping is possible in this
+        // execution context (scheduler running + current task available).
+        let maybe_task_id = if scheduler::is_running() {
+            scheduler::current_task_id()
+        } else {
+            None
+        };
+
+        if let Some(task_id) = maybe_task_id {
+            // Step 3a: scheduler context - sleep while the request slot
+            // stays busy. Predicate is rechecked with interrupts disabled by
+            // the waitqueue adapter.
+            if waitqueue_adapter::sleep_if_multi(&AHCI_REQUEST_WAITQUEUE, task_id, || {
+                AHCI_REQUEST_IN_FLIGHT.load(atomic::Ordering::Acquire)
+            })
+            .should_yield()
+            {
+                // Hand the CPU to the current owner or another runnable task.
+                scheduler::yield_now();
+            }
+        } else {
+            // Step 3b: early boot/test context - no scheduler sleep available.
+            core::hint::spin_loop();
+        }
+    }
+}
+
+/// Test-only, non-blocking attempt to claim the AHCI transfer request slot.
+///
+/// Exposed (not just `pub(crate)`) so integration tests can exercise the
+/// mutual-exclusion primitive added by issue #48 directly, mirroring
+/// `max_prdt_entries_for`'s rationale below: `do_transfer`'s hardware path
+/// cannot be driven end-to-end without a mapped AHCI port, which is not
+/// present in every test environment (e.g. default QEMU without
+/// `-device ahci`), so this is the closest hardware-independent seam to the
+/// "only one transfer in flight at a time" invariant that narrowing
+/// `AHCI_LOCK`'s scope now depends on.
+pub fn try_acquire_transfer_slot_for_test() -> bool {
+    AHCI_REQUEST_IN_FLIGHT
+        .compare_exchange(
+            false,
+            true,
+            atomic::Ordering::AcqRel,
+            atomic::Ordering::Acquire,
+        )
+        .is_ok()
+}
+
+/// Test-only release counterpart to [`try_acquire_transfer_slot_for_test`].
+///
+/// Mirrors exactly what `AhciRequestSlotGuard::drop` does, so tests can
+/// release a slot claimed via the function above without needing a real
+/// `do_transfer` call to construct the (non-`pub`) guard type.
+pub fn release_transfer_slot_for_test() {
+    AHCI_REQUEST_IN_FLIGHT.store(false, atomic::Ordering::Release);
+    waitqueue_adapter::wake_all_multi(&AHCI_REQUEST_WAITQUEUE);
+}
 
 /// Initializes the first AHCI controller that exposes an active SATA port.
 ///
@@ -709,8 +826,39 @@ fn do_transfer(
     sector_count: u32,
     is_write: bool,
 ) -> Result<(), AhciError> {
-    let _guard = AHCI_LOCK.lock();
-    let port = unsafe { ACTIVE_PORT.ok_or(AhciError::NotInitialized)? };
+    // Step 1: claim exclusive ownership of the (sole) transfer slot for the
+    // lifetime of this call. This driver only ever programs command slot 0,
+    // so only one `do_transfer` call may be mid-flight at a time. Unlike
+    // `AHCI_LOCK` below, waiting here does not disable interrupts, so a task
+    // waiting for a previous transfer to finish stays preemptible instead of
+    // stalling the timer tick / other interrupt-driven drivers (issue #48).
+    let _request = acquire_transfer_slot();
+
+    // Step 2: snapshot the active port and clear any stale pending
+    // interrupt-status bits left over from a previous command, under
+    // AHCI_LOCK.
+    //
+    // SAFETY:
+    // - `ACTIVE_PORT` is written exactly once, in `init_ports`, before the
+    //   scheduler (and therefore any other caller of `do_transfer`) can run;
+    //   after boot it is read-only, so reading it here cannot race a writer.
+    // - When `Some`, the pointer is `&mut (*hba).ports[i]` taken from the
+    //   live `HbaMem` that `try_init_controller` identity-mapped
+    //   uncacheable (`vmm::map_virtual_to_physical_uc`/`configure_uc_mapping`)
+    //   over the ABAR MMIO region reported by BAR5, so it is always non-null
+    //   and points at a live, UC-mapped `HbaPort` register block for as long
+    //   as the kernel runs (this driver never unmaps or reuses that region).
+    // - The `is` clear below only clears status bits and does not touch any
+    //   state `_request` above doesn't already serialize against other
+    //   in-flight transfers.
+    // - AHCI_LOCK serializes this snapshot/write against every other brief
+    //   register access taken elsewhere in this function.
+    let port = unsafe {
+        let _guard = AHCI_LOCK.lock();
+        let port = ACTIVE_PORT.ok_or(AhciError::NotInitialized)?;
+        core::ptr::write_volatile(&mut (*port).is, 0xFFFF_FFFF); // Clear pending interrupt bits
+        port
+    };
 
     let total_bytes = sector_count as usize * 512;
     assert!(
@@ -727,123 +875,195 @@ fn do_transfer(
         return Err(AhciError::PrdtOverflow);
     }
 
-    unsafe {
-        let p = &mut *port;
-        core::ptr::write_volatile(&mut p.is, 0xFFFF_FFFF); // Clear pending interrupt bits
+    let slot = 0; // Use slot 0
 
-        let slot = 0; // Use slot 0
-
-        // Wait for command slot 0 to become free
-        let mut timeout = 1_000_000;
-        loop {
-            let ci = core::ptr::read_volatile(&p.ci);
-            let sact = core::ptr::read_volatile(&p.sact);
-            if (ci & (1 << slot)) == 0 && (sact & (1 << slot)) == 0 {
-                break;
-            }
-            timeout -= 1;
-            if timeout == 0 {
-                return Err(AhciError::Timeout);
-            }
+    // Step 3: wait for command slot 0 to become free.
+    //
+    // Locking invariant: only the register snapshot on each iteration below
+    // runs under AHCI_LOCK; the wait *between* snapshots is unlocked (and
+    // therefore does not disable interrupts). Before issue #48, AHCI_LOCK
+    // was held (and interrupts disabled) across this entire loop - up to
+    // 1,000,000 iterations - stalling the timer tick and every other
+    // interrupt-driven driver for as long as a stuck slot took to clear.
+    // `_request` above still guarantees no other caller can reach the
+    // programming step below concurrently, so in practice this loop now
+    // exits on its first iteration; it and its timeout are kept unchanged to
+    // preserve the exact original observable contract on a genuinely wedged
+    // controller.
+    //
+    // Deliberately no `spin_loop()`/`PAUSE` is added here: under KVM,
+    // PAUSE-loop-exiting turns a tight PAUSE loop into a storm of VM exits
+    // (see `delay_ms`'s doc comment above), which would stretch this loop's
+    // already-large iteration budget unpredictably in wall-clock time - the
+    // same hazard that made `port_bring_up`'s bring-up delay appear to hang.
+    let mut timeout = 1_000_000;
+    loop {
+        // SAFETY:
+        // - `port` was validated in Step 2 and remains valid for the
+        //   lifetime of the process (see that SAFETY note).
+        // - AHCI_LOCK, reacquired fresh on each iteration, serializes this
+        //   read pair against the brief register accesses in Steps 2, 4 and
+        //   5 - only the read itself needs to be atomic with respect to
+        //   those, not the multi-iteration wait between reads.
+        let (ci, sact) = unsafe {
+            let _guard = AHCI_LOCK.lock();
+            (
+                core::ptr::read_volatile(&(*port).ci),
+                core::ptr::read_volatile(&(*port).sact),
+            )
+        };
+        if (ci & (1 << slot)) == 0 && (sact & (1 << slot)) == 0 {
+            break;
         }
-
-        let clb_phys = (core::ptr::read_volatile(&p.clb) as u64)
-            | ((core::ptr::read_volatile(&p.clbu) as u64) << 32);
-        let cmd_header = &mut *((clb_phys
-            + (slot as u64 * core::mem::size_of::<HbaCmdHeader>() as u64))
-            as *mut HbaCmdHeader);
-
-        let mut cfl = (core::mem::size_of::<FisRegH2D>() / 4) as u8;
-        if is_write {
-            cfl |= 1 << 6;
-        }
-        core::ptr::write_volatile(&mut cmd_header.cfl, cfl);
-        core::ptr::write_volatile(&mut cmd_header.flags, 0);
-
-        let ctba_phys = (core::ptr::read_volatile(&cmd_header.ctba) as u64)
-            | ((core::ptr::read_volatile(&cmd_header.ctbau) as u64) << 32);
-        let cmd_tbl = &mut *(ctba_phys as *mut HbaCmdTbl);
-        core::ptr::write_bytes(
-            cmd_tbl as *mut HbaCmdTbl as *mut u8,
-            0,
-            core::mem::size_of::<HbaCmdTbl>(),
-        );
-
-        let mut prdtl = 0;
-        let mut remaining_bytes = total_bytes;
-        let mut current_va = buffer_ptr as u64;
-
-        while remaining_bytes > 0 {
-            // Defense-in-depth: the upfront `max_prdt_entries_for` check above
-            // should already guarantee this never trips, but actual physical
-            // fragmentation is only known here (it depends on the live page
-            // table), so this remains a returned error rather than a panic
-            // in case that estimate is ever wrong.
-            if prdtl >= MAX_PRDT_ENTRIES {
-                return Err(AhciError::PrdtOverflow);
-            }
-            let phys_addr = virt_to_phys(current_va).expect("AHCI: Unmapped buffer VA");
-            let bytes_in_page = 4096 - (phys_addr & 0xFFF);
-            let chunk_size = remaining_bytes.min(bytes_in_page as usize);
-
-            core::ptr::write_volatile(&mut cmd_tbl.prdt_entry[prdtl].dba, phys_addr as u32);
-            core::ptr::write_volatile(
-                &mut cmd_tbl.prdt_entry[prdtl].dbau,
-                (phys_addr >> 32) as u32,
-            );
-            core::ptr::write_volatile(&mut cmd_tbl.prdt_entry[prdtl].dbc, (chunk_size as u32) - 1); // 0-indexed count
-
-            prdtl += 1;
-            remaining_bytes -= chunk_size;
-            current_va += chunk_size as u64;
-        }
-        core::ptr::write_volatile(&mut cmd_header.prdtl, prdtl as u16);
-
-        let fis = &mut *(cmd_tbl.cfis.as_mut_ptr() as *mut FisRegH2D);
-        core::ptr::write_bytes(
-            fis as *mut FisRegH2D as *mut u8,
-            0,
-            core::mem::size_of::<FisRegH2D>(),
-        );
-
-        core::ptr::write_volatile(&mut fis.fis_type, 0x27);
-        core::ptr::write_volatile(&mut fis.pmport_c, 1 << 7);
-        if is_write {
-            core::ptr::write_volatile(&mut fis.command, 0x35);
-        } else {
-            core::ptr::write_volatile(&mut fis.command, 0x25);
-        }
-
-        core::ptr::write_volatile(&mut fis.lba0, lba as u8);
-        core::ptr::write_volatile(&mut fis.lba1, (lba >> 8) as u8);
-        core::ptr::write_volatile(&mut fis.lba2, (lba >> 16) as u8);
-        core::ptr::write_volatile(&mut fis.device, 1 << 6);
-
-        core::ptr::write_volatile(&mut fis.lba3, (lba >> 24) as u8);
-        core::ptr::write_volatile(&mut fis.lba4, (lba >> 32) as u8);
-        core::ptr::write_volatile(&mut fis.lba5, (lba >> 40) as u8);
-
-        core::ptr::write_volatile(&mut fis.countl, sector_count as u8);
-        core::ptr::write_volatile(&mut fis.counth, (sector_count >> 8) as u8);
-
-        atomic::compiler_fence(atomic::Ordering::SeqCst);
-        core::ptr::write_volatile(&mut p.ci, 1 << slot);
-
-        let mut timeout2 = 5_000_000;
-        loop {
-            let ci = core::ptr::read_volatile(&p.ci);
-            if (ci & (1 << slot)) == 0 {
-                break;
-            }
-            let is = core::ptr::read_volatile(&p.is);
-            if (is & (1 << 30)) != 0 {
-                return Err(AhciError::PortError);
-            }
-            timeout2 -= 1;
-            if timeout2 == 0 {
-                return Err(AhciError::Timeout);
-            }
+        timeout -= 1;
+        if timeout == 0 {
+            return Err(AhciError::Timeout);
         }
     }
+
+    // Step 4: program the command list header, command table, PRDT and FIS,
+    // then issue the command. This is a bounded, fixed-length sequence of
+    // register/memory writes (not an open-ended busy-poll), so it stays
+    // under one continuous AHCI_LOCK hold - this also keeps "claim slot 0 ->
+    // issue command" atomic with respect to the brief snapshots taken in
+    // Steps 3 and 5.
+    {
+        let _guard = AHCI_LOCK.lock();
+
+        // SAFETY:
+        // - `port` was snapshotted in Step 2 while `ACTIVE_PORT` could not
+        //   change (see that SAFETY note) and stays valid for the process
+        //   lifetime.
+        // - `_request` (Step 1) guarantees no other caller can be
+        //   concurrently mid-flight on command slot 0, and Step 3 confirmed
+        //   slot 0 is not currently owned by hardware either, so this block
+        //   is the sole writer of the slot-0 command header/table/FIS for
+        //   as long as it runs.
+        // - `_guard` (AHCI_LOCK) additionally serializes this block's
+        //   port-register reads/writes (`clb`/`clbu`/`ci`) against the brief
+        //   snapshots taken in Steps 3 and 5.
+        // - `cmd_header`/`cmd_tbl`/`fis` are derived from `clb`/`ctba`
+        //   addresses this driver itself programmed in `port_rebase` and
+        //   identity-mapped; they stay within the single allocated 4 KiB
+        //   per-port frame allocated there.
+        unsafe {
+            let p = &mut *port;
+
+            let clb_phys = (core::ptr::read_volatile(&p.clb) as u64)
+                | ((core::ptr::read_volatile(&p.clbu) as u64) << 32);
+            let cmd_header = &mut *((clb_phys
+                + (slot as u64 * core::mem::size_of::<HbaCmdHeader>() as u64))
+                as *mut HbaCmdHeader);
+
+            let mut cfl = (core::mem::size_of::<FisRegH2D>() / 4) as u8;
+            if is_write {
+                cfl |= 1 << 6;
+            }
+            core::ptr::write_volatile(&mut cmd_header.cfl, cfl);
+            core::ptr::write_volatile(&mut cmd_header.flags, 0);
+
+            let ctba_phys = (core::ptr::read_volatile(&cmd_header.ctba) as u64)
+                | ((core::ptr::read_volatile(&cmd_header.ctbau) as u64) << 32);
+            let cmd_tbl = &mut *(ctba_phys as *mut HbaCmdTbl);
+            core::ptr::write_bytes(
+                cmd_tbl as *mut HbaCmdTbl as *mut u8,
+                0,
+                core::mem::size_of::<HbaCmdTbl>(),
+            );
+
+            let mut prdtl = 0;
+            let mut remaining_bytes = total_bytes;
+            let mut current_va = buffer_ptr as u64;
+
+            while remaining_bytes > 0 {
+                // Defense-in-depth: the upfront `max_prdt_entries_for` check
+                // above should already guarantee this never trips, but
+                // actual physical fragmentation is only known here (it
+                // depends on the live page table), so this remains a
+                // returned error rather than a panic in case that estimate
+                // is ever wrong.
+                if prdtl >= MAX_PRDT_ENTRIES {
+                    return Err(AhciError::PrdtOverflow);
+                }
+                let phys_addr = virt_to_phys(current_va).expect("AHCI: Unmapped buffer VA");
+                let bytes_in_page = 4096 - (phys_addr & 0xFFF);
+                let chunk_size = remaining_bytes.min(bytes_in_page as usize);
+
+                core::ptr::write_volatile(&mut cmd_tbl.prdt_entry[prdtl].dba, phys_addr as u32);
+                core::ptr::write_volatile(
+                    &mut cmd_tbl.prdt_entry[prdtl].dbau,
+                    (phys_addr >> 32) as u32,
+                );
+                core::ptr::write_volatile(
+                    &mut cmd_tbl.prdt_entry[prdtl].dbc,
+                    (chunk_size as u32) - 1,
+                ); // 0-indexed count
+
+                prdtl += 1;
+                remaining_bytes -= chunk_size;
+                current_va += chunk_size as u64;
+            }
+            core::ptr::write_volatile(&mut cmd_header.prdtl, prdtl as u16);
+
+            let fis = &mut *(cmd_tbl.cfis.as_mut_ptr() as *mut FisRegH2D);
+            core::ptr::write_bytes(
+                fis as *mut FisRegH2D as *mut u8,
+                0,
+                core::mem::size_of::<FisRegH2D>(),
+            );
+
+            core::ptr::write_volatile(&mut fis.fis_type, 0x27);
+            core::ptr::write_volatile(&mut fis.pmport_c, 1 << 7);
+            if is_write {
+                core::ptr::write_volatile(&mut fis.command, 0x35);
+            } else {
+                core::ptr::write_volatile(&mut fis.command, 0x25);
+            }
+
+            core::ptr::write_volatile(&mut fis.lba0, lba as u8);
+            core::ptr::write_volatile(&mut fis.lba1, (lba >> 8) as u8);
+            core::ptr::write_volatile(&mut fis.lba2, (lba >> 16) as u8);
+            core::ptr::write_volatile(&mut fis.device, 1 << 6);
+
+            core::ptr::write_volatile(&mut fis.lba3, (lba >> 24) as u8);
+            core::ptr::write_volatile(&mut fis.lba4, (lba >> 32) as u8);
+            core::ptr::write_volatile(&mut fis.lba5, (lba >> 40) as u8);
+
+            core::ptr::write_volatile(&mut fis.countl, sector_count as u8);
+            core::ptr::write_volatile(&mut fis.counth, (sector_count >> 8) as u8);
+
+            atomic::compiler_fence(atomic::Ordering::SeqCst);
+            core::ptr::write_volatile(&mut p.ci, 1 << slot);
+        }
+    }
+
+    // Step 5: wait for the command to complete.
+    //
+    // Same locking invariant as Step 3 (and the same reason for not adding a
+    // `spin_loop()`): only the register snapshot below runs under
+    // AHCI_LOCK, not the wait between snapshots. This is the loop issue #48
+    // specifically called out (up to 5,000,000 iterations).
+    let mut timeout2 = 5_000_000;
+    loop {
+        // SAFETY: see Step 3's snapshot above; identical justification.
+        let (ci, is) = unsafe {
+            let _guard = AHCI_LOCK.lock();
+            (
+                core::ptr::read_volatile(&(*port).ci),
+                core::ptr::read_volatile(&(*port).is),
+            )
+        };
+        if (ci & (1 << slot)) == 0 {
+            break;
+        }
+        if (is & (1 << 30)) != 0 {
+            return Err(AhciError::PortError);
+        }
+        timeout2 -= 1;
+        if timeout2 == 0 {
+            return Err(AhciError::Timeout);
+        }
+    }
+
     Ok(())
 }

@@ -136,18 +136,107 @@ static SCHED_ACTIVE_CR3: AtomicU64 = AtomicU64::new(0);
 pub(crate) static TEST_STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 /// Test-only hook: when set, assert `CR0.TS = 0` immediately after the
-/// scheduler lock is acquired in `on_timer_tick`.
+/// scheduler lock is acquired in `on_timer_tick` *and* in `with_scheduler`.
 ///
-/// This verifies the C2 invariant: the scheduler critical section must never
-/// run with the Task Switched bit set, because `cli` masks IRQs but not the
-/// `#NM` exception, and `handle_fpu_trap` would try to re-acquire `SCHED`.
+/// This verifies the C2 invariant: no `SCHED`-protected critical section may
+/// ever run with the Task Switched bit set, because `cli` masks IRQs but not
+/// the `#NM` exception, and `handle_fpu_trap` would try to re-acquire `SCHED`.
 #[cfg(debug_assertions)]
 pub static TEST_SCHEDULER_ENTER_ASSERT_TS_CLEAR: AtomicBool = AtomicBool::new(false);
 
 /// Executes `f` while holding the scheduler spinlock.
+///
+/// This is the single choke-point almost every scheduler mutation goes
+/// through (`block_task`, `unblock_task`, `terminate_task`, `spawn_internal`,
+/// `init`, `start`, and every `api.rs` accessor).  It must uphold the same C2
+/// guarantee that `on_timer_tick` and `handle_fpu_trap` uphold individually:
+/// `CR0.TS` must be 0 for the entire duration `SCHED` is held, because `cli`
+/// (inside the spinlock) masks maskable IRQs but not the `#NM` exception, and
+/// `handle_fpu_trap` re-acquires `SCHED` — a compiler-emitted SSE instruction
+/// firing `#NM` while `SCHED` is already held would deadlock on a single core.
 pub(super) fn with_scheduler<R>(f: impl FnOnce(&mut SchedulerMetadata) -> R) -> R {
+    // Step 1: Snapshot whether CR0.TS is currently armed *before* clearing it.
+    // `select_next_task` arms TS unconditionally at the end of every context
+    // switch (see `arch/fpu.rs`) so the newly running task's first FPU/SSE
+    // instruction traps into `handle_fpu_trap`, which restores that task's own
+    // saved state and records it as `fpu_owner`. `with_scheduler` may run for
+    // that same task *before* it has ever touched FPU/SSE, i.e. while TS is
+    // still armed and `fpu_owner` does not yet point at it. Clearing TS below
+    // without remembering to re-arm it here would permanently defeat that
+    // task's lazy trap: its own FPU state would never get restored via
+    // `handle_fpu_trap`, and a later FPU/SSE instruction would silently
+    // execute on whatever raw register content happens to be live instead of
+    // trapping — the same class of silent corruption C2 exists to prevent.
+    //
+    // SAFETY:
+    // - `read_ts` only reads CR0, which is safe in ring 0; `with_scheduler` is
+    //   only ever called from kernel (ring 0) code.
+    let ts_was_armed = unsafe { fpu::read_ts() };
+
+    // Step 2: Clear CR0.TS *before* taking the lock, mirroring `on_timer_tick`'s C2
+    // rationale.  This makes every `with_scheduler`-guarded critical section
+    // provably #NM-free regardless of whether TS was left armed by a prior
+    // `select_next_task` context switch.
+    //
+    // SAFETY:
+    // - `CLTS` is a ring-0-only instruction; `with_scheduler` is only ever called
+    //   from kernel (ring 0) code — there is no ring-3 caller in this codebase.
+    // - Clearing TS does not touch any FPU/SSE register content: TS is a latch
+    //   that only controls whether the *next* FPU/SSE instruction traps, so this
+    //   cannot corrupt or discard live FPU state for the current or any other task.
+    // - Calling this when TS is already 0 (e.g. a nested-looking call that is
+    //   actually sequential, since `f` never itself calls `with_scheduler`) is a
+    //   documented no-op per `clear_ts`'s contract — idempotent, not just "safe
+    //   this one time".
+    // - What would make this unsafe: invoking `with_scheduler` from ring 3, or
+    //   from a second CPU core running concurrently without its own serialization
+    //   of `CR0` — neither applies here (kernel-only call sites, single-core).
+    unsafe { fpu::clear_ts() };
+
     let mut sched = SCHED.lock();
-    f(&mut sched)
+
+    // Step 3: Test-only invariant check, mirroring the one in `on_timer_tick`.
+    // Confirms the C2 guarantee holds at this choke-point too, so a regression
+    // here (e.g. someone reordering Step 2 below the lock acquire) is caught by
+    // `cargo test` instead of shipping silently.
+    #[cfg(debug_assertions)]
+    if TEST_SCHEDULER_ENTER_ASSERT_TS_CLEAR.load(Ordering::Acquire) {
+        // SAFETY:
+        // - `read_ts` reads CR0, which is safe in ring 0.
+        // - The scheduler lock is held, so no other path can concurrently
+        //   modify CR0.TS.
+        assert!(
+            !unsafe { fpu::read_ts() },
+            "CR0.TS must be clear while the SCHED spinlock is held (C2)"
+        );
+    }
+
+    let result = f(&mut sched);
+
+    // Step 4: Release `SCHED` before touching CR0 again. Restoring TS is not
+    // part of the C2 guarantee (which only constrains the locked section
+    // above), and dropping the guard first keeps that guarantee unambiguous —
+    // CR0 is never touched again while `SCHED` is held.
+    drop(sched);
+
+    // Step 5: Re-arm CR0.TS if it was armed on entry. `f` never triggers a
+    // context switch itself (that only happens through `select_next_task`,
+    // called from `on_timer_tick`, which re-arms TS unconditionally on every
+    // switch and does not go through `with_scheduler`), so the Step 1
+    // snapshot is still the correct state to restore: either TS was already 0
+    // (the running task already owns live FPU state — nothing to restore), or
+    // it was 1 (armed, not yet trapped) and must be re-armed so that task's
+    // first genuine FPU/SSE instruction still traps into `handle_fpu_trap`
+    // instead of silently running on stale register content.
+    //
+    // SAFETY:
+    // - `set_ts` is a ring-0-only CR0 write; safe here for the same reasons as
+    //   Step 2 (kernel-only call sites, single-core).
+    if ts_was_armed {
+        unsafe { fpu::set_ts() };
+    }
+
+    result
 }
 
 pub(crate) fn arch_callbacks() -> SchedulerArchCallbacks {
@@ -478,15 +567,24 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
 /// If called with no task running (bootstrap / idle context), only `CLTS` is
 /// issued; no state is restored.
 pub fn handle_fpu_trap() {
-    let mut sched = SCHED.lock();
-    let meta = &mut *sched;
-
-    // Step 1: Clear CR0.TS so FXRSTOR64 does not raise a recursive #NM.
-    // Must happen before FXRSTOR64 (FXRSTOR64 faults if CR0.TS = 1).
+    // Step 1: Clear CR0.TS *before* acquiring SCHED — not just so FXRSTOR64
+    // avoids a recursive #NM (it faults if CR0.TS = 1), but also to uphold the
+    // same C2 guarantee as `with_scheduler`/`on_timer_tick`: SCHED must never be
+    // held while TS = 1. `#NM` fired here precisely because TS was 1, so this
+    // handler is itself running with the invariant temporarily violated; clearing
+    // TS before taking the lock closes that window as early as possible instead
+    // of taking SCHED first and clearing TS only afterward.
+    //
     // SAFETY:
     // - This requires `unsafe` because it executes a privileged CPU instruction.
-    // - `CLTS` is valid in ring 0 and clears CR0.TS atomically.
+    // - `CLTS` is valid in ring 0; `#NM` handlers always run in ring 0.
+    // - Clearing TS here, before FXRSTOR64 in Step 3 below, is required for
+    //   correctness (FXRSTOR64 would otherwise re-fault) and is idempotent if TS
+    //   was already 0.
     unsafe { fpu::clear_ts() };
+
+    let mut sched = SCHED.lock();
+    let meta = &mut *sched;
 
     let running_slot = match meta.running_slot {
         Some(slot) => slot,
