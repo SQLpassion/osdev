@@ -101,22 +101,30 @@ fn test_scheduler_critical_section_enters_with_ts_clear() {
 
 /// Contract: `with_scheduler` — the choke-point behind ~20 scheduler call sites
 /// other than `on_timer_tick`/`handle_fpu_trap` — also enters the `SCHED`
-/// critical section with `CR0.TS` clear (issue #45).
+/// critical section with `CR0.TS` clear (issue #45), and restores `CR0.TS` to
+/// its pre-call armed state once `SCHED` is released.
 ///
 /// Given: `CR0.TS` is deliberately left armed, exactly as `select_next_task`
-///        leaves it at the end of a real context switch.
+///        leaves it at the end of a real context switch (the running task has
+///        not yet trapped `#NM`, so it does not own live FPU state yet).
 /// When:  A `with_scheduler`-guarded API (`is_running`) is invoked directly,
 ///        without going through `on_timer_tick` first.
 /// Then:  The test hook must observe `CR0.TS = 0` while `SCHED` is held, and
-///        `CR0.TS` must still be 0 once the call returns.
-/// Failure Impact: Before this fix, `with_scheduler` never touched `CR0.TS`,
-/// so every one of its ~20 call sites ran its critical section with whatever
-/// `CR0.TS` value a prior context switch left behind. That is inert only as
-/// long as the build target disables SSE (see issue #45) — re-enabling SSE, or
-/// a future dependency shipping SIMD code, would turn any such call site into
-/// a silent `#NM` re-entrant-lock deadlock.
+///        `CR0.TS` must be **re-armed** (1) once the call returns — restoring
+///        the pre-call state rather than leaving it permanently cleared.
+/// Failure Impact: Before issue #45's original fix, `with_scheduler` never
+/// touched `CR0.TS` at all, so every one of its ~20 call sites ran its
+/// critical section with whatever `CR0.TS` value a prior context switch left
+/// behind — inert only as long as the build target disables SSE. A later
+/// revision of that fix cleared `CR0.TS` on entry but never restored it,
+/// which permanently defeated the lazy-FPU trap for any task that called a
+/// `with_scheduler`-guarded API before its first FPU/SSE instruction: that
+/// instruction would then silently execute on stale/foreign register content
+/// instead of trapping into `handle_fpu_trap` to restore its own state. This
+/// test pins the corrected contract: clear only for the duration of the
+/// locked section, restored immediately after.
 #[test_case]
-fn test_with_scheduler_entry_points_enter_with_ts_clear() {
+fn test_with_scheduler_entry_points_enter_with_ts_clear_and_restore_it() {
     sched::init();
 
     // Simulate the post-context-switch state `select_next_task` leaves behind:
@@ -143,15 +151,52 @@ fn test_with_scheduler_entry_points_enter_with_ts_clear() {
     // Disable the hook again so later tests in this binary are not affected.
     TEST_SCHEDULER_ENTER_ASSERT_TS_CLEAR.store(false, Ordering::Release);
 
-    // The call must also have left CR0.TS clear as an observable side effect,
-    // independent of the debug-only assertion hook above.
+    // The call must have *re-armed* CR0.TS once it returns, since it was
+    // armed (not yet trapped) on entry. Leaving it clear here would mean the
+    // running task's own FPU state is never restored via `handle_fpu_trap`.
     //
     // SAFETY:
     // - `read_ts` only reads CR0, which is safe in ring 0.
     unsafe {
         assert!(
+            fpu::read_ts(),
+            "with_scheduler must re-arm CR0.TS after returning if it was armed on entry"
+        );
+    }
+}
+
+/// Contract: `with_scheduler` must NOT arm `CR0.TS` on return if it was
+/// already clear on entry (the running task already owns live FPU state).
+///
+/// Given: `CR0.TS` is clear, as it would be for a task that has already
+///        trapped `#NM` once and had its state restored by `handle_fpu_trap`.
+/// When:  A `with_scheduler`-guarded API (`is_running`) is invoked.
+/// Then:  `CR0.TS` must remain clear once the call returns — `with_scheduler`
+///        must restore the pre-call state, not unconditionally arm it.
+/// Failure Impact: If `with_scheduler` armed `CR0.TS` unconditionally on
+/// return, a task that already owns live FPU state would take a spurious
+/// `#NM` trap on its next FPU/SSE instruction, needlessly re-running the
+/// FXRSTOR64 path against state that was already correctly in place.
+#[test_case]
+fn test_with_scheduler_leaves_ts_clear_if_already_clear_on_entry() {
+    sched::init();
+
+    // Simulate a task that already owns live FPU state (already trapped
+    // #NM once): CR0.TS = 0.
+    //
+    // SAFETY:
+    // - `clear_ts` is a ring-0-only instruction; this test binary runs
+    //   entirely in ring 0.
+    unsafe { fpu::clear_ts() };
+
+    let _ = sched::is_running();
+
+    // SAFETY:
+    // - `read_ts` only reads CR0, which is safe in ring 0.
+    unsafe {
+        assert!(
             !fpu::read_ts(),
-            "with_scheduler must leave CR0.TS clear after returning"
+            "with_scheduler must not arm CR0.TS if it was already clear on entry"
         );
     }
 }
