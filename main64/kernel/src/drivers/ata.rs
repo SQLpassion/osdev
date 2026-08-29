@@ -6,9 +6,8 @@
 use crate::arch::interrupts::{self, SavedRegisters};
 use crate::arch::port::{PortByte, PortWord};
 use crate::scheduler;
+use crate::sync::request_slot::InFlightSlot;
 use crate::sync::spinlock::SpinLock;
-use crate::sync::waitqueue::WaitQueue;
-use crate::sync::waitqueue_adapter;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 /// Bytes per sector on an ATA disk.
@@ -252,11 +251,8 @@ static PRIMARY_ATA: AtaGlobal = AtaGlobal {
     initialized: AtomicBool::new(false),
 };
 
-/// True while one task owns the primary ATA request slot.
-static REQUEST_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
-
-/// Waiters blocked while another task owns the ATA request slot.
-static REQUEST_WAITQUEUE: WaitQueue = WaitQueue::new();
+/// Primitive for exclusive ATA request ownership.
+static REQUEST_SLOT: InFlightSlot = InFlightSlot::new();
 
 /// Set by IRQ14 to signal ATA state progress/data readiness.
 static IRQ_EVENT_PENDING: AtomicBool = AtomicBool::new(false);
@@ -266,62 +262,6 @@ static IRQ_EVENT_PENDING: AtomicBool = AtomicBool::new(false);
 // - `controller` serializes all mutable ATA access via `SpinLock`.
 // - `initialized` is an atomic flag and does not require external synchronization.
 unsafe impl Sync for AtaGlobal {}
-
-/// RAII token for exclusive ATA request ownership.
-struct RequestSlotGuard;
-
-impl Drop for RequestSlotGuard {
-    fn drop(&mut self) {
-        // Step 1: release the global in-flight marker so one waiting request
-        // can acquire the controller path.
-        REQUEST_IN_FLIGHT.store(false, Ordering::Release);
-
-        // Step 2: wake request waiters outside of any controller lock so
-        // blocked tasks can re-contend for the request slot.
-        waitqueue_adapter::wake_all_multi(&REQUEST_WAITQUEUE);
-    }
-}
-
-/// Acquire exclusive ownership of the ATA request path.
-///
-/// In scheduler context this blocks cooperatively on a wait queue so other
-/// tasks can continue to run. In early-boot/test contexts (without scheduler)
-/// it falls back to brief spin-waiting.
-fn acquire_request_slot() -> RequestSlotGuard {
-    loop {
-        // Step 1: fast path — try to claim exclusive request ownership.
-        if REQUEST_IN_FLIGHT
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-        {
-            return RequestSlotGuard;
-        }
-
-        // Step 2: decide whether cooperative sleeping is possible in this
-        // execution context (scheduler running + current task available).
-        let maybe_task_id = if scheduler::is_running() {
-            scheduler::current_task_id()
-        } else {
-            None
-        };
-
-        if let Some(task_id) = maybe_task_id {
-            // Step 3a: scheduler context — sleep while request slot stays busy.
-            // Predicate is rechecked with interrupts disabled by waitqueue adapter.
-            if waitqueue_adapter::sleep_if_multi(&REQUEST_WAITQUEUE, task_id, || {
-                REQUEST_IN_FLIGHT.load(Ordering::Acquire)
-            })
-            .should_yield()
-            {
-                // Hand CPU to current owner or another runnable task.
-                scheduler::yield_now();
-            }
-        } else {
-            // Step 3b: early boot/test context — no scheduler sleep available.
-            core::hint::spin_loop();
-        }
-    }
-}
 
 fn with_controller<R>(f: impl FnOnce(&AtaPio) -> R) -> R {
     // Serialize direct task-file/data-port access to one caller at a time.
@@ -509,7 +449,7 @@ pub fn read_sectors(buffer: &mut [u8], lba: u32, sector_count: u8) -> Result<(),
 
     // Step 1: serialize full request lifetime without holding a spinlock.
     // The slot can be held across scheduler sleeps, unlike SpinLock guards.
-    let _request = acquire_request_slot();
+    let _request = REQUEST_SLOT.acquire();
 
     // Clear stale IRQ edge from any prior request before issuing a command.
     IRQ_EVENT_PENDING.store(false, Ordering::Release);
@@ -575,7 +515,7 @@ pub fn write_sectors(buffer: &[u8], lba: u32, sector_count: u8) -> Result<(), At
     );
 
     // Step 1: serialize full request lifetime without holding a spinlock.
-    let _request = acquire_request_slot();
+    let _request = REQUEST_SLOT.acquire();
 
     // Clear stale IRQ edge from any prior request before issuing a command.
     IRQ_EVENT_PENDING.store(false, Ordering::Release);

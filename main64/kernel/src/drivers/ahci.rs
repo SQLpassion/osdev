@@ -5,10 +5,8 @@
 use crate::debugln;
 use crate::drivers::pci;
 use crate::memory::{pmm, vmm};
-use crate::scheduler;
+use crate::sync::request_slot::InFlightSlot;
 use crate::sync::spinlock::SpinLock;
-use crate::sync::waitqueue::WaitQueue;
-use crate::sync::waitqueue_adapter;
 use core::sync::atomic;
 
 /// AHCI Command bits (PxCMD)
@@ -176,9 +174,7 @@ static mut ACTIVE_PORT: Option<*mut HbaPort> = None;
 
 static AHCI_LOCK: SpinLock<()> = SpinLock::new(());
 
-/// True while one caller owns the AHCI transfer request slot end-to-end,
-/// i.e. from claiming command slot 0 in `do_transfer` through observing its
-/// completion.
+/// Primitive for exclusive AHCI transfer request ownership.
 ///
 /// This driver only ever uses command slot 0, and (since issue #48)
 /// `AHCI_LOCK` itself is held only for brief register snapshots/writes
@@ -188,106 +184,35 @@ static AHCI_LOCK: SpinLock<()> = SpinLock::new(());
 /// mechanism, a second task could be scheduled in while a first transfer is
 /// still mid-flight and start its own `do_transfer` call, and both would
 /// race to (re)program the same slot-0 command header/table/FIS. This flag
-/// (with `AHCI_REQUEST_WAITQUEUE` below) restores "only one transfer in
-/// flight at a time" without requiring interrupts to stay disabled while a
-/// task waits its turn - mirrors `ata.rs`'s `REQUEST_IN_FLIGHT`.
-static AHCI_REQUEST_IN_FLIGHT: atomic::AtomicBool = atomic::AtomicBool::new(false);
-
-/// Waiters blocked while another task owns the AHCI transfer request slot.
-static AHCI_REQUEST_WAITQUEUE: WaitQueue = WaitQueue::new();
-
-/// RAII token for exclusive ownership of the AHCI transfer request slot.
-struct AhciRequestSlotGuard;
-
-impl Drop for AhciRequestSlotGuard {
-    fn drop(&mut self) {
-        // Step 1: release the in-flight marker so a waiting request can
-        // claim the slot.
-        AHCI_REQUEST_IN_FLIGHT.store(false, atomic::Ordering::Release);
-
-        // Step 2: wake request waiters outside of any lock so blocked tasks
-        // can re-contend for the request slot.
-        waitqueue_adapter::wake_all_multi(&AHCI_REQUEST_WAITQUEUE);
-    }
-}
-
-/// Acquires exclusive ownership of the AHCI transfer request slot.
-///
-/// Mirrors `ata.rs`'s `acquire_request_slot`: in scheduler context this
-/// blocks cooperatively on a wait queue so other tasks keep running while
-/// waiting; in early-boot/test contexts (no scheduler yet) it falls back to
-/// brief spin-waiting instead, since there is nothing else to yield to.
-fn acquire_transfer_slot() -> AhciRequestSlotGuard {
-    loop {
-        // Step 1: fast path - try to claim exclusive ownership.
-        if AHCI_REQUEST_IN_FLIGHT
-            .compare_exchange(
-                false,
-                true,
-                atomic::Ordering::AcqRel,
-                atomic::Ordering::Acquire,
-            )
-            .is_ok()
-        {
-            return AhciRequestSlotGuard;
-        }
-
-        // Step 2: decide whether cooperative sleeping is possible in this
-        // execution context (scheduler running + current task available).
-        let maybe_task_id = if scheduler::is_running() {
-            scheduler::current_task_id()
-        } else {
-            None
-        };
-
-        if let Some(task_id) = maybe_task_id {
-            // Step 3a: scheduler context - sleep while the request slot
-            // stays busy. Predicate is rechecked with interrupts disabled by
-            // the waitqueue adapter.
-            if waitqueue_adapter::sleep_if_multi(&AHCI_REQUEST_WAITQUEUE, task_id, || {
-                AHCI_REQUEST_IN_FLIGHT.load(atomic::Ordering::Acquire)
-            })
-            .should_yield()
-            {
-                // Hand the CPU to the current owner or another runnable task.
-                scheduler::yield_now();
-            }
-        } else {
-            // Step 3b: early boot/test context - no scheduler sleep available.
-            core::hint::spin_loop();
-        }
-    }
-}
+/// restores "only one transfer in flight at a time" without requiring
+/// interrupts to stay disabled while a task waits its turn.
+pub(crate) static REQUEST_SLOT: InFlightSlot = InFlightSlot::new();
 
 /// Test-only, non-blocking attempt to claim the AHCI transfer request slot.
 ///
 /// Exposed (not just `pub(crate)`) so integration tests can exercise the
-/// mutual-exclusion primitive added by issue #48 directly, mirroring
-/// `max_prdt_entries_for`'s rationale below: `do_transfer`'s hardware path
-/// cannot be driven end-to-end without a mapped AHCI port, which is not
-/// present in every test environment (e.g. default QEMU without
-/// `-device ahci`), so this is the closest hardware-independent seam to the
-/// "only one transfer in flight at a time" invariant that narrowing
-/// `AHCI_LOCK`'s scope now depends on.
+/// mutual-exclusion primitive added by issue #48 directly.
 pub fn try_acquire_transfer_slot_for_test() -> bool {
-    AHCI_REQUEST_IN_FLIGHT
-        .compare_exchange(
-            false,
-            true,
-            atomic::Ordering::AcqRel,
-            atomic::Ordering::Acquire,
-        )
-        .is_ok()
+    // We leak the guard here since the test calls release manually.
+    // Issue #84 will fix this to use the real guard.
+    if let Some(guard) = REQUEST_SLOT.try_acquire() {
+        core::mem::forget(guard);
+        true
+    } else {
+        false
+    }
 }
 
 /// Test-only release counterpart to [`try_acquire_transfer_slot_for_test`].
-///
-/// Mirrors exactly what `AhciRequestSlotGuard::drop` does, so tests can
-/// release a slot claimed via the function above without needing a real
-/// `do_transfer` call to construct the (non-`pub`) guard type.
 pub fn release_transfer_slot_for_test() {
-    AHCI_REQUEST_IN_FLIGHT.store(false, atomic::Ordering::Release);
-    waitqueue_adapter::wake_all_multi(&AHCI_REQUEST_WAITQUEUE);
+    // We artificially construct a guard and immediately drop it.
+    // SAFETY: This is test-only, and we rely on tests correctly balancing acquire/release.
+    // Issue #84 will remove the need for this hack.
+    let _ = unsafe {
+        core::mem::transmute::<_, crate::sync::request_slot::SingleSlotGuard<'static>>(
+            &REQUEST_SLOT,
+        )
+    };
 }
 
 /// Initializes the first AHCI controller that exposes an active SATA port.
@@ -832,7 +757,7 @@ fn do_transfer(
     // `AHCI_LOCK` below, waiting here does not disable interrupts, so a task
     // waiting for a previous transfer to finish stays preemptible instead of
     // stalling the timer tick / other interrupt-driven drivers (issue #48).
-    let _request = acquire_transfer_slot();
+    let _request = REQUEST_SLOT.acquire();
 
     // Step 2: snapshot the active port and clear any stale pending
     // interrupt-status bits left over from a previous command, under

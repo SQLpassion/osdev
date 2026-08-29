@@ -5,6 +5,7 @@
 //! scheduler-aware wait queues and lock-free communication rings.
 //!
 
+pub mod request_slot;
 pub mod ringbuffer;
 pub mod singlewaitqueue;
 pub mod spinlock;
