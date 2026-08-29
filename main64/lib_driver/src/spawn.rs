@@ -14,7 +14,15 @@ pub fn spawn_driver(
     caps: u64,
     grants: Option<&UserDriverGrants>,
 ) -> Result<u64, SysError> {
-    let name_ptr = name.as_ptr() as u64;
+    let mut buf = [0u8; 128];
+    let name_bytes = name.as_bytes();
+    if name_bytes.len() >= 128 {
+        return Err(SysError::InvalidArgument);
+    }
+    buf[..name_bytes.len()].copy_from_slice(name_bytes);
+    buf[name_bytes.len()] = 0;
+
+    let name_ptr = buf.as_ptr() as u64;
     let grants_ptr = match grants {
         Some(g) => g as *const UserDriverGrants as u64,
         None => 0,
