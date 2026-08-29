@@ -241,6 +241,14 @@ fn test_rtl8139_ipv4_checksum_and_validation() {
     assert_eq!(parsed.dest_ip, dest);
     assert_eq!(parsed.protocol, ip_protocol::ICMP);
     assert_eq!(parsed.payload, payload);
+
+    // Test subnet matching
+    let mask = Ipv4Address::new(255, 255, 255, 0);
+    let local_ip = Ipv4Address::new(192, 168, 1, 100);
+    let gateway_ip = Ipv4Address::new(192, 168, 1, 1);
+    let remote_ip = Ipv4Address::new(8, 8, 8, 8);
+    assert!(local_ip.is_same_subnet(gateway_ip, mask));
+    assert!(!local_ip.is_same_subnet(remote_ip, mask));
 }
 
 /// Tests ICMP Echo Request and Reply packet construction and checksum validation.

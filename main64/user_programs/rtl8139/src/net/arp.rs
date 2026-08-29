@@ -46,6 +46,12 @@ impl Ipv4Address {
         self.0
     }
 
+    /// Returns `true` if this address is all zeros (`0.0.0.0`).
+    #[inline]
+    pub fn is_zero(&self) -> bool {
+        self.0 == [0, 0, 0, 0]
+    }
+
     /// Parses an IPv4 address from a dotted-decimal string (e.g. `"10.0.2.2"`).
     pub fn parse_str(s: &str) -> Option<Self> {
         let mut octets = [0u8; 4];
@@ -81,6 +87,17 @@ impl Ipv4Address {
         octets[3] = current_val as u8;
 
         Some(Self(octets))
+    }
+
+    /// Checks if this address and `other` belong to the same subnet according to `mask`.
+    #[inline]
+    pub fn is_same_subnet(&self, other: Self, mask: Self) -> bool {
+        for i in 0..4 {
+            if (self.0[i] & mask.0[i]) != (other.0[i] & mask.0[i]) {
+                return false;
+            }
+        }
+        true
     }
 }
 
@@ -324,5 +341,16 @@ mod tests {
         table.update(ip, mac2);
         assert_eq!(table.lookup(ip), Some(mac2));
         assert_eq!(table.entries().len(), 1);
+    }
+
+    #[test]
+    fn test_ipv4_is_same_subnet() {
+        let mask = Ipv4Address::new(255, 255, 255, 0);
+        let ip1 = Ipv4Address::new(192, 168, 1, 50);
+        let ip2 = Ipv4Address::new(192, 168, 1, 1);
+        let ip_diff = Ipv4Address::new(10, 0, 2, 15);
+
+        assert!(ip1.is_same_subnet(ip2, mask));
+        assert!(!ip1.is_same_subnet(ip_diff, mask));
     }
 }

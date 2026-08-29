@@ -149,13 +149,17 @@ pub extern "C" fn _start() -> ! {
         match cmd {
             "help" => {
                 println!("Available commands:");
-                println!("  info         - Display network interface configuration & stats");
-                println!("  arp          - Display dynamic ARP table entries");
-                println!("  ping <ip>    - Send ICMP Echo Requests to <ip> (e.g. ping 10.0.2.2)");
                 println!(
-                    "  listen       - Listen for network packets and auto-respond to ping/arp"
+                    "  info                          - Display network configuration & statistics"
                 );
-                println!("  exit, quit   - Exit driver and return to KAOS shell");
+                println!("  ifconfig [ip] [gw] [mask]     - Display or configure IP, Gateway, and Subnet Mask");
+                println!("  set ip <address>              - Set interface IPv4 address (e.g. set ip 192.168.1.50)");
+                println!("  set gw <address>              - Set default gateway IPv4 address (e.g. set gw 192.168.1.1)");
+                println!("  set mask <address>            - Set subnet mask (e.g. set mask 255.255.255.0)");
+                println!("  arp                           - Display dynamic ARP table entries");
+                println!("  ping <ip>                     - Send ICMP Echo Requests to <ip> (e.g. ping 192.168.1.1)");
+                println!("  listen                        - Listen for network packets and auto-respond to ping/arp");
+                println!("  exit, quit                    - Exit driver and return to KAOS shell");
             }
             "info" => {
                 println!("--- Network Interface Configuration ---");
@@ -173,6 +177,73 @@ pub extern "C" fn _start() -> ! {
                     stack.tx_packets, stack.tx_bytes
                 );
             }
+            "ifconfig" => {
+                if let Some(ip_str) = parts.next() {
+                    let Some(new_ip) = Ipv4Address::parse_str(ip_str) else {
+                        println!("Invalid IPv4 address: '{}'", ip_str);
+                        continue;
+                    };
+                    stack.config.ip = new_ip;
+
+                    if let Some(gw_str) = parts.next() {
+                        if let Some(new_gw) = Ipv4Address::parse_str(gw_str) {
+                            stack.config.gateway = new_gw;
+                        }
+                    }
+
+                    if let Some(mask_str) = parts.next() {
+                        if let Some(new_mask) = Ipv4Address::parse_str(mask_str) {
+                            stack.config.subnet_mask = new_mask;
+                        }
+                    }
+
+                    println!(
+                        "Configured network: IP {}, Gateway {}, Mask {}",
+                        stack.config.ip, stack.config.gateway, stack.config.subnet_mask
+                    );
+                } else {
+                    println!("Interface rtl8139:");
+                    println!("  MAC address  : {}", stack.config.mac);
+                    println!("  inet addr    : {}", stack.config.ip);
+                    println!("  gateway      : {}", stack.config.gateway);
+                    println!("  netmask      : {}", stack.config.subnet_mask);
+                }
+            }
+            "set" => {
+                let Some(subcmd) = parts.next() else {
+                    println!("Usage: set <ip|gw|mask> <address>");
+                    continue;
+                };
+                let Some(val_str) = parts.next() else {
+                    println!("Usage: set {} <address>", subcmd);
+                    continue;
+                };
+                let Some(parsed_ip) = Ipv4Address::parse_str(val_str) else {
+                    println!("Invalid IPv4 address: '{}'", val_str);
+                    continue;
+                };
+
+                match subcmd {
+                    "ip" | "addr" => {
+                        stack.config.ip = parsed_ip;
+                        println!("Interface IP address set to {}", stack.config.ip);
+                    }
+                    "gw" | "gateway" => {
+                        stack.config.gateway = parsed_ip;
+                        println!("Default gateway set to {}", stack.config.gateway);
+                    }
+                    "mask" | "netmask" => {
+                        stack.config.subnet_mask = parsed_ip;
+                        println!("Subnet mask set to {}", stack.config.subnet_mask);
+                    }
+                    _ => {
+                        println!(
+                            "Unknown parameter: '{}'. Use 'ip', 'gw', or 'mask'.",
+                            subcmd
+                        );
+                    }
+                }
+            }
             "arp" => {
                 let entries = stack.arp_table.entries();
                 if entries.is_empty() {
@@ -186,7 +257,7 @@ pub extern "C" fn _start() -> ! {
             }
             "ping" => {
                 let Some(target_str) = parts.next() else {
-                    println!("Usage: ping <ipv4_address> (e.g. ping 10.0.2.2)");
+                    println!("Usage: ping <ipv4_address> (e.g. ping 192.168.1.1)");
                     continue;
                 };
 
@@ -236,13 +307,31 @@ fn read_tsc() -> u64 {
 fn execute_ping(device: &mut Rtl8139Device, stack: &mut NetworkStack, target_ip: Ipv4Address) {
     println!("PING {} 56(84) bytes of data.", target_ip);
 
-    // Step 1: Resolve target MAC address via ARP if not cached.
-    let dest_mac = if let Some(mac) = stack.arp_table.lookup(target_ip) {
+    // Step 1: Determine routing next-hop (direct subnet or default gateway).
+    let is_local = stack
+        .config
+        .ip
+        .is_same_subnet(target_ip, stack.config.subnet_mask);
+    let next_hop_ip = if is_local {
+        target_ip
+    } else {
+        if stack.config.gateway.is_zero() {
+            println!(
+                "From {}: Destination Host Unreachable (no default gateway configured for remote subnet)",
+                stack.config.ip
+            );
+            return;
+        }
+        stack.config.gateway
+    };
+
+    // Step 2: Resolve next-hop MAC address via ARP if not cached.
+    let dest_mac = if let Some(mac) = stack.arp_table.lookup(next_hop_ip) {
         mac
     } else {
-        // Send ARP request
+        // Send ARP request for next-hop IP
         let mut arp_buf = [0u8; 64];
-        if let Some(arp_len) = stack.build_arp_request(target_ip, &mut arp_buf) {
+        if let Some(arp_len) = stack.build_arp_request(next_hop_ip, &mut arp_buf) {
             stack.tx_packets += 1;
             stack.tx_bytes += arp_len;
             let _ = device.transmit(&arp_buf[..arp_len]);
@@ -259,7 +348,7 @@ fn execute_ping(device: &mut Rtl8139Device, stack: &mut NetworkStack, target_ip:
                 });
             }
 
-            if let Some(mac) = stack.arp_table.lookup(target_ip) {
+            if let Some(mac) = stack.arp_table.lookup(next_hop_ip) {
                 resolved_mac = Some(mac);
                 break;
             }
@@ -273,8 +362,8 @@ fn execute_ping(device: &mut Rtl8139Device, stack: &mut NetworkStack, target_ip:
             Some(m) => m,
             None => {
                 println!(
-                    "From {}: Destination Host Unreachable (ARP timeout)",
-                    stack.config.ip
+                    "From {}: Destination Host Unreachable (ARP timeout for next-hop {})",
+                    stack.config.ip, next_hop_ip
                 );
                 return;
             }
