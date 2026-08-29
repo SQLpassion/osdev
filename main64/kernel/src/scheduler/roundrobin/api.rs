@@ -199,6 +199,39 @@ pub fn current_user_heap_top() -> Option<u64> {
     })
 }
 
+/// Returns a mutable reference to the DriverCaps of the currently running task,
+/// or `None` if the task holds no capabilities (normal unprivileged task).
+pub fn current_task_caps() -> Option<&'static mut crate::process::capabilities::DriverCaps> {
+    with_scheduler(|meta| {
+        let slot = meta.running_slot?;
+        let entry = meta.slots.get(slot)?;
+        if entry.caps.is_null() {
+            None
+        } else {
+            // SAFETY:
+            // - `entry.caps` was heap-allocated with Box::into_raw and is non-null.
+            // - Syscall dispatch occurs on a single-core kernel where the current task
+            //   runs exclusively and no other thread or ISR aliases `entry.caps`.
+            Some(unsafe { &mut *entry.caps })
+        }
+    })
+}
+
+/// Sets or replaces the driver capabilities block for `task_id`.
+///
+/// Returns `false` if `task_id` is invalid or refers to an unused slot.
+pub fn set_task_caps(task_id: usize, caps: *mut crate::process::capabilities::DriverCaps) -> bool {
+    let slot = task_id_slot(task_id);
+    with_scheduler(|meta| {
+        if slot >= meta.slots.len() || !meta.slots[slot].used {
+            return false;
+        }
+
+        meta.slots[slot].caps = caps;
+        true
+    })
+}
+
 /// Sets the user heap top address of the current task.
 ///
 /// Returns `false` if there is no current task or it is not a user task.
@@ -332,5 +365,13 @@ pub fn reset_initialization_for_test() {
     with_scheduler(|meta| {
         // Step 2: Clear initialized state.
         meta.initialized = false;
+    });
+}
+
+/// Sets the currently running task slot index for unit tests.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn set_running_slot_for_test(slot: Option<usize>) {
+    with_scheduler(|meta| {
+        meta.running_slot = slot;
     });
 }

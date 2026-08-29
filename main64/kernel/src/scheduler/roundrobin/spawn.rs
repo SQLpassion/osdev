@@ -191,6 +191,7 @@ fn spawn_internal(kind: SpawnKind) -> Result<usize, SpawnError> {
             stack_base: stack_ptr,
             stack_size: TASK_STACK_SIZE,
             fpu_state: fpu_ptr,
+            caps: core::ptr::null_mut(),
         };
 
         if is_new_slot {

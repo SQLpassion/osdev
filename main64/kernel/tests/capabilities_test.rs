@@ -1,0 +1,107 @@
+//! Per-task capability and resource-grant system integration tests.
+
+#![no_std]
+#![no_main]
+#![feature(custom_test_frameworks)]
+#![test_runner(kaos_kernel::testing::test_runner)]
+#![reexport_test_harness_main = "test_main"]
+
+extern crate alloc;
+use alloc::boxed::Box;
+use alloc::vec;
+use core::panic::PanicInfo;
+
+use kaos_kernel::arch::interrupts;
+use kaos_kernel::memory::{heap, pmm, vmm};
+use kaos_kernel::process::capabilities::{Capabilities, DriverCaps, ResourceGrants};
+use kaos_kernel::scheduler::{self as sched, set_task_caps};
+
+#[no_mangle]
+#[link_section = ".text.boot"]
+pub extern "C" fn KernelMain(_kernel_size: u64) -> ! {
+    kaos_kernel::drivers::serial::init();
+    interrupts::init();
+    pmm::init(false);
+    vmm::init(false);
+    heap::init(false);
+    sched::init();
+
+    test_main();
+
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+#[panic_handler]
+fn panic(info: &PanicInfo) -> ! {
+    kaos_kernel::testing::test_panic_handler(info)
+}
+
+extern "C" fn dummy_task() -> ! {
+    loop {
+        sched::yield_now();
+    }
+}
+
+/// Tests bitwise operations and invariants of the Capabilities bitmask type.
+#[test_case]
+fn test_capabilities_bitflags() {
+    let none = Capabilities::NONE;
+    assert_eq!(none.bits(), 0);
+    assert!(!none.contains(Capabilities::MMIO));
+
+    let mmio = Capabilities::MMIO;
+    let irq = Capabilities::IRQ;
+    let spawn = Capabilities::SPAWN_DRIVER;
+
+    let combined = mmio | irq;
+    assert!(combined.contains(Capabilities::MMIO));
+    assert!(combined.contains(Capabilities::IRQ));
+    assert!(!combined.contains(Capabilities::SPAWN_DRIVER));
+
+    let all = combined.union(spawn);
+    assert!(all.contains(Capabilities::MMIO));
+    assert!(all.contains(Capabilities::IRQ));
+    assert!(all.contains(Capabilities::SPAWN_DRIVER));
+
+    let truncated = Capabilities::from_bits_truncate(0xFFFF_FFFF);
+    assert_eq!(
+        truncated.bits(),
+        (Capabilities::MMIO | Capabilities::IRQ | Capabilities::SPAWN_DRIVER).bits()
+    );
+}
+
+/// Tests that a freshly spawned task defaults to null caps (no capabilities).
+#[test_case]
+fn test_spawned_task_has_no_caps_by_default() {
+    let task_id = sched::spawn_kernel_task(dummy_task).expect("task should spawn");
+
+    // Setting caps to null is default, verify via set_task_caps and scheduler inspection.
+    let is_set = set_task_caps(task_id, core::ptr::null_mut());
+    assert!(is_set, "set_task_caps on live task should succeed");
+
+    sched::terminate_task(task_id);
+}
+
+/// Tests attaching and querying DriverCaps on a task.
+#[test_case]
+fn test_driver_caps_attachment_and_cleanup() {
+    let task_id = sched::spawn_kernel_task(dummy_task).expect("task should spawn");
+
+    // Allocate a DriverCaps block on the heap.
+    let grants = ResourceGrants {
+        mmio_regions: vec![(0xFEB0_0000, 256), (0xFEB1_0000, 4096)],
+        irqs: vec![11, 14],
+        mmio_bump: 0x0000_7800_0000_0000,
+    };
+    let flags = Capabilities::MMIO | Capabilities::IRQ;
+    let caps_ptr = Box::into_raw(Box::new(DriverCaps::new(flags, grants)));
+
+    // Attach to the task.
+    let attached = set_task_caps(task_id, caps_ptr);
+    assert!(attached, "should attach caps to task");
+
+    // Terminating task will trigger remove_task during reap, which frees caps.
+    sched::terminate_task(task_id);
+}

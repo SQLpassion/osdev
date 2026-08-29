@@ -46,10 +46,11 @@ mod wait;
 
 #[allow(unused_imports)]
 pub use api::{
-    current_task_id, current_user_heap_top, is_parent_of, is_task_privileged, is_user_task,
-    reset_initialization_for_test, set_current_user_heap_top, set_task_parent,
-    set_task_user_context, slot_table_len, task_context, task_frame_ptr, task_generation,
-    task_iret_frame, task_state, try_increment_exec_count,
+    current_task_caps, current_task_id, current_user_heap_top, is_parent_of, is_task_privileged,
+    is_user_task, reset_initialization_for_test, set_current_user_heap_top,
+    set_running_slot_for_test, set_task_caps, set_task_parent, set_task_user_context,
+    slot_table_len, task_context, task_frame_ptr, task_generation, task_iret_frame, task_state,
+    try_increment_exec_count,
 };
 #[allow(unused_imports)]
 pub use spawn::{spawn_kernel_task, spawn_user_task, spawn_user_task_owning_code};
@@ -292,6 +293,14 @@ pub fn init() {
                 }
 
                 slot.fpu_state = ptr::null_mut();
+
+                if !slot.caps.is_null() {
+                    // SAFETY:
+                    // - `caps` was heap-allocated at driver spawn time with `Box::into_raw`.
+                    // - We are resetting the scheduler; no task will access this block.
+                    drop(unsafe { alloc::boxed::Box::from_raw(slot.caps) });
+                    slot.caps = ptr::null_mut();
+                }
 
                 if !slot.stack_base.is_null() && stacks_to_free.try_reserve(1).is_ok() {
                     stacks_to_free.push((slot.stack_base, slot.stack_size));

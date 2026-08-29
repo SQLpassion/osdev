@@ -157,6 +157,17 @@ pub(crate) fn remove_task(
 
     meta.slots[task_id].fpu_state = ptr::null_mut();
 
+    // Free the driver capability block if this was a driver task.
+    if !meta.slots[task_id].caps.is_null() {
+        // SAFETY:
+        // - `caps` was heap-allocated at driver spawn time with `Box::into_raw`.
+        // - This is the unique owner of the allocation and `remove_task` is called
+        //   exactly once per slot lifecycle.
+        // - The pointer is nulled out immediately after deallocation.
+        drop(unsafe { alloc::boxed::Box::from_raw(meta.slots[task_id].caps) });
+        meta.slots[task_id].caps = ptr::null_mut();
+    }
+
     // Move the stack to the pending-free list instead of freeing it now.
     // This keeps the stack range visible to `frame_within_any_task_stack`
     // until the next timer tick, preventing stale task frames from being

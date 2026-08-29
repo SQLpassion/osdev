@@ -198,6 +198,13 @@ pub struct TaskEntry {
     ///
     /// Raw pointer instead of `Box<FpuState>` because `TaskEntry: Copy`.
     pub fpu_state: *mut fpu::FpuState,
+
+    /// Hardware capabilities and resource grants for this task.
+    /// `null` for normal (unprivileged) programs.
+    /// Heap-allocated at driver spawn time; freed in `remove_task`.
+    ///
+    /// Raw pointer instead of `Box<DriverCaps>` because `TaskEntry: Copy`.
+    pub caps: *mut crate::process::capabilities::DriverCaps,
 }
 
 impl TaskEntry {
@@ -218,6 +225,7 @@ impl TaskEntry {
             stack_base: ptr::null_mut(),
             stack_size: 0,
             fpu_state: ptr::null_mut(),
+            caps: ptr::null_mut(),
         }
     }
 
