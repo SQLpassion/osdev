@@ -153,9 +153,10 @@ pub extern "C" fn _start() -> ! {
                     "  info                          - Display network configuration & statistics"
                 );
                 println!("  ifconfig [ip] [gw] [mask]     - Display or configure IP, Gateway, and Subnet Mask");
-                println!("  set ip <address>              - Set interface IPv4 address (e.g. set ip 192.168.1.50)");
+                println!("  set ip <address>              - Set interface IPv4 address (e.g. set ip 192.168.1.200)");
                 println!("  set gw <address>              - Set default gateway IPv4 address (e.g. set gw 192.168.1.1)");
                 println!("  set mask <address>            - Set subnet mask (e.g. set mask 255.255.255.0)");
+                println!("  set dns <address>             - Set DNS server address (e.g. set dns 192.168.1.1)");
                 println!("  arp                           - Display dynamic ARP table entries");
                 println!("  ping <ip>                     - Send ICMP Echo Requests to <ip> (e.g. ping 192.168.1.1)");
                 println!("  listen                        - Listen for network packets and auto-respond to ping/arp");
@@ -167,6 +168,7 @@ pub extern "C" fn _start() -> ! {
                 println!("  IPv4 Address : {}", stack.config.ip);
                 println!("  Subnet Mask  : {}", stack.config.subnet_mask);
                 println!("  Gateway IP   : {}", stack.config.gateway);
+                println!("  DNS Server   : {}", stack.config.dns);
                 println!("--- Packet Statistics ---");
                 println!(
                     "  RX Packets   : {} ({} bytes)",
@@ -207,11 +209,12 @@ pub extern "C" fn _start() -> ! {
                     println!("  inet addr    : {}", stack.config.ip);
                     println!("  gateway      : {}", stack.config.gateway);
                     println!("  netmask      : {}", stack.config.subnet_mask);
+                    println!("  nameserver   : {}", stack.config.dns);
                 }
             }
             "set" => {
                 let Some(subcmd) = parts.next() else {
-                    println!("Usage: set <ip|gw|mask> <address>");
+                    println!("Usage: set <ip|gw|mask|dns> <address>");
                     continue;
                 };
                 let Some(val_str) = parts.next() else {
@@ -236,9 +239,13 @@ pub extern "C" fn _start() -> ! {
                         stack.config.subnet_mask = parsed_ip;
                         println!("Subnet mask set to {}", stack.config.subnet_mask);
                     }
+                    "dns" => {
+                        stack.config.dns = parsed_ip;
+                        println!("DNS server set to {}", stack.config.dns);
+                    }
                     _ => {
                         println!(
-                            "Unknown parameter: '{}'. Use 'ip', 'gw', or 'mask'.",
+                            "Unknown parameter: '{}'. Use 'ip', 'gw', 'mask', or 'dns'.",
                             subcmd
                         );
                     }
