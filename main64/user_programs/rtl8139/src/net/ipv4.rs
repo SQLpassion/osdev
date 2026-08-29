@@ -161,7 +161,7 @@ impl<'a> Ipv4Packet<'a> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "none")))]
 mod tests {
     use super::*;
 
