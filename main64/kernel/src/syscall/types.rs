@@ -74,6 +74,12 @@ pub enum SyscallId {
     IrqAck = 34,
     /// Spawn a driver task with specified capabilities and resource grants.
     SpawnDriver = 35,
+    /// Allocate physically contiguous frames for DMA.
+    AllocDma = 36,
+    /// Free DMA frames.
+    FreeDma = 37,
+    /// Translate user virtual address to physical address.
+    VirtToPhys = 38,
 }
 
 impl SyscallId {
@@ -169,6 +175,12 @@ impl SyscallId {
     pub const IRQ_ACK: u64 = Self::IrqAck as u64;
     /// Syscall number for SpawnDriver.
     pub const SPAWN_DRIVER: u64 = Self::SpawnDriver as u64;
+    /// Syscall number for AllocDma.
+    pub const ALLOC_DMA: u64 = Self::AllocDma as u64;
+    /// Syscall number for FreeDma.
+    pub const FREE_DMA: u64 = Self::FreeDma as u64;
+    /// Syscall number for VirtToPhys.
+    pub const VIRT_TO_PHYS: u64 = Self::VirtToPhys as u64;
 }
 
 /// Unknown syscall number.

@@ -1004,3 +1004,31 @@ pub fn alloc_frame_phys() -> Option<u64> {
 pub fn alloc_frame_phys_or_panic(context: &str) -> u64 {
     alloc_frame_phys().unwrap_or_else(|| panic!("{}", context))
 }
+
+/// Translates a virtual address in the current address space to its physical address.
+///
+/// Walks the active page tables (PML4 -> PDP -> PD -> PT) and returns `Some(phys_addr)`
+/// if the address is mapped and present, or `None` if any level is missing.
+#[inline]
+pub fn virt_to_phys_current(virtual_address: u64) -> Option<u64> {
+    const GIB: u64 = 1024 * 1024 * 1024;
+    match walk_levels(virtual_address) {
+        WalkResult::Pml4Missing | WalkResult::PdpMissing { .. } | WalkResult::PdMissing { .. } => {
+            None
+        }
+        WalkResult::PdpHuge { pdpe, .. } => {
+            Some((pdpe.frame() * PAGE_SIZE_U64) + (virtual_address & (GIB - 1)))
+        }
+        WalkResult::PdHuge { pde, .. } => {
+            Some((pde.frame() * PAGE_SIZE_U64) + (virtual_address & (HUGE_PAGE_SIZE_2M - 1)))
+        }
+        WalkResult::Resolved { pt, .. } => {
+            let pte = table_entry(pt, pt_index(virtual_address));
+            if pte.present() {
+                Some((pte.frame() * PAGE_SIZE_U64) + (virtual_address & (PAGE_SIZE_U64 - 1)))
+            } else {
+                None
+            }
+        }
+    }
+}

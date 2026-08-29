@@ -303,3 +303,179 @@ pub fn syscall_spawn_driver_impl(
 
     Ok(tid as u64)
 }
+
+/// Allocates physically contiguous page frames for driver DMA and maps them into the calling task.
+///
+/// Arguments:
+/// - `pages`: Number of 4 KiB pages to allocate (must be > 0).
+/// - `out_phys`: Optional user pointer to write the physical base address to (or null if not requested).
+///
+/// Returns the user virtual address where the DMA buffer is mapped.
+pub fn syscall_alloc_dma_impl(pages: usize, out_phys: *mut u64) -> SyscallResult<u64> {
+    // Step 1: Validate page count.
+    if pages == 0 {
+        return Err(SyscallError::InvalidArg);
+    }
+
+    // Step 2: Check DriverCaps (task must hold MMIO or IRQ capability).
+    let caps = scheduler::current_task_caps().ok_or(SyscallError::PermissionDenied)?;
+    if !caps.flags.contains(Capabilities::MMIO) {
+        return Err(SyscallError::PermissionDenied);
+    }
+
+    // Step 3: Allocate physically contiguous frames from PMM.
+    let frame = crate::memory::pmm::with_pmm(|mgr| mgr.alloc_contiguous_frames(pages))
+        .ok_or(SyscallError::OutOfMemory)?;
+    let base_pfn = frame.pfn;
+    let base_phys = base_pfn * PAGE_SIZE_U64;
+
+    // Step 4: Resolve next virtual address from the per-task MMIO bump allocator.
+    if caps.grants.mmio_bump < USER_MMIO_BASE {
+        caps.grants.mmio_bump = USER_MMIO_BASE;
+    }
+    let base_va = caps.grants.mmio_bump;
+    let num_bytes = (pages as u64) * PAGE_SIZE_U64;
+    let end_va = base_va
+        .checked_add(num_bytes)
+        .ok_or(SyscallError::OutOfMemory)?;
+    if end_va > USER_STACK_GUARD_BASE {
+        // Rollback physical allocation on VA space exhaustion.
+        crate::memory::pmm::with_pmm(|mgr| {
+            for i in 0..pages {
+                mgr.release_pfn(base_pfn + i as u64);
+            }
+        });
+        return Err(SyscallError::OutOfMemory);
+    }
+
+    // Step 5: Map each page in the driver's address space with uncacheable (PCD) attributes.
+    let active_cr3 = read_cr3();
+    let map_res = with_address_space(active_cr3, || {
+        for i in 0..pages {
+            let page_va = base_va + (i as u64) * PAGE_SIZE_U64;
+            let page_pfn = base_pfn + (i as u64);
+            map_user_mmio_page(page_va, page_pfn)?;
+        }
+        Ok(())
+    });
+
+    if let Err(e) = map_res {
+        // Rollback mapped pages and release PMM frames.
+        with_address_space(active_cr3, || {
+            for i in 0..pages {
+                let page_va = base_va + (i as u64) * PAGE_SIZE_U64;
+                unmap_without_release(page_va);
+            }
+        });
+        crate::memory::pmm::with_pmm(|mgr| {
+            for i in 0..pages {
+                mgr.release_pfn(base_pfn + i as u64);
+            }
+        });
+        return match e {
+            vmm::MapError::OutOfMemory { .. } => Err(SyscallError::OutOfMemory),
+            _ => Err(SyscallError::InvalidArg),
+        };
+    }
+
+    // Step 6: If out_phys pointer was provided, copy physical address to user memory.
+    if !out_phys.is_null() {
+        if !crate::syscall::types::is_valid_user_buffer(
+            out_phys as *const u8,
+            core::mem::size_of::<u64>(),
+        ) {
+            // Rollback mapping and frames if pointer is invalid.
+            with_address_space(active_cr3, || {
+                for i in 0..pages {
+                    let page_va = base_va + (i as u64) * PAGE_SIZE_U64;
+                    unmap_without_release(page_va);
+                }
+            });
+            crate::memory::pmm::with_pmm(|mgr| {
+                for i in 0..pages {
+                    mgr.release_pfn(base_pfn + i as u64);
+                }
+            });
+            return Err(SyscallError::InvalidArg);
+        }
+        // SAFETY:
+        // - `is_valid_user_buffer` verified pointer range is canonical user space.
+        // - `write_unaligned` safely writes 8 bytes.
+        unsafe {
+            core::ptr::write_unaligned(out_phys, base_phys);
+        }
+    }
+
+    // Step 7: Advance bump pointer and return virtual address.
+    caps.grants.mmio_bump = end_va;
+    Ok(base_va)
+}
+
+/// Frees previously allocated driver DMA pages and unmaps them from the task.
+///
+/// Arguments:
+/// - `user_va`: User virtual starting address returned by `AllocDma`.
+/// - `pages`: Number of 4 KiB pages.
+pub fn syscall_free_dma_impl(user_va: u64, pages: usize) -> SyscallResult<u64> {
+    // Step 1: Validate parameters.
+    if pages == 0 {
+        return Err(SyscallError::InvalidArg);
+    }
+    let num_bytes = (pages as u64)
+        .checked_mul(PAGE_SIZE_U64)
+        .ok_or(SyscallError::InvalidArg)?;
+    let end_va = user_va
+        .checked_add(num_bytes)
+        .ok_or(SyscallError::InvalidArg)?;
+
+    // Step 2: Check DriverCaps.
+    let caps = scheduler::current_task_caps().ok_or(SyscallError::PermissionDenied)?;
+    if !caps.flags.contains(Capabilities::MMIO) {
+        return Err(SyscallError::PermissionDenied);
+    }
+
+    // Step 3: Validate virtual address range.
+    if user_va < USER_MMIO_BASE || end_va > USER_STACK_GUARD_BASE {
+        return Err(SyscallError::InvalidArg);
+    }
+
+    // Step 4: Resolve PFNs, unmap virtual pages, and release physical frames to PMM.
+    let active_cr3 = read_cr3();
+    let mut pfns_to_release = alloc::vec::Vec::new();
+    if pfns_to_release.try_reserve(pages).is_err() {
+        return Err(SyscallError::OutOfMemory);
+    }
+
+    with_address_space(active_cr3, || {
+        for i in 0..pages {
+            let page_va = user_va + (i as u64) * PAGE_SIZE_U64;
+            if let Some(phys) = vmm::virt_to_phys_current(page_va) {
+                pfns_to_release.push(phys / PAGE_SIZE_U64);
+            }
+            unmap_without_release(page_va);
+        }
+    });
+
+    crate::memory::pmm::with_pmm(|mgr| {
+        for pfn in pfns_to_release {
+            mgr.release_pfn(pfn);
+        }
+    });
+
+    Ok(SYSCALL_OK)
+}
+
+/// Translates a virtual address in the calling task's address space to its physical address.
+///
+/// Arguments:
+/// - `user_va`: Virtual address to translate.
+pub fn syscall_virt_to_phys_impl(user_va: u64) -> SyscallResult<u64> {
+    // Step 1: Verify task capabilities.
+    let caps = scheduler::current_task_caps().ok_or(SyscallError::PermissionDenied)?;
+    if !caps.flags.contains(Capabilities::MMIO) && !caps.flags.contains(Capabilities::IRQ) {
+        return Err(SyscallError::PermissionDenied);
+    }
+
+    // Step 2: Translate virtual address via active page-table walk.
+    vmm::virt_to_phys_current(user_va).ok_or(SyscallError::InvalidArg)
+}

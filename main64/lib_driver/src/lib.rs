@@ -18,6 +18,7 @@ pub use kernel_types::{SysError, UserDriverGrants};
 
 mod raw;
 
+pub mod dma;
 pub mod irq;
 pub mod mmio;
 pub mod spawn;

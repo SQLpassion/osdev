@@ -539,6 +539,71 @@ impl PhysicalMemoryManager {
         None
     }
 
+    /// Allocates `count` physically contiguous page frames from the first region with enough space.
+    ///
+    /// Returns `Some(PageFrame)` containing the first frame of the contiguous run on success,
+    /// or `None` if no contiguous block of the requested size exists.
+    pub fn alloc_contiguous_frames(&mut self, count: usize) -> Option<PageFrame> {
+        // Step 1: Handle trivial zero-page and single-page requests.
+        if count == 0 {
+            return None;
+        }
+        if count == 1 {
+            return self.alloc_frame();
+        }
+
+        let regions = self.regions();
+
+        // Step 2: Search across available memory regions for a contiguous free run.
+        for (idx, r) in regions.iter_mut().enumerate() {
+            if (r.frames_free as usize) < count {
+                continue;
+            }
+
+            let bitmap = r.bitmap_start as *mut u64;
+            let mut consecutive = 0usize;
+            let mut start_bit = 0u64;
+
+            for bit in 0..r.frames_total {
+                let word_idx = (bit / 64) as usize;
+                let bit_mask = 1u64 << (bit % 64);
+                // SAFETY:
+                // - `word_idx` is within bitmap bounds because `bit < r.frames_total`.
+                // - `bitmap` points to readable PMM metadata memory.
+                let word_val = unsafe { *bitmap.add(word_idx) };
+
+                if (word_val & bit_mask) == 0 {
+                    if consecutive == 0 {
+                        start_bit = bit;
+                    }
+                    consecutive += 1;
+                    if consecutive == count {
+                        // Step 3: Contiguous range found; mark all frames as allocated.
+                        for i in 0..count {
+                            let alloc_bit = start_bit + i as u64;
+                            // SAFETY:
+                            // - `alloc_bit < r.frames_total` by construction of the scan bounds.
+                            // - `bitmap` and `refcount_start` point to writable PMM metadata memory.
+                            unsafe {
+                                set_bit(alloc_bit, bitmap);
+                                *(r.refcount_start as *mut u8).add(alloc_bit as usize) = 1;
+                            }
+                        }
+                        r.frames_free = r.frames_free.checked_sub(count as u64).unwrap();
+                        let pfn = r.start / PAGE_SIZE + start_bit;
+                        let region_index = idx as u32;
+                        super::log_alloc(pfn, region_index);
+                        return Some(PageFrame { pfn, region_index });
+                    }
+                } else {
+                    consecutive = 0;
+                }
+            }
+        }
+
+        None
+    }
+
     /// Increments the reference count of an already-allocated frame.
     ///
     /// Call this whenever an additional owner starts referencing a physical

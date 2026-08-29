@@ -81,6 +81,9 @@ pub const fn syscall_name_for_number(syscall_nr: u64) -> &'static str {
         SyscallId::IRQ_WAIT => "IrqWait",
         SyscallId::IRQ_ACK => "IrqAck",
         SyscallId::SPAWN_DRIVER => "SpawnDriver",
+        SyscallId::ALLOC_DMA => "AllocDma",
+        SyscallId::FREE_DMA => "FreeDma",
+        SyscallId::VIRT_TO_PHYS => "VirtToPhys",
         _ => "Unknown",
     }
 }
@@ -159,6 +162,9 @@ pub fn dispatch_checked(
             arg1,
             arg2 as *const crate::syscall::types::UserDriverGrants,
         ),
+        SyscallId::ALLOC_DMA => driver::syscall_alloc_dma_impl(arg0 as usize, arg1 as *mut u64),
+        SyscallId::FREE_DMA => driver::syscall_free_dma_impl(arg0, arg1 as usize),
+        SyscallId::VIRT_TO_PHYS => driver::syscall_virt_to_phys_impl(arg0),
         _ => Err(SyscallError::Unsupported),
     };
 
