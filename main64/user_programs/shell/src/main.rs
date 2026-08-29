@@ -72,8 +72,21 @@ fn execute_command(line: &str) {
         "kbasic" => {
             run_program("kbasic.bin");
         }
-        "rtl8139" => {
+        "rtl8139" | "rtl8139.bin" => {
             run_rtl8139_driver();
+        }
+        "driver" => {
+            if let Some(target) = parts.next() {
+                if target.eq_ignore_ascii_case("rtl8139")
+                    || target.eq_ignore_ascii_case("rtl8139.bin")
+                {
+                    run_rtl8139_driver();
+                } else {
+                    println!("Unknown driver '{}'", target);
+                }
+            } else {
+                println!("Usage: driver <driver-name>");
+            }
         }
         "date" => {
             let mut udt = lib_kaos::time::UserDateTime {
@@ -130,7 +143,13 @@ fn execute_command(line: &str) {
         }
         "exec" => {
             if let Some(file_name) = parts.next() {
-                run_program(file_name);
+                if file_name.eq_ignore_ascii_case("rtl8139.bin")
+                    || file_name.eq_ignore_ascii_case("rtl8139")
+                {
+                    run_rtl8139_driver();
+                } else {
+                    run_program(file_name);
+                }
             } else {
                 println!("Usage: exec <8.3-filename>");
             }
@@ -150,7 +169,11 @@ fn execute_command(line: &str) {
         }
         // Direct execution shortcut for filenames (e.g. typing "hello.bin")
         other if other.ends_with(".bin") || other.ends_with(".BIN") => {
-            run_program(other);
+            if other.eq_ignore_ascii_case("rtl8139.bin") {
+                run_rtl8139_driver();
+            } else {
+                run_program(other);
+            }
         }
         _ => {
             println!("Unknown command: '{}'. Type 'help' for options.", cmd);
@@ -226,13 +249,20 @@ fn run_rtl8139_driver() {
             && dev.vendor_id == 0x10EC
             && dev.device_id == 0x8139
         {
-            let bar = if dev.bars[1].address != 0 {
+            let mut mmio_bar = None;
+            for bar in &dev.bars {
+                if (bar.bar_type == 2 || bar.bar_type == 3) && bar.address != 0 {
+                    mmio_bar = Some(*bar);
+                    break;
+                }
+            }
+            let bar = mmio_bar.unwrap_or(if dev.bars[1].address != 0 {
                 dev.bars[1]
             } else {
                 dev.bars[0]
-            };
+            });
             grants.mmio_base = bar.address;
-            grants.mmio_len = bar.size;
+            grants.mmio_len = if bar.size != 0 { bar.size } else { 256 };
             grants.irq = dev.interrupt_line;
             break;
         }
