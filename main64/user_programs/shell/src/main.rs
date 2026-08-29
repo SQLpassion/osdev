@@ -256,11 +256,16 @@ fn run_rtl8139_driver() {
                     break;
                 }
             }
-            let bar = mmio_bar.unwrap_or(if dev.bars[1].address != 0 {
-                dev.bars[1]
-            } else {
-                dev.bars[0]
-            });
+            let bar = match mmio_bar {
+                Some(b) => b,
+                None => {
+                    if dev.bars[1].address != 0 {
+                        dev.bars[1]
+                    } else {
+                        dev.bars[0]
+                    }
+                }
+            };
             grants.mmio_base = bar.address;
             grants.mmio_len = if bar.size != 0 { bar.size } else { 256 };
             grants.irq = dev.interrupt_line;

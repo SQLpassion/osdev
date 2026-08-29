@@ -76,21 +76,35 @@ pub extern "C" fn _start() -> ! {
         dev.bus, dev.device, dev.function, dev.interrupt_line
     );
 
-    // Step 2: Locate MMIO BAR.
+    // Step 2: Locate MMIO BAR (BAR 1 is standard MMIO on RTL8139).
     let mut mmio_bar = None;
     for bar in &dev.bars {
-        if (bar.bar_type == 2 || bar.bar_type == 3) && bar.address != 0 && bar.size != 0 {
+        if (bar.bar_type == 2 || bar.bar_type == 3) && bar.address != 0 {
             mmio_bar = Some(*bar);
             break;
         }
     }
     let (bar_phys, bar_size) = match mmio_bar {
-        Some(b) => (b.address, b.size as usize),
+        Some(b) => (b.address, if b.size != 0 { b.size as usize } else { 256 }),
         None => {
             if dev.bars[1].address != 0 {
-                (dev.bars[1].address, dev.bars[1].size as usize)
+                (
+                    dev.bars[1].address,
+                    if dev.bars[1].size != 0 {
+                        dev.bars[1].size as usize
+                    } else {
+                        256
+                    },
+                )
             } else {
-                (dev.bars[0].address, dev.bars[0].size as usize)
+                (
+                    dev.bars[0].address,
+                    if dev.bars[0].size != 0 {
+                        dev.bars[0].size as usize
+                    } else {
+                        256
+                    },
+                )
             }
         }
     };

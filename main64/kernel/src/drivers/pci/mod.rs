@@ -99,7 +99,16 @@ pub fn init() {
                     }
                 }
 
-                // Step 9: Push the discovered device to the global list.
+                // Step 9: Enable I/O Space (bit 0), Memory Space (bit 1), and Bus Master (bit 2)
+                // in the PCI Command Register so hardware responds to MMIO and DMA.
+                // SAFETY:
+                // - Reading and writing PCI command register (offset 0x04) in configuration space
+                //   is standard PCI device initialization.
+                let orig_cmd = unsafe { pci_config_read(bus, slot, func, 0x04) };
+                let new_cmd = (orig_cmd & 0xFFFF_0000) | ((orig_cmd & 0x0000_FFFF) | 0x0007);
+                unsafe { pci_config_write(bus, slot, func, 0x04, new_cmd) };
+
+                // Step 10: Push the discovered device to the global list.
                 devices.push(PciDevice {
                     bus,
                     device: slot,
