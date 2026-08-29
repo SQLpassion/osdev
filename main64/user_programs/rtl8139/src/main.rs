@@ -1,12 +1,10 @@
-//! RTL8139 Realtek Fast Ethernet PCI user-space device driver.
-//!
-//! Runs in Ring 3 with hardware isolation using `lib_driver` (`Mmio` and `Irq` bridge).
-
-#![no_std]
-#![no_main]
+#![cfg_attr(not(test), no_std)]
+#![cfg_attr(not(test), no_main)]
 #![allow(dead_code)]
 
 extern crate alloc;
+
+pub mod net;
 
 use lib_driver::{irq, mmio::Mmio};
 use lib_kaos::{pci, print, println, process};
@@ -27,6 +25,7 @@ const CMD_TX_ENABLE: u8 = 0x04;
 const INT_RX_OK: u16 = 0x0001;
 const INT_TX_OK: u16 = 0x0004;
 
+#[cfg(not(test))]
 #[no_mangle]
 #[link_section = ".ltext._start"]
 pub extern "C" fn _start() -> ! {
@@ -172,6 +171,7 @@ pub extern "C" fn _start() -> ! {
     process::exit()
 }
 
+#[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     process::exit()
