@@ -310,27 +310,23 @@ fn test_ahci_prdt_overflow_guard_condition_trips_for_oversized_transfer() {
 #[test_case]
 fn test_ahci_request_slot_enforces_mutual_exclusion() {
     // First claim of a free slot must succeed.
-    assert!(
-        ahci::try_acquire_transfer_slot_for_test(),
-        "first claim of a free request slot must succeed"
-    );
+    let guard1 = ahci::try_acquire_transfer_slot_for_test()
+        .expect("first claim of a free request slot must succeed");
 
     // A second claim while the first is outstanding must fail - this is
     // exactly the invariant `do_transfer`'s `_request` guard relies on.
     assert!(
-        !ahci::try_acquire_transfer_slot_for_test(),
+        ahci::try_acquire_transfer_slot_for_test().is_none(),
         "a second claim must not succeed while the first is outstanding"
     );
 
     // Releasing the first claim must make the slot claimable again.
-    ahci::release_transfer_slot_for_test();
-    assert!(
-        ahci::try_acquire_transfer_slot_for_test(),
-        "the slot must become claimable again after being released"
-    );
+    core::mem::drop(guard1);
+    let guard2 = ahci::try_acquire_transfer_slot_for_test()
+        .expect("the slot must become claimable again after being released");
 
     // Clean up so later tests in this binary see a free slot.
-    ahci::release_transfer_slot_for_test();
+    core::mem::drop(guard2);
 }
 
 /// Contract (issue #48): the request-slot guard never leaks across repeated

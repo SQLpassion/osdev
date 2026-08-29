@@ -9,6 +9,20 @@ use crate::sync::request_slot::InFlightSlot;
 use crate::sync::spinlock::SpinLock;
 use core::sync::atomic;
 
+/// Snapshots the Command Issue (`ci`) register and a second `u32` register
+/// from the given port, under `AHCI_LOCK`.
+///
+/// # Safety
+/// - `port` must be a valid pointer to a live, mapped `HbaPort` block.
+/// - `other_reg` must be a valid pointer to a `u32` register within that port.
+unsafe fn snapshot_ci_and_reg(port: *mut HbaPort, other_reg: *const u32) -> (u32, u32) {
+    let _guard = AHCI_LOCK.lock();
+    (
+        core::ptr::read_volatile(&(*port).ci),
+        core::ptr::read_volatile(other_reg),
+    )
+}
+
 /// AHCI Command bits (PxCMD)
 const AHCI_PORT_CMD_ST: u32 = 1 << 0;
 const AHCI_PORT_CMD_SUD: u32 = 1 << 1;
@@ -192,27 +206,9 @@ pub(crate) static REQUEST_SLOT: InFlightSlot = InFlightSlot::new();
 ///
 /// Exposed (not just `pub(crate)`) so integration tests can exercise the
 /// mutual-exclusion primitive added by issue #48 directly.
-pub fn try_acquire_transfer_slot_for_test() -> bool {
-    // We leak the guard here since the test calls release manually.
-    // Issue #84 will fix this to use the real guard.
-    if let Some(guard) = REQUEST_SLOT.try_acquire() {
-        core::mem::forget(guard);
-        true
-    } else {
-        false
-    }
-}
-
-/// Test-only release counterpart to [`try_acquire_transfer_slot_for_test`].
-pub fn release_transfer_slot_for_test() {
-    // We artificially construct a guard and immediately drop it.
-    // SAFETY: This is test-only, and we rely on tests correctly balancing acquire/release.
-    // Issue #84 will remove the need for this hack.
-    let _ = unsafe {
-        core::mem::transmute::<_, crate::sync::request_slot::SingleSlotGuard<'static>>(
-            &REQUEST_SLOT,
-        )
-    };
+pub fn try_acquire_transfer_slot_for_test(
+) -> Option<crate::sync::request_slot::SingleSlotGuard<'static>> {
+    REQUEST_SLOT.try_acquire()
 }
 
 /// Initializes the first AHCI controller that exposes an active SATA port.
@@ -840,13 +836,7 @@ fn do_transfer(
         //   read pair against the brief register accesses in Steps 2, 4 and
         //   5 - only the read itself needs to be atomic with respect to
         //   those, not the multi-iteration wait between reads.
-        let (ci, sact) = unsafe {
-            let _guard = AHCI_LOCK.lock();
-            (
-                core::ptr::read_volatile(&(*port).ci),
-                core::ptr::read_volatile(&(*port).sact),
-            )
-        };
+        let (ci, sact) = unsafe { snapshot_ci_and_reg(port, core::ptr::addr_of!((*port).sact)) };
         if (ci & (1 << slot)) == 0 && (sact & (1 << slot)) == 0 {
             break;
         }
@@ -981,13 +971,7 @@ fn do_transfer(
     let mut timeout2 = 5_000_000;
     loop {
         // SAFETY: see Step 3's snapshot above; identical justification.
-        let (ci, is) = unsafe {
-            let _guard = AHCI_LOCK.lock();
-            (
-                core::ptr::read_volatile(&(*port).ci),
-                core::ptr::read_volatile(&(*port).is),
-            )
-        };
+        let (ci, is) = unsafe { snapshot_ci_and_reg(port, core::ptr::addr_of!((*port).is)) };
         if (ci & (1 << slot)) == 0 {
             break;
         }
