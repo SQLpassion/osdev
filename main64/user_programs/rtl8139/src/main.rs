@@ -487,11 +487,18 @@ fn execute_ping(device: &mut Rtl8139Device, stack: &mut NetworkStack, target_ip:
 /// Executes background packet listening mode.
 #[cfg(not(test))]
 fn execute_listen(device: &mut Rtl8139Device, stack: &mut NetworkStack) {
+    // Step 1: Drain any pending key events (e.g. Enter key from typing 'listen').
+    while let Ok(key) = console::poll_key() {
+        if key == console::Key::Unknown {
+            break;
+        }
+    }
+
     println!("[RTL8139] Listening for network packets (press any key to stop)...");
     let mut rx_buf = [0u8; 1792];
 
     loop {
-        // Poll keyboard key to check if user pressed a key
+        // Step 2: Poll keyboard to check if user wants to exit listening mode.
         if let Ok(key) = console::poll_key() {
             if key != console::Key::Unknown {
                 println!("[RTL8139] Stopped listening.");
@@ -499,13 +506,22 @@ fn execute_listen(device: &mut Rtl8139Device, stack: &mut NetworkStack) {
             }
         }
 
-        // Process incoming packets
+        // Step 3: Process incoming packets from the RX ring buffer.
         while let Some(len) = device.poll_next_packet(&mut rx_buf) {
             let event = stack.handle_rx_packet(&rx_buf[..len], |tx_pkt| {
                 let _ = device.transmit(tx_pkt);
             });
 
             match event {
+                NetworkEvent::ArpRequestAnswered {
+                    sender_ip,
+                    sender_mac,
+                } => {
+                    println!(
+                        "[NET] Answered ARP Request: who-has {} tell {} ({})",
+                        stack.config.ip, sender_ip, sender_mac
+                    );
+                }
                 NetworkEvent::ArpReplyReceived {
                     sender_ip,
                     sender_mac,
@@ -526,8 +542,11 @@ fn execute_listen(device: &mut Rtl8139Device, stack: &mut NetworkStack) {
                         src_ip, identifier, sequence
                     );
                 }
-                NetworkEvent::IcmpEchoRequestAnswered { src_ip } => {
-                    println!("[NET] Answered ICMP Echo Request from {}", src_ip);
+                NetworkEvent::IcmpEchoRequestAnswered { src_ip, sequence } => {
+                    println!(
+                        "[NET] Answered ICMP Echo Request from {} (seq={})",
+                        src_ip, sequence
+                    );
                 }
                 NetworkEvent::None => {}
             }

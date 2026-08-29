@@ -41,6 +41,11 @@ impl NetworkConfig {
 /// Incoming network event processed by the stack.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetworkEvent {
+    /// Received ARP request targeting our IP and automatically answered.
+    ArpRequestAnswered {
+        sender_ip: Ipv4Address,
+        sender_mac: MacAddress,
+    },
     /// Received ARP reply updating the ARP table.
     ArpReplyReceived {
         sender_ip: Ipv4Address,
@@ -55,7 +60,7 @@ pub enum NetworkEvent {
         data_len: usize,
     },
     /// Received ICMP Echo Request and automatically answered.
-    IcmpEchoRequestAnswered { src_ip: Ipv4Address },
+    IcmpEchoRequestAnswered { src_ip: Ipv4Address, sequence: u16 },
     /// Ignored or non-actionable packet.
     None,
 }
@@ -156,8 +161,13 @@ impl NetworkStack {
                         tx_fn(&out_frame[..final_len]);
                     }
                 }
+                NetworkEvent::ArpRequestAnswered {
+                    sender_ip: arp.sender_ip,
+                    sender_mac: arp.sender_mac,
+                }
+            } else {
+                NetworkEvent::None
             }
-            NetworkEvent::None
         } else if arp.opcode == arp_opcode::REPLY {
             NetworkEvent::ArpReplyReceived {
                 sender_ip: arp.sender_ip,
@@ -235,7 +245,10 @@ impl NetworkStack {
                     }
                 }
 
-                NetworkEvent::IcmpEchoRequestAnswered { src_ip: ip.src_ip }
+                NetworkEvent::IcmpEchoRequestAnswered {
+                    src_ip: ip.src_ip,
+                    sequence: icmp.sequence_number,
+                }
             } else if icmp.icmp_type == icmp_type::ECHO_REPLY {
                 NetworkEvent::IcmpEchoReply {
                     src_ip: ip.src_ip,

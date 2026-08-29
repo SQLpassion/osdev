@@ -307,7 +307,13 @@ fn test_rtl8139_network_stack_auto_response() {
         sent_packets.push(alloc::vec::Vec::from(tx_pkt));
     });
 
-    assert_eq!(event, NetworkEvent::None);
+    assert_eq!(
+        event,
+        NetworkEvent::ArpRequestAnswered {
+            sender_ip: gateway_ip,
+            sender_mac: gateway_mac,
+        }
+    );
     assert_eq!(
         sent_packets.len(),
         1,
