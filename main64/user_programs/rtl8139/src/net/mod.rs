@@ -33,7 +33,7 @@ impl NetworkConfig {
             ip: Ipv4Address::new(192, 168, 1, 200),
             gateway: Ipv4Address::new(192, 168, 1, 1),
             subnet_mask: Ipv4Address::new(255, 255, 255, 0),
-            dns: Ipv4Address::new(192, 168, 1, 1),
+            dns: Ipv4Address::new(192, 168, 1, 3),
         }
     }
 }
