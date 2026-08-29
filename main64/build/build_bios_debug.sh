@@ -151,33 +151,19 @@ case "$DISPLAY_MODE" in
         ;;
 esac
 
-# 5) Network backend configuration (bridged network default)
-BRIDGE_IFNAME="${BRIDGE_IFNAME:-en0}"
-NET_MODE="${NET_MODE:-bridged}"
-
+# 5) Network backend configuration (always bridged network)
 SUDO_PREFIX=()
-case "$NET_MODE" in
-    bridged)
-        if [ "$OS_KIND" = "macos" ]; then
-            QEMU_NET=(-netdev "vmnet-bridged,id=net0,ifname=$BRIDGE_IFNAME" -device rtl8139,netdev=net0)
-            if [ "$(id -u)" -ne 0 ]; then
-                SUDO_PREFIX=(sudo)
-            fi
-        else
-            QEMU_NET=(-netdev "tap,id=net0,ifname=tap0,script=no,downscript=no" -device rtl8139,netdev=net0)
-        fi
-        ;;
-    user|nat)
-        QEMU_NET=(-netdev "user,id=net0,net=192.168.1.0/24,dhcpstart=192.168.1.200,host=192.168.1.1,dns=192.168.1.3" -device rtl8139,netdev=net0)
-        ;;
-    *)
-        echo "ERROR: unknown NET_MODE='$NET_MODE' (expected: bridged | user)." >&2
-        exit 1
-        ;;
-esac
+if [ "$OS_KIND" = "macos" ]; then
+    QEMU_NET=(-netdev vmnet-bridged,id=net0,ifname=en0 -device rtl8139,netdev=net0)
+    if [ "$(id -u)" -ne 0 ]; then
+        SUDO_PREFIX=(sudo)
+    fi
+else
+    QEMU_NET=(-netdev tap,id=net0,ifname=tap0,script=no,downscript=no -device rtl8139,netdev=net0)
+fi
 
 # 6) Boot it. (Ctrl-A X quits QEMU when serial is attached to the terminal.)
-echo "==> Launching QEMU [$DISPLAY_MODE: $DISPLAY_HINT] [Net: $NET_MODE ($BRIDGE_IFNAME)]..."
+echo "==> Launching QEMU [$DISPLAY_MODE: $DISPLAY_HINT] [Net: bridged]..."
 "${SUDO_PREFIX[@]}" qemu-system-x86_64 \
     -drive format=raw,file="kaos64-bios.img" \
     "${QEMU_NET[@]}" \
