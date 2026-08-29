@@ -24,12 +24,12 @@ pub struct NetworkConfig {
 }
 
 impl NetworkConfig {
-    /// Creates a network configuration using QEMU default parameters.
+    /// Creates a network configuration using default parameters (192.168.1.0/24).
     pub fn default_qemu(mac: MacAddress) -> Self {
         Self {
             mac,
-            ip: Ipv4Address::new(10, 0, 2, 15),
-            gateway: Ipv4Address::new(10, 0, 2, 2),
+            ip: Ipv4Address::new(192, 168, 1, 15),
+            gateway: Ipv4Address::new(192, 168, 1, 1),
             subnet_mask: Ipv4Address::new(255, 255, 255, 0),
         }
     }
