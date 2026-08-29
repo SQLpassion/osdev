@@ -211,6 +211,13 @@ pub fn try_acquire_transfer_slot_for_test(
     REQUEST_SLOT.try_acquire()
 }
 
+/// Test-only blocking attempt to claim the AHCI transfer request slot.
+/// Exposed for testing the cooperative wait path.
+pub fn acquire_transfer_slot_for_test_blocking(
+) -> crate::sync::request_slot::SingleSlotGuard<'static> {
+    REQUEST_SLOT.acquire()
+}
+
 /// Initializes the first AHCI controller that exposes an active SATA port.
 ///
 /// A system can have more than one AHCI (class 01:06) controller. On QEMU/Proxmox
