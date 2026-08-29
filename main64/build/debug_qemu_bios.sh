@@ -12,5 +12,6 @@ cd "$PROJECT_ROOT"
 
 qemu-system-x86_64 \
     -drive format=raw,file=kaos64-bios.img \
+    -netdev user,id=net0 -device rtl8139,netdev=net0 \
     -gdb tcp::12345 -S \
     -m 256M

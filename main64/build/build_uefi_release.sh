@@ -178,6 +178,6 @@ qemu-system-x86_64 \
     -drive format=raw,file="$IMG" \
     -vga virtio \
     "${QEMU_DISPLAY[@]}" \
-    -net none \
+    -netdev user,id=net0 -device rtl8139,netdev=net0 \
     -m 256M \
     "$@"
