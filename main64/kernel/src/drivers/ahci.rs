@@ -744,6 +744,16 @@ pub fn write_sectors(buffer: &[u8], lba: u64, sector_count: u32) -> Result<(), A
     )
 }
 
+/// Executes an ATA data transfer (read or write) on the active AHCI port.
+///
+/// **Concurrency & Locking:**
+/// End-to-end mutual exclusion for concurrent `do_transfer` callers is provided
+/// entirely by the `REQUEST_SLOT` acquired in Step 1. Because this driver
+/// only uses command slot 0, and the kernel currently has no AHCI IRQ handler
+/// or SMP, the `AHCI_LOCK` scopes inside this function do not guard against
+/// actual concurrency today. They exist to serialize register snapshots and
+/// writes against a hypothetical future IRQ handler or SMP port-status poller,
+/// preventing those from seeing torn state or racing with command submission.
 fn do_transfer(
     buffer_ptr: *mut u8,
     buffer_len: usize,
