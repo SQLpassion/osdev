@@ -1,3 +1,7 @@
+//! RTL8139 Realtek Fast Ethernet PCI user-space device driver & interactive CLI.
+//!
+//! Runs in Ring 3 with hardware isolation using `lib_driver` (`Mmio`, `Irq`, `Dma`).
+
 #![cfg_attr(not(test), no_std)]
 #![cfg_attr(not(test), no_main)]
 #![allow(dead_code)]
@@ -5,31 +9,24 @@
 extern crate alloc;
 
 pub mod net;
+pub mod rtl8139;
 
-use lib_driver::{irq, mmio::Mmio};
-use lib_kaos::{pci, print, println, process};
-
-/// RTL8139 Register Offsets
-const REG_MAC0: usize = 0x00;
-const REG_CHIPCMD: usize = 0x37;
-const REG_IMR: usize = 0x3C;
-const REG_ISR: usize = 0x3E;
-const REG_CONFIG1: usize = 0x52;
-
-/// ChipCmd bits
-const CMD_RESET: u8 = 0x10;
-const CMD_RX_ENABLE: u8 = 0x08;
-const CMD_TX_ENABLE: u8 = 0x04;
-
-/// Interrupt bits
-const INT_RX_OK: u16 = 0x0001;
-const INT_TX_OK: u16 = 0x0004;
+#[cfg(not(test))]
+use lib_driver::mmio::Mmio;
+#[cfg(not(test))]
+use lib_kaos::{console, pci, print, println, process};
+#[cfg(not(test))]
+use net::{Ipv4Address, NetworkEvent, NetworkStack};
+#[cfg(not(test))]
+use rtl8139::Rtl8139Device;
 
 #[cfg(not(test))]
 #[no_mangle]
 #[link_section = ".ltext._start"]
 pub extern "C" fn _start() -> ! {
-    println!("[RTL8139] Starting user-mode network driver (Ring 3)...");
+    println!("==================================================");
+    println!("  KAOS RTL8139 Fast Ethernet Driver (Ring 3)");
+    println!("==================================================");
 
     // Step 1: Discover RTL8139 device via PCI subsystem.
     let dev_count = pci::get_pci_device_count().unwrap_or(0);
@@ -70,26 +67,23 @@ pub extern "C" fn _start() -> ! {
     }
 
     let Some(dev) = found_device else {
-        println!("[RTL8139] No Realtek RTL8139 PCI device (0x10EC:0x8139) detected.");
+        println!("[RTL8139] Error: No Realtek RTL8139 PCI device (0x10EC:0x8139) found.");
         process::exit();
     };
 
     println!(
-        "[RTL8139] Found PCI device at Bus {:02x}, Device {:02x}, Func {:02x}, IRQ Line {}",
+        "[RTL8139] Found device: PCI Bus {:02x}:{:02x}.{:x}, IRQ Line {}",
         dev.bus, dev.device, dev.function, dev.interrupt_line
     );
 
-    // Step 2: Locate Memory BAR (or Memory32 / Memory64 BAR).
+    // Step 2: Locate MMIO BAR.
     let mut mmio_bar = None;
     for bar in &dev.bars {
-        // bar_type 2 = Memory32, 3 = Memory64
         if (bar.bar_type == 2 || bar.bar_type == 3) && bar.address != 0 && bar.size != 0 {
             mmio_bar = Some(*bar);
             break;
         }
     }
-
-    // If memory BAR is not found, fallback to BAR1
     let (bar_phys, bar_size) = match mmio_bar {
         Some(b) => (b.address, b.size as usize),
         None => {
@@ -101,12 +95,7 @@ pub extern "C" fn _start() -> ! {
         }
     };
 
-    println!(
-        "[RTL8139] Mapping MMIO BAR physical {:#x} (len {} bytes)...",
-        bar_phys, bar_size
-    );
-
-    // Step 3: Map physical MMIO registers into user address space using Mmio.
+    // Step 3: Map physical MMIO registers.
     let mmio = match Mmio::map(bar_phys, bar_size) {
         Ok(m) => m,
         Err(e) => {
@@ -115,60 +104,329 @@ pub extern "C" fn _start() -> ! {
         }
     };
 
-    // Step 4: Power on chip (turn off power-saving mode).
-    mmio.write8(REG_CONFIG1, 0x00);
-
-    // Step 5: Perform software reset.
-    mmio.write8(REG_CHIPCMD, CMD_RESET);
-    let mut timeout = 10000;
-    while (mmio.read8(REG_CHIPCMD) & CMD_RESET) != 0 && timeout > 0 {
-        timeout -= 1;
-    }
-
-    if timeout == 0 {
-        println!("[RTL8139] Software reset timed out!");
-        process::exit();
-    }
-
-    // Step 6: Read hardware MAC address.
-    let mac = [
-        mmio.read8(REG_MAC0),
-        mmio.read8(REG_MAC0 + 1),
-        mmio.read8(REG_MAC0 + 2),
-        mmio.read8(REG_MAC0 + 3),
-        mmio.read8(REG_MAC0 + 4),
-        mmio.read8(REG_MAC0 + 5),
-    ];
-
-    print!("[RTL8139] Hardware MAC Address: ");
-    for (i, b) in mac.iter().enumerate() {
-        if i > 0 {
-            print!(":");
+    // Step 4: Initialize RTL8139 controller and DMA ring buffers.
+    let mut device = match Rtl8139Device::init(mmio, dev.interrupt_line) {
+        Ok(d) => d,
+        Err(e) => {
+            println!("[RTL8139] Device initialization failed: {:?}", e);
+            process::exit();
         }
-        print!("{:02x}", b);
-    }
-    println!();
+    };
 
-    // Step 7: Subscribe to device IRQ if available.
-    let irq_num = dev.interrupt_line;
-    if irq_num != 0 && irq_num != 0xFF {
-        if let Err(e) = irq::subscribe(irq_num) {
-            println!(
-                "[RTL8139] Warning: could not subscribe to IRQ {}: {:?}",
-                irq_num, e
-            );
-        } else {
-            println!("[RTL8139] Subscribed to IRQ {}", irq_num);
-            // Enable RX and TX interrupts
-            mmio.write16(REG_IMR, INT_RX_OK | INT_TX_OK);
+    let mac = device.mac();
+    println!("[RTL8139] Hardware MAC Address: {}", mac);
+
+    // Step 5: Initialize protocol network stack.
+    let mut stack = NetworkStack::new(mac);
+    println!(
+        "[RTL8139] Network initialized: IP {}, Gateway {}",
+        stack.config.ip, stack.config.gateway
+    );
+    println!("Type 'help' for available commands.\n");
+
+    // Step 6: Interactive driver CLI console loop.
+    let mut line_buf = [0u8; 128];
+    loop {
+        print!("[rtl8139]> ");
+        let len = match console::readline(&mut line_buf) {
+            Ok(l) => l,
+            Err(_) => break,
+        };
+
+        let Ok(line) = core::str::from_utf8(&line_buf[..len]) else {
+            continue;
+        };
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let mut parts = line.split_whitespace();
+        let Some(cmd) = parts.next() else {
+            continue;
+        };
+
+        match cmd {
+            "help" => {
+                println!("Available commands:");
+                println!("  info         - Display network interface configuration & stats");
+                println!("  arp          - Display dynamic ARP table entries");
+                println!("  ping <ip>    - Send ICMP Echo Requests to <ip> (e.g. ping 10.0.2.2)");
+                println!(
+                    "  listen       - Listen for network packets and auto-respond to ping/arp"
+                );
+                println!("  exit, quit   - Exit driver and return to KAOS shell");
+            }
+            "info" => {
+                println!("--- Network Interface Configuration ---");
+                println!("  Hardware MAC : {}", stack.config.mac);
+                println!("  IPv4 Address : {}", stack.config.ip);
+                println!("  Subnet Mask  : {}", stack.config.subnet_mask);
+                println!("  Gateway IP   : {}", stack.config.gateway);
+                println!("--- Packet Statistics ---");
+                println!(
+                    "  RX Packets   : {} ({} bytes)",
+                    stack.rx_packets, stack.rx_bytes
+                );
+                println!(
+                    "  TX Packets   : {} ({} bytes)",
+                    stack.tx_packets, stack.tx_bytes
+                );
+            }
+            "arp" => {
+                let entries = stack.arp_table.entries();
+                if entries.is_empty() {
+                    println!("ARP table is empty.");
+                } else {
+                    println!("Address                  HWaddress");
+                    for (ip, mac) in entries {
+                        println!("{:<24} {}", ip, mac);
+                    }
+                }
+            }
+            "ping" => {
+                let Some(target_str) = parts.next() else {
+                    println!("Usage: ping <ipv4_address> (e.g. ping 10.0.2.2)");
+                    continue;
+                };
+
+                let Some(target_ip) = Ipv4Address::parse_str(target_str) else {
+                    println!("Invalid IPv4 address: '{}'", target_str);
+                    continue;
+                };
+
+                execute_ping(&mut device, &mut stack, target_ip);
+            }
+            "listen" => {
+                execute_listen(&mut device, &mut stack);
+            }
+            "exit" | "quit" => {
+                println!("[RTL8139] Shutting down device...");
+                device.shutdown();
+                break;
+            }
+            _ => {
+                println!(
+                    "Unknown command: '{}'. Type 'help' for available commands.",
+                    cmd
+                );
+            }
         }
     }
-
-    // Step 8: Enable Receiver and Transmitter.
-    mmio.write8(REG_CHIPCMD, CMD_RX_ENABLE | CMD_TX_ENABLE);
-    println!("[RTL8139] Network device initialized and ready in Ring 3.");
 
     process::exit()
+}
+
+/// Reads the x86_64 timestamp counter for RTT measurement.
+#[cfg(not(test))]
+#[inline]
+fn read_tsc() -> u64 {
+    let low: u32;
+    let high: u32;
+    // SAFETY:
+    // - RDTSC instruction is accessible in Ring 3 and has no memory side effects.
+    unsafe {
+        core::arch::asm!("rdtsc", out("eax") low, out("edx") high, options(nomem, nostack));
+    }
+    ((high as u64) << 32) | (low as u64)
+}
+
+/// Executes the interactive `ping` command.
+#[cfg(not(test))]
+fn execute_ping(device: &mut Rtl8139Device, stack: &mut NetworkStack, target_ip: Ipv4Address) {
+    println!("PING {} 56(84) bytes of data.", target_ip);
+
+    // Step 1: Resolve target MAC address via ARP if not cached.
+    let dest_mac = if let Some(mac) = stack.arp_table.lookup(target_ip) {
+        mac
+    } else {
+        // Send ARP request
+        let mut arp_buf = [0u8; 64];
+        if let Some(arp_len) = stack.build_arp_request(target_ip, &mut arp_buf) {
+            stack.tx_packets += 1;
+            stack.tx_bytes += arp_len;
+            let _ = device.transmit(&arp_buf[..arp_len]);
+        }
+
+        // Wait up to 1000ms for ARP resolution
+        let mut resolved_mac = None;
+        let start_time = read_tsc();
+        let mut rx_buf = [0u8; 1792];
+        while read_tsc().saturating_sub(start_time) < 2_000_000_000 {
+            while let Some(len) = device.poll_next_packet(&mut rx_buf) {
+                let _ = stack.handle_rx_packet(&rx_buf[..len], |tx_pkt| {
+                    let _ = device.transmit(tx_pkt);
+                });
+            }
+
+            if let Some(mac) = stack.arp_table.lookup(target_ip) {
+                resolved_mac = Some(mac);
+                break;
+            }
+
+            for _ in 0..10_000 {
+                core::hint::spin_loop();
+            }
+        }
+
+        match resolved_mac {
+            Some(m) => m,
+            None => {
+                println!(
+                    "From {}: Destination Host Unreachable (ARP timeout)",
+                    stack.config.ip
+                );
+                return;
+            }
+        }
+    };
+
+    // Step 2: Send 4 ICMP Echo Requests and measure RTT.
+    let mut transmitted = 0;
+    let mut received = 0;
+    let mut rx_buf = [0u8; 1792];
+
+    for seq in 1..=4 {
+        transmitted += 1;
+        let payload = b"KAOS Ping Payload 1234567890";
+        let mut ping_buf = [0u8; 128];
+        let Some(ping_len) = stack.build_ping(
+            target_ip,
+            dest_mac,
+            0x1337,
+            seq as u16,
+            payload,
+            &mut ping_buf,
+        ) else {
+            println!("Failed to format ping packet");
+            continue;
+        };
+
+        stack.tx_packets += 1;
+        stack.tx_bytes += ping_len;
+        let send_time = read_tsc();
+        let _ = device.transmit(&ping_buf[..ping_len]);
+
+        // Wait up to 1000ms for Echo Reply
+        let mut got_reply = false;
+        while read_tsc().saturating_sub(send_time) < 2_000_000_000 {
+            let mut echo_event = None;
+            while let Some(len) = device.poll_next_packet(&mut rx_buf) {
+                let event = stack.handle_rx_packet(&rx_buf[..len], |tx_pkt| {
+                    let _ = device.transmit(tx_pkt);
+                });
+                if let NetworkEvent::IcmpEchoReply {
+                    src_ip,
+                    identifier,
+                    sequence,
+                    ttl,
+                    data_len,
+                } = event
+                {
+                    if src_ip == target_ip && identifier == 0x1337 && sequence == seq as u16 {
+                        echo_event = Some((ttl, data_len));
+                    }
+                }
+            }
+
+            if let Some((ttl, _data_len)) = echo_event {
+                let end_time = read_tsc();
+                let cycles = end_time.saturating_sub(send_time);
+                // Approximate 2 GHz clock (2,000,000 cycles per ms)
+                let ms = cycles / 2_000_000;
+                let tenths = (cycles % 2_000_000) / 200_000;
+
+                println!(
+                    "64 bytes from {}: icmp_seq={} ttl={} time={}.{} ms",
+                    target_ip, seq, ttl, ms, tenths
+                );
+                received += 1;
+                got_reply = true;
+                break;
+            }
+
+            for _ in 0..10_000 {
+                core::hint::spin_loop();
+            }
+        }
+
+        if !got_reply {
+            println!("Request timeout for icmp_seq={}", seq);
+        }
+
+        // 200ms delay between pings
+        let pause_start = read_tsc();
+        while read_tsc().saturating_sub(pause_start) < 400_000_000 {
+            core::hint::spin_loop();
+        }
+    }
+
+    // Step 3: Print summary statistics.
+    println!("\n--- {} ping statistics ---", target_ip);
+    let loss_pct = if transmitted > 0 {
+        ((transmitted - received) * 100) / transmitted
+    } else {
+        0
+    };
+    println!(
+        "{} packets transmitted, {} received, {}% packet loss",
+        transmitted, received, loss_pct
+    );
+}
+
+/// Executes background packet listening mode.
+#[cfg(not(test))]
+fn execute_listen(device: &mut Rtl8139Device, stack: &mut NetworkStack) {
+    println!("[RTL8139] Listening for network packets (press any key to stop)...");
+    let mut rx_buf = [0u8; 1792];
+
+    loop {
+        // Poll keyboard key to check if user pressed a key
+        if let Ok(key) = console::poll_key() {
+            if key != console::Key::Unknown {
+                println!("[RTL8139] Stopped listening.");
+                break;
+            }
+        }
+
+        // Process incoming packets
+        while let Some(len) = device.poll_next_packet(&mut rx_buf) {
+            let event = stack.handle_rx_packet(&rx_buf[..len], |tx_pkt| {
+                let _ = device.transmit(tx_pkt);
+            });
+
+            match event {
+                NetworkEvent::ArpReplyReceived {
+                    sender_ip,
+                    sender_mac,
+                } => {
+                    println!(
+                        "[NET] Received ARP reply: {} is at {}",
+                        sender_ip, sender_mac
+                    );
+                }
+                NetworkEvent::IcmpEchoReply {
+                    src_ip,
+                    identifier,
+                    sequence,
+                    ..
+                } => {
+                    println!(
+                        "[NET] Received ICMP Echo Reply from {} (id={:#x}, seq={})",
+                        src_ip, identifier, sequence
+                    );
+                }
+                NetworkEvent::IcmpEchoRequestAnswered { src_ip } => {
+                    println!("[NET] Answered ICMP Echo Request from {}", src_ip);
+                }
+                NetworkEvent::None => {}
+            }
+        }
+
+        for _ in 0..10_000 {
+            core::hint::spin_loop();
+        }
+    }
 }
 
 #[cfg(not(test))]
