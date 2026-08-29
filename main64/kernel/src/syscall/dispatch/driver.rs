@@ -206,11 +206,11 @@ pub fn syscall_spawn_driver_impl(
     caps_flags: u64,
     grants_ptr: *const crate::syscall::types::UserDriverGrants,
 ) -> SyscallResult<u64> {
-    use alloc::boxed::Box;
-    use alloc::vec::Vec;
     use crate::process::capabilities::{Capabilities, DriverCaps, ResourceGrants};
     use crate::process::ExecError;
     use crate::syscall::types::{is_valid_user_buffer_readable, UserDriverGrants};
+    use alloc::boxed::Box;
+    use alloc::vec::Vec;
 
     // Step 1: Verify that the caller holds SPAWN_DRIVER capability or is privileged.
     let caller_caps = scheduler::current_task_caps();
@@ -271,14 +271,16 @@ pub fn syscall_spawn_driver_impl(
     let result = crate::process::exec_from_vfs(&name);
     let tid = match result {
         Ok(tid) => tid,
-        Err(ExecError::FileNotFound) => return Err(SyscallError::Io),
-        Err(ExecError::CorruptImage) | Err(ExecError::InvalidElf) => {
-            return Err(SyscallError::InvalidArg)
-        }
-        Err(ExecError::ImageTooLarge) | Err(ExecError::OutOfMemory) => {
+        Err(ExecError::InvalidName)
+        | Err(ExecError::NotFound)
+        | Err(ExecError::IsDirectory)
+        | Err(ExecError::EmptyImage)
+        | Err(ExecError::FileTooLarge)
+        | Err(ExecError::InvalidElfImage) => return Err(SyscallError::InvalidArg),
+        Err(ExecError::OutOfMemory) | Err(ExecError::MappingFailed) => {
             return Err(SyscallError::OutOfMemory)
         }
-        Err(ExecError::SpawnFailed) => return Err(SyscallError::Io),
+        Err(ExecError::SpawnFailed) | Err(ExecError::Io) => return Err(SyscallError::Io),
     };
 
     // Step 5: Assign parent task linkage.
@@ -287,7 +289,7 @@ pub fn syscall_spawn_driver_impl(
     }
 
     // Step 6: Construct and attach DriverCaps to newly created task.
-    let caps = DriverCaps::new(Capabilities::from_bits_truncate(caps_flags), grants);
+    let caps = DriverCaps::new(Capabilities::from_bits_truncate(caps_flags as u32), grants);
     let caps_ptr = Box::into_raw(Box::new(caps));
     scheduler::set_task_caps(tid, caps_ptr);
 
@@ -301,4 +303,3 @@ pub fn syscall_spawn_driver_impl(
 
     Ok(tid as u64)
 }
-

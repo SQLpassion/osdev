@@ -12,11 +12,12 @@
 #[path = "../../kernel/src/syscall/types.rs"]
 mod kernel_types;
 
-pub use kernel_types::SysError;
 #[allow(unused_imports)]
 pub(crate) use kernel_types::{decode_result, SyscallId};
+pub use kernel_types::{SysError, UserDriverGrants};
 
 mod raw;
 
 pub mod irq;
 pub mod mmio;
+pub mod spawn;

@@ -144,3 +144,6 @@ name = "driver_mmio_test"
 
 [[test]]
 name = "driver_irq_test"
+
+[[test]]
+name = "driver_spawn_test"

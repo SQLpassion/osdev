@@ -154,6 +154,11 @@ pub fn dispatch_checked(
         SyscallId::IRQ_SUBSCRIBE => driver::syscall_irq_subscribe_impl(arg0),
         SyscallId::IRQ_WAIT => driver::syscall_irq_wait_impl(arg0, arg1),
         SyscallId::IRQ_ACK => driver::syscall_irq_ack_impl(arg0),
+        SyscallId::SPAWN_DRIVER => driver::syscall_spawn_driver_impl(
+            arg0 as *const u8,
+            arg1,
+            arg2 as *const crate::syscall::types::UserDriverGrants,
+        ),
         _ => Err(SyscallError::Unsupported),
     };
 
