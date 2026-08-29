@@ -65,6 +65,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rtl8139_user_program"
+version = "0.1.0"
+dependencies = [
+ "lib_driver",
+ "lib_kaos",
+]
+
+[[package]]
 name = "shell_user_program"
 version = "0.1.0"
 dependencies = [

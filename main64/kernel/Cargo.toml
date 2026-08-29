@@ -147,3 +147,6 @@ name = "driver_irq_test"
 
 [[test]]
 name = "driver_spawn_test"
+
+[[test]]
+name = "driver_rtl8139_test"

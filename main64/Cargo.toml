@@ -12,6 +12,7 @@ members = [
     "user_programs/hello",
     "user_programs/kbasic",
     "user_programs/readline",
+    "user_programs/rtl8139",
     "user_programs/shell",
     "user_programs/tui_app",
 ]
