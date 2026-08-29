@@ -176,3 +176,24 @@ strip_debug_info kbasic.bin
 echo "-> Built: $KBASIC_DIR/kbasic.bin"
 ls -la kbasic.bin
 
+RTL8139_DIR="$PROJECT_ROOT/user_programs/rtl8139"
+echo ""
+echo "-> Building rtl8139 driver user program..."
+
+cd "$RTL8139_DIR"
+
+if [ "$PROFILE" = "release" ]; then
+    cargo +nightly build --release --target x86_64-unknown-none -Z build-std=core,alloc
+    INPUT_ELF="$PROJECT_ROOT/target/x86_64-unknown-none/release/rtl8139"
+else
+    cargo +nightly build --target x86_64-unknown-none
+    INPUT_ELF="$PROJECT_ROOT/target/x86_64-unknown-none/debug/rtl8139"
+fi
+
+cp "$INPUT_ELF" rtl8139.bin
+strip_debug_info rtl8139.bin
+
+echo "-> Built: $RTL8139_DIR/rtl8139.bin"
+ls -la rtl8139.bin
+
+

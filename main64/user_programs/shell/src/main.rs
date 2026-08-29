@@ -63,6 +63,7 @@ fn execute_command(line: &str) {
             println!("  fputest         - run FPU/SSE smoke test (ring 3)");
             println!("  except          - launch the Ring-3 exception exerciser");
             println!("  kbasic          - run the BASIC interpreter");
+            println!("  rtl8139         - start the RTL8139 network driver");
             println!("  date            - show the current calendar date");
             println!("  time            - show the current system time");
             println!("  exit            - exit this shell instance");
@@ -70,6 +71,9 @@ fn execute_command(line: &str) {
         }
         "kbasic" => {
             run_program("kbasic.bin");
+        }
+        "rtl8139" => {
+            run_rtl8139_driver();
         }
         "date" => {
             let mut udt = lib_kaos::time::UserDateTime {
@@ -174,6 +178,82 @@ fn cat_file(name: &str) {
         }
         Err(err) => {
             println!("Could not open file '{}': error {:#x}", name, err);
+        }
+    }
+}
+
+/// Spawns the RTL8139 network driver with authorized MMIO and IRQ capabilities.
+fn run_rtl8139_driver() {
+    use lib_driver::spawn::spawn_driver;
+    use lib_driver::UserDriverGrants;
+    use lib_kaos::pci;
+
+    println!("Scanning PCI for Realtek RTL8139 network card...");
+    let dev_count = pci::get_pci_device_count().unwrap_or(0);
+    let mut grants = UserDriverGrants {
+        mmio_base: 0,
+        mmio_len: 0,
+        irq: 0xFF,
+        _padding: [0; 7],
+    };
+
+    for i in 0..dev_count {
+        let mut dev = pci::UserPciDevice {
+            bus: 0,
+            device: 0,
+            function: 0,
+            class_code: 0,
+            subclass: 0,
+            prog_if: 0,
+            revision_id: 0,
+            header_type: 0,
+            vendor_id: 0,
+            device_id: 0,
+            interrupt_line: 0,
+            interrupt_pin: 0,
+            _padding: [0; 2],
+            bars: [pci::UserPciBar {
+                bar_type: 0,
+                flags: 0,
+                address: 0,
+                size: 0,
+                raw_value: 0,
+                _padding: 0,
+            }; 6],
+        };
+
+        if pci::get_pci_device(i, &mut dev).is_ok()
+            && dev.vendor_id == 0x10EC
+            && dev.device_id == 0x8139
+        {
+            let bar = if dev.bars[1].address != 0 {
+                dev.bars[1]
+            } else {
+                dev.bars[0]
+            };
+            grants.mmio_base = bar.address;
+            grants.mmio_len = bar.size;
+            grants.irq = dev.interrupt_line;
+            break;
+        }
+    }
+
+    let caps = 1 | 2; // MMIO (1) | IRQ (2)
+    let grants_opt = if grants.mmio_len > 0 {
+        Some(&grants)
+    } else {
+        None
+    };
+
+    println!("Spawning RTL8139 driver with MMIO + IRQ capabilities...");
+    match spawn_driver("rtl8139.bin", caps, grants_opt) {
+        Ok(pid) => {
+            if let Err(err) = process::wait(pid as usize) {
+                println!("Error waiting for RTL8139 driver: error {:#x}", err);
+            }
+        }
+        Err(err) => {
+            println!("Failed to spawn RTL8139 driver: {:?}", err);
         }
     }
 }
