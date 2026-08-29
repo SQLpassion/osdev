@@ -227,7 +227,11 @@ pub(crate) fn dispatch_irq(vector: u8, frame: &mut SavedRegisters) -> *mut Saved
     // ISR bit set (see doc comment above and `is_in_service`). A software
     // `int` on this vector never sets that bit, so it naturally skips EOI
     // here instead of requiring the caller to bypass this dispatch path.
-    if (IRQ_BASE..IRQ_BASE + 16).contains(&vector) && is_in_service(vector - IRQ_BASE) {
+    // Driver-subscribed IRQs defer EOI until user-space calls `IrqAck`.
+    if (IRQ_BASE..IRQ_BASE + 16).contains(&vector)
+        && is_in_service(vector - IRQ_BASE)
+        && !crate::drivers::irq_bridge::is_driver_irq(vector - IRQ_BASE)
+    {
         end_of_interrupt(vector - IRQ_BASE);
     }
 

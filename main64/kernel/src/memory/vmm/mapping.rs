@@ -882,6 +882,7 @@ pub fn map_user_page(virtual_address: u64, pfn: u64, writable: bool) -> Result<(
         Some(UserRegion::Code) => false,
         Some(UserRegion::Stack) => true,
         Some(UserRegion::Heap) => true,
+        Some(UserRegion::Mmio) => true,
         Some(UserRegion::Guard) => {
             return Err(MapError::UserGuardPage { virtual_address });
         }
@@ -925,6 +926,91 @@ pub fn map_user_code_page(
     }
 
     map_user_leaf(virtual_address, pfn, writable, !executable)
+}
+
+/// Maps one user virtual page inside the MMIO window with PCD (cache disable),
+/// writable, user, and no-execute permissions for device hardware registers.
+///
+/// Preconditions: callers must run this only inside a critical section with
+/// interrupts disabled for the full duration and a stable CR3.
+pub fn map_user_mmio_page(virtual_address: u64, pfn: u64) -> Result<(), MapError> {
+    // Note: single-core, IF-disabled
+    let virtual_address = page_align_down(virtual_address);
+
+    match classify_user_region(virtual_address) {
+        Some(UserRegion::Mmio) => {}
+        Some(UserRegion::Guard) => {
+            return Err(MapError::UserGuardPage { virtual_address });
+        }
+        _ => {
+            return Err(MapError::NotUserRegion { virtual_address });
+        }
+    }
+
+    map_user_mmio_leaf(virtual_address, pfn)
+}
+
+/// Installs (or idempotently updates) an MMIO user leaf mapping with
+/// present, writable, user, no_execute, PCD, and PWT flags set (strongly uncacheable).
+fn map_user_mmio_leaf(virtual_address: u64, pfn: u64) -> Result<(), MapError> {
+    // Note: single-core, IF-disabled
+    debug_assert!(
+        !interrupts::are_enabled(),
+        "map_user_mmio_leaf: must run with interrupts disabled; \
+         see map_user_mmio_page preconditions"
+    );
+
+    // Step 1: Ensure all intermediate page table levels (PML4, PDP, PD) exist and are marked user-accessible.
+    populate_page_table_path(virtual_address, true)?;
+    let pt = table_at(pt_table_addr(virtual_address));
+    let pt_idx = pt_index(virtual_address);
+
+    // Step 2: Handle idempotent remap if the leaf is already present.
+    if table_entry(pt, pt_idx).present() {
+        let current_pfn = table_entry(pt, pt_idx).frame();
+
+        if current_pfn != pfn {
+            return Err(MapError::AlreadyMapped {
+                virtual_address,
+                current_pfn,
+                requested_pfn: pfn,
+            });
+        }
+
+        // SAFETY:
+        // - `pt` is a valid PT page mapped into the recursive paging window.
+        // - `pt_idx < PT_ENTRIES` (0..512).
+        // - Interrupts are disabled on this core and CR3 is stable.
+        unsafe {
+            let e = entry_ptr(pt, pt_idx);
+            (*e).set_writable(true);
+            (*e).set_user(true);
+            (*e).set_no_execute(true);
+            (*e).set_pcd(true);
+            (*e).set_pwt(true);
+        }
+
+        invlpg(virtual_address);
+        return Ok(());
+    }
+
+    // Step 3: Fresh mapping path for previously non-present leaf.
+    // SAFETY:
+    // - `pt` is a valid PT page mapped in the recursive window.
+    // - `pt_idx < PT_ENTRIES`.
+    // - Interrupts are disabled and CR3 is stable.
+    unsafe {
+        let e = entry_ptr(pt, pt_idx);
+        (*e).set_mapping(pfn, true, true, true);
+        (*e).set_no_execute(true);
+        (*e).set_pcd(true);
+        (*e).set_pwt(true);
+    }
+
+    // Invalidate stale translation for this VA in current TLB context.
+    invlpg(virtual_address);
+
+    Ok(())
 }
 
 /// Shared leaf-mapping body behind [`map_user_page`] and [`map_user_code_page`]:

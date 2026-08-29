@@ -62,6 +62,18 @@ pub enum SyscallId {
     PollKey = 28,
     /// Retrieve the current console dimensions (packed as `rows << 32 | cols`).
     GetConsoleDimensions = 29,
+    /// Map a physical MMIO region into the driver address space.
+    MapPhysical = 30,
+    /// Unmap a previously mapped MMIO region from the driver address space.
+    UnmapPhysical = 31,
+    /// Subscribe to a hardware IRQ vector.
+    IrqSubscribe = 32,
+    /// Block until the subscribed IRQ fires (or timeout).
+    IrqWait = 33,
+    /// Acknowledge IRQ handling (sends PIC EOI).
+    IrqAck = 34,
+    /// Spawn a driver task with specified capabilities and resource grants.
+    SpawnDriver = 35,
 }
 
 impl SyscallId {
@@ -145,6 +157,18 @@ impl SyscallId {
     pub const POLL_KEY: u64 = Self::PollKey as u64;
     /// Syscall number for GetConsoleDimensions.
     pub const GET_CONSOLE_DIMENSIONS: u64 = Self::GetConsoleDimensions as u64;
+    /// Syscall number for MapPhysical.
+    pub const MAP_PHYSICAL: u64 = Self::MapPhysical as u64;
+    /// Syscall number for UnmapPhysical.
+    pub const UNMAP_PHYSICAL: u64 = Self::UnmapPhysical as u64;
+    /// Syscall number for IrqSubscribe.
+    pub const IRQ_SUBSCRIBE: u64 = Self::IrqSubscribe as u64;
+    /// Syscall number for IrqWait.
+    pub const IRQ_WAIT: u64 = Self::IrqWait as u64;
+    /// Syscall number for IrqAck.
+    pub const IRQ_ACK: u64 = Self::IrqAck as u64;
+    /// Syscall number for SpawnDriver.
+    pub const SPAWN_DRIVER: u64 = Self::SpawnDriver as u64;
 }
 
 /// Unknown syscall number.
@@ -507,3 +531,18 @@ pub struct UserDateTime {
     /// Explicit padding for 8-byte alignment structure size matching.
     pub _padding: [u8; 7],
 }
+
+/// User-space representation of driver resource grants for `SpawnDriver`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UserDriverGrants {
+    /// Base physical address of the primary MMIO range (0 if none).
+    pub mmio_base: u64,
+    /// Size of the primary MMIO range in bytes (0 if none).
+    pub mmio_len: u64,
+    /// Hardware IRQ line or vector (0xFF = none).
+    pub irq: u8,
+    /// Explicit padding for 8-byte alignment structure size matching.
+    pub _padding: [u8; 7],
+}
+
