@@ -126,6 +126,7 @@ pub struct IntelNicDevice {
 impl IntelNicDevice {
     /// Initializes the Intel Gigabit network controller and descriptor DMA rings.
     pub fn init(model: NicModel, mmio: Mmio, irq: u8) -> Result<Self, SysError> {
+        lib_kaos::println!("[Intel NIC] Phase 1: Controller reset...");
         // Step 1: Issue global software reset via CTRL register.
         let mut ctrl = mmio.read32(REG_CTRL);
         mmio.write32(REG_CTRL, ctrl | CTRL_RST);
@@ -143,6 +144,7 @@ impl IntelNicDevice {
         ctrl = mmio.read32(REG_CTRL);
         mmio.write32(REG_CTRL, ctrl | CTRL_SLU);
 
+        lib_kaos::println!("[Intel NIC] Phase 2: Reading MAC address...");
         // Step 2: Read hardware MAC address from Receive Address registers (RAL0 / RAH0).
         let ral = mmio.read32(REG_RAL0);
         let rah = mmio.read32(REG_RAH0);
@@ -158,6 +160,7 @@ impl IntelNicDevice {
         // If RAL/RAH were uninitialized by firmware (all 0 or all FF), fallback to EERD EEPROM read.
         // e1000/e1000e EERD: Bit 0 = START, bits 8..15 = word addr. Done bit is bit 4 (or bit 1 on older chips).
         if (mac_bytes == [0; 6] || mac_bytes == [0xFF; 6]) || (rah & (1 << 31)) == 0 {
+            lib_kaos::println!("[Intel NIC] RAL0/RAH0 uninitialized; reading from EEPROM...");
             for i in 0..3 {
                 // Request EEPROM read at word address i.
                 mmio.write32(REG_EERD, 1 | ((i as u32) << 8));
@@ -177,6 +180,7 @@ impl IntelNicDevice {
             }
         }
         let mac = MacAddress(mac_bytes);
+        lib_kaos::println!("[Intel NIC] Phase 3: Allocating DMA buffers...");
 
         // Step 3: Clear and initialize Multicast Table Array (MTA) registers (128 entries).
         for i in 0..128 {
@@ -276,6 +280,8 @@ impl IntelNicDevice {
                 mmio.write32(REG_IMS, INT_RXT0 | INT_TXDW | INT_LSC);
             }
         }
+
+        lib_kaos::println!("[Intel NIC] Phase 4: Initialization complete.");
 
         Ok(Self {
             model,
