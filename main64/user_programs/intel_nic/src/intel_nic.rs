@@ -196,6 +196,17 @@ impl IntelNicDevice {
             }
         }
         let mac = MacAddress(mac_bytes);
+
+        // Step 2b: Write back hardware MAC to RAL0/RAH0 with Address Valid (AV, bit 31) set.
+        // This ensures the receive address filter explicitly accepts incoming packets for this MAC.
+        let low_mac = (mac_bytes[0] as u32)
+            | ((mac_bytes[1] as u32) << 8)
+            | ((mac_bytes[2] as u32) << 16)
+            | ((mac_bytes[3] as u32) << 24);
+        let high_mac = (mac_bytes[4] as u32) | ((mac_bytes[5] as u32) << 8) | (1u32 << 31); // Bit 31: Address Valid (AV)
+        mmio.write32(REG_RAL0, low_mac);
+        mmio.write32(REG_RAH0, high_mac);
+
         lib_kaos::println!("[Intel NIC] Phase 3: Allocating DMA buffers...");
 
         // Step 3: Clear and initialize Multicast Table Array (MTA) registers (128 entries).
@@ -242,7 +253,8 @@ impl IntelNicDevice {
         mmio.write32(REG_RDT, (NUM_RX_DESCRIPTORS - 1) as u32);
 
         // Configure and enable receiver (RCTL).
-        let rctl_val = RCTL_EN | RCTL_BAM | RCTL_BSIZE_2048 | RCTL_SECRC;
+        // RCTL_EN | RCTL_BAM (Broadcast Accept) | RCTL_UPE (Unicast Promiscuous) | RCTL_MPE (Multicast Promiscuous) | RCTL_BSIZE_2048 | RCTL_SECRC
+        let rctl_val = RCTL_EN | RCTL_BAM | (1 << 3) | (1 << 4) | RCTL_BSIZE_2048 | RCTL_SECRC;
         mmio.write32(REG_RCTL, rctl_val);
 
         // Step 5: Allocate contiguous physical TX DMA ring and payload buffers.
