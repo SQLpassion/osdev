@@ -373,13 +373,15 @@ impl IntelNicDevice {
                     buffer_addr: buf_pa,
                     length: tx_len as u16,
                     cso: 0,
-                    cmd: 0x01 | 0x02 | 0x08, // EOP | IFCS | RS
+                    cmd: 0x01 | 0x02 | 0x08, // EOP (bit 0) | IFCS (bit 1) | RS (bit 3)
                     status: 0,               // Clear DD bit for transmission
                     css: 0,
                     special: 0,
                 },
             );
         }
+
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
 
         // Step 4: Advance tail pointer and kick hardware by writing TDT.
         self.tx_tail = (self.tx_tail + 1) % NUM_TX_DESCRIPTORS;

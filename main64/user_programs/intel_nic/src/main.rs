@@ -377,7 +377,9 @@ fn execute_ping(device: &mut impl NicDevice, stack: &mut NetworkStack, target_ip
         if let Some(arp_len) = stack.build_arp_request(next_hop_ip, &mut arp_buf) {
             stack.tx_packets += 1;
             stack.tx_bytes += arp_len;
-            let _ = device.transmit(&arp_buf[..arp_len]);
+            if let Err(e) = device.transmit(&arp_buf[..arp_len]) {
+                println!("[Intel NIC] Error transmitting ARP request: {:?}", e);
+            }
         }
 
         // Wait up to 1000ms for ARP resolution
