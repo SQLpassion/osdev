@@ -131,8 +131,13 @@ impl IntelNicDevice {
         let mut ctrl = mmio.read32(REG_CTRL);
         mmio.write32(REG_CTRL, ctrl | CTRL_RST);
 
-        // Spin until hardware clears RST bit.
-        let mut timeout = 100_000;
+        // Hardware resets internal state. Wait a brief moment.
+        for _ in 0..10_000 {
+            core::hint::spin_loop();
+        }
+
+        // Spin until hardware clears RST bit, with strict fallback timeout.
+        let mut timeout = 20_000;
         while (mmio.read32(REG_CTRL) & CTRL_RST) != 0 && timeout > 0 {
             timeout -= 1;
             for _ in 0..100 {
@@ -140,9 +145,20 @@ impl IntelNicDevice {
             }
         }
 
+        if timeout == 0 {
+            lib_kaos::println!(
+                "[Intel NIC] Note: Reset bit did not clear automatically; forcing link up..."
+            );
+        }
+
         // Re-read CTRL, set link up (SLU), and disable auto-speed detection overrides.
         ctrl = mmio.read32(REG_CTRL);
-        mmio.write32(REG_CTRL, ctrl | CTRL_SLU);
+        mmio.write32(REG_CTRL, (ctrl & !CTRL_RST) | CTRL_SLU);
+
+        // Wait a brief moment for PHY link configuration to settle.
+        for _ in 0..10_000 {
+            core::hint::spin_loop();
+        }
 
         lib_kaos::println!("[Intel NIC] Phase 2: Reading MAC address...");
         // Step 2: Read hardware MAC address from Receive Address registers (RAL0 / RAH0).
