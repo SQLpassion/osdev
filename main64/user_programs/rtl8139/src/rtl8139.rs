@@ -1,8 +1,7 @@
 //! RTL8139 hardware controller, DMA ring buffers, and interrupt handling.
 
 use lib_driver::{dma::DmaBuffer, irq, mmio::Mmio, SysError};
-
-use super::net::MacAddress;
+use lib_net::{MacAddress, NicDevice};
 
 /// RTL8139 Register Offsets
 pub const REG_MAC0: usize = 0x00;
@@ -234,5 +233,23 @@ impl Rtl8139Device {
     pub fn shutdown(&mut self) {
         self.mmio.write8(REG_CHIPCMD, 0x00);
         self.mmio.write16(REG_IMR, 0x0000);
+    }
+}
+
+impl NicDevice for Rtl8139Device {
+    fn mac(&self) -> MacAddress {
+        self.mac()
+    }
+
+    fn transmit(&mut self, packet: &[u8]) -> Result<(), SysError> {
+        self.transmit(packet)
+    }
+
+    fn poll_next_packet(&mut self, out_buf: &mut [u8]) -> Option<usize> {
+        self.poll_next_packet(out_buf)
+    }
+
+    fn shutdown(&mut self) {
+        self.shutdown();
     }
 }

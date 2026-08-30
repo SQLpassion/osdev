@@ -150,13 +150,28 @@ fn test_rtl8139_driver_dma_allocation_and_translation() {
 }
 
 #[allow(dead_code, unused_imports)]
-#[path = "../../user_programs/rtl8139/src/net/mod.rs"]
-mod net;
+#[path = "../../lib_net/src/proto/mod.rs"]
+mod proto;
 
-use net::{
-    arp_opcode, ethertype, icmp_type, ip_protocol, ArpPacket, ArpTable, EthernetFrame,
-    IcmpEchoPacket, Ipv4Address, Ipv4Packet, MacAddress, NetworkEvent, NetworkStack,
-};
+#[allow(dead_code, unused_imports)]
+#[path = "../../lib_net/src/config.rs"]
+mod config;
+
+#[allow(dead_code, unused_imports)]
+#[path = "../../lib_net/src/event.rs"]
+mod event;
+
+#[allow(dead_code, unused_imports)]
+#[path = "../../lib_net/src/stack.rs"]
+mod stack;
+
+use config::NetworkConfig;
+use event::NetworkEvent;
+use proto::arp::{opcode as arp_opcode, ArpPacket, ArpTable, Ipv4Address};
+use proto::ethernet::{ethertype, EthernetFrame, MacAddress};
+use proto::icmp::{msg_type as icmp_type, IcmpEchoPacket};
+use proto::ipv4::{protocol as ip_protocol, Ipv4Packet};
+use stack::NetworkStack;
 
 /// Tests Ethernet frame serialization and deserialization in kernel test environment.
 #[test_case]

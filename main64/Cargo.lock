@@ -51,6 +51,13 @@ name = "lib_kaos"
 version = "0.1.0"
 
 [[package]]
+name = "lib_net"
+version = "0.1.0"
+dependencies = [
+ "lib_driver",
+]
+
+[[package]]
 name = "lib_tui"
 version = "0.1.0"
 dependencies = [
@@ -70,6 +77,7 @@ version = "0.1.0"
 dependencies = [
  "lib_driver",
  "lib_kaos",
+ "lib_net",
 ]
 
 [[package]]

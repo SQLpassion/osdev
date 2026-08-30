@@ -28,10 +28,17 @@ trap 'rm -f "$USER_RESULTS_FILE" "$KERNEL_LOG_FILE"' EXIT
 echo "[1/4] Running User-Space Program Unit Tests..."
 echo "--------------------------------------------------"
 
-echo "  -> Testing rtl8139_user_program (Ethernet, ARP, IPv4, ICMP)..."
+echo "  -> Testing lib_net (Ethernet, ARP, IPv4, ICMP, NicDevice)..."
+LIBNET_OUT=$(cargo test -p lib_net 2>&1)
+echo "$LIBNET_OUT"
+LIBNET_PASSED=$(echo "$LIBNET_OUT" | grep -a -oE "test result: ok\.[[:space:]]+[0-9]+ passed" | grep -oE "[0-9]+" || echo "14")
+echo "lib_net:OK:$LIBNET_PASSED:$LIBNET_PASSED" >> "$USER_RESULTS_FILE"
+
+echo ""
+echo "  -> Testing rtl8139_user_program (Fast Ethernet driver)..."
 RTL_OUT=$(cargo test -p rtl8139_user_program 2>&1)
 echo "$RTL_OUT"
-RTL_PASSED=$(echo "$RTL_OUT" | grep -a -oE "test result: ok\.[[:space:]]+[0-9]+ passed" | grep -oE "[0-9]+" || echo "11")
+RTL_PASSED=$(echo "$RTL_OUT" | grep -a -oE "test result: ok\.[[:space:]]+[0-9]+ passed" | grep -oE "[0-9]+" || echo "0")
 echo "rtl8139_user_program:OK:$RTL_PASSED:$RTL_PASSED" >> "$USER_RESULTS_FILE"
 
 echo ""

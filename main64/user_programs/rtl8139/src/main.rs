@@ -8,7 +8,6 @@
 
 extern crate alloc;
 
-pub mod net;
 pub mod rtl8139;
 
 #[cfg(not(test))]
@@ -16,7 +15,7 @@ use lib_driver::mmio::Mmio;
 #[cfg(not(test))]
 use lib_kaos::{console, pci, print, println, process};
 #[cfg(not(test))]
-use net::{Ipv4Address, NetworkEvent, NetworkStack};
+use lib_net::{Ipv4Address, NetworkEvent, NetworkStack, NicDevice};
 #[cfg(not(test))]
 use rtl8139::Rtl8139Device;
 
@@ -325,7 +324,7 @@ fn read_tsc() -> u64 {
 
 /// Executes the interactive `ping` command.
 #[cfg(not(test))]
-fn execute_ping(device: &mut Rtl8139Device, stack: &mut NetworkStack, target_ip: Ipv4Address) {
+fn execute_ping(device: &mut impl NicDevice, stack: &mut NetworkStack, target_ip: Ipv4Address) {
     println!("PING {} 56(84) bytes of data.", target_ip);
 
     // Step 1: Determine routing next-hop (direct subnet or default gateway).
@@ -486,7 +485,7 @@ fn execute_ping(device: &mut Rtl8139Device, stack: &mut NetworkStack, target_ip:
 
 /// Executes background packet listening mode.
 #[cfg(not(test))]
-fn execute_listen(device: &mut Rtl8139Device, stack: &mut NetworkStack) {
+fn execute_listen(device: &mut impl NicDevice, stack: &mut NetworkStack) {
     let mut rx_buf = [0u8; 1792];
 
     // Step 1: Drain any pending key events (e.g. Enter key from typing 'listen').

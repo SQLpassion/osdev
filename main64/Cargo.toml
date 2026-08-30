@@ -6,6 +6,7 @@ members = [
     "kernel",
     "lib_driver",
     "lib_kaos",
+    "lib_net",
     "lib_tui",
     "user_programs/filedemo",
     "user_programs/exception_test",
