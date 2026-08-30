@@ -133,8 +133,10 @@ const POST_RESET_DELAY_CYCLES: u64 = 200_000_000;
 const RESET_RETRY_DELAY_CYCLES: u64 = 200_000_000;
 const TX_COMPLETION_TIMEOUT_CYCLES: u64 = 200_000_000;
 const HW_OWNERSHIP_TIMEOUT_CYCLES: u64 = 1_000_000_000;
-/// About three seconds on the approximately 2 GHz TSC assumed by the CLI.
-const LINK_UP_TIMEOUT_CYCLES: u64 = 6_000_000_000;
+/// Wait times for PHY link-up on physical hardware can exceed 3 seconds if the
+/// link partner has spanning tree (STP) enabled or uses Energy Efficient Ethernet.
+/// About five seconds on the approximately 2 GHz TSC assumed by the CLI.
+const LINK_UP_TIMEOUT_CYCLES: u64 = 10_000_000_000;
 
 /// 16-byte Legacy RX descriptor format for e1000/e1000e.
 #[repr(C)]
@@ -429,7 +431,9 @@ impl IntelNicDevice {
                 let _ = self.mmio.read32(REG_STATUS);
                 return true;
             }
-            core::hint::spin_loop();
+            // Step 1: Delay ~1ms between checks. Polling the PCH too aggressively
+            // can starve the internal ME/PHY interconnect and prevent link-up on I219-V.
+            delay_tsc_cycles(2_000_000);
         }
 
         false

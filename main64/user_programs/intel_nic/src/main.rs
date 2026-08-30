@@ -372,21 +372,26 @@ fn execute_ping(device: &mut impl NicDevice, stack: &mut NetworkStack, target_ip
     let dest_mac = if let Some(mac) = stack.arp_table.lookup(next_hop_ip) {
         mac
     } else {
-        // Send ARP request for next-hop IP
+        // Send initial ARP request for next-hop IP
         let mut arp_buf = [0u8; 64];
-        if let Some(arp_len) = stack.build_arp_request(next_hop_ip, &mut arp_buf) {
+        let arp_len = stack
+            .build_arp_request(next_hop_ip, &mut arp_buf)
+            .unwrap_or(0);
+        if arp_len > 0 {
             stack.tx_packets += 1;
             stack.tx_bytes += arp_len;
-            if let Err(e) = device.transmit(&arp_buf[..arp_len]) {
-                println!("[Intel NIC] Error transmitting ARP request: {:?}", e);
-            }
+            let _ = device.transmit(&arp_buf[..arp_len]);
         }
 
-        // Wait up to 1000ms for ARP resolution
+        // Wait up to 10000ms for ARP resolution, retrying every 1000ms.
+        // This is crucial because physical switches often block traffic for several
+        // seconds (STP Listening/Learning states) after the link physically comes up.
         let mut resolved_mac = None;
         let start_time = read_tsc();
+        let mut last_arp_tx = start_time;
         let mut rx_buf = [0u8; 1792];
-        while read_tsc().saturating_sub(start_time) < 2_000_000_000 {
+
+        while read_tsc().saturating_sub(start_time) < 20_000_000_000 {
             while let Some(len) = device.poll_next_packet(&mut rx_buf) {
                 let _ = stack.handle_rx_packet(&rx_buf[..len], |tx_pkt| {
                     let _ = device.transmit(tx_pkt);
@@ -396,6 +401,16 @@ fn execute_ping(device: &mut impl NicDevice, stack: &mut NetworkStack, target_ip
             if let Some(mac) = stack.arp_table.lookup(next_hop_ip) {
                 resolved_mac = Some(mac);
                 break;
+            }
+
+            let current_time = read_tsc();
+            if current_time.saturating_sub(last_arp_tx) >= 2_000_000_000 {
+                if arp_len > 0 {
+                    stack.tx_packets += 1;
+                    stack.tx_bytes += arp_len;
+                    let _ = device.transmit(&arp_buf[..arp_len]);
+                }
+                last_arp_tx = current_time;
             }
 
             for _ in 0..10_000 {
@@ -438,8 +453,8 @@ fn execute_ping(device: &mut impl NicDevice, stack: &mut NetworkStack, target_ip
 
         stack.tx_packets += 1;
         stack.tx_bytes += ping_len;
-        let send_time = read_tsc();
         let _ = device.transmit(&ping_buf[..ping_len]);
+        let send_time = read_tsc();
 
         // Wait up to 1000ms for Echo Reply
         let mut got_reply = false;
