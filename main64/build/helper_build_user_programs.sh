@@ -196,4 +196,24 @@ strip_debug_info rtl8139.bin
 echo "-> Built: $RTL8139_DIR/rtl8139.bin"
 ls -la rtl8139.bin
 
+INTEL_NIC_DIR="$PROJECT_ROOT/user_programs/intel_nic"
+echo ""
+echo "-> Building intel_nic driver user program..."
+
+cd "$INTEL_NIC_DIR"
+
+if [ "$PROFILE" = "release" ]; then
+    cargo +nightly build --release --target x86_64-unknown-none -Z build-std=core,alloc
+    INPUT_ELF="$PROJECT_ROOT/target/x86_64-unknown-none/release/intel_nic"
+else
+    cargo +nightly build --target x86_64-unknown-none
+    INPUT_ELF="$PROJECT_ROOT/target/x86_64-unknown-none/debug/intel_nic"
+fi
+
+cp "$INPUT_ELF" intel_nic.bin
+strip_debug_info intel_nic.bin
+
+echo "-> Built: $INTEL_NIC_DIR/intel_nic.bin"
+ls -la intel_nic.bin
+
 

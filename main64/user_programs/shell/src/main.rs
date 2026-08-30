@@ -78,7 +78,7 @@ fn execute_command(line: &str) {
         "rtl8139" | "rtl8139.bin" => {
             run_rtl8139_driver();
         }
-        "intel_nic" | "intel_nic.bin" => {
+        "intel_nic" | "intel_nic.bin" | "intlnic" | "intlnic.bin" => {
             run_intel_nic_driver();
         }
         "driver" => {
@@ -89,6 +89,8 @@ fn execute_command(line: &str) {
                     run_rtl8139_driver();
                 } else if target.eq_ignore_ascii_case("intel_nic")
                     || target.eq_ignore_ascii_case("intel_nic.bin")
+                    || target.eq_ignore_ascii_case("intlnic")
+                    || target.eq_ignore_ascii_case("intlnic.bin")
                 {
                     run_intel_nic_driver();
                 } else {
@@ -159,6 +161,8 @@ fn execute_command(line: &str) {
                     run_rtl8139_driver();
                 } else if file_name.eq_ignore_ascii_case("intel_nic.bin")
                     || file_name.eq_ignore_ascii_case("intel_nic")
+                    || file_name.eq_ignore_ascii_case("intlnic.bin")
+                    || file_name.eq_ignore_ascii_case("intlnic")
                 {
                     run_intel_nic_driver();
                 } else {
@@ -185,7 +189,9 @@ fn execute_command(line: &str) {
         other if other.ends_with(".bin") || other.ends_with(".BIN") => {
             if other.eq_ignore_ascii_case("rtl8139.bin") {
                 run_rtl8139_driver();
-            } else if other.eq_ignore_ascii_case("intel_nic.bin") {
+            } else if other.eq_ignore_ascii_case("intel_nic.bin")
+                || other.eq_ignore_ascii_case("intlnic.bin")
+            {
                 run_intel_nic_driver();
             } else {
                 run_program(other);
@@ -379,7 +385,7 @@ fn run_intel_nic_driver() {
     };
 
     println!("Spawning Intel NIC driver with MMIO + IRQ capabilities...");
-    match spawn_driver("intel_nic.bin", caps, grants_opt) {
+    match spawn_driver("intlnic.bin", caps, grants_opt) {
         Ok(pid) => {
             if let Err(err) = process::wait(pid as usize) {
                 println!("Error waiting for Intel NIC driver: error {:#x}", err);
