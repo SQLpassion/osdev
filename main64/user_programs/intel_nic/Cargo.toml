@@ -1,0 +1,17 @@
+[package]
+name = "intel_nic_user_program"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+kernel = []
+
+[dependencies]
+lib_driver = { path = "../../lib_driver" }
+lib_kaos = { path = "../../lib_kaos" }
+lib_net = { path = "../../lib_net" }
+
+[[bin]]
+name = "intel_nic"
+path = "src/main.rs"
+bench = false

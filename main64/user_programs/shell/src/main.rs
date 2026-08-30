@@ -64,6 +64,9 @@ fn execute_command(line: &str) {
             println!("  except          - launch the Ring-3 exception exerciser");
             println!("  kbasic          - run the BASIC interpreter");
             println!("  rtl8139         - start the RTL8139 network driver");
+            println!(
+                "  intel_nic       - start the Intel Gigabit Ethernet driver (82577LM/I219-V)"
+            );
             println!("  date            - show the current calendar date");
             println!("  time            - show the current system time");
             println!("  exit            - exit this shell instance");
@@ -75,12 +78,19 @@ fn execute_command(line: &str) {
         "rtl8139" | "rtl8139.bin" => {
             run_rtl8139_driver();
         }
+        "intel_nic" | "intel_nic.bin" => {
+            run_intel_nic_driver();
+        }
         "driver" => {
             if let Some(target) = parts.next() {
                 if target.eq_ignore_ascii_case("rtl8139")
                     || target.eq_ignore_ascii_case("rtl8139.bin")
                 {
                     run_rtl8139_driver();
+                } else if target.eq_ignore_ascii_case("intel_nic")
+                    || target.eq_ignore_ascii_case("intel_nic.bin")
+                {
+                    run_intel_nic_driver();
                 } else {
                     println!("Unknown driver '{}'", target);
                 }
@@ -147,6 +157,10 @@ fn execute_command(line: &str) {
                     || file_name.eq_ignore_ascii_case("rtl8139")
                 {
                     run_rtl8139_driver();
+                } else if file_name.eq_ignore_ascii_case("intel_nic.bin")
+                    || file_name.eq_ignore_ascii_case("intel_nic")
+                {
+                    run_intel_nic_driver();
                 } else {
                     run_program(file_name);
                 }
@@ -171,6 +185,8 @@ fn execute_command(line: &str) {
         other if other.ends_with(".bin") || other.ends_with(".BIN") => {
             if other.eq_ignore_ascii_case("rtl8139.bin") {
                 run_rtl8139_driver();
+            } else if other.eq_ignore_ascii_case("intel_nic.bin") {
+                run_intel_nic_driver();
             } else {
                 run_program(other);
             }
@@ -289,6 +305,88 @@ fn run_rtl8139_driver() {
         }
         Err(err) => {
             println!("Failed to spawn RTL8139 driver: {:?}", err);
+        }
+    }
+}
+
+/// Spawns the Intel Gigabit Ethernet driver (82577LM/I219-V) with authorized MMIO and IRQ capabilities.
+fn run_intel_nic_driver() {
+    use lib_driver::spawn::spawn_driver;
+    use lib_driver::UserDriverGrants;
+    use lib_kaos::pci;
+
+    println!("Scanning PCI for Intel 82577LM (8086:10EA) or I219-V (8086:15B8)...");
+    let dev_count = pci::get_pci_device_count().unwrap_or(0);
+    let mut grants = UserDriverGrants {
+        mmio_base: 0,
+        mmio_len: 0,
+        irq: 0xFF,
+        _padding: [0; 7],
+    };
+
+    for i in 0..dev_count {
+        let mut dev = pci::UserPciDevice {
+            bus: 0,
+            device: 0,
+            function: 0,
+            class_code: 0,
+            subclass: 0,
+            prog_if: 0,
+            revision_id: 0,
+            header_type: 0,
+            vendor_id: 0,
+            device_id: 0,
+            interrupt_line: 0,
+            interrupt_pin: 0,
+            _padding: [0; 2],
+            bars: [pci::UserPciBar {
+                bar_type: 0,
+                flags: 0,
+                address: 0,
+                size: 0,
+                raw_value: 0,
+                _padding: 0,
+            }; 6],
+        };
+
+        if pci::get_pci_device(i, &mut dev).is_ok()
+            && dev.vendor_id == 0x8086
+            && (dev.device_id == 0x10EA || dev.device_id == 0x15B8)
+        {
+            let mut mmio_bar = None;
+            for bar in &dev.bars {
+                if (bar.bar_type == 2 || bar.bar_type == 3) && bar.address != 0 {
+                    mmio_bar = Some(*bar);
+                    break;
+                }
+            }
+            let bar = match mmio_bar {
+                Some(b) => b,
+                None => dev.bars[0],
+            };
+            grants.mmio_base = bar.address;
+            grants.mmio_len = if bar.size != 0 { bar.size } else { 128 * 1024 };
+            grants.irq = dev.interrupt_line;
+            break;
+        }
+    }
+
+    let caps = 1 | 2; // MMIO (1) | IRQ (2)
+    let grants_opt = if grants.mmio_len > 0 {
+        Some(&grants)
+    } else {
+        None
+    };
+
+    println!("Spawning Intel NIC driver with MMIO + IRQ capabilities...");
+    match spawn_driver("intel_nic.bin", caps, grants_opt) {
+        Ok(pid) => {
+            if let Err(err) = process::wait(pid as usize) {
+                println!("Error waiting for Intel NIC driver: error {:#x}", err);
+            }
+        }
+        Err(err) => {
+            println!("Failed to spawn Intel NIC driver: {:?}", err);
         }
     }
 }

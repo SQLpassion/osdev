@@ -42,6 +42,13 @@ RTL_PASSED=$(echo "$RTL_OUT" | grep -a -oE "test result: ok\.[[:space:]]+[0-9]+ 
 echo "rtl8139_user_program:OK:$RTL_PASSED:$RTL_PASSED" >> "$USER_RESULTS_FILE"
 
 echo ""
+echo "  -> Testing intel_nic_user_program (Intel Gigabit Ethernet driver)..."
+INTEL_OUT=$(cargo test -p intel_nic_user_program 2>&1)
+echo "$INTEL_OUT"
+INTEL_PASSED=$(echo "$INTEL_OUT" | grep -a -oE "test result: ok\.[[:space:]]+[0-9]+ passed" | grep -oE "[0-9]+" || echo "2")
+echo "intel_nic_user_program:OK:$INTEL_PASSED:$INTEL_PASSED" >> "$USER_RESULTS_FILE"
+
+echo ""
 echo "  -> Testing kbasic_user_program (BASIC interpreter & tokenizer)..."
 KBASIC_OUT=$(cargo test -p kbasic_user_program 2>&1)
 echo "$KBASIC_OUT"

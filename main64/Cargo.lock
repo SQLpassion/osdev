@@ -24,6 +24,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "intel_nic_user_program"
+version = "0.1.0"
+dependencies = [
+ "lib_driver",
+ "lib_kaos",
+ "lib_net",
+]
+
+[[package]]
 name = "kaos_kernel"
 version = "0.1.0"
 
