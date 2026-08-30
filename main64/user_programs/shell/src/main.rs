@@ -321,7 +321,7 @@ fn run_intel_nic_driver() {
     use lib_driver::UserDriverGrants;
     use lib_kaos::pci;
 
-    println!("Scanning PCI for Intel 82577LM (8086:10EA) or I219-V (8086:15B8)...");
+    println!("Scanning PCI for Intel Gigabit Ethernet card...");
     let dev_count = pci::get_pci_device_count().unwrap_or(0);
     let mut grants = UserDriverGrants {
         mmio_base: 0,
@@ -357,7 +357,10 @@ fn run_intel_nic_driver() {
 
         if pci::get_pci_device(i, &mut dev).is_ok()
             && dev.vendor_id == 0x8086
-            && (dev.device_id == 0x10EA || dev.device_id == 0x15B8)
+            && (dev.device_id == 0x10EA
+                || dev.device_id == 0x15B8
+                || dev.device_id == 0x10D3
+                || dev.device_id == 0x100E)
         {
             let mut mmio_bar = None;
             for bar in &dev.bars {
@@ -375,6 +378,11 @@ fn run_intel_nic_driver() {
             grants.irq = dev.interrupt_line;
             break;
         }
+    }
+
+    if grants.mmio_len == 0 {
+        println!("[shell] Error: No supported Intel network card (8086:10EA, 8086:15B8, 8086:10D3, 8086:100E) found on PCI bus.");
+        return;
     }
 
     let caps = 1 | 2; // MMIO (1) | IRQ (2)

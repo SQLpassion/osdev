@@ -89,6 +89,10 @@ pub enum NicModel {
     E1000e,
     /// Intel Ethernet Connection I219-V (0x8086:0x15B8).
     I219V,
+    /// Intel 82574L Gigabit Network Connection (0x8086:0x10D3, QEMU/UTM e1000e).
+    E1000e82574L,
+    /// Intel 82540EM Gigabit Ethernet Controller (0x8086:0x100E, QEMU/UTM e1000).
+    E100082540EM,
 }
 
 impl NicModel {
@@ -97,6 +101,8 @@ impl NicModel {
         match self {
             Self::E1000e => "Intel 82577LM Gigabit Network Connection",
             Self::I219V => "Intel Ethernet Connection I219-V",
+            Self::E1000e82574L => "Intel 82574L Gigabit Network Connection (e1000e)",
+            Self::E100082540EM => "Intel 82540EM Gigabit Ethernet Controller (e1000)",
         }
     }
 }
@@ -435,6 +441,14 @@ mod tests {
             "Intel 82577LM Gigabit Network Connection"
         );
         assert_eq!(NicModel::I219V.name(), "Intel Ethernet Connection I219-V");
+        assert_eq!(
+            NicModel::E1000e82574L.name(),
+            "Intel 82574L Gigabit Network Connection (e1000e)"
+        );
+        assert_eq!(
+            NicModel::E100082540EM.name(),
+            "Intel 82540EM Gigabit Ethernet Controller (e1000)"
+        );
     }
 
     #[test]

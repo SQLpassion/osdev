@@ -64,12 +64,18 @@ pub extern "C" fn _start() -> ! {
             } else if dev.device_id == 0x15B8 {
                 found = Some((dev, NicModel::I219V));
                 break;
+            } else if dev.device_id == 0x10D3 {
+                found = Some((dev, NicModel::E1000e82574L));
+                break;
+            } else if dev.device_id == 0x100E {
+                found = Some((dev, NicModel::E100082540EM));
+                break;
             }
         }
     }
 
     let Some((dev, model)) = found else {
-        println!("[Intel NIC] Error: No Intel 82577LM (8086:10EA) or I219-V (8086:15B8) PCI device found.");
+        println!("[Intel NIC] Error: No supported Intel Gigabit Ethernet PCI device found.");
         process::exit();
     };
 
