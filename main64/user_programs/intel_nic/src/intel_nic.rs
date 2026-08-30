@@ -131,12 +131,12 @@ impl IntelNicDevice {
         mmio.write32(REG_CTRL, ctrl | CTRL_RST);
 
         // Spin until hardware clears RST bit.
-        let mut timeout = 10_000;
+        let mut timeout = 100_000;
         while (mmio.read32(REG_CTRL) & CTRL_RST) != 0 && timeout > 0 {
             timeout -= 1;
-        }
-        if timeout == 0 {
-            return Err(SysError::IoError);
+            for _ in 0..100 {
+                core::hint::spin_loop();
+            }
         }
 
         // Re-read CTRL, set link up (SLU), and disable auto-speed detection overrides.
@@ -156,17 +156,24 @@ impl IntelNicDevice {
         ];
 
         // If RAL/RAH were uninitialized by firmware (all 0 or all FF), fallback to EERD EEPROM read.
+        // e1000/e1000e EERD: Bit 0 = START, bits 8..15 = word addr. Done bit is bit 4 (or bit 1 on older chips).
         if (mac_bytes == [0; 6] || mac_bytes == [0xFF; 6]) || (rah & (1 << 31)) == 0 {
             for i in 0..3 {
-                // Request EEPROM read at word address i (start bit 1, addr in bits 8..15).
+                // Request EEPROM read at word address i.
                 mmio.write32(REG_EERD, 1 | ((i as u32) << 8));
-                let mut eerd_timeout = 10_000;
-                while (mmio.read32(REG_EERD) & (1 << 4)) == 0 && eerd_timeout > 0 {
+                let mut eerd_timeout = 100_000;
+                while eerd_timeout > 0 {
+                    let val = mmio.read32(REG_EERD);
+                    // Check bit 4 (e1000e/ICH/PCH) or bit 1 (legacy 82540)
+                    if (val & (1 << 4)) != 0 || (val & (1 << 1)) != 0 {
+                        let data = ((val >> 16) & 0xFFFF) as u16;
+                        mac_bytes[i * 2] = (data & 0xFF) as u8;
+                        mac_bytes[i * 2 + 1] = ((data >> 8) & 0xFF) as u8;
+                        break;
+                    }
                     eerd_timeout -= 1;
+                    core::hint::spin_loop();
                 }
-                let data = ((mmio.read32(REG_EERD) >> 16) & 0xFFFF) as u16;
-                mac_bytes[i * 2] = (data & 0xFF) as u8;
-                mac_bytes[i * 2 + 1] = ((data >> 8) & 0xFF) as u8;
             }
         }
         let mac = MacAddress(mac_bytes);

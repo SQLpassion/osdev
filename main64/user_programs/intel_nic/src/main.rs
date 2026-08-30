@@ -122,6 +122,12 @@ pub extern "C" fn _start() -> ! {
         }
     };
 
+    println!(
+        "[Intel NIC] Mapping MMIO BAR at {:#x} ({} KB)...",
+        bar_phys,
+        bar_size / 1024
+    );
+
     // Step 3: Map physical MMIO registers.
     let mmio = match Mmio::map(bar_phys, bar_size) {
         Ok(m) => m,
@@ -130,6 +136,8 @@ pub extern "C" fn _start() -> ! {
             process::exit();
         }
     };
+
+    println!("[Intel NIC] Initializing hardware controller and DMA rings...");
 
     // Step 4: Initialize Intel controller and DMA descriptor rings.
     let mut device = match IntelNicDevice::init(model, mmio, dev.interrupt_line) {
