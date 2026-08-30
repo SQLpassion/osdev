@@ -29,30 +29,30 @@ echo "[1/4] Running User-Space Program Unit Tests..."
 echo "--------------------------------------------------"
 
 echo "  -> Testing lib_net (Ethernet, ARP, IPv4, ICMP, NicDevice)..."
-LIBNET_OUT=$(cargo test -p lib_net 2>&1)
+LIBNET_OUT=$(cargo test -p lib_net --lib 2>&1)
 echo "$LIBNET_OUT"
-LIBNET_PASSED=$(echo "$LIBNET_OUT" | grep -a -oE "test result: ok\.[[:space:]]+[0-9]+ passed" | grep -oE "[0-9]+" || echo "14")
+LIBNET_PASSED=$(echo "$LIBNET_OUT" | grep -a -m 1 -oE "test result: ok\.[[:space:]]+[0-9]+ passed" | grep -oE "[0-9]+" || echo "14")
 echo "lib_net:OK:$LIBNET_PASSED:$LIBNET_PASSED" >> "$USER_RESULTS_FILE"
 
 echo ""
 echo "  -> Testing rtl8139_user_program (Fast Ethernet driver)..."
-RTL_OUT=$(cargo test -p rtl8139_user_program 2>&1)
+RTL_OUT=$(cargo test -p rtl8139_user_program --bin rtl8139 2>&1)
 echo "$RTL_OUT"
-RTL_PASSED=$(echo "$RTL_OUT" | grep -a -oE "test result: ok\.[[:space:]]+[0-9]+ passed" | grep -oE "[0-9]+" || echo "0")
+RTL_PASSED=$(echo "$RTL_OUT" | grep -a -m 1 -oE "test result: ok\.[[:space:]]+[0-9]+ passed" | grep -oE "[0-9]+" || echo "0")
 echo "rtl8139_user_program:OK:$RTL_PASSED:$RTL_PASSED" >> "$USER_RESULTS_FILE"
 
 echo ""
 echo "  -> Testing intel_nic_user_program (Intel Gigabit Ethernet driver)..."
-INTEL_OUT=$(cargo test -p intel_nic_user_program 2>&1)
+INTEL_OUT=$(cargo test -p intel_nic_user_program --bin intel_nic 2>&1)
 echo "$INTEL_OUT"
-INTEL_PASSED=$(echo "$INTEL_OUT" | grep -a -oE "test result: ok\.[[:space:]]+[0-9]+ passed" | grep -oE "[0-9]+" || echo "2")
+INTEL_PASSED=$(echo "$INTEL_OUT" | grep -a -m 1 -oE "test result: ok\.[[:space:]]+[0-9]+ passed" | grep -oE "[0-9]+" || echo "2")
 echo "intel_nic_user_program:OK:$INTEL_PASSED:$INTEL_PASSED" >> "$USER_RESULTS_FILE"
 
 echo ""
 echo "  -> Testing kbasic_user_program (BASIC interpreter & tokenizer)..."
-KBASIC_OUT=$(cargo test -p kbasic_user_program 2>&1)
+KBASIC_OUT=$(cargo test -p kbasic_user_program --bin kbasic 2>&1)
 echo "$KBASIC_OUT"
-KBASIC_PASSED=$(echo "$KBASIC_OUT" | grep -a -oE "test result: ok\.[[:space:]]+[0-9]+ passed" | grep -oE "[0-9]+" || echo "19")
+KBASIC_PASSED=$(echo "$KBASIC_OUT" | grep -a -m 1 -oE "test result: ok\.[[:space:]]+[0-9]+ passed" | grep -oE "[0-9]+" || echo "19")
 echo "kbasic_user_program:OK:$KBASIC_PASSED:$KBASIC_PASSED" >> "$USER_RESULTS_FILE"
 
 echo ""
