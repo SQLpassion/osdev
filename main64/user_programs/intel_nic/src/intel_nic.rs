@@ -7,26 +7,32 @@ use lib_net::{MacAddress, NicDevice};
 pub const REG_CTRL: usize = 0x0000;
 pub const REG_STATUS: usize = 0x0008;
 pub const REG_EECD: usize = 0x0010;
+pub const REG_CTRL_EXT: usize = 0x0018;
 pub const REG_EERD: usize = 0x0014;
 pub const REG_ICR: usize = 0x00C0;
 pub const REG_IMS: usize = 0x00D0;
 pub const REG_IMC: usize = 0x00D8;
 pub const REG_RCTL: usize = 0x0100;
 pub const REG_TCTL: usize = 0x0400;
+pub const REG_TIPG: usize = 0x0410;
 pub const REG_RDBAL: usize = 0x2800;
 pub const REG_RDBAH: usize = 0x2804;
 pub const REG_RDLEN: usize = 0x2808;
 pub const REG_RDH: usize = 0x2810;
 pub const REG_RDT: usize = 0x2818;
+pub const REG_RXDCTL: usize = 0x2828;
 pub const REG_TDBAL: usize = 0x3800;
 pub const REG_TDBAH: usize = 0x3804;
 pub const REG_TDLEN: usize = 0x3808;
 pub const REG_TDH: usize = 0x3810;
 pub const REG_TDT: usize = 0x3818;
+pub const REG_TXDCTL: usize = 0x3828;
 pub const REG_RAL0: usize = 0x5400;
 pub const REG_RAH0: usize = 0x5404;
 
 /// Control register bit definitions.
+pub const CTRL_ASDE: u32 = 1 << 5; // Auto-Speed Detection Enable
+pub const CTRL_EXT_DRV_LOAD: u32 = 1 << 28; // Auto-Speed Detection Enable
 pub const CTRL_SLU: u32 = 1 << 6; // Set Link Up
 pub const CTRL_RST: u32 = 1 << 26; // Device Reset
 
@@ -151,9 +157,14 @@ impl IntelNicDevice {
             );
         }
 
-        // Re-read CTRL, set link up (SLU), and disable auto-speed detection overrides.
+        // Re-read CTRL, set link up (SLU), and enable auto-speed detection.
         ctrl = mmio.read32(REG_CTRL);
-        mmio.write32(REG_CTRL, (ctrl & !CTRL_RST) | CTRL_SLU);
+        mmio.write32(REG_CTRL, (ctrl & !CTRL_RST) | CTRL_SLU | CTRL_ASDE);
+
+        // Set Driver Loaded bit in CTRL_EXT so firmware/ME hands over control.
+        let mut ctrl_ext = mmio.read32(REG_CTRL_EXT);
+        ctrl_ext |= CTRL_EXT_DRV_LOAD;
+        mmio.write32(REG_CTRL_EXT, ctrl_ext);
 
         // Wait a brief moment for PHY link configuration to settle.
         for _ in 0..10_000 {
@@ -252,9 +263,14 @@ impl IntelNicDevice {
         mmio.write32(REG_RDH, 0);
         mmio.write32(REG_RDT, (NUM_RX_DESCRIPTORS - 1) as u32);
 
+        // Enable RX Queue for newer PCIe hardware (e.g. 82577LM / I219-V).
+        let mut rxdctl = mmio.read32(REG_RXDCTL);
+        rxdctl |= 1 << 25; // RXDCTL.ENABLE
+        mmio.write32(REG_RXDCTL, rxdctl);
+
         // Configure and enable receiver (RCTL).
         // RCTL_EN | RCTL_BAM (Broadcast Accept) | RCTL_UPE (Unicast Promiscuous) | RCTL_MPE (Multicast Promiscuous) | RCTL_BSIZE_2048 | RCTL_SECRC
-        let rctl_val = RCTL_EN | RCTL_BAM | (1 << 3) | (1 << 4) | RCTL_BSIZE_2048 | RCTL_SECRC;
+        let rctl_val = RCTL_EN | RCTL_BAM | RCTL_BSIZE_2048 | RCTL_SECRC; // UPE and MPE disabled to prevent RX ring exhaustion
         mmio.write32(REG_RCTL, rctl_val);
 
         // Step 5: Allocate contiguous physical TX DMA ring and payload buffers.
@@ -296,11 +312,20 @@ impl IntelNicDevice {
         mmio.write32(REG_TDH, 0);
         mmio.write32(REG_TDT, 0);
 
+        // Enable TX Queue for newer PCIe hardware (e.g. 82577LM / I219-V).
+        let mut txdctl = mmio.read32(REG_TXDCTL);
+        txdctl |= 1 << 25; // TXDCTL.ENABLE
+        mmio.write32(REG_TXDCTL, txdctl);
+
         // Configure and enable transmitter (TCTL).
         // CT = 0x0F (15 collisions), COLD = 0x40 (64 bytes full duplex).
         let tctl_val =
             TCTL_EN | TCTL_PSP | (0x0Fu32 << TCTL_CT_SHIFT) | (0x40u32 << TCTL_COLD_SHIFT);
         mmio.write32(REG_TCTL, tctl_val);
+
+        // Program Transmit Inter Packet Gap (TIPG) to IEEE standards.
+        // IPGT = 10, IPGR1 = 8, IPGR2 = 6. (0x0060200A)
+        mmio.write32(REG_TIPG, 0x0060200A);
 
         // Step 6: Subscribe to hardware IRQ if valid.
         if irq != 0 && irq != 0xFF {
