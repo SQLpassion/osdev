@@ -150,6 +150,10 @@ impl Rtl8139Device {
         let tx_slice = self._tx_buffers.as_mut_slice();
         tx_slice[slot_offset..slot_offset + packet.len()].copy_from_slice(packet);
 
+        // The packet contents must become globally visible before the TSD
+        // doorbell write below can trigger the NIC's DMA engine to read them.
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+
         // Step 3: Write packet length to TSD (clears OWN bit and triggers transmit).
         // Minimum packet length is 60 bytes.
         let tx_len = packet.len().max(60);
