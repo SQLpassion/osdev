@@ -294,6 +294,73 @@ fn test_request_must_match_derived_grants() {
     );
 }
 
+/// Tests that a BAR whose page-aligned window would overflow `u64` is
+/// skipped instead of silently wrapping into a corrupted grant.
+///
+/// `mmio_windows` used raw (non-checked) `u64` arithmetic to compute a BAR's
+/// page-aligned end address, unlike every other address computation in
+/// `driver_db`, which uses `checked_add`. A `Memory64` BAR's (address, size)
+/// pair comes straight from PCI config-space registers a device (or a
+/// misbehaving VM) controls; values close to `u64::MAX` would wrap the
+/// page-aligned end low, and the subsequent `page_end - page_base`
+/// subtraction would then underflow into a huge bogus length —
+/// `syscall_map_physical_impl` trusts this window as an authoritative grant
+/// without re-validating its internal consistency.
+#[test_case]
+fn test_mmio_windows_rejects_overflowing_bar() {
+    let mut device = fake_pci_device(0, 8, 0);
+    device.bars[0] = PciBar {
+        bar_type: BarType::Memory64 {
+            address: u64::MAX - 100,
+            size: 200,
+            prefetchable: false,
+        },
+        raw_value: 0,
+    };
+    for bar in device.bars.iter_mut().skip(1) {
+        *bar = PciBar {
+            bar_type: BarType::None,
+            raw_value: 0,
+        };
+    }
+
+    let windows = driver_db::mmio_windows_for_test(&device);
+    assert!(
+        windows.is_empty(),
+        "a BAR whose page-aligned window overflows u64 must be skipped, \
+         not silently wrapped into a corrupted grant"
+    );
+}
+
+/// Tests that an ordinary, non-overflowing `Memory64` BAR still derives its
+/// window correctly — the overflow guard in `mmio_windows` must not reject
+/// legitimate BARs near (but not at) the top of the address space.
+#[test_case]
+fn test_mmio_windows_accepts_non_overflowing_bar() {
+    let mut device = fake_pci_device(0, 9, 0);
+    device.bars[0] = PciBar {
+        bar_type: BarType::Memory64 {
+            address: 0xFEBC_0000,
+            size: 0x1234,
+            prefetchable: false,
+        },
+        raw_value: 0,
+    };
+    for bar in device.bars.iter_mut().skip(1) {
+        *bar = PciBar {
+            bar_type: BarType::None,
+            raw_value: 0,
+        };
+    }
+
+    let windows = driver_db::mmio_windows_for_test(&device);
+    assert_eq!(
+        windows,
+        vec![(0xFEBC_0000, 0x2000)],
+        "a normal BAR must still be rounded out to whole 4 KiB pages"
+    );
+}
+
 /// Tests that a second SpawnDriver-style claim on the same PCI device is
 /// rejected while the first owning task is still alive, and succeeds again
 /// once that task has terminated — the double-grant prevention this module

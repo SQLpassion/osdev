@@ -211,6 +211,18 @@ pub fn reserve_device_for_test(device: &PciDevice) -> bool {
     reserve_device(device)
 }
 
+/// Exercises [`mmio_windows`] directly (for unit tests).
+///
+/// `derive_grants` can only reach this indirectly through a live PCI device,
+/// which the integration test runner's QEMU configuration never attaches
+/// (see [`reserve_device_for_test`]). This lets tests drive the BAR-to-window
+/// derivation itself, including malformed/adversarial `BarType::Memory64`
+/// values a real device could never present but a misbehaving VM or a
+/// spoofed config-space read could.
+pub fn mmio_windows_for_test(device: &PciDevice) -> Vec<(u64, u64)> {
+    mmio_windows(device)
+}
+
 /// Restricts a caller-supplied capability bitmask to the flags a driver may hold.
 ///
 /// Unknown bits are dropped by `from_bits_truncate`; `SPAWN_DRIVER` is then masked
@@ -259,8 +271,23 @@ fn mmio_windows(device: &PciDevice) -> Vec<(u64, u64)> {
             continue;
         }
 
+        // Skip a BAR whose page-aligned window would overflow `u64` rather
+        // than let it wrap into a corrupted grant: a `Memory64` BAR's
+        // (address, size) pair comes straight from hardware/emulator PCI
+        // config-space registers, so a device (or a malicious/buggy VM) can
+        // present values close to `u64::MAX` here. Silently wrapping would
+        // hand `MapPhysical` a `page_base..page_end` range with `page_end <
+        // page_base`, whose `page_end - page_base` subtraction below would
+        // itself underflow into a huge bogus length — exactly the kind of
+        // fabricated grant this module's module-level doc note warns against.
         let page_base = window.0 & !(PAGE_SIZE_U64 - 1);
-        let page_end = (window.0 + window.1 + PAGE_SIZE_U64 - 1) & !(PAGE_SIZE_U64 - 1);
+        let Some(raw_end) = window.0.checked_add(window.1) else {
+            continue;
+        };
+        let Some(page_end) = raw_end.checked_add(PAGE_SIZE_U64 - 1) else {
+            continue;
+        };
+        let page_end = page_end & !(PAGE_SIZE_U64 - 1);
         windows.push((page_base, page_end - page_base));
     }
 
