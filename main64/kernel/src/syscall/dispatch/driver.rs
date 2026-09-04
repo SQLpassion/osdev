@@ -243,7 +243,6 @@ pub fn syscall_spawn_driver_impl(
     use crate::process::capabilities::{Capabilities, DriverCaps, ResourceGrants};
     use crate::process::ExecError;
     use crate::syscall::types::{is_valid_user_buffer_readable, UserDriverGrants};
-    use alloc::boxed::Box;
     use alloc::vec::Vec;
 
     // Step 1: Verify that the caller holds SPAWN_DRIVER capability or is privileged.
@@ -429,9 +428,31 @@ pub fn syscall_spawn_driver_impl(
     // Step 9: Construct and attach DriverCaps to newly created task. The requested
     // flags are masked to the driver-grantable set, so a driver can never inherit
     // SPAWN_DRIVER and mint further drivers with capabilities of its own choosing.
+    //
+    // Allocated manually (instead of `Box::new`) so an OOM here returns
+    // `SyscallError::OutOfMemory` like every other fallible step in this
+    // function, instead of invoking the global alloc-error handler (abort),
+    // which would turn a per-task resource exhaustion into a full kernel
+    // panic. The task is still `Blocked` (see step 6) and has therefore never
+    // run, so it can be torn down wholesale via `terminate_task` — which also
+    // releases the `driver_db` reservation `confirm_binding` just assigned to
+    // `tid` in step 8.
     let granted_caps = driver_db::sanitize_driver_caps(caps_flags);
     let caps = DriverCaps::new(granted_caps, grants);
-    let caps_ptr = Box::into_raw(Box::new(caps));
+    let caps_layout = core::alloc::Layout::new::<DriverCaps>();
+    // SAFETY: `caps_layout` is a valid, non-zero-sized layout for `DriverCaps`.
+    let caps_ptr = unsafe { alloc::alloc::alloc(caps_layout) } as *mut DriverCaps;
+    if caps_ptr.is_null() {
+        scheduler::terminate_task(tid);
+        return Err(SyscallError::OutOfMemory);
+    }
+    // SAFETY:
+    // - `caps_ptr` was just allocated with the layout of `DriverCaps` and
+    //   holds no initialized value yet.
+    // - `write` moves `caps` into it without dropping any prior contents,
+    //   matching `Box::from_raw`'s expectations for the later `remove_task`
+    //   deallocation (same global allocator, same layout).
+    unsafe { caps_ptr.write(caps) };
     scheduler::set_task_caps(tid, caps_ptr);
 
     // Step 10: Setup is complete — allow the task to actually run. Must be
