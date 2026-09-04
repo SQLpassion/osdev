@@ -6,7 +6,7 @@
 
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use crate::arch::interrupts::pic::{end_of_interrupt, is_in_service};
+use crate::arch::interrupts::pic::{end_of_interrupt, is_in_service, mask_irq, unmask_irq};
 use crate::arch::interrupts::types::{IRQ_BASE, IRQ_LINES};
 use crate::arch::interrupts::{
     register_irq_handler, registered_irq_handler, IrqHandler, SavedRegisters,
@@ -149,6 +149,12 @@ pub fn subscribe(vector: u8, task_id: usize) -> Result<(), SyscallError> {
     // Step 3: Register the top-half trampoline for this hardware vector.
     register_irq_handler(idt_vector, driver_irq_trampoline);
 
+    // Step 4: Unmask the line at the 8259 itself. `mask_pic()` at boot only
+    // unmasks the lines the kernel services directly; without this, the PIC
+    // never forwards the interrupt to the CPU no matter how the IDT/task
+    // binding above is set up.
+    unmask_irq(idx as u8);
+
     Ok(())
 }
 
@@ -263,6 +269,11 @@ pub fn release_task(task_id: usize) {
         if is_in_service(idx as u8) {
             end_of_interrupt(idx as u8);
         }
+
+        // Re-mask the line: no task is left to service it, and leaving it
+        // unmasked would let the device keep raising interrupts that are
+        // merely auto-EOI'd by `dispatch_irq`'s no-handler path.
+        mask_irq(idx as u8);
     }
 }
 
