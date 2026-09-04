@@ -135,9 +135,15 @@ impl Drop for Mmio {
             // SAFETY:
             // - Unmaps the physical memory window from the task's page table.
             // - self.base was returned by a successful MapPhysical call.
-            unsafe {
-                let _ = syscall2(SyscallId::UNMAP_PHYSICAL, self.base as u64, self.len as u64);
-            }
+            let raw_res =
+                unsafe { syscall2(SyscallId::UNMAP_PHYSICAL, self.base as u64, self.len as u64) };
+            // Drop cannot return a Result, so a kernel-side failure here cannot be
+            // propagated to the caller. Surface it loudly instead of silently
+            // treating the window as unmapped while it may still be live.
+            debug_assert!(
+                decode_result(raw_res).is_ok(),
+                "UnmapPhysical failed while dropping an Mmio mapping"
+            );
             self.base = ptr::null_mut();
         }
     }

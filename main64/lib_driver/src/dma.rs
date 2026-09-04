@@ -84,9 +84,14 @@ impl Drop for DmaBuffer {
             // SAFETY:
             // - `self.va` was returned by a successful AllocDma call.
             // - Unmaps the virtual memory and releases physical frames back to PMM.
-            unsafe {
-                let _ = syscall2(SyscallId::FREE_DMA, self.va as u64, self.pages as u64);
-            }
+            let raw_res = unsafe { syscall2(SyscallId::FREE_DMA, self.va as u64, self.pages as u64) };
+            // Drop cannot return a Result, so a kernel-side failure here cannot be
+            // propagated to the caller. Surface it loudly instead of silently
+            // treating the buffer as freed while its VA/frames may still be live.
+            debug_assert!(
+                decode_result(raw_res).is_ok(),
+                "FreeDma failed while dropping a DmaBuffer"
+            );
             self.va = ptr::null_mut();
         }
     }
