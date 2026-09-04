@@ -163,6 +163,13 @@ pub(crate) fn remove_task(
     // this is the only point where it is still possible to tell a device BAR
     // window apart from PMM-owned RAM in that task's MMIO VA window.
     let mut mmio_skip_release: alloc::vec::Vec<(u64, usize)> = alloc::vec::Vec::new();
+    // Set when `mmio_count > 0` but the reservation below fails (OOM): an
+    // empty-but-nonempty-expected `mmio_skip_release` would make
+    // `reclaim_user_range`'s `release_pfn = !mmio_skip_release.iter().any(...)`
+    // evaluate `true` for every page, including this task's still-device-owned
+    // MMIO BAR pages — corrupting PMM bookkeeping for that physical range. Gates
+    // the deferred address-space cleanup below instead of risking that.
+    let mut mmio_skip_release_incomplete = false;
     if !meta.slots[task_id].caps.is_null() {
         // SAFETY:
         // - `caps` is still a live allocation at this point (freed just below).
@@ -181,6 +188,8 @@ pub(crate) fn remove_task(
                     })
                     .map(|&(va, pages, _)| (va, pages)),
             );
+        } else if mmio_count > 0 {
+            mmio_skip_release_incomplete = true;
         }
     }
 
@@ -274,8 +283,15 @@ pub(crate) fn remove_task(
     // Final step: push user address-space for deferred cleanup.
     // Releasing the address space is a slow operation that must happen outside
     // the scheduler lock.
+    //
+    // `mmio_skip_release_incomplete` means the MMIO-exclusion list above is
+    // missing entries under OOM: pushing it as-is would let the deferred
+    // reclaim release this task's still-device-owned MMIO BAR frames back to
+    // the PMM as if they were ordinary RAM. Leaking the whole address space
+    // is the safe fallback, consistent with the CR3-in-use case above.
     if let Some(cr3) = cleanup {
-        if meta.pending_free_address_spaces.try_reserve(1).is_ok() {
+        if !mmio_skip_release_incomplete && meta.pending_free_address_spaces.try_reserve(1).is_ok()
+        {
             meta.pending_free_address_spaces
                 .push((cr3, mmio_skip_release));
         }
