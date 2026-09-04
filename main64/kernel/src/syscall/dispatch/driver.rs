@@ -7,7 +7,9 @@ use crate::memory::vmm::{
 };
 use crate::process::capabilities::{Capabilities, MmioAllocKind};
 use crate::scheduler;
-use crate::syscall::types::{SyscallError, SyscallResult, SYSCALL_OK};
+use crate::syscall::types::{
+    is_valid_user_buffer_writable, SyscallError, SyscallResult, SYSCALL_OK,
+};
 
 /// Maps a physical MMIO region into the calling driver task's address space.
 ///
@@ -477,10 +479,7 @@ pub fn syscall_alloc_dma_impl(pages: usize, out_phys: *mut u64) -> SyscallResult
 
     // Step 6: If out_phys pointer was provided, copy physical address to user memory.
     if !out_phys.is_null() {
-        if !crate::syscall::types::is_valid_user_buffer(
-            out_phys as *const u8,
-            core::mem::size_of::<u64>(),
-        ) {
+        if !is_valid_user_buffer_writable(out_phys as *const u8, core::mem::size_of::<u64>()) {
             // Rollback mapping and frames if pointer is invalid.
             with_address_space(active_cr3, || {
                 for i in 0..pages {
@@ -496,7 +495,9 @@ pub fn syscall_alloc_dma_impl(pages: usize, out_phys: *mut u64) -> SyscallResult
             return Err(SyscallError::InvalidArg);
         }
         // SAFETY:
-        // - `is_valid_user_buffer` verified pointer range is canonical user space.
+        // - `is_valid_user_buffer_writable` verified the pointer range is
+        //   canonical user space and mapped present+writable in the page
+        //   table, so this write cannot fault.
         // - `write_unaligned` safely writes 8 bytes.
         unsafe {
             core::ptr::write_unaligned(out_phys, base_phys);
