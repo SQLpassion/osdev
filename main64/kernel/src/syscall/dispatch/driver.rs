@@ -541,7 +541,16 @@ pub fn syscall_free_dma_impl(user_va: u64, pages: usize) -> SyscallResult<u64> {
         return Err(SyscallError::InvalidArg);
     }
 
-    // Step 4: Verify this VA range actually originated from an AllocDma call
+    // Step 4: Reserve bookkeeping storage before mutating any state. Doing this
+    // before `take_allocation` ensures an OOM here fails cleanly with the
+    // allocation record still intact, instead of removing the record and then
+    // bailing out with the VA still mapped and the frames still unreleased.
+    let mut pfns_to_release = alloc::vec::Vec::new();
+    if pfns_to_release.try_reserve(pages).is_err() {
+        return Err(SyscallError::OutOfMemory);
+    }
+
+    // Step 5: Verify this VA range actually originated from an AllocDma call
     // on this task, not a MapPhysical BAR window. Without this check, FreeDma
     // on a MapPhysical VA would unmap a device's register window and then
     // call `pmm::release_pfn` on its physical BAR address — silent corruption
@@ -550,12 +559,8 @@ pub fn syscall_free_dma_impl(user_va: u64, pages: usize) -> SyscallResult<u64> {
         return Err(SyscallError::InvalidArg);
     }
 
-    // Step 5: Resolve PFNs, unmap virtual pages, and release physical frames to PMM.
+    // Step 6: Resolve PFNs, unmap virtual pages, and release physical frames to PMM.
     let active_cr3 = read_cr3();
-    let mut pfns_to_release = alloc::vec::Vec::new();
-    if pfns_to_release.try_reserve(pages).is_err() {
-        return Err(SyscallError::OutOfMemory);
-    }
 
     with_address_space(active_cr3, || {
         for i in 0..pages {
