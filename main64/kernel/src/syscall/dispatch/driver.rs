@@ -5,7 +5,7 @@ use crate::memory::vmm::{
     self, map_user_mmio_page, read_cr3, unmap_without_release, with_address_space, USER_MMIO_BASE,
     USER_STACK_GUARD_BASE,
 };
-use crate::process::capabilities::Capabilities;
+use crate::process::capabilities::{Capabilities, MmioAllocKind};
 use crate::scheduler;
 use crate::syscall::types::{SyscallError, SyscallResult, SYSCALL_OK};
 
@@ -87,8 +87,11 @@ pub fn syscall_map_physical_impl(phys_addr: u64, len: usize, _flags: u64) -> Sys
         };
     }
 
-    // Step 7: Advance bump pointer and return the user virtual address.
+    // Step 7: Advance bump pointer, record the allocation's origin so a later
+    // FreeDma cannot be used to release this MMIO BAR window (see
+    // `DriverCaps::allocations`), and return the user virtual address.
     caps.grants.mmio_bump = end_va;
+    caps.record_allocation(base_va, num_pages, MmioAllocKind::Mmio);
     Ok(base_va + offset_in_page)
 }
 
@@ -117,11 +120,20 @@ pub fn syscall_unmap_physical_impl(user_va: u64, len: usize) -> SyscallResult<u6
         return Err(SyscallError::InvalidArg);
     }
 
-    // Step 4: Unmap pages across the region without releasing device physical frames to PMM.
+    // Step 4: Compute the page range and verify it actually originated from a
+    // MapPhysical call on this task, not an AllocDma buffer. Without this
+    // check, UnmapPhysical on an AllocDma VA would unmap the pages without
+    // ever releasing their physical frames to the PMM, leaking them forever
+    // (see `DriverCaps::allocations`).
     let page_va_start = user_va & !(PAGE_SIZE_U64 - 1);
     let page_va_end = (end_va + PAGE_SIZE_U64 - 1) & !(PAGE_SIZE_U64 - 1);
     let num_pages = ((page_va_end - page_va_start) / PAGE_SIZE_U64) as usize;
 
+    if !caps.take_allocation(page_va_start, num_pages, MmioAllocKind::Mmio) {
+        return Err(SyscallError::InvalidArg);
+    }
+
+    // Step 5: Unmap pages across the region without releasing device physical frames to PMM.
     let active_cr3 = read_cr3();
     with_address_space(active_cr3, || {
         for i in 0..num_pages {
@@ -491,8 +503,11 @@ pub fn syscall_alloc_dma_impl(pages: usize, out_phys: *mut u64) -> SyscallResult
         }
     }
 
-    // Step 7: Advance bump pointer and return virtual address.
+    // Step 7: Advance bump pointer, record the allocation's origin so a later
+    // UnmapPhysical cannot be used to leak this buffer's RAM frames (see
+    // `DriverCaps::allocations`), and return the virtual address.
     caps.grants.mmio_bump = end_va;
+    caps.record_allocation(base_va, pages, MmioAllocKind::Dma);
     Ok(base_va)
 }
 
@@ -526,7 +541,16 @@ pub fn syscall_free_dma_impl(user_va: u64, pages: usize) -> SyscallResult<u64> {
         return Err(SyscallError::InvalidArg);
     }
 
-    // Step 4: Resolve PFNs, unmap virtual pages, and release physical frames to PMM.
+    // Step 4: Verify this VA range actually originated from an AllocDma call
+    // on this task, not a MapPhysical BAR window. Without this check, FreeDma
+    // on a MapPhysical VA would unmap a device's register window and then
+    // call `pmm::release_pfn` on its physical BAR address — silent corruption
+    // instead of a rejected call (see `DriverCaps::allocations`).
+    if !caps.take_allocation(user_va, pages, MmioAllocKind::Dma) {
+        return Err(SyscallError::InvalidArg);
+    }
+
+    // Step 5: Resolve PFNs, unmap virtual pages, and release physical frames to PMM.
     let active_cr3 = read_cr3();
     let mut pfns_to_release = alloc::vec::Vec::new();
     if pfns_to_release.try_reserve(pages).is_err() {

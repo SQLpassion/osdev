@@ -278,3 +278,89 @@ fn test_alloc_and_free_dma_succeeds_with_mmio_capability_alone() {
     set_running_slot_for_test(None);
     sched::terminate_task(task_id);
 }
+
+/// Tests that FreeDma refuses a VA that actually came from MapPhysical.
+///
+/// Before this fix, FreeDma and UnmapPhysical shared only a generic
+/// "VA lies inside the MMIO window" check with no record of which allocator
+/// produced a given range. Handing a MapPhysical VA to FreeDma would unmap
+/// the device's register window and then call `pmm::release_pfn` on its
+/// physical BAR address — silent corruption of a live device mapping instead
+/// of a rejected call.
+#[test_case]
+fn test_free_dma_rejects_map_physical_va() {
+    let task_id = sched::spawn_kernel_task(test_task_loop).expect("spawn task");
+    let slot = task_id_slot(task_id);
+
+    let grants = ResourceGrants {
+        mmio_regions: vec![(0xFEB0_0000, 0x1000)],
+        irqs: vec![],
+        mmio_bump: vmm::USER_MMIO_BASE,
+    };
+    let caps_ptr = Box::into_raw(Box::new(DriverCaps::new(Capabilities::MMIO, grants)));
+    set_task_caps(task_id, caps_ptr);
+    set_running_slot_for_test(Some(slot));
+
+    let va = dispatch_checked(SyscallId::MAP_PHYSICAL, 0xFEB0_0000, 0x1000, 0, 0)
+        .expect("MapPhysical must succeed");
+
+    let free_res = dispatch_checked(SyscallId::FREE_DMA, va, 1, 0, 0);
+    assert_eq!(
+        free_res,
+        Err(SyscallError::InvalidArg),
+        "FreeDma on a MapPhysical VA must be rejected, not silently release the BAR window"
+    );
+
+    // The rejected FreeDma attempt must not have consumed or corrupted the
+    // MapPhysical allocation record: a real UnmapPhysical must still work.
+    let unmap_res = dispatch_checked(SyscallId::UNMAP_PHYSICAL, va, 0x1000, 0, 0);
+    assert_eq!(
+        unmap_res,
+        Ok(SYSCALL_OK),
+        "the MapPhysical mapping must still be intact and unmappable after the rejected FreeDma"
+    );
+
+    set_running_slot_for_test(None);
+    sched::terminate_task(task_id);
+}
+
+/// Tests that UnmapPhysical refuses a VA that actually came from AllocDma.
+///
+/// Before this fix, UnmapPhysical on an AllocDma VA would unmap the pages
+/// without ever releasing their physical frames to the PMM, leaking them
+/// permanently instead of being rejected.
+#[test_case]
+fn test_unmap_physical_rejects_alloc_dma_va() {
+    let task_id = sched::spawn_kernel_task(test_task_loop).expect("spawn task");
+    let slot = task_id_slot(task_id);
+
+    let grants = ResourceGrants {
+        mmio_regions: vec![],
+        irqs: vec![],
+        mmio_bump: vmm::USER_MMIO_BASE,
+    };
+    let caps_ptr = Box::into_raw(Box::new(DriverCaps::new(Capabilities::MMIO, grants)));
+    set_task_caps(task_id, caps_ptr);
+    set_running_slot_for_test(Some(slot));
+
+    let va = dispatch_checked(SyscallId::ALLOC_DMA, 1, 0, 0, 0).expect("AllocDma must succeed");
+
+    let unmap_res = dispatch_checked(SyscallId::UNMAP_PHYSICAL, va, 4096, 0, 0);
+    assert_eq!(
+        unmap_res,
+        Err(SyscallError::InvalidArg),
+        "UnmapPhysical on an AllocDma VA must be rejected, not silently leak its RAM frames"
+    );
+
+    // The rejected UnmapPhysical attempt must not have consumed or corrupted
+    // the AllocDma allocation record: a real FreeDma must still work.
+    let free_res = dispatch_checked(SyscallId::FREE_DMA, va, 1, 0, 0);
+    assert_eq!(
+        free_res,
+        Ok(SYSCALL_OK),
+        "the AllocDma buffer must still be intact and freeable after the rejected UnmapPhysical"
+    );
+
+    set_running_slot_for_test(None);
+    sched::terminate_task(task_id);
+}

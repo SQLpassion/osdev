@@ -88,16 +88,80 @@ pub struct ResourceGrants {
     pub mmio_bump: u64,
 }
 
+/// Which allocator produced a virtual-address range mapped into the user MMIO
+/// window (`USER_MMIO_BASE..USER_STACK_GUARD_BASE`).
+///
+/// `AllocDma` (physically-contiguous RAM frames) and `MapPhysical` (a device's
+/// MMIO BAR window) share that same VA window and bump allocator, but the two
+/// free paths must never be interchangeable: unmapping a `MapPhysical` range
+/// through `FreeDma` would call `pmm::release_pfn` on a device register's
+/// physical address, and unmapping an `AllocDma` range through
+/// `UnmapPhysical` would leak its RAM frames forever (neither path releases
+/// physical frames the way the other expects). See [`DriverCaps::allocations`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MmioAllocKind {
+    /// Physically-contiguous RAM frames obtained via `AllocDma`.
+    Dma,
+    /// A device MMIO BAR window obtained via `MapPhysical`.
+    Mmio,
+}
+
 /// Combined capability block — heap-allocated per driver task, null for normal tasks.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DriverCaps {
     pub flags: Capabilities,
     pub grants: ResourceGrants,
+
+    /// Live allocations in the MMIO VA window, recorded as
+    /// `(page_va_start, num_pages, kind)` by a successful `AllocDma` or
+    /// `MapPhysical` call and removed by the matching `FreeDma`/`UnmapPhysical`
+    /// call. Consulted by the free paths so a VA can only be released through
+    /// the allocator that produced it — see [`MmioAllocKind`].
+    pub allocations: Vec<(u64, usize, MmioAllocKind)>,
 }
 
 impl DriverCaps {
     /// Creates a new driver capability block with the given flags and grants.
     pub fn new(flags: Capabilities, grants: ResourceGrants) -> Self {
-        Self { flags, grants }
+        Self {
+            flags,
+            grants,
+            allocations: Vec::new(),
+        }
+    }
+
+    /// Records that `[page_va_start, page_va_start + num_pages * PAGE_SIZE)`
+    /// was just mapped by the allocator identified by `kind`.
+    ///
+    /// Called only after every fallible step of the mapping syscall has
+    /// already succeeded, so this recording itself is never rolled back.
+    pub fn record_allocation(&mut self, page_va_start: u64, num_pages: usize, kind: MmioAllocKind) {
+        self.allocations.push((page_va_start, num_pages, kind));
+    }
+
+    /// Removes and confirms an allocation record matching the given VA range
+    /// and `kind` exactly, returning `true` if one was found.
+    ///
+    /// A free/unmap syscall must call this *before* touching the address
+    /// space or PMM, and refuse to proceed at all when it returns `false` —
+    /// that is what prevents `FreeDma` from being handed a `MapPhysical` VA
+    /// (or vice versa).
+    pub fn take_allocation(
+        &mut self,
+        page_va_start: u64,
+        num_pages: usize,
+        kind: MmioAllocKind,
+    ) -> bool {
+        match self
+            .allocations
+            .iter()
+            .position(|&(va, pages, k)| va == page_va_start && pages == num_pages && k == kind)
+        {
+            Some(pos) => {
+                self.allocations.remove(pos);
+                true
+            }
+            None => false,
+        }
     }
 }
