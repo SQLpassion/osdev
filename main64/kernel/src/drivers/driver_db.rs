@@ -124,14 +124,25 @@ fn reserve_device(device: &PciDevice) -> bool {
 /// Called once `SpawnDriver` has successfully created the driver task, so the
 /// binding's lifetime from here on matches the lifetime of that task's
 /// `DriverCaps` block (freed in `remove_task`, see [`release_task`]).
-pub fn confirm_binding(device: &PciDevice, task_id: usize) {
+///
+/// Returns `false` if no reservation for `device` was found still parked at
+/// [`RESERVED_TASK_ID`] — the caller must treat this as a fatal setup error
+/// rather than silently proceeding with a task whose device binding was
+/// never actually resolved (`SpawnDriver` would otherwise be able to return
+/// `Ok(tid)` for a task that does not, in fact, own the device it was
+/// granted access to).
+pub fn confirm_binding(device: &PciDevice, task_id: usize) -> bool {
     let key = device_key(device);
     let mut bindings = DEVICE_BINDINGS.lock();
-    if let Some(entry) = bindings
+    match bindings
         .iter_mut()
         .find(|(k, t)| *k == key && *t == RESERVED_TASK_ID)
     {
-        entry.1 = task_id;
+        Some(entry) => {
+            entry.1 = task_id;
+            true
+        }
+        None => false,
     }
 }
 

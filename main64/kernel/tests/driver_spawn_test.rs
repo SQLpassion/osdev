@@ -487,7 +487,10 @@ fn test_device_binding_rejects_double_grant_until_task_exits() {
     // returns a packed task ID (slot + generation), the same format
     // `confirm_binding`/`release_task` expect.
     let task_id = sched::spawn_kernel_task(test_task_loop).expect("spawn task");
-    driver_db::confirm_binding(&device, task_id);
+    assert!(
+        driver_db::confirm_binding(&device, task_id),
+        "confirming a binding that is still parked at RESERVED_TASK_ID must succeed"
+    );
 
     // Now that the reservation is confirmed to a live task, a second
     // "SpawnDriver" for the same device must still be rejected.
@@ -505,6 +508,50 @@ fn test_device_binding_rejects_double_grant_until_task_exits() {
         "the device must become claimable again once its owning task has exited"
     );
 
+    driver_db::reset_bindings_for_test();
+}
+
+/// Tests that `confirm_binding` reports failure via its return value instead
+/// of silently no-op'ing when there is no matching reservation to resolve.
+///
+/// `syscall_spawn_driver_impl` relies on this return value to abort the
+/// `SpawnDriver` call instead of returning `Ok(tid)` for a task whose device
+/// binding was never actually confirmed — before this, the discarded `()`
+/// return gave the caller no way to detect that.
+#[test_case]
+fn test_confirm_binding_reports_failure_when_no_reservation_matches() {
+    driver_db::reset_bindings_for_test();
+    let device = fake_pci_device(0, 7, 0);
+
+    // No `reserve_device` call was ever made for this device: there is
+    // nothing parked at RESERVED_TASK_ID for `confirm_binding` to resolve.
+    let task_id = sched::spawn_kernel_task(test_task_loop).expect("spawn task");
+    assert!(
+        !driver_db::confirm_binding(&device, task_id),
+        "confirming a binding with no matching reservation must report failure"
+    );
+
+    // Reserve, confirm once (succeeds), then confirm again for a second task:
+    // the first confirmation already replaced RESERVED_TASK_ID with the real
+    // task id, so nothing is left at the sentinel for a second confirmation
+    // to match.
+    assert!(
+        driver_db::reserve_device_for_test(&device),
+        "device must be free to reserve at test start"
+    );
+    assert!(
+        driver_db::confirm_binding(&device, task_id),
+        "the first confirmation on a fresh reservation must succeed"
+    );
+    let other_task_id = sched::spawn_kernel_task(test_task_loop).expect("spawn second task");
+    assert!(
+        !driver_db::confirm_binding(&device, other_task_id),
+        "a second confirmation on an already-resolved binding must report failure, \
+         not silently reassign ownership"
+    );
+
+    sched::terminate_task(task_id);
+    sched::terminate_task(other_task_id);
     driver_db::reset_bindings_for_test();
 }
 

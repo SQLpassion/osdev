@@ -383,15 +383,47 @@ pub fn syscall_spawn_driver_impl(
         }
     };
 
-    // Step 7: Assign parent task linkage.
+    // Step 7: Assign parent task linkage. The task spawned in step 6 is
+    // still `Blocked` and therefore cannot have exited yet, so
+    // `set_task_parent` returning `false` here means the slot was somehow
+    // already invalidated out from under us — an internal inconsistency
+    // serious enough to abort the spawn rather than silently return
+    // `Ok(tid)` for a task with no recorded parent (which would make a later
+    // `Wait` on `tid` behave as "not my child" instead of surfacing the real
+    // problem).
     if let Some(caller_id) = scheduler::current_task_id() {
-        scheduler::set_task_parent(tid, caller_id);
+        if !scheduler::set_task_parent(tid, caller_id) {
+            crate::logging::logln(
+                "driver",
+                format_args!(
+                    "SpawnDriver: set_task_parent({}, {}) failed — aborting spawn",
+                    tid, caller_id
+                ),
+            );
+            scheduler::terminate_task(tid);
+            return Err(SyscallError::Io);
+        }
     }
 
     // Step 8: Resolve the device reservation from Step 4 to the task that now
-    // actually owns it, so `remove_task` can release it again on exit.
+    // actually owns it, so `remove_task` can release it again on exit. Must
+    // succeed for the same reason as step 7 — the task cannot have exited
+    // yet, so a `false` return means the reservation this task is supposed
+    // to own was somehow already lost. Proceeding anyway would return
+    // `Ok(tid)` for a driver task `remove_task` can never find a binding to
+    // release for, permanently stranding it at `RESERVED_TASK_ID`.
     if let Some(device) = &bound_device {
-        driver_db::confirm_binding(device, tid);
+        if !driver_db::confirm_binding(device, tid) {
+            crate::logging::logln(
+                "driver",
+                format_args!(
+                    "SpawnDriver: confirm_binding failed for task {} — aborting spawn",
+                    tid
+                ),
+            );
+            scheduler::terminate_task(tid);
+            return Err(SyscallError::Io);
+        }
     }
 
     // Step 9: Construct and attach DriverCaps to newly created task. The requested
