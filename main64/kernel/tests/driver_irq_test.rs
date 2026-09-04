@@ -270,3 +270,52 @@ fn test_irq_binding_released_on_task_terminate() {
     sched::terminate_task(task2_id);
     irq_bridge::reset_bindings_for_test();
 }
+
+/// Tests that IrqWait actually honors its timeout instead of blocking forever
+/// when no IRQ ever fires. Before the fix, `irq_bridge::wait`'s `timeout_ms`
+/// parameter was ignored (`_timeout_ms`), so this exact scenario — subscribe,
+/// then wait with no IRQ pending and none ever triggered via
+/// `driver_irq_trampoline` — would hang the calling task (and this test)
+/// forever instead of returning.
+#[test_case]
+fn test_irq_wait_times_out_when_no_irq_fires() {
+    irq_bridge::reset_bindings_for_test();
+    let task_id = sched::spawn_kernel_task(test_task_loop).expect("spawn task");
+    let slot = task_id_slot(task_id);
+
+    let grants = ResourceGrants {
+        mmio_regions: vec![],
+        irqs: vec![13],
+        mmio_bump: vmm::USER_MMIO_BASE,
+    };
+    let caps_ptr = Box::into_raw(Box::new(DriverCaps::new(Capabilities::IRQ, grants)));
+    set_task_caps(task_id, caps_ptr);
+    set_running_slot_for_test(Some(slot));
+
+    let sub_res = dispatch_checked(SyscallId::IRQ_SUBSCRIBE, 13, 0, 0, 0);
+    assert_eq!(
+        sub_res,
+        Ok(SYSCALL_OK),
+        "Task should successfully subscribe to IRQ 13"
+    );
+
+    // No `driver_irq_trampoline(13, ...)` call anywhere in this test: the IRQ
+    // never fires, so a bounded IrqWait must give up on its own.
+    let wait_res = dispatch_checked(SyscallId::IRQ_WAIT, 13, 20, 0, 0);
+    assert_eq!(
+        wait_res,
+        Err(SyscallError::Timeout),
+        "IrqWait with a timeout and no IRQ must return Timeout instead of blocking forever"
+    );
+
+    // A timed-out wait must not disturb the caller's IRQ ownership — it may
+    // simply call IrqWait again.
+    assert!(
+        irq_bridge::is_driver_irq(13),
+        "a timed-out IrqWait must not release the caller's IRQ subscription"
+    );
+
+    set_running_slot_for_test(None);
+    sched::terminate_task(task_id);
+    irq_bridge::reset_bindings_for_test();
+}

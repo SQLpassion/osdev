@@ -11,6 +11,7 @@ use crate::arch::interrupts::types::{IRQ_BASE, IRQ_LINES};
 use crate::arch::interrupts::{
     register_irq_handler, registered_irq_handler, IrqHandler, SavedRegisters,
 };
+use crate::drivers::time;
 use crate::scheduler;
 use crate::sync::singlewaitqueue::SingleWaitQueue;
 use crate::sync::waitqueue_adapter::{sleep_if_single, wake_all_single};
@@ -151,8 +152,12 @@ pub fn subscribe(vector: u8, task_id: usize) -> Result<(), SyscallError> {
     Ok(())
 }
 
-/// Blocks `task_id` until an IRQ fires on `vector` or an event is already pending.
-pub fn wait(vector: u8, task_id: usize, _timeout_ms: u32) -> Result<(), SyscallError> {
+/// Blocks `task_id` until an IRQ fires on `vector`, an event is already
+/// pending, or (when `timeout_ms != 0`) the timeout elapses.
+///
+/// `timeout_ms == 0` means "wait forever", matching the documented contract
+/// of the `IrqWait` syscall (`syscall_irq_wait_impl`).
+pub fn wait(vector: u8, task_id: usize, timeout_ms: u32) -> Result<(), SyscallError> {
     let idx = irq_to_index(vector).ok_or(SyscallError::InvalidArg)?;
     let binding = &IRQ_BINDINGS[idx];
 
@@ -166,22 +171,46 @@ pub fn wait(vector: u8, task_id: usize, _timeout_ms: u32) -> Result<(), SyscallE
         return Ok(());
     }
 
-    // Step 3: Sleep on the single wait queue until the top-half trampoline signals an IRQ.
-    loop {
-        let outcome = sleep_if_single(&binding.waitq, task_id, || {
-            !binding.pending.load(Ordering::Acquire)
-        });
+    // Step 3: An infinite wait blocks on the single wait queue exactly as
+    // before, woken only by the top-half trampoline or by `release_task` on
+    // the owner's exit.
+    if timeout_ms == 0 {
+        loop {
+            let outcome = sleep_if_single(&binding.waitq, task_id, || {
+                !binding.pending.load(Ordering::Acquire)
+            });
 
-        if outcome.should_yield() {
-            scheduler::yield_now();
-        }
+            if outcome.should_yield() {
+                scheduler::yield_now();
+            }
 
-        if binding.pending.swap(false, Ordering::AcqRel) {
-            break;
+            if binding.pending.swap(false, Ordering::AcqRel) {
+                return Ok(());
+            }
         }
     }
 
-    Ok(())
+    // Step 4: A bounded wait cannot use `scheduler::block_task` (as
+    // `sleep_if_single` does above): once blocked, this task would only ever
+    // resume when woken by the trampoline or `release_task`, which defeats
+    // the timeout entirely. Instead, poll cooperatively via `yield_now()` and
+    // compare against a TSC deadline computed from `timeout_ms`. A real IRQ
+    // during the poll is still observed: `driver_irq_trampoline` sets
+    // `pending` unconditionally, regardless of wait-queue registration.
+    let ticks_per_ms = time::tsc_ticks_per_us().saturating_mul(1000);
+    let deadline = time::rdtsc().saturating_add(ticks_per_ms.saturating_mul(timeout_ms as u64));
+
+    loop {
+        scheduler::yield_now();
+
+        if binding.pending.swap(false, Ordering::AcqRel) {
+            return Ok(());
+        }
+
+        if time::rdtsc() >= deadline {
+            return Err(SyscallError::Timeout);
+        }
+    }
 }
 
 /// Acknowledges an IRQ event and sends the PIC EOI command.

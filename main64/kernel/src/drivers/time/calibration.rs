@@ -1,5 +1,7 @@
 //! Calibration logic for the CPU Time Stamp Counter (TSC).
 
+use core::sync::atomic::{AtomicU64, Ordering};
+
 use crate::arch::port::PortByte;
 
 /// Reads the current value of the Time Stamp Counter.
@@ -127,4 +129,26 @@ pub fn calibrate_tsc() -> u64 {
 
     // 10 milliseconds = 10,000 microseconds.
     diff / 10000
+}
+
+/// Cached result of [`calibrate_tsc`], shared by every caller that needs a
+/// TSC-based deadline (e.g. a bounded `IrqWait`) without re-running the
+/// ~10 ms PIT calibration window on every call. `0` means "not yet cached".
+///
+/// `calibrate_tsc` never returns `0` (its own worst-case fallback is `2000`),
+/// so `0` is a safe sentinel. A benign race where two callers both observe an
+/// uncached value and calibrate concurrently is possible on entry, but costs
+/// only a redundant ~10 ms calibration — it cannot corrupt the cached value.
+static CACHED_TICKS_PER_US: AtomicU64 = AtomicU64::new(0);
+
+/// Returns TSC cycles per microsecond, calibrating once on first use.
+pub fn tsc_ticks_per_us() -> u64 {
+    let cached = CACHED_TICKS_PER_US.load(Ordering::Acquire);
+    if cached != 0 {
+        return cached;
+    }
+
+    let calibrated = calibrate_tsc();
+    CACHED_TICKS_PER_US.store(calibrated, Ordering::Release);
+    calibrated
 }

@@ -198,6 +198,9 @@ pub const SYSCALL_ERR_OUT_OF_MEMORY: u64 = u64::MAX - 3;
 /// Caller lacks the capability required for this syscall.
 pub const SYSCALL_ERR_PERMISSION_DENIED: u64 = u64::MAX - 4;
 
+/// A bounded wait (e.g. `IrqWait`) elapsed before the awaited event occurred.
+pub const SYSCALL_ERR_TIMEOUT: u64 = u64::MAX - 5;
+
 /// Successful syscall return code for void-like operations.
 pub const SYSCALL_OK: u64 = 0;
 
@@ -225,6 +228,10 @@ pub enum SyscallError {
     /// currently returned only by the `Shutdown` syscall when the calling
     /// task is not marked privileged.
     PermissionDenied,
+
+    /// A bounded wait elapsed before the awaited event occurred (e.g.
+    /// `IrqWait` with a non-zero `timeout_ms` and no IRQ firing in time).
+    Timeout,
 }
 
 /// Kernel-internal syscall result type.
@@ -239,6 +246,7 @@ pub const fn syscall_error_to_raw(err: SyscallError) -> u64 {
         SyscallError::Io => SYSCALL_ERR_IO,
         SyscallError::OutOfMemory => SYSCALL_ERR_OUT_OF_MEMORY,
         SyscallError::PermissionDenied => SYSCALL_ERR_PERMISSION_DENIED,
+        SyscallError::Timeout => SYSCALL_ERR_TIMEOUT,
     }
 }
 
@@ -411,6 +419,8 @@ pub enum SysError {
     OutOfMemory,
     /// Caller lacks the capability required for this syscall.
     PermissionDenied,
+    /// A bounded wait elapsed before the awaited event occurred.
+    Timeout,
     /// Any unclassified kernel return value in the error range.
     Unknown(u64),
 }
@@ -424,6 +434,7 @@ impl core::fmt::Display for SysError {
             SysError::IoError => write!(f, "IoError"),
             SysError::OutOfMemory => write!(f, "OutOfMemory"),
             SysError::PermissionDenied => write!(f, "PermissionDenied"),
+            SysError::Timeout => write!(f, "Timeout"),
             SysError::Unknown(raw) => write!(f, "UnknownError(0x{:x})", raw),
         }
     }
@@ -438,6 +449,7 @@ impl core::fmt::LowerHex for SysError {
             SysError::IoError => SYSCALL_ERR_IO,
             SysError::OutOfMemory => SYSCALL_ERR_OUT_OF_MEMORY,
             SysError::PermissionDenied => SYSCALL_ERR_PERMISSION_DENIED,
+            SysError::Timeout => SYSCALL_ERR_TIMEOUT,
             SysError::Unknown(raw) => *raw,
         };
         core::fmt::LowerHex::fmt(&val, f)
@@ -454,6 +466,7 @@ pub fn decode_result(raw: u64) -> Result<u64, SysError> {
         SYSCALL_ERR_IO => Err(SysError::IoError),
         SYSCALL_ERR_OUT_OF_MEMORY => Err(SysError::OutOfMemory),
         SYSCALL_ERR_PERMISSION_DENIED => Err(SysError::PermissionDenied),
+        SYSCALL_ERR_TIMEOUT => Err(SysError::Timeout),
         value => Ok(value),
     }
 }
