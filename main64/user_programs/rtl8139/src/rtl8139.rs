@@ -45,6 +45,26 @@ pub const RX_RING_SIZE: usize = 8192;
 pub const TX_POOL_PAGES: usize = 2;
 pub const TX_BUFFER_SLOT_SIZE: usize = 2048;
 
+/// Highest physical address the RTL8139 can address for DMA.
+///
+/// `REG_RBSTART` and `REG_TSAD0..3` are 32-bit registers with no
+/// high-address extension (unlike e.g. Intel's `RDBAH`/`TDBAH`), so the
+/// chip can only ever DMA to/from physical memory below 4 GiB. Truncating
+/// a higher physical address with `as u32` would silently alias it to an
+/// unrelated low page instead of failing.
+const MAX_DMA_PHYS_ADDR: u64 = u32::MAX as u64;
+
+/// Fails loudly if `[base, base + len)` extends past the RTL8139's 32-bit
+/// DMA address space, instead of letting a truncating `as u32` cast alias
+/// the buffer to the wrong physical page.
+fn require_dma_addressable(base: u64, len: usize) -> Result<(), SysError> {
+    let end_inclusive = base.saturating_add(len as u64).saturating_sub(1);
+    if end_inclusive > MAX_DMA_PHYS_ADDR {
+        return Err(SysError::IoError);
+    }
+    Ok(())
+}
+
 /// RTL8139 Hardware Device Driver.
 pub struct Rtl8139Device {
     mmio: Mmio,
@@ -84,10 +104,12 @@ impl Rtl8139Device {
 
         // Step 4: Allocate contiguous physical RX DMA buffer (16 KiB).
         let rx_buffer = DmaBuffer::allocate(RX_RING_PAGES)?;
+        require_dma_addressable(rx_buffer.pa(), RX_RING_PAGES * 4096)?;
         mmio.write32(REG_RBSTART, rx_buffer.pa() as u32);
 
         // Step 5: Allocate contiguous physical TX DMA buffers (4 x 2048 bytes).
         let tx_buffers = DmaBuffer::allocate(TX_POOL_PAGES)?;
+        require_dma_addressable(tx_buffers.pa(), TX_POOL_PAGES * 4096)?;
         for i in 0..4 {
             let slot_pa = tx_buffers.pa() + (i * TX_BUFFER_SLOT_SIZE) as u64;
             mmio.write32(REG_TSAD0 + (i * 4), slot_pa as u32);
