@@ -24,6 +24,7 @@ use alloc::vec::Vec;
 use crate::drivers::pci::{self, BarType, PciDevice};
 use crate::memory::vmm::USER_MMIO_BASE;
 use crate::process::capabilities::{Capabilities, ResourceGrants};
+use crate::sync::spinlock::SpinLock;
 
 /// Capability flags a spawned driver may ever receive.
 ///
@@ -62,6 +63,109 @@ pub enum BindError {
 
     /// The device is present but exposes no usable (non-zero, sized) memory BAR.
     NoMmioBar,
+
+    /// Every device the driver could bind to is already bound to a live driver task.
+    ///
+    /// Without this check, two `SpawnDriver` calls for the same binary (a caller
+    /// bug, a race between two callers, or a respawn attempted before the first
+    /// instance exits) would each derive a grant for the *same* PCI device,
+    /// handing two Ring-3 tasks concurrent MMIO/IRQ access to one device's
+    /// registers and descriptor rings.
+    AllDevicesBound,
+}
+
+/// Registry of PCI devices currently bound to a live driver task, keyed by the
+/// device's (bus, device, function) triple — the only field combination that
+/// uniquely identifies a device when multiple identical cards are installed.
+///
+/// Entries also transiently hold [`RESERVED_TASK_ID`] between `derive_grants`
+/// claiming a device and the caller resolving that claim via
+/// [`confirm_binding`] (task created) or [`release_reservation`] (spawn failed
+/// after the claim), so the window between "device selected" and "task
+/// created" cannot be raced by a second concurrent `SpawnDriver` call for the
+/// same device.
+static DEVICE_BINDINGS: SpinLock<Vec<(u32, usize)>> = SpinLock::new(Vec::new());
+
+/// Sentinel task ID meaning "device claimed by an in-flight `SpawnDriver` call,
+/// task not yet created". Never a legal packed task ID: a real task's
+/// generation counter starts at 1, so `usize::MAX` (generation and slot both
+/// all-ones) is unreachable by [`pack_task_id`](crate::scheduler::pack_task_id)
+/// short of ~4 billion spawns.
+const RESERVED_TASK_ID: usize = usize::MAX;
+
+/// Packs a PCI device's (bus, device, function) triple into a lookup key.
+fn device_key(device: &PciDevice) -> u32 {
+    ((device.bus as u32) << 16) | ((device.device as u32) << 8) | (device.function as u32)
+}
+
+/// Atomically claims `device` for an in-flight `SpawnDriver` call.
+///
+/// Returns `false` without side effects if the device is already bound to a
+/// live task or already reserved by another in-flight call — the caller
+/// should try the next candidate device rather than hand out a duplicate grant.
+fn reserve_device(device: &PciDevice) -> bool {
+    let key = device_key(device);
+    let mut bindings = DEVICE_BINDINGS.lock();
+    if bindings.iter().any(|&(k, _)| k == key) {
+        return false;
+    }
+    bindings.push((key, RESERVED_TASK_ID));
+    true
+}
+
+/// Resolves a device reservation to the task that was actually spawned.
+///
+/// Called once `SpawnDriver` has successfully created the driver task, so the
+/// binding's lifetime from here on matches the lifetime of that task's
+/// `DriverCaps` block (freed in `remove_task`, see [`release_task`]).
+pub fn confirm_binding(device: &PciDevice, task_id: usize) {
+    let key = device_key(device);
+    let mut bindings = DEVICE_BINDINGS.lock();
+    if let Some(entry) = bindings
+        .iter_mut()
+        .find(|(k, t)| *k == key && *t == RESERVED_TASK_ID)
+    {
+        entry.1 = task_id;
+    }
+}
+
+/// Releases a device reservation that was never confirmed because `SpawnDriver`
+/// failed after `derive_grants` claimed the device (e.g. the requested grant
+/// was rejected, or the driver binary could not be loaded).
+pub fn release_reservation(device: &PciDevice) {
+    let key = device_key(device);
+    let mut bindings = DEVICE_BINDINGS.lock();
+    bindings.retain(|&(k, t)| !(k == key && t == RESERVED_TASK_ID));
+}
+
+/// Releases every device binding owned by `task_id`.
+///
+/// Called from the scheduler's `remove_task` — the single choke point reached
+/// by both explicit termination and zombie-reaping after a crash — mirroring
+/// `irq_bridge::release_task`. Without this, a device bound to a crashed or
+/// exited driver task would stay bound forever, permanently refusing
+/// `SpawnDriver` for that device with `AllDevicesBound`.
+pub fn release_task(task_id: usize) {
+    if task_id == 0 {
+        return;
+    }
+    let mut bindings = DEVICE_BINDINGS.lock();
+    bindings.retain(|&(_, t)| t != task_id);
+}
+
+/// Resets all device bindings (for unit tests / teardown).
+pub fn reset_bindings_for_test() {
+    DEVICE_BINDINGS.lock().clear();
+}
+
+/// Exercises [`reserve_device`] directly (for unit tests).
+///
+/// The QEMU configuration used by the integration test runner attaches no
+/// PCI NIC, so `derive_grants` can never reach a live device to exercise the
+/// double-grant check end to end. This lets tests drive the same reservation
+/// logic with a synthetic [`PciDevice`] instead.
+pub fn reserve_device_for_test(device: &PciDevice) -> bool {
+    reserve_device(device)
 }
 
 /// Restricts a caller-supplied capability bitmask to the flags a driver may hold.
@@ -114,43 +218,68 @@ fn mmio_windows(device: &PciDevice) -> Vec<(u64, u64)> {
 ///
 /// Returns the grants together with the PCI device the driver was bound to, so the
 /// caller can log the binding and cross-check what the requester asked for.
+///
+/// The returned device is atomically reserved (see [`reserve_device`]) before this
+/// function returns `Ok`, so two concurrent calls for the same driver can never be
+/// handed the same device. The caller must resolve that reservation by calling
+/// exactly one of [`confirm_binding`] (task successfully spawned) or
+/// [`release_reservation`] (spawn failed afterwards) for the returned device.
 pub fn derive_grants(name: &str) -> Result<(ResourceGrants, PciDevice), BindError> {
     // Step 1: Resolve the binary name to the set of devices this driver may bind to.
     let supported = lookup_driver(name).ok_or(BindError::UnknownDriver)?;
 
-    // Step 2: Find the first enumerated device matching one of those IDs.
+    // Step 2: Walk enumerated devices matching one of those IDs, in PCI enumeration
+    // order, skipping any device already bound (or reserved) by another driver task.
+    // This is what prevents two `SpawnDriver` calls for the same binary — a caller
+    // bug, a race, or a respawn attempted before the first instance exits — from
+    // both being handed the same device's MMIO/IRQ grant.
     let devices = pci::get_devices();
-    let device = devices
-        .iter()
-        .find(|dev| {
-            supported
-                .iter()
-                .any(|&(vendor, device_id)| dev.vendor_id == vendor && dev.device_id == device_id)
-        })
-        .copied()
-        .ok_or(BindError::DeviceNotPresent)?;
+    let mut device_present = false;
+    for device in devices.iter().filter(|dev| {
+        supported
+            .iter()
+            .any(|&(vendor, device_id)| dev.vendor_id == vendor && dev.device_id == device_id)
+    }) {
+        device_present = true;
 
-    // Step 3: Derive the MMIO regions from that device's own BARs.
-    let mmio_regions = mmio_windows(&device);
-    if mmio_regions.is_empty() {
-        return Err(BindError::NoMmioBar);
+        // Step 3: Derive the MMIO regions from this device's own BARs. A device
+        // without a usable BAR is a hard failure rather than a skip-and-retry
+        // candidate: it is not a resource contention problem, so trying the next
+        // matching device (if any) would not help.
+        let mmio_regions = mmio_windows(device);
+        if mmio_regions.is_empty() {
+            return Err(BindError::NoMmioBar);
+        }
+
+        // Step 4: Atomically claim this device. If it is already bound (or
+        // reserved by a concurrent in-flight SpawnDriver), try the next
+        // matching device instead of failing outright.
+        if !reserve_device(device) {
+            continue;
+        }
+
+        // Step 5: Derive the IRQ grant from the device's interrupt line. 0xFF
+        // means "no interrupt routed", which is not a grantable vector.
+        let mut irqs = Vec::new();
+        if device.interrupt_line != 0xFF {
+            irqs.push(device.interrupt_line);
+        }
+
+        return Ok((
+            ResourceGrants {
+                mmio_regions,
+                irqs,
+                mmio_bump: USER_MMIO_BASE,
+            },
+            *device,
+        ));
     }
 
-    // Step 4: Derive the IRQ grant from the device's interrupt line. 0xFF means
-    // "no interrupt routed", which is not a grantable vector.
-    let mut irqs = Vec::new();
-    if device.interrupt_line != 0xFF {
-        irqs.push(device.interrupt_line);
+    if !device_present {
+        return Err(BindError::DeviceNotPresent);
     }
 
-    Ok((
-        ResourceGrants {
-            mmio_regions,
-            irqs,
-            mmio_bump: USER_MMIO_BASE,
-        },
-        device,
-    ))
+    Err(BindError::AllDevicesBound)
 }
 
 /// Checks that a caller's *requested* grant is consistent with the kernel-derived one.

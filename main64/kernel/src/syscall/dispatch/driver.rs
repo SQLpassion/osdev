@@ -263,7 +263,14 @@ pub fn syscall_spawn_driver_impl(
     // Step 4: Derive the authoritative grants from the kernel's own PCI enumeration.
     // An unregistered binary receives no grants at all; it can still be spawned (it is
     // then just an ordinary Ring-3 program), but it may not carry an MMIO/IRQ request.
-    let grants = match driver_db::derive_grants(&name) {
+    //
+    // A successful `derive_grants` atomically reserves `device` against a second
+    // concurrent SpawnDriver for the same binary (see `driver_db::reserve_device`).
+    // Every early return below this point must resolve that reservation via
+    // `release_reservation`, and the success path must resolve it via
+    // `confirm_binding` once the task actually exists — otherwise the device would
+    // stay reserved forever with no task to release it in `remove_task`.
+    let (grants, bound_device) = match driver_db::derive_grants(&name) {
         Ok((grants, device)) => {
             crate::logging::logln(
                 "driver",
@@ -272,7 +279,7 @@ pub fn syscall_spawn_driver_impl(
                     name, device.vendor_id, device.device_id, device.interrupt_line
                 ),
             );
-            grants
+            (grants, Some(device))
         }
         Err(BindError::UnknownDriver) => {
             // Reject a grant request for a binary the kernel does not know as a driver:
@@ -288,11 +295,14 @@ pub fn syscall_spawn_driver_impl(
                 return Err(SyscallError::PermissionDenied);
             }
 
-            ResourceGrants {
-                mmio_regions: Vec::new(),
-                irqs: Vec::new(),
-                mmio_bump: USER_MMIO_BASE,
-            }
+            (
+                ResourceGrants {
+                    mmio_regions: Vec::new(),
+                    irqs: Vec::new(),
+                    mmio_bump: USER_MMIO_BASE,
+                },
+                None,
+            )
         }
         Err(reason) => {
             crate::logging::logln(
@@ -314,6 +324,9 @@ pub fn syscall_spawn_driver_impl(
                     name, req.mmio_base, req.irq
                 ),
             );
+            if let Some(device) = &bound_device {
+                driver_db::release_reservation(device);
+            }
             return Err(SyscallError::PermissionDenied);
         }
     }
@@ -322,16 +335,21 @@ pub fn syscall_spawn_driver_impl(
     let result = crate::process::exec_from_vfs(&name);
     let tid = match result {
         Ok(tid) => tid,
-        Err(ExecError::InvalidName)
-        | Err(ExecError::NotFound)
-        | Err(ExecError::IsDirectory)
-        | Err(ExecError::EmptyImage)
-        | Err(ExecError::FileTooLarge)
-        | Err(ExecError::InvalidElfImage) => return Err(SyscallError::InvalidArg),
-        Err(ExecError::OutOfMemory) | Err(ExecError::MappingFailed) => {
-            return Err(SyscallError::OutOfMemory)
+        Err(e) => {
+            if let Some(device) = &bound_device {
+                driver_db::release_reservation(device);
+            }
+            return match e {
+                ExecError::InvalidName
+                | ExecError::NotFound
+                | ExecError::IsDirectory
+                | ExecError::EmptyImage
+                | ExecError::FileTooLarge
+                | ExecError::InvalidElfImage => Err(SyscallError::InvalidArg),
+                ExecError::OutOfMemory | ExecError::MappingFailed => Err(SyscallError::OutOfMemory),
+                ExecError::SpawnFailed | ExecError::Io => Err(SyscallError::Io),
+            };
         }
-        Err(ExecError::SpawnFailed) | Err(ExecError::Io) => return Err(SyscallError::Io),
     };
 
     // Step 7: Assign parent task linkage.
@@ -339,7 +357,13 @@ pub fn syscall_spawn_driver_impl(
         scheduler::set_task_parent(tid, caller_id);
     }
 
-    // Step 8: Construct and attach DriverCaps to newly created task. The requested
+    // Step 8: Resolve the device reservation from Step 4 to the task that now
+    // actually owns it, so `remove_task` can release it again on exit.
+    if let Some(device) = &bound_device {
+        driver_db::confirm_binding(device, tid);
+    }
+
+    // Step 9: Construct and attach DriverCaps to newly created task. The requested
     // flags are masked to the driver-grantable set, so a driver can never inherit
     // SPAWN_DRIVER and mint further drivers with capabilities of its own choosing.
     let granted_caps = driver_db::sanitize_driver_caps(caps_flags);

@@ -13,12 +13,42 @@ use core::panic::PanicInfo;
 
 use kaos_kernel::arch::interrupts;
 use kaos_kernel::drivers::driver_db::{self, BindError};
+use kaos_kernel::drivers::pci::{BarType, PciBar, PciDevice};
 use kaos_kernel::memory::{heap, pmm, vmm};
 use kaos_kernel::process::capabilities::{Capabilities, DriverCaps, ResourceGrants};
 use kaos_kernel::scheduler::{
     self as sched, set_running_slot_for_test, set_task_caps, task_id_slot,
 };
 use kaos_kernel::syscall::{dispatch_checked, SyscallError, SyscallId, UserDriverGrants};
+
+/// Builds a synthetic PCI device for tests that exercise the device-binding
+/// registry directly. The QEMU configuration used by the test runner attaches
+/// no PCI NIC, so `derive_grants` itself can never reach a live device here —
+/// see `driver_db::reserve_device_for_test`.
+fn fake_pci_device(bus: u8, device: u8, function: u8) -> PciDevice {
+    PciDevice {
+        bus,
+        device,
+        function,
+        vendor_id: 0x10EC,
+        device_id: 0x8139,
+        class_code: 0x02,
+        subclass: 0x00,
+        prog_if: 0x00,
+        revision_id: 0x00,
+        header_type: 0x00,
+        interrupt_line: 11,
+        interrupt_pin: 1,
+        bars: [PciBar {
+            bar_type: BarType::Memory32 {
+                address: 0xFEB0_0000,
+                size: 256,
+                prefetchable: false,
+            },
+            raw_value: 0,
+        }; 6],
+    }
+}
 
 #[no_mangle]
 #[link_section = ".text.boot"]
@@ -262,4 +292,88 @@ fn test_request_must_match_derived_grants() {
         !driver_db::request_matches_grants(&grants, 0xFEBC_0000, 10),
         "a request for an IRQ the device does not own must be rejected"
     );
+}
+
+/// Tests that a second SpawnDriver-style claim on the same PCI device is
+/// rejected while the first owning task is still alive, and succeeds again
+/// once that task has terminated — the double-grant prevention this module
+/// exists for.
+///
+/// This drives `driver_db`'s reservation registry directly (via
+/// `reserve_device_for_test`/`confirm_binding`/`release_task`) rather than
+/// through the full `SpawnDriver` syscall, because the QEMU configuration
+/// used by the test runner attaches no PCI NIC: `derive_grants("rtl8139.bin")`
+/// would only ever observe `BindError::DeviceNotPresent` here, never reaching
+/// a live device to bind. The registry logic under test is identical either way
+/// — `derive_grants` calls exactly this same `reserve_device` internally.
+#[test_case]
+fn test_device_binding_rejects_double_grant_until_task_exits() {
+    driver_db::reset_bindings_for_test();
+    let device = fake_pci_device(0, 5, 0);
+
+    // First "SpawnDriver": claims the device before its task exists yet.
+    assert!(
+        driver_db::reserve_device_for_test(&device),
+        "the first claim on a free device must succeed"
+    );
+
+    // A second concurrent/duplicate "SpawnDriver" call for the same device
+    // must be rejected while the reservation is still unresolved (task not
+    // yet created) — this closes the exact race the module doc describes.
+    assert!(
+        !driver_db::reserve_device_for_test(&device),
+        "a device already reserved must refuse a second concurrent claim"
+    );
+
+    // Resolve the first claim to a live task. `spawn_kernel_task` already
+    // returns a packed task ID (slot + generation), the same format
+    // `confirm_binding`/`release_task` expect.
+    let task_id = sched::spawn_kernel_task(test_task_loop).expect("spawn task");
+    driver_db::confirm_binding(&device, task_id);
+
+    // Now that the reservation is confirmed to a live task, a second
+    // "SpawnDriver" for the same device must still be rejected.
+    assert!(
+        !driver_db::reserve_device_for_test(&device),
+        "a device bound to a live task must refuse a second claim"
+    );
+
+    // Terminate the owning task — `remove_task` releases the device binding
+    // exactly like it releases IRQ bindings (see `irq_bridge::release_task`).
+    sched::terminate_task(task_id);
+
+    assert!(
+        driver_db::reserve_device_for_test(&device),
+        "the device must become claimable again once its owning task has exited"
+    );
+
+    driver_db::reset_bindings_for_test();
+}
+
+/// Tests that a reservation abandoned by a failed spawn (never confirmed to a
+/// task) is released explicitly, without needing a task to terminate.
+#[test_case]
+fn test_device_reservation_released_on_spawn_failure() {
+    driver_db::reset_bindings_for_test();
+    let device = fake_pci_device(0, 6, 0);
+
+    assert!(
+        driver_db::reserve_device_for_test(&device),
+        "the first claim on a free device must succeed"
+    );
+    assert!(
+        !driver_db::reserve_device_for_test(&device),
+        "a device already reserved must refuse a second concurrent claim"
+    );
+
+    // Simulate SpawnDriver failing after derive_grants (e.g. exec_from_vfs
+    // could not load the binary) — the reservation must be released.
+    driver_db::release_reservation(&device);
+
+    assert!(
+        driver_db::reserve_device_for_test(&device),
+        "an abandoned reservation must release the device without a task ever existing"
+    );
+
+    driver_db::reset_bindings_for_test();
 }
