@@ -770,7 +770,11 @@ pub fn destroy_user_address_space_with_page_counts(
         // MMIO/DMA window). Code/Stack/Heap were already cleared, so in the common
         // case this scan only has the MMIO/DMA window left to walk; it exists so
         // nothing in the user PML4 slot range can be silently leaked at teardown.
-        reclaim_user_range(USER_CODE_BASE, USER_ADDRESS_SPACE_SCAN_END, mmio_skip_release);
+        reclaim_user_range(
+            USER_CODE_BASE,
+            USER_ADDRESS_SPACE_SCAN_END,
+            mmio_skip_release,
+        );
     });
 
     // Finally release the root PML4 frame itself after its hierarchy has been pruned.

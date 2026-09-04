@@ -16,7 +16,9 @@ use kaos_kernel::arch::gdt;
 use kaos_kernel::arch::interrupts::{self, SavedRegisters};
 use kaos_kernel::memory::{heap, pmm, vmm};
 use kaos_kernel::process::capabilities::{Capabilities, DriverCaps, MmioAllocKind, ResourceGrants};
-use kaos_kernel::scheduler::{self as sched, set_task_caps, SchedulerArchCallbacks, TaskEntry, TaskState};
+use kaos_kernel::scheduler::{
+    self as sched, set_task_caps, SchedulerArchCallbacks, TaskEntry, TaskState,
+};
 use kaos_kernel::sync::singlewaitqueue::SingleWaitQueue;
 use kaos_kernel::sync::waitqueue::WaitQueue;
 use kaos_kernel::sync::waitqueue_adapter;
@@ -1093,8 +1095,10 @@ fn test_reaping_driver_task_skips_release_for_open_mmio_allocation() {
     const MMIO_VA: u64 = vmm::USER_MMIO_BASE;
 
     let user_cr3 = vmm::clone_kernel_pml4_for_user();
-    let mmio_leaf =
-        pmm::with_pmm(|mgr| mgr.alloc_frame().expect("mmio leaf frame allocation failed"));
+    let mmio_leaf = pmm::with_pmm(|mgr| {
+        mgr.alloc_frame()
+            .expect("mmio leaf frame allocation failed")
+    });
     vmm::with_address_space(user_cr3, || {
         vmm::try_map_virtual_to_physical(MMIO_VA, mmio_leaf.physical_address())
             .expect("mapping the MMIO-window VA should succeed at the page-table level");

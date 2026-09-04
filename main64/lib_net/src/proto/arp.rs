@@ -399,7 +399,11 @@ mod tests {
         table.update(new_ip, mac_for(200));
 
         assert_eq!(table.entries().len(), MAX_ENTRIES);
-        assert_eq!(table.lookup(first_ip), None, "oldest entry should be evicted");
+        assert_eq!(
+            table.lookup(first_ip),
+            None,
+            "oldest entry should be evicted"
+        );
         assert_eq!(table.lookup(new_ip), Some(mac_for(200)));
     }
 
