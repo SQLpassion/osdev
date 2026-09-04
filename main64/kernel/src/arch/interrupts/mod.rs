@@ -165,6 +165,25 @@ pub fn register_irq_handler(vector: u8, handler: IrqHandler) {
     }
 }
 
+/// Returns the handler currently registered for `vector`, if any.
+///
+/// Lets a caller that manages per-line ownership itself (namely
+/// `irq_bridge::subscribe`) detect whether registering its own handler would
+/// silently replace a pre-existing kernel-internal handler — e.g. `ata`'s
+/// `IRQ14_PRIMARY_ATA_VECTOR` handler — on a legacy PCI interrupt line shared
+/// with a user-space driver's device. `register_irq_handler` itself performs
+/// no such check because most callers (kernel subsystems at boot) are the
+/// sole, permanent owner of their vector and have nothing to conflict with.
+pub fn registered_irq_handler(vector: u8) -> Option<IrqHandler> {
+    let irq_idx = irq_slot_index(vector)?;
+
+    // SAFETY:
+    // - This requires `unsafe` because it dereferences a raw pointer, which Rust cannot validate.
+    // - Reads the immutable snapshot of the singleton handler table.
+    // - `irq_idx` is derived from validated IRQ range and is in-bounds for `IRQ_LINES`.
+    unsafe { (*STATE.irq_handlers.get())[irq_idx] }
+}
+
 fn clear_irq_handlers() {
     // SAFETY:
     // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.

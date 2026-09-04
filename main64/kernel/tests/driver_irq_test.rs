@@ -170,6 +170,41 @@ fn test_irq_subscribe_trampoline_wait_and_ack() {
     irq_bridge::reset_bindings_for_test();
 }
 
+/// Tests that IrqSubscribe refuses to silently overwrite a kernel-internal
+/// handler already registered for a vector — here, IRQ0's timer handler,
+/// registered by `sched::init()` at boot (mirrors a real shared legacy PCI
+/// line, e.g. a NIC sharing IRQ14 with the kernel's own `ata` handler).
+#[test_case]
+fn test_irq_subscribe_refuses_to_steal_kernel_handler() {
+    irq_bridge::reset_bindings_for_test();
+    let task_id = sched::spawn_kernel_task(test_task_loop).expect("spawn task");
+    let slot = task_id_slot(task_id);
+
+    let grants = ResourceGrants {
+        mmio_regions: vec![],
+        irqs: vec![0],
+        mmio_bump: vmm::USER_MMIO_BASE,
+    };
+    let caps_ptr = Box::into_raw(Box::new(DriverCaps::new(Capabilities::IRQ, grants)));
+    set_task_caps(task_id, caps_ptr);
+    set_running_slot_for_test(Some(slot));
+
+    let res = dispatch_checked(SyscallId::IRQ_SUBSCRIBE, 0, 0, 0, 0);
+    assert_eq!(
+        res,
+        Err(SyscallError::PermissionDenied),
+        "IrqSubscribe must refuse to overwrite the kernel's own IRQ0 timer handler"
+    );
+    assert!(
+        !irq_bridge::is_driver_irq(0),
+        "a refused subscribe must not leave IRQ0 bound to the driver task"
+    );
+
+    set_running_slot_for_test(None);
+    sched::terminate_task(task_id);
+    irq_bridge::reset_bindings_for_test();
+}
+
 /// Tests that terminating a task (e.g. a crashed driver) releases its IRQ
 /// binding, instead of leaving the vector permanently owned by the dead task.
 #[test_case]

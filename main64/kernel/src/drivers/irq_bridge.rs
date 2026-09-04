@@ -8,7 +8,9 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::arch::interrupts::pic::{end_of_interrupt, is_in_service};
 use crate::arch::interrupts::types::{IRQ_BASE, IRQ_LINES};
-use crate::arch::interrupts::{register_irq_handler, SavedRegisters};
+use crate::arch::interrupts::{
+    register_irq_handler, registered_irq_handler, IrqHandler, SavedRegisters,
+};
 use crate::scheduler;
 use crate::sync::singlewaitqueue::SingleWaitQueue;
 use crate::sync::waitqueue_adapter::{sleep_if_single, wake_all_single};
@@ -125,8 +127,26 @@ pub fn subscribe(vector: u8, task_id: usize) -> Result<(), SyscallError> {
         return Err(SyscallError::InvalidArg);
     }
 
-    // Step 2: Register the top-half trampoline for this hardware vector.
-    register_irq_handler(irq_index_to_vector(idx), driver_irq_trampoline);
+    let idt_vector = irq_index_to_vector(idx);
+
+    // Step 2: Refuse to silently steal a line already serviced by a
+    // kernel-internal handler (e.g. `ata`'s IRQ14 handler, registered at
+    // boot). On real hardware a legacy PCI interrupt line is routinely
+    // shared between the device a driver task was granted and an unrelated
+    // device the kernel already services directly; overwriting that handler
+    // here would break the kernel's own device silently. Re-claiming a line
+    // this bridge itself registered earlier (e.g. respawning the same
+    // driver) is fine, since `driver_irq_trampoline` is idempotent to
+    // re-register.
+    if let Some(existing) = registered_irq_handler(idt_vector) {
+        if !core::ptr::fn_addr_eq(existing, driver_irq_trampoline as IrqHandler) {
+            binding.task_id.store(0, Ordering::Release);
+            return Err(SyscallError::PermissionDenied);
+        }
+    }
+
+    // Step 3: Register the top-half trampoline for this hardware vector.
+    register_irq_handler(idt_vector, driver_irq_trampoline);
 
     Ok(())
 }
