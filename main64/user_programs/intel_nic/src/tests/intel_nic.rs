@@ -175,5 +175,8 @@ fn test_multi_descriptor_frame_continuation_is_dropped_not_desynchronized() {
         len, None,
         "a continuation fragment must never be reported as its own frame"
     );
-    assert!(!mid, "EOP on the continuation must clear the mid-frame state");
+    assert!(
+        !mid,
+        "EOP on the continuation must clear the mid-frame state"
+    );
 }
