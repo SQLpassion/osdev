@@ -187,3 +187,94 @@ fn test_map_and_unmap_physical_lifecycle() {
     set_running_slot_for_test(None);
     sched::terminate_task(task_id);
 }
+
+/// Tests that AllocDma requires MMIO capability specifically — IRQ alone is
+/// not a substitute. `syscall_alloc_dma_impl`'s doc comment used to claim
+/// "MMIO or IRQ" while the code only ever checked MMIO; a driver holding only
+/// IRQ has no way to program a DMA buffer's physical address into any device
+/// register, so MMIO is the correct (and only) gate.
+#[test_case]
+fn test_alloc_dma_requires_mmio_not_irq_alone() {
+    let task_id = sched::spawn_kernel_task(test_task_loop).expect("spawn task");
+    let slot = task_id_slot(task_id);
+
+    let grants = ResourceGrants {
+        mmio_regions: vec![],
+        irqs: vec![11],
+        mmio_bump: vmm::USER_MMIO_BASE,
+    };
+    let caps_ptr = Box::into_raw(Box::new(DriverCaps::new(Capabilities::IRQ, grants)));
+    set_task_caps(task_id, caps_ptr);
+    set_running_slot_for_test(Some(slot));
+
+    let res = dispatch_checked(SyscallId::ALLOC_DMA, 1, 0, 0, 0);
+    assert_eq!(
+        res,
+        Err(SyscallError::PermissionDenied),
+        "AllocDma with only IRQ capability (no MMIO) must return PermissionDenied"
+    );
+
+    set_running_slot_for_test(None);
+    sched::terminate_task(task_id);
+}
+
+/// Tests that FreeDma requires MMIO capability specifically, mirroring AllocDma.
+#[test_case]
+fn test_free_dma_requires_mmio_not_irq_alone() {
+    let task_id = sched::spawn_kernel_task(test_task_loop).expect("spawn task");
+    let slot = task_id_slot(task_id);
+
+    let grants = ResourceGrants {
+        mmio_regions: vec![],
+        irqs: vec![11],
+        mmio_bump: vmm::USER_MMIO_BASE,
+    };
+    let caps_ptr = Box::into_raw(Box::new(DriverCaps::new(Capabilities::IRQ, grants)));
+    set_task_caps(task_id, caps_ptr);
+    set_running_slot_for_test(Some(slot));
+
+    let res = dispatch_checked(SyscallId::FREE_DMA, vmm::USER_MMIO_BASE, 1, 0, 0);
+    assert_eq!(
+        res,
+        Err(SyscallError::PermissionDenied),
+        "FreeDma with only IRQ capability (no MMIO) must return PermissionDenied"
+    );
+
+    set_running_slot_for_test(None);
+    sched::terminate_task(task_id);
+}
+
+/// Tests that MMIO capability alone (no IRQ) is sufficient for a full
+/// AllocDma/FreeDma lifecycle — confirming IRQ is not required, only MMIO.
+#[test_case]
+fn test_alloc_and_free_dma_succeeds_with_mmio_capability_alone() {
+    let task_id = sched::spawn_kernel_task(test_task_loop).expect("spawn task");
+    let slot = task_id_slot(task_id);
+
+    let grants = ResourceGrants {
+        mmio_regions: vec![],
+        irqs: vec![],
+        mmio_bump: vmm::USER_MMIO_BASE,
+    };
+    let caps_ptr = Box::into_raw(Box::new(DriverCaps::new(Capabilities::MMIO, grants)));
+    set_task_caps(task_id, caps_ptr);
+    set_running_slot_for_test(Some(slot));
+
+    let va = dispatch_checked(SyscallId::ALLOC_DMA, 1, 0, 0, 0)
+        .expect("AllocDma with MMIO capability alone must succeed");
+    assert_eq!(
+        va,
+        vmm::USER_MMIO_BASE,
+        "the DMA buffer must be mapped at the start of the MMIO VA window"
+    );
+
+    let free_res = dispatch_checked(SyscallId::FREE_DMA, va, 1, 0, 0);
+    assert_eq!(
+        free_res,
+        Ok(SYSCALL_OK),
+        "FreeDma with MMIO capability alone must succeed"
+    );
+
+    set_running_slot_for_test(None);
+    sched::terminate_task(task_id);
+}

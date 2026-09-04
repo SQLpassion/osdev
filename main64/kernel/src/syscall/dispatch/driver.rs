@@ -398,7 +398,11 @@ pub fn syscall_alloc_dma_impl(pages: usize, out_phys: *mut u64) -> SyscallResult
         return Err(SyscallError::InvalidArg);
     }
 
-    // Step 2: Check DriverCaps (task must hold MMIO or IRQ capability).
+    // Step 2: Check DriverCaps. AllocDma requires MMIO, not IRQ: the buffer is
+    // mapped into the same MMIO VA window as MapPhysical/UnmapPhysical (which
+    // gate on MMIO alone), and is only useful to a driver that can actually
+    // program its physical address into a device register — something an
+    // IRQ-only task cannot do (see `docs/drivers.md`).
     let caps = scheduler::current_task_caps().ok_or(SyscallError::PermissionDenied)?;
     if !caps.flags.contains(Capabilities::MMIO) {
         return Err(SyscallError::PermissionDenied);
@@ -509,7 +513,9 @@ pub fn syscall_free_dma_impl(user_va: u64, pages: usize) -> SyscallResult<u64> {
         .checked_add(num_bytes)
         .ok_or(SyscallError::InvalidArg)?;
 
-    // Step 2: Check DriverCaps.
+    // Step 2: Check DriverCaps. Mirrors AllocDma's MMIO-only gate (see its
+    // Step 2 comment) — a task that could allocate a DMA buffer without MMIO
+    // could not free one without it either.
     let caps = scheduler::current_task_caps().ok_or(SyscallError::PermissionDenied)?;
     if !caps.flags.contains(Capabilities::MMIO) {
         return Err(SyscallError::PermissionDenied);
