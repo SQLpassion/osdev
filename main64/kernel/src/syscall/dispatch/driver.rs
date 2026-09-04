@@ -224,16 +224,16 @@ pub fn syscall_spawn_driver_impl(
     use alloc::vec::Vec;
 
     // Step 1: Verify that the caller holds SPAWN_DRIVER capability or is privileged.
+    //
+    // A task with no DriverCaps block (e.g. the privileged boot shell, which
+    // has no capability grants of its own) falls through to the `privileged`
+    // flag on its scheduler slot. Failing closed (`false`) when there is no
+    // current task at all is deliberate: an authorization check must never
+    // default to "allowed" just because it could not identify the caller.
     let caller_caps = scheduler::current_task_caps();
     let is_authorized = match caller_caps {
         Some(caps) => caps.flags.contains(Capabilities::SPAWN_DRIVER),
-        None => {
-            if let Some(tid) = scheduler::current_task_id() {
-                scheduler::is_task_privileged(tid) || tid == 1
-            } else {
-                true
-            }
-        }
+        None => scheduler::current_task_id().is_some_and(scheduler::is_task_privileged),
     };
     if !is_authorized {
         return Err(SyscallError::PermissionDenied);

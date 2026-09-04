@@ -75,6 +75,25 @@ fn test_spawn_driver_without_capability_fails() {
     sched::terminate_task(task_id);
 }
 
+/// Tests that SpawnDriver fails closed — not open — when there is no current
+/// task to authorize (`scheduler::current_task_id()` returns `None`).
+///
+/// Before this fix, the `None`-current-task fallback defaulted to `true`
+/// (authorized), silently bypassing the capability gate for any caller this
+/// check could not identify. An unreachable path today, but a landmine for
+/// future code that might dispatch this syscall outside a task context.
+#[test_case]
+fn test_spawn_driver_with_no_current_task_fails_closed() {
+    set_running_slot_for_test(None);
+
+    let res = dispatch_checked(SyscallId::SPAWN_DRIVER, 0, 0, 0, 0);
+    assert_eq!(
+        res,
+        Err(SyscallError::PermissionDenied),
+        "SpawnDriver must fail closed, not open, when no task is currently running"
+    );
+}
+
 /// Tests that SpawnDriver fails with InvalidArg on null or kernel-space filename pointer.
 #[test_case]
 fn test_spawn_driver_invalid_name_pointer() {
