@@ -190,7 +190,11 @@ impl ArpPacket {
         let protocol_len = data[5];
         let opcode = u16::from_be_bytes([data[6], data[7]]);
 
-        if hardware_len != 6 || protocol_len != 4 {
+        if hardware_type != HARDWARE_TYPE_ETHERNET
+            || protocol_type != PROTOCOL_TYPE_IPV4
+            || hardware_len != 6
+            || protocol_len != 4
+        {
             return None;
         }
 
@@ -335,6 +339,28 @@ mod tests {
         assert_eq!(parsed.sender_ip, sender_ip);
         assert_eq!(parsed.target_ip, target_ip);
         assert_eq!(parsed.opcode, opcode::REQUEST);
+    }
+
+    #[test]
+    fn test_arp_parse_rejects_non_ethernet_ipv4_types() {
+        let sender_mac = MacAddress::new([0x52, 0x54, 0x00, 0x12, 0x34, 0x56]);
+        let sender_ip = Ipv4Address::new(10, 0, 2, 15);
+        let target_ip = Ipv4Address::new(10, 0, 2, 2);
+        let req = ArpPacket::build_request(sender_mac, sender_ip, target_ip);
+
+        let mut buf = [0u8; 64];
+        let written = req.serialize(&mut buf).expect("serialize ARP request");
+
+        // A packet with hardware_len=6/protocol_len=4 but a wrong hardware_type
+        // must still be rejected, even though the length fields alone look valid.
+        let mut wrong_hw_type = buf;
+        wrong_hw_type[0..2].copy_from_slice(&6u16.to_be_bytes());
+        assert!(ArpPacket::parse(&wrong_hw_type[..written]).is_none());
+
+        // Likewise for a wrong protocol_type.
+        let mut wrong_proto_type = buf;
+        wrong_proto_type[2..4].copy_from_slice(&0x0806u16.to_be_bytes());
+        assert!(ArpPacket::parse(&wrong_proto_type[..written]).is_none());
     }
 
     #[test]
