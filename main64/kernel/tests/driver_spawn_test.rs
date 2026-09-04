@@ -439,3 +439,67 @@ fn test_release_task_disables_bound_device() {
     }
     driver_db::reset_bindings_for_test();
 }
+
+/// Contract: abandoning a device reservation after a failed `SpawnDriver`
+/// call must leave the device fully disabled, not just unreserved.
+/// Given: A real PCI device is reserved and its Command Register decode bits
+/// are enabled — exactly as `derive_grants`'s Step 4b does before the caller's
+/// requested grant is validated or the driver binary is loaded.
+/// When: The reservation is abandoned via `release_reservation`, mirroring
+/// the two failure paths in `syscall_spawn_driver_impl` (a rejected grant
+/// request, or a failed `exec_from_vfs`) that run after `derive_grants`
+/// already enabled the device but before any task could ever own it.
+/// Then: The device's Command Register decode bits are cleared again.
+/// Failure Impact: Before this fix, a `SpawnDriver` call that failed after
+/// `derive_grants` reserved and enabled a device left that device's hardware
+/// permanently decoding MMIO and mastering DMA with no owning task to ever
+/// release it.
+#[test_case]
+fn test_release_reservation_disables_device() {
+    pci::init();
+    driver_db::reset_bindings_for_test();
+
+    let device = pci::get_devices()
+        .into_iter()
+        .next()
+        .expect("QEMU must expose at least the host bridge on bus 0");
+
+    // SAFETY: reading/writing PCI configuration space via port I/O is safe in
+    // Ring 0; offset 0x04 is the standard Command Register.
+    let orig_cmd =
+        unsafe { pci::pci_config_read(device.bus, device.device, device.function, 0x04) };
+
+    // Simulate `derive_grants`'s Step 4b: reserve the device, then enable it.
+    assert!(
+        driver_db::reserve_device_for_test(&device),
+        "device must be free to reserve at test start"
+    );
+    pci::enable_device(&device);
+    let enabled_cmd =
+        unsafe { pci::pci_config_read(device.bus, device.device, device.function, 0x04) };
+    assert_eq!(
+        enabled_cmd & 0x7,
+        0x7,
+        "enable_device must set I/O/Memory/Bus-Master decode bits"
+    );
+
+    // Simulate SpawnDriver failing after derive_grants (e.g. a rejected grant
+    // request, or exec_from_vfs failing to load the binary).
+    driver_db::release_reservation(&device);
+
+    let cmd_after_release =
+        unsafe { pci::pci_config_read(device.bus, device.device, device.function, 0x04) };
+    assert_eq!(
+        cmd_after_release & 0x7,
+        0,
+        "an abandoned reservation must leave the device fully disabled, not just unreserved"
+    );
+
+    // Restore the device's original configuration so later tests observe the
+    // same PCI state they would on a fresh boot.
+    // SAFETY: restoring the previously-read Command Register value.
+    unsafe {
+        pci::pci_config_write(device.bus, device.device, device.function, 0x04, orig_cmd);
+    }
+    driver_db::reset_bindings_for_test();
+}

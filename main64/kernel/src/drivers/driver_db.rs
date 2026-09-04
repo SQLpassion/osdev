@@ -138,10 +138,20 @@ pub fn confirm_binding(device: &PciDevice, task_id: usize) {
 /// Releases a device reservation that was never confirmed because `SpawnDriver`
 /// failed after `derive_grants` claimed the device (e.g. the requested grant
 /// was rejected, or the driver binary could not be loaded).
+///
+/// Also disables the device's I/O/Memory/Bus-Master decode bits that
+/// `derive_grants`'s Step 4b enabled when it reserved this device. Without
+/// this, a spawn failure after that point would leave the device permanently
+/// decoding MMIO and mastering DMA with no owning task — contradicting this
+/// module's own invariant that an ungranted device never decodes MMIO or
+/// masters DMA.
 pub fn release_reservation(device: &PciDevice) {
     let key = device_key(device);
     let mut bindings = DEVICE_BINDINGS.lock();
     bindings.retain(|&(k, t)| !(k == key && t == RESERVED_TASK_ID));
+    drop(bindings);
+
+    pci::disable_device(device);
 }
 
 /// Releases every device binding owned by `task_id`.
