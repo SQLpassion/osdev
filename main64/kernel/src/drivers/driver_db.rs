@@ -48,10 +48,8 @@ const INTEL_NIC_IDS: &[(u16, u16)] = &[
 ///
 /// Adding a driver means adding a row here — the kernel will not hand out a grant for
 /// a binary it does not know.
-const DRIVER_DB: &[(&str, &[(u16, u16)])] = &[
-    ("rtl8139.bin", RTL8139_IDS),
-    ("intlnic.bin", INTEL_NIC_IDS),
-];
+const DRIVER_DB: &[(&str, &[(u16, u16)])] =
+    &[("rtl8139.bin", RTL8139_IDS), ("intlnic.bin", INTEL_NIC_IDS)];
 
 /// Why a driver could not be bound to a device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
