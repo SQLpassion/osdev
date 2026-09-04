@@ -4,7 +4,7 @@
 //! trampolines that wake waiting driver tasks on interrupt, and mediates PIC EOI
 //! acknowledgment on user-space request (`IrqAck`).
 
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use crate::arch::interrupts::pic::{end_of_interrupt, is_in_service, mask_irq, unmask_irq};
 use crate::arch::interrupts::types::{IRQ_BASE, IRQ_LINES};
@@ -27,6 +27,22 @@ pub struct IrqBinding {
     pub task_id: AtomicUsize,
     /// Set to true by the trampoline when an IRQ fires; cleared by IrqWait.
     pub pending: AtomicBool,
+    /// `rdtsc()` timestamp of the most recent occasion the trampoline found
+    /// this line's PIC ISR bit newly set (i.e. a real hardware assertion, not
+    /// a re-run for an already-in-service line — see the doc comment on
+    /// [`driver_irq_trampoline`]). `0` means "not currently in service" —
+    /// either never fired, or already acknowledged via [`ack`] or the
+    /// watchdog in [`check_stale_bindings`].
+    ///
+    /// Exists so [`check_stale_bindings`] can bound how long a subscribed
+    /// line is allowed to sit in-service without the driver task calling
+    /// `IrqAck`: `dispatch_irq` never sends EOI for a driver-subscribed
+    /// vector on its own (see its doc comment), so a driver task that is
+    /// merely slow, descheduled, or live-locked elsewhere — not dead, so
+    /// `remove_task`'s cleanup never runs — would otherwise wedge this PIC
+    /// ISR bit (and, for a slave-PIC line, the master's cascade line)
+    /// indefinitely, blocking every same-or-lower-priority interrupt.
+    pub isr_set_since_tsc: AtomicU64,
     /// The driver task blocks on this queue in IrqWait.
     pub waitq: SingleWaitQueue,
 }
@@ -37,6 +53,7 @@ impl IrqBinding {
         Self {
             task_id: AtomicUsize::new(0),
             pending: AtomicBool::new(false),
+            isr_set_since_tsc: AtomicU64::new(0),
             waitq: SingleWaitQueue::new(),
         }
     }
@@ -109,7 +126,15 @@ pub fn driver_irq_trampoline(vector: u8, regs: &mut SavedRegisters) -> *mut Save
     // Step 2: Mark IRQ pending for consumer task in Ring 3.
     binding.pending.store(true, Ordering::Release);
 
-    // Step 3: Wake the driver task blocked on this IRQ's wait queue.
+    // Step 3: Record when this line's ISR bit became set, so
+    // `check_stale_bindings` can bound how long it is allowed to stay
+    // in-service without an `IrqAck`. `rdtsc()` is a cheap, lock-free read —
+    // safe to call unconditionally from this top-half context.
+    binding
+        .isr_set_since_tsc
+        .store(time::rdtsc(), Ordering::Release);
+
+    // Step 4: Wake the driver task blocked on this IRQ's wait queue.
     wake_all_single(&binding.waitq);
 
     regs as *mut SavedRegisters
@@ -128,6 +153,7 @@ pub fn subscribe(vector: u8, task_id: usize) -> Result<(), SyscallError> {
     {
         return Err(SyscallError::InvalidArg);
     }
+    binding.isr_set_since_tsc.store(0, Ordering::Release);
 
     let idt_vector = irq_index_to_vector(idx);
 
@@ -233,7 +259,75 @@ pub fn ack(vector: u8, task_id: usize) -> Result<(), SyscallError> {
     // Step 2: Send PIC EOI now that the user driver has serviced device registers.
     end_of_interrupt(idx as u8);
 
+    // Step 3: The driver acknowledged in time — this occurrence is no longer
+    // a `check_stale_bindings` watchdog candidate.
+    binding.isr_set_since_tsc.store(0, Ordering::Release);
+
     Ok(())
+}
+
+/// How long a driver-subscribed IRQ line may sit in-service (PIC ISR bit
+/// set, no `IrqAck` yet) before [`check_stale_bindings`] forces an EOI on its
+/// behalf.
+///
+/// Generous enough that a driver task merely waiting for a round-robin time
+/// slice never trips it under normal load, but short enough that the window
+/// during which this line (and, for a slave-PIC line, the master's cascade
+/// line) blocks every same-or-lower-priority interrupt stays bounded instead
+/// of open-ended.
+const IRQ_ACK_WATCHDOG_TIMEOUT_MS: u32 = 500;
+
+/// Forces a PIC EOI on any driver-subscribed IRQ line that has sat in-service
+/// longer than [`IRQ_ACK_WATCHDOG_TIMEOUT_MS`] without the owning task calling
+/// `IrqAck`.
+///
+/// Called from the scheduler's timer-tick path, so this runs periodically
+/// regardless of which line (if any) is stuck — unlike `dispatch_irq`'s own
+/// EOI epilogue, which only ever runs in response to a *new* interrupt on the
+/// specific vector that just fired, and therefore never observes a line that
+/// is silently sitting in-service with nothing left to dispatch.
+///
+/// This does not unsubscribe the slow task or touch `pending`/the wait
+/// queue — the driver may still be alive and will still see (and can still
+/// consume) the event once it runs again via `IrqWait`. It only unblocks the
+/// PIC so every *other* interrupt on that line's priority level or below can
+/// keep flowing. A level-triggered device whose status register the driver
+/// still has not serviced will typically re-assert the line immediately
+/// after this EOI, re-running `driver_irq_trampoline` and refreshing the
+/// timestamp — which is the expected, self-limiting outcome: bounded
+/// re-triggering instead of an indefinite block.
+pub fn check_stale_bindings() {
+    let ticks_per_ms = time::tsc_ticks_per_us().saturating_mul(1000);
+    let timeout_ticks = ticks_per_ms.saturating_mul(IRQ_ACK_WATCHDOG_TIMEOUT_MS as u64);
+    let now = time::rdtsc();
+
+    for (idx, binding) in IRQ_BINDINGS.iter().enumerate() {
+        let since = binding.isr_set_since_tsc.load(Ordering::Acquire);
+        if since == 0 {
+            continue;
+        }
+        if now.saturating_sub(since) < timeout_ticks {
+            continue;
+        }
+        if !is_in_service(idx as u8) {
+            // Already acknowledged through the normal path; nothing to force.
+            binding.isr_set_since_tsc.store(0, Ordering::Release);
+            continue;
+        }
+
+        crate::logging::logln(
+            "irq_bridge",
+            format_args!(
+                "check_stale_bindings: IRQ{} still in-service after {}ms with no IrqAck \
+                 from task {:#x} — forcing EOI to avoid wedging the PIC",
+                idx,
+                IRQ_ACK_WATCHDOG_TIMEOUT_MS,
+                binding.task_id.load(Ordering::Acquire)
+            ),
+        );
+        end_of_interrupt(idx as u8);
+        binding.isr_set_since_tsc.store(0, Ordering::Release);
+    }
 }
 
 /// Releases every IRQ binding owned by `task_id`.
@@ -273,6 +367,7 @@ pub fn release_task(meta: &mut SchedulerMetadata, task_id: usize) {
         }
 
         binding.pending.store(false, Ordering::Release);
+        binding.isr_set_since_tsc.store(0, Ordering::Release);
         binding
             .waitq
             .wake_all(|waiter| scheduler::unblock_task_locked(meta, waiter));
@@ -308,6 +403,32 @@ pub fn reset_bindings_for_test() {
     for binding in IRQ_BINDINGS.iter() {
         binding.task_id.store(0, Ordering::Release);
         binding.pending.store(false, Ordering::Release);
+        binding.isr_set_since_tsc.store(0, Ordering::Release);
         wake_all_single(&binding.waitq);
     }
+}
+
+/// Test-only: directly sets `vector`'s `isr_set_since_tsc` timestamp,
+/// without going through the trampoline.
+///
+/// Lets integration tests simulate "this line's ISR bit has been set since
+/// `tsc_value`" — the state [`check_stale_bindings`] watches for — without
+/// needing a real, sustained hardware IRQ assertion.
+#[doc(hidden)]
+pub fn set_isr_set_since_for_test(vector: u8, tsc_value: u64) -> bool {
+    match irq_to_index(vector) {
+        Some(idx) => {
+            IRQ_BINDINGS[idx]
+                .isr_set_since_tsc
+                .store(tsc_value, Ordering::Release);
+            true
+        }
+        None => false,
+    }
+}
+
+/// Test-only: reads `vector`'s current `isr_set_since_tsc` bookkeeping value.
+#[doc(hidden)]
+pub fn isr_set_since_for_test(vector: u8) -> Option<u64> {
+    irq_to_index(vector).map(|idx| IRQ_BINDINGS[idx].isr_set_since_tsc.load(Ordering::Acquire))
 }

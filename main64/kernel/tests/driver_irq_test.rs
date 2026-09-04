@@ -170,6 +170,127 @@ fn test_irq_subscribe_trampoline_wait_and_ack() {
     irq_bridge::reset_bindings_for_test();
 }
 
+/// Tests the IRQ-ack watchdog (`check_stale_bindings`) that bounds how long a
+/// driver-subscribed line may sit in-service without an `IrqAck` — see the
+/// doc comment on `IrqBinding::isr_set_since_tsc`.
+///
+/// Only the branches reachable without a genuine hardware INTA cycle are
+/// exercised here: a *synthetic* `isr_set_since_tsc` timestamp (set directly
+/// via the test-only `set_isr_set_since_for_test`, mirroring how the sibling
+/// `test_irq_subscribe_trampoline_wait_and_ack` test calls
+/// `driver_irq_trampoline` directly to simulate an IRQ firing) never makes
+/// the PIC's real ISR bit for this line actually set, so `is_in_service`
+/// stays false throughout. That is exactly why `check_stale_bindings` checks
+/// `is_in_service` before forcing an EOI instead of trusting the timestamp
+/// alone: a stale-but-not-really-in-service line must just have its
+/// bookkeeping cleared, never a forced (spurious) EOI. The "stale AND
+/// genuinely in-service" force-EOI branch requires a real hardware
+/// interrupt, the same constraint documented on
+/// `test_genuine_hardware_irq0_tick_still_sends_eoi` in
+/// `interrupts_layout_test.rs`.
+#[test_case]
+fn test_check_stale_bindings_clears_synthetic_timestamps_without_forcing_eoi() {
+    irq_bridge::reset_bindings_for_test();
+    interrupts::pic::reset_eoi_count_for_test();
+
+    let task_id = sched::spawn_kernel_task(test_task_loop).expect("spawn task");
+    let grants = ResourceGrants {
+        mmio_regions: vec![],
+        irqs: vec![11],
+        mmio_bump: vmm::USER_MMIO_BASE,
+    };
+    let caps_ptr = Box::into_raw(Box::new(DriverCaps::new(Capabilities::IRQ, grants)));
+    set_task_caps(task_id, caps_ptr);
+    set_running_slot_for_test(Some(task_id_slot(task_id)));
+    dispatch_checked(SyscallId::IRQ_SUBSCRIBE, 11, 0, 0, 0).expect("subscribe IRQ 11");
+    set_running_slot_for_test(None);
+
+    // A fresh timestamp must never be treated as stale.
+    irq_bridge::set_isr_set_since_for_test(11, kaos_kernel::drivers::time::rdtsc());
+    irq_bridge::check_stale_bindings();
+    assert_ne!(
+        irq_bridge::isr_set_since_for_test(11),
+        Some(0),
+        "a fresh timestamp must not be cleared by check_stale_bindings"
+    );
+    assert_eq!(
+        interrupts::pic::eoi_count_for_test(),
+        0,
+        "a fresh (non-stale) binding must never trigger a forced EOI"
+    );
+
+    // `check_stale_bindings` compares an *absolute* rdtsc delta against its
+    // fixed watchdog timeout, so a synthetic "since=1" (approximating
+    // power-on) only looks sufficiently stale once the CPU has genuinely
+    // been running long enough in real time — otherwise `now` itself is
+    // still smaller than the timeout. Busy-wait past that real-time floor
+    // before relying on it, well past any plausible watchdog timeout.
+    let ticks_per_us = kaos_kernel::drivers::time::tsc_ticks_per_us();
+    let real_time_floor =
+        kaos_kernel::drivers::time::rdtsc().saturating_add(ticks_per_us.saturating_mul(700_000));
+    while kaos_kernel::drivers::time::rdtsc() < real_time_floor {
+        core::hint::spin_loop();
+    }
+
+    // An old timestamp on a line whose PIC ISR bit was never actually
+    // latched (no genuine hardware INTA occurred here) must just clear the
+    // bookkeeping, never ring a forced EOI it has no real PIC state to
+    // justify.
+    irq_bridge::set_isr_set_since_for_test(11, 1);
+    irq_bridge::check_stale_bindings();
+    assert_eq!(
+        irq_bridge::isr_set_since_for_test(11),
+        Some(0),
+        "a stale-but-not-actually-in-service binding must have its bookkeeping cleared"
+    );
+    assert_eq!(
+        interrupts::pic::eoi_count_for_test(),
+        0,
+        "check_stale_bindings must never force an EOI for a line whose ISR bit isn't set"
+    );
+
+    sched::terminate_task(task_id);
+    irq_bridge::reset_bindings_for_test();
+}
+
+/// Tests that `IrqAck` clears the watchdog's `isr_set_since_tsc` bookkeeping
+/// for the acknowledged line, so `check_stale_bindings` never mistakes a
+/// properly-acked occurrence for a stuck one.
+#[test_case]
+fn test_irq_ack_clears_stale_binding_watchdog_timestamp() {
+    irq_bridge::reset_bindings_for_test();
+
+    let task_id = sched::spawn_kernel_task(test_task_loop).expect("spawn task");
+    let grants = ResourceGrants {
+        mmio_regions: vec![],
+        irqs: vec![11],
+        mmio_bump: vmm::USER_MMIO_BASE,
+    };
+    let caps_ptr = Box::into_raw(Box::new(DriverCaps::new(Capabilities::IRQ, grants)));
+    set_task_caps(task_id, caps_ptr);
+    set_running_slot_for_test(Some(task_id_slot(task_id)));
+    dispatch_checked(SyscallId::IRQ_SUBSCRIBE, 11, 0, 0, 0).expect("subscribe IRQ 11");
+
+    let mut regs = SavedRegisters::default();
+    driver_irq_trampoline(11, &mut regs);
+    assert_ne!(
+        irq_bridge::isr_set_since_for_test(11),
+        Some(0),
+        "the trampoline must record a watchdog timestamp when the IRQ fires"
+    );
+
+    dispatch_checked(SyscallId::IRQ_ACK, 11, 0, 0, 0).expect("ack IRQ 11");
+    assert_eq!(
+        irq_bridge::isr_set_since_for_test(11),
+        Some(0),
+        "IrqAck must clear the watchdog timestamp for the line it just acknowledged"
+    );
+
+    set_running_slot_for_test(None);
+    sched::terminate_task(task_id);
+    irq_bridge::reset_bindings_for_test();
+}
+
 /// Tests that IrqSubscribe refuses to silently overwrite a kernel-internal
 /// handler already registered for a vector — here, IRQ0's timer handler,
 /// registered by `sched::init()` at boot (mirrors a real shared legacy PCI

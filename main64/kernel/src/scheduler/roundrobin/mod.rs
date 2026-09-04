@@ -394,7 +394,16 @@ pub fn set_kernel_address_space_cr3(kernel_cr3: u64) {
 }
 
 /// IRQ adapter that routes PIT ticks into the scheduler core.
+///
+/// Also runs the IRQ-ack watchdog (`irq_bridge::check_stale_bindings`) on
+/// every genuine PIT tick: `dispatch_irq` never auto-EOIs a driver-subscribed
+/// vector (see its doc comment), so without a periodic, tick-driven check
+/// nothing would ever notice a line whose driver task is slow, descheduled,
+/// or live-locked elsewhere (not dead, so `remove_task`'s own cleanup never
+/// runs) sitting in-service indefinitely and blocking every same-or-lower
+/// priority interrupt.
 fn timer_irq_handler(_vector: u8, frame: &mut SavedRegisters) -> *mut SavedRegisters {
+    crate::drivers::irq_bridge::check_stale_bindings();
     on_timer_tick(frame as *mut SavedRegisters)
 }
 
