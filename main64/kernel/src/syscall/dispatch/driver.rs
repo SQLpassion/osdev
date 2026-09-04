@@ -32,10 +32,23 @@ pub fn syscall_map_physical_impl(phys_addr: u64, len: usize, _flags: u64) -> Sys
         return Err(SyscallError::PermissionDenied);
     }
 
-    // Step 3: Check fine-grained resource grants (phys_addr..end_phys must be covered by a grant).
+    // Step 3: Compute page-aligned ranges for physical memory and virtual allocation.
+    let offset_in_page = phys_addr & (PAGE_SIZE_U64 - 1);
+    let page_phys_start = phys_addr & !(PAGE_SIZE_U64 - 1);
+    let page_phys_end = (end_phys + PAGE_SIZE_U64 - 1) & !(PAGE_SIZE_U64 - 1);
+    let num_bytes = page_phys_end - page_phys_start;
+    let num_pages = (num_bytes / PAGE_SIZE_U64) as usize;
+
+    // Step 4: Check fine-grained resource grants against the page-rounded
+    // range that will actually be mapped, not just the caller's unrounded
+    // [phys_addr, end_phys) request. A BAR smaller than or unaligned to a
+    // 4KiB page (PCI legally allows BARs as small as 16 bytes) would
+    // otherwise pass a grant check against the exact request while the
+    // subsequent page-rounded mapping exposes whatever physical memory
+    // shares that page with the granted device — a capability bypass.
     let grant_matched = caps.grants.mmio_regions.iter().any(|&(g_base, g_len)| {
         if let Some(g_end) = g_base.checked_add(g_len) {
-            phys_addr >= g_base && end_phys <= g_end
+            page_phys_start >= g_base && page_phys_end <= g_end
         } else {
             false
         }
@@ -44,18 +57,11 @@ pub fn syscall_map_physical_impl(phys_addr: u64, len: usize, _flags: u64) -> Sys
         return Err(SyscallError::PermissionDenied);
     }
 
-    // Step 4: Resolve next virtual address from the per-task MMIO bump allocator.
+    // Step 5: Resolve next virtual address from the per-task MMIO bump allocator.
     if caps.grants.mmio_bump < USER_MMIO_BASE {
         caps.grants.mmio_bump = USER_MMIO_BASE;
     }
     let base_va = caps.grants.mmio_bump;
-
-    // Step 5: Compute page-aligned ranges for physical memory and virtual allocation.
-    let offset_in_page = phys_addr & (PAGE_SIZE_U64 - 1);
-    let page_phys_start = phys_addr & !(PAGE_SIZE_U64 - 1);
-    let page_phys_end = (end_phys + PAGE_SIZE_U64 - 1) & !(PAGE_SIZE_U64 - 1);
-    let num_bytes = page_phys_end - page_phys_start;
-    let num_pages = (num_bytes / PAGE_SIZE_U64) as usize;
 
     let end_va = base_va
         .checked_add(num_bytes)

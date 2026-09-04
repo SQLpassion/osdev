@@ -21,6 +21,7 @@
 
 use alloc::vec::Vec;
 
+use crate::arch::constants::PAGE_SIZE_U64;
 use crate::drivers::pci::{self, BarType, PciDevice};
 use crate::memory::vmm::USER_MMIO_BASE;
 use crate::process::capabilities::{Capabilities, ResourceGrants};
@@ -193,6 +194,14 @@ pub fn is_known_driver(name: &str) -> bool {
 ///
 /// I/O BARs are ignored: KAOS drivers reach port-mapped registers through the
 /// mediated syscall path, not through an MMIO grant.
+///
+/// Each window is rounded out to whole 4KiB pages. `MapPhysical` can only map
+/// at page granularity, so a BAR smaller than or unaligned to a page (PCI
+/// legally allows BARs as small as 16 bytes) always ends up exposing its
+/// entire enclosing page(s) once mapped. Storing the grant pre-rounded makes
+/// it the authoritative statement of what the driver actually gets access
+/// to, instead of a narrower byte range that `MapPhysical`'s own
+/// page-rounded grant check would then have to reject as out-of-bounds.
 fn mmio_windows(device: &PciDevice) -> Vec<(u64, u64)> {
     let mut windows = Vec::new();
 
@@ -208,7 +217,9 @@ fn mmio_windows(device: &PciDevice) -> Vec<(u64, u64)> {
             continue;
         }
 
-        windows.push(window);
+        let page_base = window.0 & !(PAGE_SIZE_U64 - 1);
+        let page_end = (window.0 + window.1 + PAGE_SIZE_U64 - 1) & !(PAGE_SIZE_U64 - 1);
+        windows.push((page_base, page_end - page_base));
     }
 
     windows

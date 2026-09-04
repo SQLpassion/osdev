@@ -54,9 +54,12 @@ fn test_rtl8139_driver_grants_and_mapping() {
     let task_id = sched::spawn_kernel_task(test_task_loop).expect("spawn task");
     let slot = task_id_slot(task_id);
 
-    // Simulated RTL8139 BAR physical 0xFEB0_0000, 256 bytes, IRQ line 11
+    // Simulated RTL8139 BAR physical 0xFEB0_0000, 256 bytes, IRQ line 11.
+    // The grant itself is page-rounded to 4096 bytes, mirroring what
+    // `driver_db::mmio_windows` derives from a real, sub-page BAR — the
+    // grant must cover the whole page `MapPhysical` will actually map.
     let grants = ResourceGrants {
-        mmio_regions: vec![(0xFEB0_0000, 256)],
+        mmio_regions: vec![(0xFEB0_0000, 4096)],
         irqs: vec![11],
         mmio_bump: vmm::USER_MMIO_BASE,
     };
