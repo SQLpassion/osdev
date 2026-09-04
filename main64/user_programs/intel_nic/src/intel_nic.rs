@@ -392,6 +392,35 @@ fn received_frame_len(status: u8, errors: u8, length: usize, capacity: usize) ->
     Some(length)
 }
 
+/// Decides how a polled RX descriptor should be reported, accounting for
+/// frames that span more than one descriptor (no EOP on the first one).
+///
+/// `RxDesc.length` is only the byte count DMA'd into *this* descriptor's
+/// buffer, not the full frame length. This driver cannot reassemble a
+/// multi-descriptor frame, so every descriptor belonging to one must be
+/// dropped — including the later, individually well-formed EOP-bearing
+/// descriptor that closes it out, which must never be mistaken for an
+/// independent, truncated frame of its own.
+///
+/// Returns `(frame_len, still_mid_frame)`: `frame_len` is `None` whenever the
+/// descriptor is part of a frame this driver is (still) discarding, and
+/// `still_mid_frame` is the caller's new `mid_frame_drop` state.
+fn received_frame_len_multi(
+    was_mid_frame: bool,
+    status: u8,
+    errors: u8,
+    length: usize,
+    capacity: usize,
+) -> (Option<usize>, bool) {
+    let still_mid_frame = (status & RX_STATUS_EOP) == 0;
+    let frame_len = if was_mid_frame {
+        None
+    } else {
+        received_frame_len(status, errors, length, capacity)
+    };
+    (frame_len, still_mid_frame)
+}
+
 /// Returns whether the MAC reports an established physical link.
 #[inline]
 fn status_has_link(status: u32) -> bool {
@@ -408,6 +437,13 @@ pub struct IntelNicDevice {
     _rx_descs: DmaBuffer,
     _rx_bufs: DmaBuffer,
     rx_tail: usize,
+    /// Set while recycling the continuation descriptors of a frame that spans
+    /// more than one RX descriptor (no EOP on its first descriptor). This
+    /// driver cannot reassemble such a frame, so every descriptor belonging
+    /// to it must be dropped — including the later, individually well-formed
+    /// EOP-bearing descriptor that closes it out, which must NOT be mistaken
+    /// for an independent, truncated frame of its own.
+    mid_frame_drop: bool,
 
     _tx_descs: DmaBuffer,
     _tx_bufs: DmaBuffer,
@@ -761,6 +797,7 @@ impl IntelNicDevice {
             _rx_descs: rx_descs,
             _rx_bufs: rx_bufs,
             rx_tail: 0,
+            mid_frame_drop: false,
             _tx_descs: tx_descs,
             _tx_bufs: tx_bufs,
             tx_tail: 0,
@@ -968,7 +1005,9 @@ impl IntelNicDevice {
         let errors = unsafe { core::ptr::read_volatile(&((*rx_desc_ptr.add(slot)).errors)) };
 
         let buf_offset = slot * RX_BUFFER_SIZE;
-        let frame_len = received_frame_len(status, errors, length, out_buf.len());
+        let (frame_len, still_mid_frame) =
+            received_frame_len_multi(self.mid_frame_drop, status, errors, length, out_buf.len());
+        self.mid_frame_drop = still_mid_frame;
         if let Some(frame_len) = frame_len {
             let rx_slice = self._rx_bufs.as_slice();
             out_buf[..frame_len].copy_from_slice(&rx_slice[buf_offset..buf_offset + frame_len]);

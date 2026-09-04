@@ -149,3 +149,31 @@ fn test_received_frame_requires_eop_and_rejects_frame_errors() {
     assert_eq!(received_frame_len(complete, 0x80, 64, 128), None);
     assert_eq!(received_frame_len(complete, 0, 129, 128), None);
 }
+
+#[test]
+fn test_multi_descriptor_frame_continuation_is_dropped_not_desynchronized() {
+    let complete = RX_STATUS_DD | RX_STATUS_EOP;
+    let fragment_start = RX_STATUS_DD; // DD set, EOP not set: first descriptor of an oversized frame.
+
+    // An ordinary single-descriptor frame is unaffected.
+    let (len, mid) = received_frame_len_multi(false, complete, 0, 64, 128);
+    assert_eq!(len, Some(64));
+    assert!(!mid);
+
+    // First descriptor of a frame spanning more than one buffer: dropped,
+    // and the mid-frame state latches on so the next descriptor is not
+    // mistaken for an independent frame.
+    let (len, mid) = received_frame_len_multi(false, fragment_start, 0, 64, 128);
+    assert_eq!(len, None);
+    assert!(mid);
+
+    // The EOP-bearing descriptor that closes the frame out must also be
+    // dropped — even though it is itself well-formed and complete — because
+    // treating it as an independent frame would desynchronize reassembly.
+    let (len, mid) = received_frame_len_multi(true, complete, 0, 64, 128);
+    assert_eq!(
+        len, None,
+        "a continuation fragment must never be reported as its own frame"
+    );
+    assert!(!mid, "EOP on the continuation must clear the mid-frame state");
+}
