@@ -65,6 +65,29 @@ fn require_dma_addressable(base: u64, len: usize) -> Result<(), SysError> {
     Ok(())
 }
 
+/// Copies `packet` into a TX DMA slot, zero-filling the padding bytes up to
+/// the RTL8139's 60-byte minimum frame length.
+///
+/// Hardware transmits exactly the returned length from the slot, so any
+/// bytes between `packet.len()` and that length must be explicitly zeroed —
+/// otherwise they are whatever a previous packet left behind in that ring
+/// position, and end up transmitted on the wire.
+fn prepare_tx_frame(packet: &[u8], tx_slot: &mut [u8]) -> Option<usize> {
+    if packet.is_empty() || packet.len() > tx_slot.len() {
+        return None;
+    }
+
+    let tx_len = packet.len().max(60);
+    if tx_len > tx_slot.len() {
+        return None;
+    }
+
+    tx_slot[..tx_len].fill(0);
+    tx_slot[..packet.len()].copy_from_slice(packet);
+
+    Some(tx_len)
+}
+
 /// RTL8139 Hardware Device Driver.
 pub struct Rtl8139Device {
     mmio: Mmio,
@@ -170,18 +193,21 @@ impl Rtl8139Device {
             return Err(SysError::IoError);
         }
 
-        // Step 2: Copy packet into TX DMA buffer slot.
+        // Step 2: Copy packet into TX DMA buffer slot, zero-padding any bytes
+        // below the 60-byte minimum frame length so hardware never transmits
+        // stale bytes left over from a previous use of this slot.
         let slot_offset = slot * TX_BUFFER_SLOT_SIZE;
         let tx_slice = self._tx_buffers.as_mut_slice();
-        tx_slice[slot_offset..slot_offset + packet.len()].copy_from_slice(packet);
+        let tx_slot = &mut tx_slice[slot_offset..slot_offset + TX_BUFFER_SLOT_SIZE];
+        let Some(tx_len) = prepare_tx_frame(packet, tx_slot) else {
+            return Err(SysError::InvalidArgument);
+        };
 
         // The packet contents must become globally visible before the TSD
         // doorbell write below can trigger the NIC's DMA engine to read them.
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
 
-        // Step 3: Write packet length to TSD (clears OWN bit and triggers transmit).
-        // Minimum packet length is 60 bytes.
-        let tx_len = packet.len().max(60);
+        // Step 3: Write frame length to TSD (clears OWN bit and triggers transmit).
         self.mmio.write32(tsd_reg, tx_len as u32);
 
         // Step 4: Advance descriptor index.
@@ -282,3 +308,7 @@ impl NicDevice for Rtl8139Device {
         self.shutdown();
     }
 }
+
+#[cfg(all(test, not(target_os = "none")))]
+#[path = "tests/rtl8139.rs"]
+mod tests;
