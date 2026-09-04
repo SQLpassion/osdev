@@ -9,8 +9,16 @@ const PIC1_COMMAND: u16 = 0x20;
 const PIC1_DATA: u16 = 0x21;
 const PIC2_COMMAND: u16 = 0xA0;
 const PIC2_DATA: u16 = 0xA1;
-const PIC_EOI: u8 = 0x20;
 const PIC_ISR_READ: u8 = 0x0B;
+
+/// OCW2 base for the 8259's "Specific EOI" command. ORing in an IRQ level
+/// (0..7, relative to the target PIC) clears exactly that PIC's ISR bit,
+/// unlike the "Non-specific EOI" command (`0x20`) which always clears
+/// whichever ISR bit is currently highest-priority — the wrong bit whenever
+/// more than one IRQ is simultaneously in-service (e.g. two user-space
+/// drivers on different lines, one acknowledging while the other is still
+/// pending). See `end_of_interrupt`.
+const PIC_SPECIFIC_EOI: u8 = 0x60;
 
 const PIC_ICW1_INIT: u8 = 0x10;
 const PIC_ICW1_ICW4: u8 = 0x01;
@@ -98,13 +106,20 @@ pub fn end_of_interrupt(irq: u8) {
 
     // SAFETY:
     // - This requires `unsafe` because hardware port I/O is inherently outside Rust's memory-safety guarantees.
-    // - EOI commands to PIC ports acknowledge serviced IRQ lines.
-    // - `irq >= 8` correctly determines whether slave PIC also needs EOI.
+    // - Specific-EOI commands to PIC ports acknowledge exactly `irq`'s ISR bit,
+    //   never an unrelated line that happens to be in-service at the same time.
+    // - `irq >= 8` correctly determines whether the slave PIC also needs EOI.
     unsafe {
         if irq >= 8 {
-            PortByte::new(PIC2_COMMAND).write(PIC_EOI);
+            // Clear the slave's own ISR bit for this line.
+            PortByte::new(PIC2_COMMAND).write(PIC_SPECIFIC_EOI | (irq - 8));
+            // Every slave-originated interrupt also latches the cascade line
+            // (IRQ2) on the master; that bit must be EOI'd too, specifically,
+            // so an unrelated in-service master IRQ (e.g. IRQ1) is untouched.
+            PortByte::new(PIC1_COMMAND).write(PIC_SPECIFIC_EOI | 2);
+        } else {
+            PortByte::new(PIC1_COMMAND).write(PIC_SPECIFIC_EOI | irq);
         }
-        PortByte::new(PIC1_COMMAND).write(PIC_EOI);
     }
 }
 
