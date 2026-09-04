@@ -241,6 +241,11 @@ impl ArpPacket {
     }
 }
 
+/// Maximum number of entries retained in the ARP cache. Without a cap, a flood of
+/// ARP packets carrying distinct spoofed sender IPs would grow this table without
+/// limit and exhaust the driver task's memory.
+const MAX_ENTRIES: usize = 128;
+
 /// Dynamic ARP cache storing IP to MAC address mappings.
 #[derive(Debug, Default)]
 pub struct ArpTable {
@@ -266,6 +271,9 @@ impl ArpTable {
     }
 
     /// Updates or inserts an ARP entry for `(ip, mac)`.
+    ///
+    /// When the table is already at [`MAX_ENTRIES`] and `ip` is not yet cached, the
+    /// oldest entry is evicted to make room, bounding the table's memory footprint.
     pub fn update(&mut self, ip: Ipv4Address, mac: MacAddress) {
         // Step 1: Update existing mapping if IP is already cached.
         for (entry_ip, entry_mac) in &mut self.entries {
@@ -275,7 +283,10 @@ impl ArpTable {
             }
         }
 
-        // Step 2: Append new mapping if not found.
+        // Step 2: Evict the oldest entry if the cache is full, then append the new mapping.
+        if self.entries.len() >= MAX_ENTRIES {
+            self.entries.remove(0);
+        }
         self.entries.push((ip, mac));
     }
 
@@ -341,6 +352,29 @@ mod tests {
         table.update(ip, mac2);
         assert_eq!(table.lookup(ip), Some(mac2));
         assert_eq!(table.entries().len(), 1);
+    }
+
+    #[test]
+    fn test_arp_table_evicts_oldest_entry_once_full() {
+        let mut table = ArpTable::new();
+        let mac_for = |n: u8| MacAddress::new([0x52, 0x54, 0x00, 0x12, 0x34, n]);
+
+        for i in 0..MAX_ENTRIES {
+            table.update(Ipv4Address::new(10, 0, 0, i as u8), mac_for(i as u8));
+        }
+        assert_eq!(table.entries().len(), MAX_ENTRIES);
+
+        let first_ip = Ipv4Address::new(10, 0, 0, 0);
+        assert_eq!(table.lookup(first_ip), Some(mac_for(0)));
+
+        // One more distinct IP should evict the oldest entry rather than grow
+        // the table past MAX_ENTRIES.
+        let new_ip = Ipv4Address::new(10, 0, 1, 0);
+        table.update(new_ip, mac_for(200));
+
+        assert_eq!(table.entries().len(), MAX_ENTRIES);
+        assert_eq!(table.lookup(first_ip), None, "oldest entry should be evicted");
+        assert_eq!(table.lookup(new_ip), Some(mac_for(200)));
     }
 
     #[test]
