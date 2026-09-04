@@ -8,7 +8,7 @@ use crate::memory::vmm::{
 use crate::process::capabilities::{Capabilities, MmioAllocKind};
 use crate::scheduler;
 use crate::syscall::types::{
-    is_valid_user_buffer_writable, SyscallError, SyscallResult, SYSCALL_OK,
+    is_valid_user_buffer, is_valid_user_buffer_writable, SyscallError, SyscallResult, SYSCALL_OK,
 };
 
 /// Maps a physical MMIO region into the calling driver task's address space.
@@ -602,6 +602,13 @@ pub fn syscall_virt_to_phys_impl(user_va: u64) -> SyscallResult<u64> {
         return Err(SyscallError::PermissionDenied);
     }
 
-    // Step 2: Translate virtual address via active page-table walk.
+    // Step 2: Reject non-canonical or kernel-half addresses before walking the
+    // page tables, so a driver task cannot probe kernel virtual memory (which
+    // is mapped into every user PML4) to leak its physical layout.
+    if !is_valid_user_buffer(user_va as *const u8, 1) {
+        return Err(SyscallError::InvalidArg);
+    }
+
+    // Step 3: Translate virtual address via active page-table walk.
     vmm::virt_to_phys_current(user_va).ok_or(SyscallError::InvalidArg)
 }
