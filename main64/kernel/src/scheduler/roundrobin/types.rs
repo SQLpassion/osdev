@@ -302,12 +302,22 @@ pub struct SchedulerMetadata {
     pub pending_free_stacks: Vec<(*mut u8, usize)>,
 
     /// Address spaces (CR3 roots) from terminated user tasks awaiting
-    /// deallocation.
+    /// deallocation, paired with any `MapPhysical`-kind MMIO allocation ranges
+    /// (`(page_va_start, num_pages)`) the task still held open at exit.
     ///
     /// Destroying an address space is a slow operation that traverses page
     /// tables and modifies PMM structures. It must happen outside the scheduler
     /// spinlock to keep interrupt latency low.
-    pub pending_free_address_spaces: Vec<u64>,
+    ///
+    /// The MMIO ranges are captured from `DriverCaps::allocations` in
+    /// `remove_task` before that block is freed, because by the time this
+    /// address space is actually torn down the task's `DriverCaps` is long
+    /// gone. Without them, the generic catch-all reclaim in
+    /// `destroy_user_address_space_with_page_counts` cannot distinguish a
+    /// device BAR window from PMM-owned RAM and would call `release_pfn` on
+    /// the BAR's physical address — see the module note on
+    /// `MmioAllocKind::Mmio`.
+    pub pending_free_address_spaces: Vec<(u64, Vec<(u64, usize)>)>,
 
     /// Slot index of the task whose FPU/SSE state is currently live in the
     /// CPU's XMM/x87 registers.

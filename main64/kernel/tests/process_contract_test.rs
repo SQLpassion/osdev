@@ -384,7 +384,7 @@ fn test_map_program_image_into_user_address_space_zeroes_bootstrap_stack_page() 
         }
     });
 
-    vmm::destroy_user_address_space(loaded.cr3);
+    vmm::destroy_user_address_space(loaded.cr3, &[]);
 
     // Release code PFNs explicitly because current VMM teardown keeps USER_CODE
     // leaf PFNs reserved to support temporary kernel-text alias mappings.

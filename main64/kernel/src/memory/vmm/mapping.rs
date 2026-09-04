@@ -664,12 +664,13 @@ pub fn clone_kernel_pml4_for_user() -> u64 {
 ///   releases them,
 /// - prunes and releases now-empty PT/PD/PDP pages,
 /// - releases the root PML4 frame itself.
-pub fn destroy_user_address_space(pml4_phys: u64) {
+pub fn destroy_user_address_space(pml4_phys: u64, mmio_skip_release: &[(u64, usize)]) {
     // Note: single-core, IF-disabled
     destroy_user_address_space_with_page_counts(
         pml4_phys,
         (USER_CODE_SIZE / PAGE_SIZE_U64) as usize,
         (USER_STACK_SIZE / PAGE_SIZE_U64) as usize,
+        mmio_skip_release,
     );
 }
 
@@ -701,6 +702,15 @@ pub fn destroy_user_address_space(pml4_phys: u64) {
 /// downward from [`USER_STACK_TOP`], matching how user stacks are allocated.
 /// Count values are clamped to configured region capacities.
 ///
+/// `mmio_skip_release` lists `(page_va_start, num_pages)` ranges — captured from
+/// the exiting task's `DriverCaps::allocations` before that block was freed —
+/// that map a device MMIO BAR window (`MmioAllocKind::Mmio`) rather than
+/// PMM-owned RAM. The catch-all scan in step 3 still unmaps every page in
+/// these ranges (so nothing stays mapped after teardown), but skips
+/// `release_pfn` for them, since that physical address was never owned by the
+/// PMM and must not be added to its free list. Pass `&[]` for a task that
+/// never held an MMIO grant.
+///
 /// ## What this function does NOT do
 /// - It does not touch any kernel-half mappings (PML4 entries 256 and above), nor
 ///   PML4 slot 0 (the low-memory identity map). Those are shared with every other
@@ -716,6 +726,7 @@ pub fn destroy_user_address_space_with_page_counts(
     pml4_phys: u64,
     code_page_count: usize,
     stack_page_count_from_top: usize,
+    mmio_skip_release: &[(u64, usize)],
 ) {
     // Note: single-core, IF-disabled
     // Always operate on a canonical page-aligned root frame.
@@ -755,11 +766,11 @@ pub fn destroy_user_address_space_with_page_counts(
         unmap_user_heap_region();
 
         // Step 4: Catch-all — reclaim any other present user mapping outside the
-        // three windows above (e.g. a future mmap-created region). Code/Stack/Heap
-        // were already cleared, so in the common case this scan finds nothing left
-        // and is a cheap no-op; it exists so nothing in the user PML4 slot range can
-        // be silently leaked at teardown.
-        reclaim_user_range(USER_CODE_BASE, USER_ADDRESS_SPACE_SCAN_END);
+        // three windows above (e.g. a future mmap-created region, or this task's
+        // MMIO/DMA window). Code/Stack/Heap were already cleared, so in the common
+        // case this scan only has the MMIO/DMA window left to walk; it exists so
+        // nothing in the user PML4 slot range can be silently leaked at teardown.
+        reclaim_user_range(USER_CODE_BASE, USER_ADDRESS_SPACE_SCAN_END, mmio_skip_release);
     });
 
     // Finally release the root PML4 frame itself after its hierarchy has been pruned.
@@ -780,7 +791,7 @@ pub fn destroy_user_address_space_with_page_counts(
 /// This traverses intermediate page table directories to efficiently skip
 /// unmapped sub-regions and prunes hierarchy frames as they become empty.
 pub fn unmap_user_heap_region() {
-    reclaim_user_range(USER_HEAP_BASE, USER_HEAP_END);
+    reclaim_user_range(USER_HEAP_BASE, USER_HEAP_END, &[]);
 }
 
 /// Reclaims every present user leaf mapping in `[scan_start, scan_end)`.
@@ -813,7 +824,11 @@ pub fn unmap_user_heap_region() {
 /// correctly, and must only pass bounds known not to overlap
 /// address-space-shared infrastructure (PML4 slot 0's identity map, or the
 /// higher-half kernel slots) — see [`USER_ADDRESS_SPACE_SCAN_END`].
-fn reclaim_user_range(scan_start: u64, scan_end: u64) {
+///
+/// `mmio_skip_release` lists `(page_va_start, num_pages)` ranges that must be
+/// unmapped but never passed to `release_pfn` — see the parameter doc on
+/// [`destroy_user_address_space_with_page_counts`].
+fn reclaim_user_range(scan_start: u64, scan_end: u64, mmio_skip_release: &[(u64, usize)]) {
     let mut va = scan_start;
     while va < scan_end {
         match walk_levels(va) {
@@ -833,7 +848,11 @@ fn reclaim_user_range(scan_start: u64, scan_end: u64) {
                 // Page table level exists; reuse the already-resolved path to
                 // clear and prune this one page, then advance by page size.
                 let path = ResolvedPath::for_virtual_address(va);
-                clear_leaf_and_prune(va, path, true);
+                let release_pfn = !mmio_skip_release.iter().any(|&(base, pages)| {
+                    let end = base + (pages as u64) * PAGE_SIZE_U64;
+                    va >= base && va < end
+                });
+                clear_leaf_and_prune(va, path, release_pfn);
                 va += PAGE_SIZE_U64;
             }
         }

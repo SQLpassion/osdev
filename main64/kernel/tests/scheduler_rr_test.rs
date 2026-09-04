@@ -6,12 +6,17 @@
 #![test_runner(kaos_kernel::testing::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
+extern crate alloc;
+
+use alloc::boxed::Box;
+use alloc::vec;
 use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicU64, Ordering};
 use kaos_kernel::arch::gdt;
 use kaos_kernel::arch::interrupts::{self, SavedRegisters};
 use kaos_kernel::memory::{heap, pmm, vmm};
-use kaos_kernel::scheduler::{self as sched, SchedulerArchCallbacks, TaskEntry, TaskState};
+use kaos_kernel::process::capabilities::{Capabilities, DriverCaps, MmioAllocKind, ResourceGrants};
+use kaos_kernel::scheduler::{self as sched, set_task_caps, SchedulerArchCallbacks, TaskEntry, TaskState};
 use kaos_kernel::sync::singlewaitqueue::SingleWaitQueue;
 use kaos_kernel::sync::waitqueue::WaitQueue;
 use kaos_kernel::sync::waitqueue_adapter;
@@ -1068,6 +1073,81 @@ fn test_reaping_user_task_destroys_its_address_space() {
             !mgr.release_pfn(user_cr3 / pmm::PAGE_SIZE),
             "user CR3 root must already be released by scheduler reap"
         )
+    });
+}
+
+/// Contract: reaping a driver task whose `DriverCaps` still records an open
+/// `MapPhysical` (MMIO BAR) allocation must unmap that page during teardown but
+/// must never hand its PFN to `release_pfn` — the physical address behind a
+/// device BAR window was never PMM-owned RAM, unlike an `AllocDma` allocation.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "reaping a driver task never releases an open MapPhysical allocation's PFN".
+/// Failure Impact: A regression here would return a live device BAR's physical address to the PMM free list on driver-task exit, corrupting the physical memory allocator the next time that PFN is reused for RAM.
+#[test_case]
+fn test_reaping_driver_task_skips_release_for_open_mmio_allocation() {
+    sched::init();
+    let kernel_cr3 = vmm::get_pml4_address();
+    sched::set_kernel_address_space_cr3(kernel_cr3);
+
+    const MMIO_VA: u64 = vmm::USER_MMIO_BASE;
+
+    let user_cr3 = vmm::clone_kernel_pml4_for_user();
+    let mmio_leaf =
+        pmm::with_pmm(|mgr| mgr.alloc_frame().expect("mmio leaf frame allocation failed"));
+    vmm::with_address_space(user_cr3, || {
+        vmm::try_map_virtual_to_physical(MMIO_VA, mmio_leaf.physical_address())
+            .expect("mapping the MMIO-window VA should succeed at the page-table level");
+    });
+
+    let user_task = sched::spawn_user_task(
+        vmm::USER_CODE_BASE,
+        vmm::USER_STACK_TOP - 16,
+        user_cr3,
+        false,
+    )
+    .expect("user task spawn should succeed");
+
+    let grants = ResourceGrants {
+        mmio_regions: vec![(0xFEB0_0000, 4096)],
+        irqs: vec![],
+        mmio_bump: MMIO_VA + 4096,
+    };
+    let mut caps = DriverCaps::new(Capabilities::MMIO, grants);
+    caps.record_allocation(MMIO_VA, 1, MmioAllocKind::Mmio);
+    let caps_ptr = Box::into_raw(Box::new(caps));
+    assert!(
+        set_task_caps(user_task, caps_ptr),
+        "caps should attach to the spawned user task"
+    );
+
+    sched::start();
+
+    let mut bootstrap = SavedRegisters::default();
+    let mut current = &mut bootstrap as *mut SavedRegisters;
+
+    current = sched::on_timer_tick(current);
+    assert!(
+        vmm::get_active_cr3() == user_cr3,
+        "user task selection should activate its CR3"
+    );
+
+    sched::mark_current_as_zombie();
+    let _ = sched::on_timer_tick(current);
+
+    // An extra tick is needed to reap the zombie task after the scheduler has left its stack.
+    let _ = sched::on_timer_tick(current);
+
+    assert!(
+        sched::task_state(user_task).is_none(),
+        "zombie driver task should be reaped on next tick"
+    );
+
+    pmm::with_pmm(|mgr| {
+        assert!(
+            mgr.release_pfn(mmio_leaf.pfn),
+            "reap must not have already released the open MapPhysical allocation's PFN"
+        );
     });
 }
 

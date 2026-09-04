@@ -157,6 +157,33 @@ pub(crate) fn remove_task(
 
     meta.slots[task_id].fpu_state = ptr::null_mut();
 
+    // Capture any still-open `MapPhysical` (MMIO BAR) allocation ranges before
+    // the capability block below is freed. The deferred address-space teardown
+    // (see `pending_free_address_spaces`) runs after `DriverCaps` is gone, so
+    // this is the only point where it is still possible to tell a device BAR
+    // window apart from PMM-owned RAM in that task's MMIO VA window.
+    let mut mmio_skip_release: alloc::vec::Vec<(u64, usize)> = alloc::vec::Vec::new();
+    if !meta.slots[task_id].caps.is_null() {
+        // SAFETY:
+        // - `caps` is still a live allocation at this point (freed just below).
+        // - Only read here; ownership/deallocation happens in the next block.
+        let allocations = &unsafe { &*meta.slots[task_id].caps }.allocations;
+        let mmio_count = allocations
+            .iter()
+            .filter(|&&(_, _, kind)| kind == crate::process::capabilities::MmioAllocKind::Mmio)
+            .count();
+        if mmio_skip_release.try_reserve(mmio_count).is_ok() {
+            mmio_skip_release.extend(
+                allocations
+                    .iter()
+                    .filter(|&&(_, _, kind)| {
+                        kind == crate::process::capabilities::MmioAllocKind::Mmio
+                    })
+                    .map(|&(va, pages, _)| (va, pages)),
+            );
+        }
+    }
+
     // Free the driver capability block if this was a driver task.
     if !meta.slots[task_id].caps.is_null() {
         // SAFETY:
@@ -249,7 +276,8 @@ pub(crate) fn remove_task(
     // the scheduler lock.
     if let Some(cr3) = cleanup {
         if meta.pending_free_address_spaces.try_reserve(1).is_ok() {
-            meta.pending_free_address_spaces.push(cr3);
+            meta.pending_free_address_spaces
+                .push((cr3, mmio_skip_release));
         }
     }
 
@@ -565,13 +593,15 @@ pub(crate) fn free_pending_stacks(stacks: &[(*mut u8, usize)]) {
 }
 
 /// Drains `pending_free_address_spaces` for deallocation.
-pub(crate) fn take_pending_address_spaces_for_free(meta: &mut SchedulerMetadata) -> Vec<u64> {
+pub(crate) fn take_pending_address_spaces_for_free(
+    meta: &mut SchedulerMetadata,
+) -> Vec<(u64, Vec<(u64, usize)>)> {
     core::mem::take(&mut meta.pending_free_address_spaces)
 }
 
 /// Frees pending address spaces outside the scheduler lock.
-pub(crate) fn free_pending_address_spaces(address_spaces: &[u64]) {
-    for &cr3 in address_spaces {
-        vmm::destroy_user_address_space(cr3);
+pub(crate) fn free_pending_address_spaces(address_spaces: &[(u64, Vec<(u64, usize)>)]) {
+    for (cr3, mmio_skip_release) in address_spaces {
+        vmm::destroy_user_address_space(*cr3, mmio_skip_release);
     }
 }

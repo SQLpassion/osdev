@@ -422,6 +422,7 @@ fn cleanup_failed_elf_mapping(user_cr3: u64, state: &ElfMapState) {
         user_cr3,
         total_mapped_pages,
         stack_pages_mapped,
+        &[],
     );
 
     pmm::with_pmm(|mgr| {
@@ -506,7 +507,12 @@ fn spawn_loaded_program(loaded: LoadedProgram, privileged: bool) -> ExecResult<u
             );
             // Spawn failed before task activation, so only loader-mapped pages
             // exist (code prefix + single bootstrap stack page).
-            vmm::destroy_user_address_space_with_page_counts(loaded.cr3, loaded.code_page_count, 1);
+            vmm::destroy_user_address_space_with_page_counts(
+                loaded.cr3,
+                loaded.code_page_count,
+                1,
+                &[],
+            );
             Err(ExecError::SpawnFailed)
         }
     }
