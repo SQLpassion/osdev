@@ -6,7 +6,7 @@
 
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use crate::arch::interrupts::pic::end_of_interrupt;
+use crate::arch::interrupts::pic::{end_of_interrupt, is_in_service};
 use crate::arch::interrupts::types::{IRQ_BASE, IRQ_LINES};
 use crate::arch::interrupts::{register_irq_handler, SavedRegisters};
 use crate::scheduler;
@@ -178,6 +178,43 @@ pub fn ack(vector: u8, task_id: usize) -> Result<(), SyscallError> {
     end_of_interrupt(idx as u8);
 
     Ok(())
+}
+
+/// Releases every IRQ binding owned by `task_id`.
+///
+/// Called from the scheduler's `remove_task` — the single choke point reached
+/// by both explicit termination (`Exit`/`terminate_task`) and zombie-reaping
+/// after a crash (`#PF`/`#GP`/`#DE`) — so a driver task's death never leaves a
+/// stale owner behind. Without this, `IRQ_BINDINGS[idx].task_id` would keep
+/// pointing at the dead task forever: `subscribe()`'s
+/// `compare_exchange(0, ...)` would fail for any future subscriber on that
+/// vector, and `is_driver_irq()` would keep suppressing `dispatch_irq`'s
+/// auto-EOI epilogue, wedging the PIC line until reboot.
+///
+/// If the vector's ISR bit is still set (the task died between the IRQ firing
+/// and calling `IrqAck`), a final EOI is sent so the line does not stay
+/// masked at the PIC with no subscriber left to acknowledge it.
+pub fn release_task(task_id: usize) {
+    if task_id == 0 {
+        return;
+    }
+
+    for (idx, binding) in IRQ_BINDINGS.iter().enumerate() {
+        if binding
+            .task_id
+            .compare_exchange(task_id, 0, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            continue;
+        }
+
+        binding.pending.store(false, Ordering::Release);
+        wake_all_single(&binding.waitq);
+
+        if is_in_service(idx as u8) {
+            end_of_interrupt(idx as u8);
+        }
+    }
 }
 
 /// Resets all IRQ bindings and clears handlers (for unit tests / teardown).

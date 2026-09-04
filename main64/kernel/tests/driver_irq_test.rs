@@ -169,3 +169,69 @@ fn test_irq_subscribe_trampoline_wait_and_ack() {
     sched::terminate_task(task2_id);
     irq_bridge::reset_bindings_for_test();
 }
+
+/// Tests that terminating a task (e.g. a crashed driver) releases its IRQ
+/// binding, instead of leaving the vector permanently owned by the dead task.
+#[test_case]
+fn test_irq_binding_released_on_task_terminate() {
+    irq_bridge::reset_bindings_for_test();
+    let task1_id = sched::spawn_kernel_task(test_task_loop).expect("spawn task 1");
+    let slot1 = task_id_slot(task1_id);
+
+    let grants1 = ResourceGrants {
+        mmio_regions: vec![],
+        irqs: vec![12],
+        mmio_bump: vmm::USER_MMIO_BASE,
+    };
+    let caps1_ptr = Box::into_raw(Box::new(DriverCaps::new(Capabilities::IRQ, grants1)));
+    set_task_caps(task1_id, caps1_ptr);
+
+    // Step 1: Task 1 subscribes to IRQ 12 but never calls IrqAck — simulating
+    // a driver that crashes (or exits) while still owning the binding.
+    set_running_slot_for_test(Some(slot1));
+    let sub_res = dispatch_checked(SyscallId::IRQ_SUBSCRIBE, 12, 0, 0, 0);
+    assert_eq!(
+        sub_res,
+        Ok(SYSCALL_OK),
+        "Task 1 should successfully subscribe to IRQ 12"
+    );
+    assert!(
+        irq_bridge::is_driver_irq(12),
+        "IRQ 12 should be reported as driver-owned after subscribe"
+    );
+
+    // Step 2: Terminate task 1 without ever acknowledging the IRQ.
+    set_running_slot_for_test(None);
+    sched::terminate_task(task1_id);
+
+    assert!(
+        !irq_bridge::is_driver_irq(12),
+        "IRQ 12 binding must be released once the owning task is terminated"
+    );
+
+    // Step 3: A second task requesting the same vector must now succeed —
+    // before the fix, `subscribe`'s compare_exchange(0, ...) would keep
+    // failing forever because the dead task's ID was never cleared.
+    let task2_id = sched::spawn_kernel_task(test_task_loop).expect("spawn task 2");
+    let slot2 = task_id_slot(task2_id);
+
+    let grants2 = ResourceGrants {
+        mmio_regions: vec![],
+        irqs: vec![12],
+        mmio_bump: vmm::USER_MMIO_BASE,
+    };
+    let caps2_ptr = Box::into_raw(Box::new(DriverCaps::new(Capabilities::IRQ, grants2)));
+    set_task_caps(task2_id, caps2_ptr);
+    set_running_slot_for_test(Some(slot2));
+
+    let sub2_res = dispatch_checked(SyscallId::IRQ_SUBSCRIBE, 12, 0, 0, 0);
+    assert_eq!(
+        sub2_res,
+        Ok(SYSCALL_OK),
+        "Task 2 must be able to claim IRQ 12 after task 1's binding was released"
+    );
+
+    set_running_slot_for_test(None);
+    sched::terminate_task(task2_id);
+    irq_bridge::reset_bindings_for_test();
+}

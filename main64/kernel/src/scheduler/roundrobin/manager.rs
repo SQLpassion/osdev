@@ -7,7 +7,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use super::context::free_task_stack;
-use super::types::{SchedulerArchCallbacks, SchedulerMetadata, TaskEntry, TaskState};
+use super::types::{pack_task_id, SchedulerArchCallbacks, SchedulerMetadata, TaskEntry, TaskState};
 use super::{active_cr3_value, kernel_cr3_value, set_active_cr3};
 use crate::arch::fpu;
 use crate::arch::interrupts::{InterruptStackFrame, SavedRegisters};
@@ -167,6 +167,13 @@ pub(crate) fn remove_task(
         drop(unsafe { alloc::boxed::Box::from_raw(meta.slots[task_id].caps) });
         meta.slots[task_id].caps = ptr::null_mut();
     }
+
+    // Release any hardware IRQ bindings this task held, so a driver task's
+    // exit (including a crash reaped via `reap_zombies`) does not leave its
+    // subscribed vector permanently owned by a dead task. Must run before the
+    // slot below is cleared, since it needs the still-live generation to
+    // reconstruct the packed task ID that `irq_bridge` stores as the owner.
+    crate::drivers::irq_bridge::release_task(pack_task_id(task_id, meta.slots[task_id].generation));
 
     // Move the stack to the pending-free list instead of freeing it now.
     // This keeps the stack range visible to `frame_within_any_task_stack`
