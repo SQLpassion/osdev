@@ -35,7 +35,10 @@ pub fn syscall_map_physical_impl(phys_addr: u64, len: usize, _flags: u64) -> Sys
     // Step 3: Compute page-aligned ranges for physical memory and virtual allocation.
     let offset_in_page = phys_addr & (PAGE_SIZE_U64 - 1);
     let page_phys_start = phys_addr & !(PAGE_SIZE_U64 - 1);
-    let page_phys_end = (end_phys + PAGE_SIZE_U64 - 1) & !(PAGE_SIZE_U64 - 1);
+    let page_phys_end = end_phys
+        .checked_add(PAGE_SIZE_U64 - 1)
+        .ok_or(SyscallError::InvalidArg)?
+        & !(PAGE_SIZE_U64 - 1);
     let num_bytes = page_phys_end - page_phys_start;
     let num_pages = (num_bytes / PAGE_SIZE_U64) as usize;
 
