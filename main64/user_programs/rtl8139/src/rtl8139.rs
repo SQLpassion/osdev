@@ -144,6 +144,9 @@ impl Rtl8139Device {
         while (self.mmio.read32(tsd_reg) & (1 << 13)) == 0 && timeout > 0 {
             timeout -= 1;
         }
+        if timeout == 0 {
+            return Err(SysError::IoError);
+        }
 
         // Step 2: Copy packet into TX DMA buffer slot.
         let slot_offset = slot * TX_BUFFER_SLOT_SIZE;
