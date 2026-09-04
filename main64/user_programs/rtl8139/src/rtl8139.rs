@@ -30,6 +30,36 @@ pub const INT_RX_ERR: u16 = 0x0002;
 pub const INT_TX_OK: u16 = 0x0004;
 pub const INT_TX_ERR: u16 = 0x0008;
 
+/// RX packet-status header bits (RTL8139(C/CL) datasheet, receive descriptor
+/// status word) — distinct from the `INT_*` interrupt-status-register bits
+/// above, which report the same conditions at the controller level rather
+/// than per-packet.
+pub const RX_STATUS_ROK: u16 = 1 << 0; // Receive OK
+pub const RX_STATUS_FAE: u16 = 1 << 1; // Frame Alignment Error
+pub const RX_STATUS_CRC: u16 = 1 << 2; // CRC Error
+pub const RX_STATUS_LONG: u16 = 1 << 3; // Long Packet (> 4 KiB)
+pub const RX_STATUS_RUNT: u16 = 1 << 4; // Runt Packet (< 64 bytes)
+pub const RX_STATUS_ISE: u16 = 1 << 5; // Invalid Symbol Error
+
+/// Hardware-reported error bits that must reject a received frame even when
+/// `RX_STATUS_ROK` is also set. Real RTL8139 hardware can latch `ROK`
+/// together with a corruption bit on a bad frame; unlike the Intel NIC
+/// driver's `RX_FRAME_ERROR_MASK` (which the controller never sets alongside
+/// its own "descriptor done" bit), this controller does not suppress `ROK`
+/// on error, so the two must be checked together.
+pub const RX_STATUS_ERROR_MASK: u16 =
+    RX_STATUS_FAE | RX_STATUS_CRC | RX_STATUS_LONG | RX_STATUS_RUNT | RX_STATUS_ISE;
+
+/// Returns whether a received frame's packet-status header describes a
+/// frame `poll_next_packet` may safely copy out: `RX_STATUS_ROK` set, none of
+/// `RX_STATUS_ERROR_MASK` set, and a length inside the legal
+/// payload-plus-CRC bounds.
+fn rx_frame_is_ok(status: u16, length: usize) -> bool {
+    (status & RX_STATUS_ROK) != 0
+        && (status & RX_STATUS_ERROR_MASK) == 0
+        && (4..=1792).contains(&length)
+}
+
 /// Receive Configuration Register bits
 pub const RCR_AAP: u32 = 1 << 0; // Accept All Packets
 pub const RCR_APM: u32 = 1 << 1; // Accept Physical Match (destination == MAC)
@@ -231,8 +261,8 @@ impl Rtl8139Device {
         let status = u16::from_le_bytes([rx_slice[off], rx_slice[off + 1]]);
         let length = u16::from_le_bytes([rx_slice[off + 2], rx_slice[off + 3]]) as usize;
 
-        // Step 2: Check packet validity (Receive OK flag).
-        if (status & 0x0001) == 0 || !(4..=1792).contains(&length) {
+        // Step 2: Check packet validity (Receive OK, no hardware error bits).
+        if !rx_frame_is_ok(status, length) {
             // Bad packet or descriptor out-of-sync; reset read pointer.
             self.rx_offset = 0;
             self.mmio.write16(REG_CAPR, 0xFFF0);
