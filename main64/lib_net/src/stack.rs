@@ -59,7 +59,7 @@ impl NetworkStack {
         // Step 3: Demultiplex by EtherType.
         match eth.ethertype {
             ethertype::ARP => self.process_arp(eth.src_mac, eth.payload, tx_fn),
-            ethertype::IPV4 => self.process_ipv4(eth.payload, tx_fn),
+            ethertype::IPV4 => self.process_ipv4(eth.src_mac, eth.payload, tx_fn),
             _ => NetworkEvent::None,
         }
     }
@@ -121,7 +121,11 @@ impl NetworkStack {
     }
 
     /// Processes an incoming IPv4 packet.
-    fn process_ipv4<F>(&mut self, payload: &[u8], mut tx_fn: F) -> NetworkEvent
+    ///
+    /// `eth_src` is the source MAC of the Ethernet frame carrying this packet,
+    /// used as the destination for an auto-generated ICMP Echo Reply when the
+    /// sender's IP is not yet in the ARP table.
+    fn process_ipv4<F>(&mut self, eth_src: MacAddress, payload: &[u8], mut tx_fn: F) -> NetworkEvent
     where
         F: FnMut(&[u8]),
     {
@@ -165,11 +169,11 @@ impl NetworkStack {
                     ip_packet[20..20 + icmp_len].copy_from_slice(&icmp_buf[..icmp_len]);
                     let ip_packet_len = 20 + icmp_len;
 
-                    // Resolve destination MAC
-                    let dest_mac = self
-                        .arp_table
-                        .lookup(ip.src_ip)
-                        .unwrap_or(MacAddress::BROADCAST);
+                    // Resolve destination MAC. Fall back to the sender's own
+                    // Ethernet source address (already known from this very
+                    // frame) rather than broadcasting the reply to the whole
+                    // LAN segment when the sender's IP has no ARP entry yet.
+                    let dest_mac = self.arp_table.lookup(ip.src_ip).unwrap_or(eth_src);
 
                     let eth_frame = EthernetFrame {
                         dest_mac,
