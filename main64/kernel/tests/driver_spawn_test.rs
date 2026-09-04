@@ -13,7 +13,7 @@ use core::panic::PanicInfo;
 
 use kaos_kernel::arch::interrupts;
 use kaos_kernel::drivers::driver_db::{self, BindError};
-use kaos_kernel::drivers::pci::{BarType, PciBar, PciDevice};
+use kaos_kernel::drivers::pci::{self, BarType, PciBar, PciDevice};
 use kaos_kernel::memory::{heap, pmm, vmm};
 use kaos_kernel::process::capabilities::{Capabilities, DriverCaps, ResourceGrants};
 use kaos_kernel::scheduler::{
@@ -375,5 +375,67 @@ fn test_device_reservation_released_on_spawn_failure() {
         "an abandoned reservation must release the device without a task ever existing"
     );
 
+    driver_db::reset_bindings_for_test();
+}
+
+/// Contract: a driver task's exit must disable its bound PCI device's
+/// I/O/Memory/Bus-Master decode bits, not just release the binding bookkeeping.
+/// Given: A real PCI device (from `pci::init()`'s bus scan) is reserved and
+/// bound to a driver task, and its Command Register decode bits are enabled —
+/// exactly as `derive_grants`'s Step 4b does for a live `SpawnDriver` call.
+/// When: The owning task terminates (`remove_task` -> `driver_db::release_task`).
+/// Then: The device's Command Register decode bits are cleared again.
+/// Failure Impact: Before this fix, a crashed or killed driver task's device
+/// binding was released but its hardware was left fully enabled — a NIC with
+/// still-armed DMA descriptors would keep writing into physical memory after
+/// `remove_task` frees it back to the PMM for an unrelated task to reuse.
+#[test_case]
+fn test_release_task_disables_bound_device() {
+    pci::init();
+    driver_db::reset_bindings_for_test();
+
+    let device = pci::get_devices()
+        .into_iter()
+        .next()
+        .expect("QEMU must expose at least the host bridge on bus 0");
+
+    // SAFETY: reading/writing PCI configuration space via port I/O is safe in
+    // Ring 0; offset 0x04 is the standard Command Register.
+    let orig_cmd =
+        unsafe { pci::pci_config_read(device.bus, device.device, device.function, 0x04) };
+
+    // Simulate what `derive_grants` does once it exclusively reserves a device.
+    pci::enable_device(&device);
+    let enabled_cmd =
+        unsafe { pci::pci_config_read(device.bus, device.device, device.function, 0x04) };
+    assert_eq!(
+        enabled_cmd & 0x7,
+        0x7,
+        "enable_device must set I/O/Memory/Bus-Master decode bits"
+    );
+
+    assert!(
+        driver_db::reserve_device_for_test(&device),
+        "device must be free to reserve at test start"
+    );
+    let task_id = sched::spawn_kernel_task(test_task_loop).expect("spawn task");
+    driver_db::confirm_binding(&device, task_id);
+
+    sched::terminate_task(task_id);
+
+    let cmd_after_exit =
+        unsafe { pci::pci_config_read(device.bus, device.device, device.function, 0x04) };
+    assert_eq!(
+        cmd_after_exit & 0x7,
+        0,
+        "a device bound to a task that just exited must have its decode bits cleared"
+    );
+
+    // Restore the device's original configuration so later tests observe the
+    // same PCI state they would on a fresh boot.
+    // SAFETY: restoring the previously-read Command Register value.
+    unsafe {
+        pci::pci_config_write(device.bus, device.device, device.function, 0x04, orig_cmd);
+    }
     driver_db::reset_bindings_for_test();
 }

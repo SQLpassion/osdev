@@ -146,6 +146,25 @@ pub fn enable_device(device: &PciDevice) {
     unsafe { pci_config_write(device.bus, device.device, device.function, 0x04, new_cmd) };
 }
 
+/// Clears I/O Space (bit 0), Memory Space (bit 1), and Bus Master (bit 2) in
+/// `device`'s PCI Command Register, undoing what [`enable_device`] set.
+///
+/// Must be called once a device is no longer bound to a live driver task —
+/// either because its owning task exited (see `driver_db::release_task`) or
+/// because binding it failed after `enable_device` already ran (see
+/// `driver_db::release_reservation`). Without this, the device keeps
+/// responding to MMIO and mastering DMA after every task that could
+/// legitimately program it is gone, so a still-armed descriptor ring can keep
+/// writing into physical memory the PMM has since handed to an unrelated task.
+pub fn disable_device(device: &PciDevice) {
+    // SAFETY:
+    // - Reading and writing the PCI command register (offset 0x04) in configuration
+    //   space is standard PCI device teardown.
+    let orig_cmd = unsafe { pci_config_read(device.bus, device.device, device.function, 0x04) };
+    let new_cmd = orig_cmd & !0x0007;
+    unsafe { pci_config_write(device.bus, device.device, device.function, 0x04, new_cmd) };
+}
+
 /// Return a copy of a single scanned PCI device.
 pub fn get_device(index: usize) -> Option<PciDevice> {
     // Step 1: Lock the global PCI device list.

@@ -99,6 +99,11 @@ fn device_key(device: &PciDevice) -> u32 {
     ((device.bus as u32) << 16) | ((device.device as u32) << 8) | (device.function as u32)
 }
 
+/// Unpacks a lookup key produced by [`device_key`] back into (bus, device, function).
+fn decode_device_key(key: u32) -> (u8, u8, u8) {
+    ((key >> 16) as u8, (key >> 8) as u8, key as u8)
+}
+
 /// Atomically claims `device` for an in-flight `SpawnDriver` call.
 ///
 /// Returns `false` without side effects if the device is already bound to a
@@ -146,12 +151,39 @@ pub fn release_reservation(device: &PciDevice) {
 /// `irq_bridge::release_task`. Without this, a device bound to a crashed or
 /// exited driver task would stay bound forever, permanently refusing
 /// `SpawnDriver` for that device with `AllDevicesBound`.
+///
+/// Also disables every released device's I/O/Memory/Bus-Master decode bits
+/// before returning. `remove_task` calls this before it defers the task's
+/// address space (and any DMA buffers still targeted by a live descriptor
+/// ring) for teardown, so a NIC with armed RX/TX descriptors can no longer
+/// perform DMA by the time those physical frames are handed back to the PMM
+/// and reused by an unrelated task.
 pub fn release_task(task_id: usize) {
     if task_id == 0 {
         return;
     }
     let mut bindings = DEVICE_BINDINGS.lock();
+    let released_keys: Vec<u32> = bindings
+        .iter()
+        .filter(|&&(_, t)| t == task_id)
+        .map(|&(k, _)| k)
+        .collect();
     bindings.retain(|&(_, t)| t != task_id);
+    drop(bindings);
+
+    if released_keys.is_empty() {
+        return;
+    }
+    let devices = pci::get_devices();
+    for key in released_keys {
+        let (bus, device, function) = decode_device_key(key);
+        if let Some(dev) = devices
+            .iter()
+            .find(|d| d.bus == bus && d.device == device && d.function == function)
+        {
+            pci::disable_device(dev);
+        }
+    }
 }
 
 /// Resets all device bindings (for unit tests / teardown).
