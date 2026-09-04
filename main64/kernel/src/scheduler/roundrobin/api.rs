@@ -201,6 +201,20 @@ pub fn current_user_heap_top() -> Option<u64> {
 
 /// Returns a mutable reference to the DriverCaps of the currently running task,
 /// or `None` if the task holds no capabilities (normal unprivileged task).
+///
+/// ## Caller invariant
+/// The returned reference is only valid for as long as the *current* task
+/// remains the one running — i.e. for the synchronous remainder of the
+/// current syscall handler, with no intervening yield/block/preemption point.
+/// This function unlocks the scheduler metadata lock before returning (unlike
+/// most accessors in this module, which take a closure and never let a
+/// reference escape the locked section), so nothing stops a future caller
+/// from holding the reference across a point where the current task could be
+/// descheduled or torn down — `remove_task` frees the very `DriverCaps` block
+/// this reference points into. Every call site today only reads/writes the
+/// reference synchronously within a single syscall handler body with no
+/// yield in between, which is what makes this safe in practice; that must
+/// keep holding for any new call site.
 pub fn current_task_caps() -> Option<&'static mut crate::process::capabilities::DriverCaps> {
     with_scheduler(|meta| {
         let slot = meta.running_slot?;
