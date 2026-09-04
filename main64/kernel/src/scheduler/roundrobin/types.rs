@@ -48,6 +48,23 @@ pub enum SpawnKind {
         /// every other user task (in particular anything spawned via `Exec`)
         /// must default to `false`.
         privileged: bool,
+
+        /// Whether the task is created directly in [`TaskState::Blocked`]
+        /// instead of [`TaskState::Ready`].
+        ///
+        /// A task is normally `Ready` (and therefore already sitting in the
+        /// run queue, eligible for the very next timer tick) by the time its
+        /// spawn call returns. A caller that must still finish irrevocable
+        /// kernel-side setup after spawning — e.g. `SpawnDriver` assigning
+        /// parent linkage, resolving a `driver_db` device reservation, and
+        /// attaching `DriverCaps` — cannot let the task run before that setup
+        /// completes: a timer tick landing in the gap could select and run
+        /// (and potentially crash) the new task first, permanently stranding
+        /// state that assumed setup would finish uninterrupted. Starting the
+        /// task `Blocked` closes that race entirely, rather than narrowing it
+        /// with a `block_task` call made just slightly too late. The caller
+        /// must call [`super::unblock_task`] once setup is complete.
+        start_blocked: bool,
     },
 }
 

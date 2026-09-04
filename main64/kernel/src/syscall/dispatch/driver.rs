@@ -354,8 +354,16 @@ pub fn syscall_spawn_driver_impl(
         }
     }
 
-    // Step 6: Spawn the task by loading ELF executable from VFS.
-    let result = crate::process::exec_from_vfs(&name);
+    // Step 6: Spawn the task by loading ELF executable from VFS, directly in
+    // `TaskState::Blocked`. Parent linkage, the driver_db reservation, and
+    // DriverCaps are not attached until steps 7-9 below; if the task were
+    // schedulable immediately (as a plain `exec_from_vfs` spawn would leave
+    // it), a timer tick landing in that gap could select and run — and
+    // potentially crash — it before that setup ever runs, permanently
+    // stranding the reservation confirmed in step 8 at `RESERVED_TASK_ID`
+    // (see `driver_db::confirm_binding`). Step 10 unblocks the task once
+    // setup has fully completed.
+    let result = crate::process::exec_from_vfs_blocked(&name);
     let tid = match result {
         Ok(tid) => tid,
         Err(e) => {
@@ -393,6 +401,11 @@ pub fn syscall_spawn_driver_impl(
     let caps = DriverCaps::new(granted_caps, grants);
     let caps_ptr = Box::into_raw(Box::new(caps));
     scheduler::set_task_caps(tid, caps_ptr);
+
+    // Step 10: Setup is complete — allow the task to actually run. Must be
+    // the last step: everything above must be visible to the task before it
+    // ever executes a single instruction (see step 6).
+    scheduler::unblock_task(tid);
 
     crate::logging::logln(
         "driver",

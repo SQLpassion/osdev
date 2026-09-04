@@ -115,6 +115,21 @@ pub fn exec_from_vfs(file_name_8_3: &str) -> ExecResult<usize> {
     spawn_loaded_program(loaded, false)
 }
 
+/// Same as [`exec_from_vfs`], but the spawned task starts in
+/// `TaskState::Blocked` instead of `TaskState::Ready`.
+///
+/// Used by `SpawnDriver`, which must finish assigning parent linkage,
+/// resolving its `driver_db` device reservation, and attaching `DriverCaps`
+/// before the new task is ever allowed to run — otherwise a timer tick could
+/// select and run (and potentially crash) the task first, permanently
+/// stranding state that assumed that setup would finish uninterrupted (see
+/// `SpawnKind::User::start_blocked`). The caller must call
+/// `scheduler::unblock_task` once that setup is complete.
+pub fn exec_from_vfs_blocked(file_name_8_3: &str) -> ExecResult<usize> {
+    let loaded = load_program_into_user_address_space(file_name_8_3)?;
+    spawn_loaded_program_blocked(loaded, false)
+}
+
 /// End-to-end process exec path for an already-loaded user binary.
 ///
 /// Unlike [`exec_from_vfs`], this takes the program bytes from the caller
@@ -490,12 +505,37 @@ fn map_fs_error(error: FsError) -> ExecError {
 /// `privileged` is forwarded to [`scheduler::spawn_user_task_owning_code`]; see
 /// M6 in `docs/CODE_REVIEW_2026-07-23.md` for what this capability gates.
 fn spawn_loaded_program(loaded: LoadedProgram, privileged: bool) -> ExecResult<usize> {
-    match scheduler::spawn_user_task_owning_code(
-        loaded.entry_rip,
-        loaded.user_rsp,
-        loaded.cr3,
-        privileged,
-    ) {
+    spawn_loaded_program_with(loaded, privileged, false)
+}
+
+/// Same as [`spawn_loaded_program`], but the task is created directly in
+/// `TaskState::Blocked` — see [`exec_from_vfs_blocked`].
+fn spawn_loaded_program_blocked(loaded: LoadedProgram, privileged: bool) -> ExecResult<usize> {
+    spawn_loaded_program_with(loaded, privileged, true)
+}
+
+fn spawn_loaded_program_with(
+    loaded: LoadedProgram,
+    privileged: bool,
+    start_blocked: bool,
+) -> ExecResult<usize> {
+    let spawn_result = if start_blocked {
+        scheduler::spawn_user_task_owning_code_blocked(
+            loaded.entry_rip,
+            loaded.user_rsp,
+            loaded.cr3,
+            privileged,
+        )
+    } else {
+        scheduler::spawn_user_task_owning_code(
+            loaded.entry_rip,
+            loaded.user_rsp,
+            loaded.cr3,
+            privileged,
+        )
+    };
+
+    match spawn_result {
         Ok(task_id) => Ok(task_id),
         Err(e) => {
             crate::logging::logln(

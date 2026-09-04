@@ -53,7 +53,10 @@ pub use api::{
     try_increment_exec_count,
 };
 #[allow(unused_imports)]
-pub use spawn::{spawn_kernel_task, spawn_user_task, spawn_user_task_owning_code};
+pub use spawn::{
+    spawn_kernel_task, spawn_user_task, spawn_user_task_owning_code,
+    spawn_user_task_owning_code_blocked,
+};
 #[allow(unused_imports)]
 pub(crate) use wait::unblock_task_locked;
 #[allow(unused_imports)]

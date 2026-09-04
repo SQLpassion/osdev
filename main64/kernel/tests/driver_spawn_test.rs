@@ -60,6 +60,17 @@ pub extern "C" fn KernelMain(_kernel_size: u64) -> ! {
     heap::init(false);
     sched::init();
 
+    // Mounted so `test_spawn_driver_end_to_end_creates_ready_task_with_caps_and_parent`
+    // can drive the real `SpawnDriver` syscall path (which loads its target
+    // binary through the VFS) instead of stopping at an early rejection.
+    kaos_kernel::drivers::ata::init();
+    kaos_kernel::drivers::block::init_ata();
+    let vol = kaos_kernel::io::fat32::Fat32Volume::mount(0)
+        .expect("FAT32 superfloppy must mount at LBA 0 in the test image");
+    kaos_kernel::io::vfs::mount(alloc::boxed::Box::new(
+        kaos_kernel::io::fat32::Fat32Fs::new(vol),
+    ));
+
     test_main();
 
     loop {
@@ -177,6 +188,86 @@ fn test_user_driver_grants_layout() {
         8,
         "UserDriverGrants alignment must be 8 bytes"
     );
+}
+
+/// Tests the full `SpawnDriver` success path end to end: spawning a binary
+/// the kernel does not recognize as a *driver* (`derive_grants` returns
+/// `BindError::UnknownDriver`, a deliberate "spawn as an ordinary Ring-3
+/// program" fallback, not a rejection) still runs the complete
+/// `syscall_spawn_driver_impl` sequence — parent linkage, the (empty, since
+/// there is no bound device) grant, `DriverCaps` attachment, and finally
+/// unblocking the task.
+///
+/// This is the only test in this file that reaches that far: every other
+/// `SpawnDriver` test here stops at an early rejection, because the QEMU
+/// configuration used by the test runner attaches no PCI NIC (see
+/// `fake_pci_device`'s doc comment) — so this is what actually exercises the
+/// task ending up `TaskState::Ready` (not left `Blocked` forever) and the
+/// manually-allocated `DriverCaps` block (see `syscall_spawn_driver_impl`'s
+/// step 9) landing on the right task.
+#[test_case]
+fn test_spawn_driver_end_to_end_creates_ready_task_with_caps_and_parent() {
+    let caller_id = sched::spawn_kernel_task(test_task_loop).expect("spawn caller task");
+    let caller_slot = task_id_slot(caller_id);
+
+    let caller_grants = ResourceGrants {
+        mmio_regions: vec![],
+        irqs: vec![],
+        mmio_bump: vmm::USER_MMIO_BASE,
+    };
+    let caller_caps_ptr = Box::into_raw(Box::new(DriverCaps::new(
+        Capabilities::SPAWN_DRIVER,
+        caller_grants,
+    )));
+    assert!(
+        set_task_caps(caller_id, caller_caps_ptr),
+        "caps should attach to the caller task"
+    );
+
+    // `read_user_string` (which resolves `name_ptr`) walks the currently
+    // active page tables directly, so a plain mapped-and-written page is
+    // enough here — no dedicated per-task address space is needed for a
+    // kernel-mode caller task in this test harness.
+    const NAME_VA: u64 = vmm::USER_CODE_BASE + 0x70_000;
+    let name_phys = vmm::page_table::alloc_frame_phys().expect("frame alloc for name page");
+    let name_pfn = vmm::page_table::phys_to_pfn(name_phys);
+    vmm::map_user_page(NAME_VA, name_pfn, true).expect("map name page");
+    // SAFETY: `NAME_VA` was just mapped present, writable, and user-accessible.
+    unsafe {
+        core::ptr::copy_nonoverlapping(c"HELLO.BIN".as_ptr() as *const u8, NAME_VA as *mut u8, 10);
+    }
+
+    set_running_slot_for_test(Some(caller_slot));
+    let requested_caps = (Capabilities::MMIO | Capabilities::IRQ).bits() as u64;
+    let tid = dispatch_checked(SyscallId::SPAWN_DRIVER, NAME_VA, requested_caps, 0, 0)
+        .expect("SpawnDriver on an ordinary (non-driver) binary must still succeed")
+        as usize;
+    set_running_slot_for_test(None);
+
+    assert_eq!(
+        sched::task_state(tid),
+        Some(sched::TaskState::Ready),
+        "SpawnDriver must leave the new task Ready (unblocked) once setup completes, \
+         not stuck Blocked forever"
+    );
+    assert!(
+        sched::is_parent_of(caller_id, tid),
+        "SpawnDriver must record the caller as the new task's parent"
+    );
+
+    set_running_slot_for_test(Some(task_id_slot(tid)));
+    let attached_caps =
+        sched::current_task_caps().expect("DriverCaps must be attached to the new task");
+    assert!(
+        attached_caps
+            .flags
+            .contains(Capabilities::MMIO | Capabilities::IRQ),
+        "requested driver-grantable capabilities must reach the new task's DriverCaps"
+    );
+    set_running_slot_for_test(None);
+
+    sched::terminate_task(tid);
+    sched::terminate_task(caller_id);
 }
 
 /// Tests that a spawned driver can never inherit SPAWN_DRIVER, and that unknown

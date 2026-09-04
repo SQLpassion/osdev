@@ -37,6 +37,7 @@ pub fn spawn_user_task(
         user_rsp,
         cr3,
         privileged,
+        start_blocked: false,
     })
 }
 
@@ -71,6 +72,27 @@ pub fn spawn_user_task_owning_code(
         user_rsp,
         cr3,
         privileged,
+        start_blocked: false,
+    })
+}
+
+/// Same as [`spawn_user_task_owning_code`], but the task is created directly
+/// in [`TaskState::Blocked`] instead of [`TaskState::Ready`] — see
+/// `SpawnKind::User::start_blocked` for why this exists and what the caller
+/// must do afterwards (call [`super::unblock_task`] once its post-spawn setup
+/// is complete).
+pub fn spawn_user_task_owning_code_blocked(
+    entry_rip: u64,
+    user_rsp: u64,
+    cr3: u64,
+    privileged: bool,
+) -> Result<usize, SpawnError> {
+    spawn_internal(SpawnKind::User {
+        entry_rip,
+        user_rsp,
+        cr3,
+        privileged,
+        start_blocked: true,
     })
 }
 
@@ -145,25 +167,39 @@ fn spawn_internal(kind: SpawnKind) -> Result<usize, SpawnError> {
             .try_reserve(1)
             .map_err(|_| SpawnError::StackAllocationFailed)?;
 
-        let (frame_ptr, cr3, user_rsp, kernel_rsp_top, is_user, privileged) = match kind {
-            SpawnKind::Kernel { entry } => {
-                let (frame_ptr, kernel_rsp_top) =
-                    build_initial_kernel_task_frame(stack_ptr, TASK_STACK_SIZE, entry);
-                // Kernel tasks never cross the syscall boundary (they call kernel
-                // functions directly), so the privileged flag is inert for them.
-                (frame_ptr, 0, 0, kernel_rsp_top, false, false)
-            }
-            SpawnKind::User {
-                entry_rip,
-                user_rsp,
-                cr3,
-                privileged,
-            } => {
-                let (frame_ptr, kernel_rsp_top) =
-                    build_initial_user_task_frame(stack_ptr, TASK_STACK_SIZE, entry_rip, user_rsp);
-                (frame_ptr, cr3, user_rsp, kernel_rsp_top, true, privileged)
-            }
-        };
+        let (frame_ptr, cr3, user_rsp, kernel_rsp_top, is_user, privileged, start_blocked) =
+            match kind {
+                SpawnKind::Kernel { entry } => {
+                    let (frame_ptr, kernel_rsp_top) =
+                        build_initial_kernel_task_frame(stack_ptr, TASK_STACK_SIZE, entry);
+                    // Kernel tasks never cross the syscall boundary (they call kernel
+                    // functions directly), so the privileged flag is inert for them.
+                    (frame_ptr, 0, 0, kernel_rsp_top, false, false, false)
+                }
+                SpawnKind::User {
+                    entry_rip,
+                    user_rsp,
+                    cr3,
+                    privileged,
+                    start_blocked,
+                } => {
+                    let (frame_ptr, kernel_rsp_top) = build_initial_user_task_frame(
+                        stack_ptr,
+                        TASK_STACK_SIZE,
+                        entry_rip,
+                        user_rsp,
+                    );
+                    (
+                        frame_ptr,
+                        cr3,
+                        user_rsp,
+                        kernel_rsp_top,
+                        true,
+                        privileged,
+                        start_blocked,
+                    )
+                }
+            };
 
         // Step 1: Acquire a fresh generation for this task under the scheduler
         // lock.  Fetching here (rather than before the lock) keeps the atomic
@@ -173,7 +209,11 @@ fn spawn_internal(kind: SpawnKind) -> Result<usize, SpawnError> {
 
         let entry = TaskEntry {
             used: true,
-            state: TaskState::Ready,
+            state: if start_blocked {
+                TaskState::Blocked
+            } else {
+                TaskState::Ready
+            },
             generation,
             frame_ptr,
             cr3,
