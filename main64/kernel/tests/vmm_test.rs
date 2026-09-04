@@ -17,6 +17,7 @@ use kaos_kernel::memory::vmm::page_table::{
     PDP_TABLE_BASE, PD_TABLE_BASE, PML4_TABLE_ADDR, PT_ENTRIES, PT_TABLE_BASE, RECURSIVE_SLOT,
 };
 use kaos_kernel::memory::{heap, pmm, vmm};
+use kaos_kernel::process::capabilities::MmioAllocKind;
 
 /// Entry point for the VMM integration test kernel.
 #[no_mangle]
@@ -692,7 +693,7 @@ fn test_destroy_user_address_space_skips_release_for_mmio_ranges() {
             .expect("mapping the MMIO-window VA should still succeed at the page-table level");
     });
 
-    vmm::destroy_user_address_space(user_cr3, &[(MMIO_SKIP_VA, 1)]);
+    vmm::destroy_user_address_space(user_cr3, &[(MMIO_SKIP_VA, 1, MmioAllocKind::Mmio)]);
 
     // Note: `user_cr3`'s root PML4 frame was released by the call above, so the
     // address space itself is no longer safe to re-enter here. The PMM check

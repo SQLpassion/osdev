@@ -1155,6 +1155,79 @@ fn test_reaping_driver_task_skips_release_for_open_mmio_allocation() {
     });
 }
 
+/// Contract: reaping a driver task with an open `MapPhysical` allocation must
+/// still fully tear down the *rest* of its address space (page tables and the
+/// root PML4 frame) — the exclusion-list capture feeding `mmio_skip_release`
+/// must never be the reason the whole address space is skipped and leaked.
+///
+/// Before this fix, `remove_task` built a brand-new `Vec` for that exclusion
+/// list, sized via `try_reserve`. A failure there (heap exhaustion at exactly
+/// the wrong moment) silently dropped the task's `(cr3, ..)` entry from
+/// `pending_free_address_spaces` entirely — leaking the address space's code,
+/// stack, heap, and every page-table frame forever, not just the MMIO BAR
+/// window that actually needed protecting. The fix moves
+/// (`core::mem::take`) the already-allocated `DriverCaps::allocations` list
+/// out instead of copying it into a new allocation, which cannot fail, so the
+/// address space is now unconditionally enqueued for teardown.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "reaping a driver task with an open MapPhysical allocation still releases its address space".
+/// Failure Impact: A regression here would leak an exiting driver task's entire address space (not just its MMIO window) whenever the exclusion-list capture could fail.
+#[test_case]
+fn test_reaping_driver_task_with_open_mmio_allocation_still_frees_address_space() {
+    sched::init();
+    let kernel_cr3 = vmm::get_pml4_address();
+    sched::set_kernel_address_space_cr3(kernel_cr3);
+
+    const MMIO_VA: u64 = vmm::USER_MMIO_BASE;
+
+    let user_cr3 = vmm::clone_kernel_pml4_for_user();
+    let mmio_leaf = pmm::with_pmm(|mgr| {
+        mgr.alloc_frame()
+            .expect("mmio leaf frame allocation failed")
+    });
+    vmm::with_address_space(user_cr3, || {
+        vmm::try_map_virtual_to_physical(MMIO_VA, mmio_leaf.physical_address())
+            .expect("mapping the MMIO-window VA should succeed at the page-table level");
+    });
+
+    let user_task = sched::spawn_user_task(
+        vmm::USER_CODE_BASE,
+        vmm::USER_STACK_TOP - 16,
+        user_cr3,
+        false,
+    )
+    .expect("user task spawn should succeed");
+
+    let grants = ResourceGrants {
+        mmio_regions: vec![(0xFEB0_0000, 4096)],
+        irqs: vec![],
+        mmio_bump: MMIO_VA + 4096,
+    };
+    let mut caps = DriverCaps::new(Capabilities::MMIO, grants);
+    caps.record_allocation(MMIO_VA, 1, MmioAllocKind::Mmio);
+    let caps_ptr = Box::into_raw(Box::new(caps));
+    assert!(
+        set_task_caps(user_task, caps_ptr),
+        "caps should attach to the spawned user task"
+    );
+
+    assert!(
+        sched::terminate_task(user_task),
+        "driver task with an open MapPhysical allocation must still be terminatable"
+    );
+
+    let pml4_pfn = user_cr3 / kaos_kernel::arch::constants::PAGE_SIZE_U64;
+    let released_again = pmm::with_pmm(|mgr| mgr.release_pfn(pml4_pfn));
+    assert!(
+        !released_again,
+        "terminating a driver task with an open MapPhysical allocation must still \
+         release its root PML4 frame during teardown instead of leaking the whole \
+         address space (a second release here would be a double-free if it were \
+         still live, so `false` proves teardown already freed it)"
+    );
+}
+
 /// Contract: scheduler recovers when current frame slot mismatches expected slot.
 /// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
 /// When: The exact operation sequence in this function is executed against that state.

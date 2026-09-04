@@ -7,7 +7,10 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use super::context::free_task_stack;
-use super::types::{pack_task_id, SchedulerArchCallbacks, SchedulerMetadata, TaskEntry, TaskState};
+use super::types::{
+    pack_task_id, PendingAddressSpaceEntry, SchedulerArchCallbacks, SchedulerMetadata, TaskEntry,
+    TaskState,
+};
 use super::{active_cr3_value, kernel_cr3_value, set_active_cr3};
 use crate::arch::fpu;
 use crate::arch::interrupts::{InterruptStackFrame, SavedRegisters};
@@ -157,41 +160,31 @@ pub(crate) fn remove_task(
 
     meta.slots[task_id].fpu_state = ptr::null_mut();
 
-    // Capture any still-open `MapPhysical` (MMIO BAR) allocation ranges before
-    // the capability block below is freed. The deferred address-space teardown
-    // (see `pending_free_address_spaces`) runs after `DriverCaps` is gone, so
-    // this is the only point where it is still possible to tell a device BAR
-    // window apart from PMM-owned RAM in that task's MMIO VA window.
-    let mut mmio_skip_release: alloc::vec::Vec<(u64, usize)> = alloc::vec::Vec::new();
-    // Set when `mmio_count > 0` but the reservation below fails (OOM): an
-    // empty-but-nonempty-expected `mmio_skip_release` would make
-    // `reclaim_user_range`'s `release_pfn = !mmio_skip_release.iter().any(...)`
-    // evaluate `true` for every page, including this task's still-device-owned
-    // MMIO BAR pages — corrupting PMM bookkeeping for that physical range. Gates
-    // the deferred address-space cleanup below instead of risking that.
-    let mut mmio_skip_release_incomplete = false;
-    if !meta.slots[task_id].caps.is_null() {
+    // Take ownership of any still-open `DriverCaps` allocation records
+    // (`AllocDma`/`MapPhysical` ranges) before the capability block below is
+    // freed. The deferred address-space teardown (see
+    // `pending_free_address_spaces`) runs after `DriverCaps` is gone, so this
+    // is the only point where it is still possible to tell a device BAR
+    // window (`MmioAllocKind::Mmio`, which must never be handed back to the
+    // PMM) apart from PMM-owned RAM in that task's MMIO VA window.
+    //
+    // This moves the allocator's existing `Vec` out via `mem::take` instead
+    // of allocating a fresh, filtered copy: a previous version built a new
+    // `Vec` sized by `try_reserve`, whose failure under OOM left the entire
+    // address space — code, stack, heap, and page tables, not just the MMIO
+    // window — leaked forever rather than risk corrupting PMM bookkeeping.
+    // Moving the list cannot fail, so that fallback is no longer reachable.
+    let mmio_skip_release = if meta.slots[task_id].caps.is_null() {
+        alloc::vec::Vec::new()
+    } else {
         // SAFETY:
-        // - `caps` is still a live allocation at this point (freed just below).
-        // - Only read here; ownership/deallocation happens in the next block.
-        let allocations = &unsafe { &*meta.slots[task_id].caps }.allocations;
-        let mmio_count = allocations
-            .iter()
-            .filter(|&&(_, _, kind)| kind == crate::process::capabilities::MmioAllocKind::Mmio)
-            .count();
-        if mmio_skip_release.try_reserve(mmio_count).is_ok() {
-            mmio_skip_release.extend(
-                allocations
-                    .iter()
-                    .filter(|&&(_, _, kind)| {
-                        kind == crate::process::capabilities::MmioAllocKind::Mmio
-                    })
-                    .map(|&(va, pages, _)| (va, pages)),
-            );
-        } else if mmio_count > 0 {
-            mmio_skip_release_incomplete = true;
-        }
-    }
+        // - `caps` is still a live, uniquely-owned allocation at this point
+        //   (freed just below).
+        // - `mem::take` leaves an empty (non-allocating) `Vec` behind in its
+        //   place, so the subsequent `Box::from_raw` drop below still sees a
+        //   valid, well-formed `DriverCaps`.
+        core::mem::take(&mut unsafe { &mut *meta.slots[task_id].caps }.allocations)
+    };
 
     // Free the driver capability block if this was a driver task.
     if !meta.slots[task_id].caps.is_null() {
@@ -284,14 +277,12 @@ pub(crate) fn remove_task(
     // Releasing the address space is a slow operation that must happen outside
     // the scheduler lock.
     //
-    // `mmio_skip_release_incomplete` means the MMIO-exclusion list above is
-    // missing entries under OOM: pushing it as-is would let the deferred
-    // reclaim release this task's still-device-owned MMIO BAR frames back to
-    // the PMM as if they were ordinary RAM. Leaking the whole address space
-    // is the safe fallback, consistent with the CR3-in-use case above.
+    // A failure to reserve room for this one `(cr3, allocations)` entry is the
+    // only remaining OOM path here (the allocation-list capture above can no
+    // longer fail — see `mmio_skip_release`), and leaking just this address
+    // space is the safe fallback, consistent with the CR3-in-use case above.
     if let Some(cr3) = cleanup {
-        if !mmio_skip_release_incomplete && meta.pending_free_address_spaces.try_reserve(1).is_ok()
-        {
+        if meta.pending_free_address_spaces.try_reserve(1).is_ok() {
             meta.pending_free_address_spaces
                 .push((cr3, mmio_skip_release));
         }
@@ -611,12 +602,12 @@ pub(crate) fn free_pending_stacks(stacks: &[(*mut u8, usize)]) {
 /// Drains `pending_free_address_spaces` for deallocation.
 pub(crate) fn take_pending_address_spaces_for_free(
     meta: &mut SchedulerMetadata,
-) -> Vec<(u64, Vec<(u64, usize)>)> {
+) -> Vec<PendingAddressSpaceEntry> {
     core::mem::take(&mut meta.pending_free_address_spaces)
 }
 
 /// Frees pending address spaces outside the scheduler lock.
-pub(crate) fn free_pending_address_spaces(address_spaces: &[(u64, Vec<(u64, usize)>)]) {
+pub(crate) fn free_pending_address_spaces(address_spaces: &[PendingAddressSpaceEntry]) {
     for (cr3, mmio_skip_release) in address_spaces {
         vmm::destroy_user_address_space(*cr3, mmio_skip_release);
     }

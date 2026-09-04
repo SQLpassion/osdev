@@ -1,6 +1,7 @@
 use crate::arch::constants::PAGE_SIZE_U64;
 use crate::arch::interrupts;
 use crate::memory::pmm;
+use crate::process::capabilities::MmioAllocKind;
 
 use super::page_table::{
     alloc_frame_phys, alloc_frame_phys_or_panic, entry_ptr, invlpg, page_align_down, pd_index,
@@ -664,7 +665,10 @@ pub fn clone_kernel_pml4_for_user() -> u64 {
 ///   releases them,
 /// - prunes and releases now-empty PT/PD/PDP pages,
 /// - releases the root PML4 frame itself.
-pub fn destroy_user_address_space(pml4_phys: u64, mmio_skip_release: &[(u64, usize)]) {
+pub fn destroy_user_address_space(
+    pml4_phys: u64,
+    mmio_skip_release: &[(u64, usize, MmioAllocKind)],
+) {
     // Note: single-core, IF-disabled
     destroy_user_address_space_with_page_counts(
         pml4_phys,
@@ -702,14 +706,18 @@ pub fn destroy_user_address_space(pml4_phys: u64, mmio_skip_release: &[(u64, usi
 /// downward from [`USER_STACK_TOP`], matching how user stacks are allocated.
 /// Count values are clamped to configured region capacities.
 ///
-/// `mmio_skip_release` lists `(page_va_start, num_pages)` ranges — captured from
-/// the exiting task's `DriverCaps::allocations` before that block was freed —
-/// that map a device MMIO BAR window (`MmioAllocKind::Mmio`) rather than
-/// PMM-owned RAM. The catch-all scan in step 3 still unmaps every page in
+/// `mmio_skip_release` lists `(page_va_start, num_pages, kind)` entries —
+/// moved wholesale from the exiting task's `DriverCaps::allocations` before
+/// that block was freed — describing every `AllocDma`/`MapPhysical` range the
+/// task still held open at exit. Only entries whose `kind` is
+/// `MmioAllocKind::Mmio` (a device MMIO BAR window, never PMM-owned RAM) are
+/// treated specially: the catch-all scan in step 3 still unmaps every page in
 /// these ranges (so nothing stays mapped after teardown), but skips
 /// `release_pfn` for them, since that physical address was never owned by the
-/// PMM and must not be added to its free list. Pass `&[]` for a task that
-/// never held an MMIO grant.
+/// PMM and must not be added to its free list. A `Dma`-kind entry (an
+/// `AllocDma` buffer the task never freed) is real PMM-owned RAM and is
+/// released normally, exactly like any other page in the scan. Pass `&[]` for
+/// a task that never held an MMIO or DMA grant.
 ///
 /// ## What this function does NOT do
 /// - It does not touch any kernel-half mappings (PML4 entries 256 and above), nor
@@ -726,7 +734,7 @@ pub fn destroy_user_address_space_with_page_counts(
     pml4_phys: u64,
     code_page_count: usize,
     stack_page_count_from_top: usize,
-    mmio_skip_release: &[(u64, usize)],
+    mmio_skip_release: &[(u64, usize, MmioAllocKind)],
 ) {
     // Note: single-core, IF-disabled
     // Always operate on a canonical page-aligned root frame.
@@ -829,10 +837,14 @@ pub fn unmap_user_heap_region() {
 /// address-space-shared infrastructure (PML4 slot 0's identity map, or the
 /// higher-half kernel slots) — see [`USER_ADDRESS_SPACE_SCAN_END`].
 ///
-/// `mmio_skip_release` lists `(page_va_start, num_pages)` ranges that must be
-/// unmapped but never passed to `release_pfn` — see the parameter doc on
-/// [`destroy_user_address_space_with_page_counts`].
-fn reclaim_user_range(scan_start: u64, scan_end: u64, mmio_skip_release: &[(u64, usize)]) {
+/// `mmio_skip_release` lists `(page_va_start, num_pages, kind)` entries whose
+/// `Mmio`-kind ranges must be unmapped but never passed to `release_pfn` —
+/// see the parameter doc on [`destroy_user_address_space_with_page_counts`].
+fn reclaim_user_range(
+    scan_start: u64,
+    scan_end: u64,
+    mmio_skip_release: &[(u64, usize, MmioAllocKind)],
+) {
     let mut va = scan_start;
     while va < scan_end {
         match walk_levels(va) {
@@ -852,9 +864,9 @@ fn reclaim_user_range(scan_start: u64, scan_end: u64, mmio_skip_release: &[(u64,
                 // Page table level exists; reuse the already-resolved path to
                 // clear and prune this one page, then advance by page size.
                 let path = ResolvedPath::for_virtual_address(va);
-                let release_pfn = !mmio_skip_release.iter().any(|&(base, pages)| {
+                let release_pfn = !mmio_skip_release.iter().any(|&(base, pages, kind)| {
                     let end = base + (pages as u64) * PAGE_SIZE_U64;
-                    va >= base && va < end
+                    kind == MmioAllocKind::Mmio && va >= base && va < end
                 });
                 clear_leaf_and_prune(va, path, release_pfn);
                 va += PAGE_SIZE_U64;
