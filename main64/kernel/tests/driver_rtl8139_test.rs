@@ -165,7 +165,6 @@ mod event;
 #[path = "../../lib_net/src/stack.rs"]
 mod stack;
 
-use config::NetworkConfig;
 use event::NetworkEvent;
 use proto::arp::{opcode as arp_opcode, ArpPacket, ArpTable, Ipv4Address};
 use proto::ethernet::{ethertype, EthernetFrame, MacAddress};
