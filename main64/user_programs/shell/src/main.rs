@@ -227,20 +227,18 @@ fn cat_file(name: &str) {
     }
 }
 
-/// Spawns the RTL8139 network driver with authorized MMIO and IRQ capabilities.
-fn run_rtl8139_driver() {
-    use lib_driver::spawn::spawn_driver;
-    use lib_driver::UserDriverGrants;
+/// Reports whether a PCI device with one of the given `(vendor_id, device_id)` pairs
+/// is present on the bus.
+///
+/// This is a presence check for a friendly error message only. The BAR and IRQ that
+/// the driver is actually allowed to touch are derived by the kernel from the same PCI
+/// data (`kernel/src/drivers/driver_db.rs`) — the shell deliberately does not compute
+/// resource grants, because a grant chosen by an unprivileged caller would be worthless
+/// as a security boundary.
+fn pci_device_present(supported: &[(u16, u16)]) -> bool {
     use lib_kaos::pci;
 
-    println!("Scanning PCI for Realtek RTL8139 network card...");
     let dev_count = pci::get_pci_device_count().unwrap_or(0);
-    let mut grants = UserDriverGrants {
-        mmio_base: 0,
-        mmio_len: 0,
-        irq: 0xFF,
-        _padding: [0; 7],
-    };
 
     for i in 0..dev_count {
         let mut dev = pci::UserPciDevice {
@@ -268,42 +266,31 @@ fn run_rtl8139_driver() {
         };
 
         if pci::get_pci_device(i, &mut dev).is_ok()
-            && dev.vendor_id == 0x10EC
-            && dev.device_id == 0x8139
+            && supported
+                .iter()
+                .any(|&(vendor, device_id)| dev.vendor_id == vendor && dev.device_id == device_id)
         {
-            let mut mmio_bar = None;
-            for bar in &dev.bars {
-                if (bar.bar_type == 2 || bar.bar_type == 3) && bar.address != 0 {
-                    mmio_bar = Some(*bar);
-                    break;
-                }
-            }
-            let bar = match mmio_bar {
-                Some(b) => b,
-                None => {
-                    if dev.bars[1].address != 0 {
-                        dev.bars[1]
-                    } else {
-                        dev.bars[0]
-                    }
-                }
-            };
-            grants.mmio_base = bar.address;
-            grants.mmio_len = if bar.size != 0 { bar.size } else { 256 };
-            grants.irq = dev.interrupt_line;
-            break;
+            return true;
         }
     }
 
+    false
+}
+
+/// Spawns the RTL8139 network driver with authorized MMIO and IRQ capabilities.
+fn run_rtl8139_driver() {
+    use lib_driver::spawn::spawn_driver;
+
+    println!("Scanning PCI for Realtek RTL8139 network card...");
+    if !pci_device_present(&[(0x10EC, 0x8139)]) {
+        println!("[shell] Error: No Realtek RTL8139 network card (10EC:8139) found on PCI bus.");
+        return;
+    }
+
     let caps = 1 | 2; // MMIO (1) | IRQ (2)
-    let grants_opt = if grants.mmio_len > 0 {
-        Some(&grants)
-    } else {
-        None
-    };
 
     println!("Spawning RTL8139 driver with MMIO + IRQ capabilities...");
-    match spawn_driver("rtl8139.bin", caps, grants_opt) {
+    match spawn_driver("rtl8139.bin", caps, None) {
         Ok(pid) => {
             if let Err(err) = process::wait(pid as usize) {
                 println!("Error waiting for RTL8139 driver: error {:#x}", err);
@@ -318,82 +305,22 @@ fn run_rtl8139_driver() {
 /// Spawns the Intel Gigabit Ethernet driver (82577LM/I219-V) with authorized MMIO and IRQ capabilities.
 fn run_intel_nic_driver() {
     use lib_driver::spawn::spawn_driver;
-    use lib_driver::UserDriverGrants;
-    use lib_kaos::pci;
 
     println!("Scanning PCI for Intel Gigabit Ethernet card...");
-    let dev_count = pci::get_pci_device_count().unwrap_or(0);
-    let mut grants = UserDriverGrants {
-        mmio_base: 0,
-        mmio_len: 0,
-        irq: 0xFF,
-        _padding: [0; 7],
-    };
-
-    for i in 0..dev_count {
-        let mut dev = pci::UserPciDevice {
-            bus: 0,
-            device: 0,
-            function: 0,
-            class_code: 0,
-            subclass: 0,
-            prog_if: 0,
-            revision_id: 0,
-            header_type: 0,
-            vendor_id: 0,
-            device_id: 0,
-            interrupt_line: 0,
-            interrupt_pin: 0,
-            _padding: [0; 2],
-            bars: [pci::UserPciBar {
-                bar_type: 0,
-                flags: 0,
-                address: 0,
-                size: 0,
-                raw_value: 0,
-                _padding: 0,
-            }; 6],
-        };
-
-        if pci::get_pci_device(i, &mut dev).is_ok()
-            && dev.vendor_id == 0x8086
-            && (dev.device_id == 0x10EA
-                || dev.device_id == 0x15B8
-                || dev.device_id == 0x10D3
-                || dev.device_id == 0x100E)
-        {
-            let mut mmio_bar = None;
-            for bar in &dev.bars {
-                if (bar.bar_type == 2 || bar.bar_type == 3) && bar.address != 0 {
-                    mmio_bar = Some(*bar);
-                    break;
-                }
-            }
-            let bar = match mmio_bar {
-                Some(b) => b,
-                None => dev.bars[0],
-            };
-            grants.mmio_base = bar.address;
-            grants.mmio_len = if bar.size != 0 { bar.size } else { 128 * 1024 };
-            grants.irq = dev.interrupt_line;
-            break;
-        }
-    }
-
-    if grants.mmio_len == 0 {
+    if !pci_device_present(&[
+        (0x8086, 0x10EA),
+        (0x8086, 0x15B8),
+        (0x8086, 0x10D3),
+        (0x8086, 0x100E),
+    ]) {
         println!("[shell] Error: No supported Intel network card (8086:10EA, 8086:15B8, 8086:10D3, 8086:100E) found on PCI bus.");
         return;
     }
 
     let caps = 1 | 2; // MMIO (1) | IRQ (2)
-    let grants_opt = if grants.mmio_len > 0 {
-        Some(&grants)
-    } else {
-        None
-    };
 
     println!("Spawning Intel NIC driver with MMIO + IRQ capabilities...");
-    match spawn_driver("intlnic.bin", caps, grants_opt) {
+    match spawn_driver("intlnic.bin", caps, None) {
         Ok(pid) => {
             if let Err(err) = process::wait(pid as usize) {
                 println!("Error waiting for Intel NIC driver: error {:#x}", err);

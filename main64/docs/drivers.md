@@ -120,30 +120,23 @@ After an interrupt has been serviced, software must issue an End Of Interrupt, o
 
 The driver is not launched like an ordinary program. The shell acts as a small driver manager. Its `run_rtl8139_driver()` function in [`user_programs/shell/src/main.rs`](../user_programs/shell/src/main.rs) queries the PCI device list and searches for `0x10EC:0x8139`.
 
-After finding the device, the shell selects a memory BAR and creates the ABI structure `UserDriverGrants`:
+The shell uses that scan **only** to decide whether the card is present, so it can print a helpful message if it is not:
 
 ```rust
-let mut grants = UserDriverGrants {
-    mmio_base: 0,
-    mmio_len: 0,
-    irq: 0xFF,
-    _padding: [0; 7],
-};
-
-// After successful PCI discovery:
-grants.mmio_base = bar.address;
-grants.mmio_len = if bar.size != 0 { bar.size } else { 256 };
-grants.irq = dev.interrupt_line;
+if !pci_device_present(&[(0x10EC, 0x8139)]) {
+    println!("[shell] Error: No Realtek RTL8139 network card (10EC:8139) found on PCI bus.");
+    return;
+}
 ```
 
-The value `0xFF` means that no IRQ has been assigned. Explicit padding guarantees that both sides of the syscall boundary see a structure that is exactly 24 bytes long and aligned to eight bytes. Without a stable ABI layout, the compiler could arrange fields differently, causing the kernel and user process to interpret the same bytes in incompatible ways.
+The shell deliberately does **not** compute the resource grants. It runs in Ring 3 as an ordinary unprivileged process, so any address range it named would be an address range chosen by untrusted code — and `MapPhysical` would then map it. A grant a caller can pick for itself is not a security boundary at all: a caller could name a kernel physical frame instead of a device BAR and read or write it from Ring 3. The kernel therefore derives every grant itself, from its own PCI enumeration, in [`kernel/src/drivers/driver_db.rs`](../kernel/src/drivers/driver_db.rs). The binary name selects which device the driver may bind to; it never selects an address.
 
-The shell then starts the driver with the `MMIO | IRQ` capability bits:
+The shell then starts the driver with the `MMIO | IRQ` capability bits and no grant request at all:
 
 ```rust
 let caps = 1 | 2; // MMIO (1) | IRQ (2)
 
-match spawn_driver("rtl8139.bin", caps, Some(&grants)) {
+match spawn_driver("rtl8139.bin", caps, None) {
     Ok(pid) => {
         let _ = process::wait(pid as usize);
     }
@@ -152,6 +145,8 @@ match spawn_driver("rtl8139.bin", caps, Some(&grants)) {
     }
 }
 ```
+
+The `UserDriverGrants` structure still exists in the ABI, but its meaning is now a *request* rather than a grant. A caller that passes one is asking the kernel to confirm that a particular BAR base and IRQ belong to the device the driver was bound to; a mismatch is rejected with `PermissionDenied` instead of being silently accepted. The value `0xFF` in `irq` and `0` in `mmio_base` mean "no preference". Explicit padding guarantees that both sides of the syscall boundary see a structure that is exactly 24 bytes long and aligned to eight bytes. Without a stable ABI layout, the compiler could arrange fields differently, causing the kernel and user process to interpret the same bytes in incompatible ways.
 
 The shell waits in the foreground until the driver exits. Commands such as `rtl8139`, `rtl8139.bin`, `driver rtl8139`, and `exec rtl8139` intentionally lead to this path. A normal `exec` would create a process without `DriverCaps`, so its first attempt to map the BAR would fail with `PermissionDenied`.
 
@@ -282,7 +277,11 @@ SyscallId::MAP_PHYSICAL =>
 
 The match only selects a handler. The actual validation and security decisions happen inside [`kernel/src/syscall/dispatch/driver.rs`](../kernel/src/syscall/dispatch/driver.rs).
 
-`SpawnDriver` first verifies that the caller either holds `SPAWN_DRIVER` or is a privileged kernel task or task 1. It validates and copies the file name from user memory, validates and copies `UserDriverGrants`, loads the ELF image through the VFS, establishes the parent relationship, and finally attaches a newly allocated `DriverCaps` block to the new task. Unknown capability bits are discarded by `Capabilities::from_bits_truncate()`.
+`SpawnDriver` first verifies that the caller either holds `SPAWN_DRIVER` or is a privileged kernel task or task 1. It then validates and copies the file name from user memory and reads the optional `UserDriverGrants` request.
+
+Next comes the step that makes the grant trustworthy: `driver_db::derive_grants()` resolves the binary name against the kernel's driver database, finds the matching device in the kernel's own PCI enumeration, and builds the `ResourceGrants` from that device's memory BARs and interrupt line. Nothing in the grant originates from user space. A binary that is not registered as a driver receives no grants at all, and a grant *request* for such a binary is refused outright — there is no device to validate it against. If the caller did supply a request, it is compared against the derived grant and rejected with `PermissionDenied` if it names a region or vector outside the bound device.
+
+Only then does the syscall load the ELF image through the VFS, establish the parent relationship, and attach a newly allocated `DriverCaps` block to the new task. The requested capability bits are narrowed twice: unknown bits are discarded by `Capabilities::from_bits_truncate()`, and the result is masked to `driver_db::DRIVER_GRANTABLE_CAPS`. That mask omits `SPAWN_DRIVER`, so a driver can never inherit the authority to spawn further drivers with capabilities of its own choosing.
 
 ---
 
@@ -489,7 +488,7 @@ This ordering avoids releasing the PIC line while the device still reports an ac
 
 ## 9. Initializing the RTL8139 Controller
 
-After startup, the driver scans the PCI list again. The shell needed its scan to construct safe grants; the driver needs its own scan to obtain the BAR and IRQ for actual operation. It locates vendor ID `0x10EC` and device ID `0x8139`, chooses a memory BAR, and calls `Mmio::map()`.
+After startup, the driver scans the PCI list again. The shell needed its scan only to check that the card is present; the driver needs its own scan to obtain the BAR and IRQ for actual operation. It locates vendor ID `0x10EC` and device ID `0x8139`, chooses a memory BAR, and calls `Mmio::map()`. That the driver reads these values itself is harmless: the kernel checks the mapping request against the grant it derived independently, so a driver that computed a wrong or malicious address gets `PermissionDenied` rather than the mapping.
 
 `Rtl8139Device::init()` first disables power saving and requests a software reset:
 
@@ -787,7 +786,7 @@ The new test programs validate the layers independently. [`capabilities_test.rs`
 
 [`driver_irq_test.rs`](../kernel/tests/driver_irq_test.rs) ensures that only the owner can subscribe to and acknowledge an IRQ line. A second task cannot claim the same line. The test invokes the trampoline directly, verifies the pending-event path, and acknowledges the event.
 
-[`driver_spawn_test.rs`](../kernel/tests/driver_spawn_test.rs) checks missing `SPAWN_DRIVER` authority, invalid user pointers, and the exact 24-byte ABI layout of `UserDriverGrants`.
+[`driver_spawn_test.rs`](../kernel/tests/driver_spawn_test.rs) checks missing `SPAWN_DRIVER` authority, invalid user pointers, and the exact 24-byte ABI layout of `UserDriverGrants`. It also covers the grant-derivation contract: that `SPAWN_DRIVER` is masked out of a spawned driver's capabilities, that the driver database resolves registered binaries case-insensitively and rejects unregistered ones, and that a grant request naming physical memory outside the bound device's BAR is refused.
 
 [`driver_rtl8139_test.rs`](../kernel/tests/driver_rtl8139_test.rs) combines MMIO, IRQ, and DMA in a simulated RTL8139 task. It also imports the real network modules through `#[path]`, so the same parsers and serializers run in ordinary host unit tests and inside the QEMU kernel test environment.
 
@@ -825,7 +824,7 @@ Finally, QEMU networking depends on host configuration. `en0` is not the active 
 
 During boot, the kernel scans the PCI bus. It reads vendor IDs, device IDs, BARs, and IRQ lines and enables Memory Space and Bus Mastering. QEMU provides an emulated RTL8139 device.
 
-When the user types `rtl8139` in the shell, the shell finds that device in the cached PCI list. It extracts only the device's MMIO BAR and IRQ line and passes those values, together with the capability bits, to `SpawnDriver`. The kernel validates the user pointers, loads `rtl8139.bin` as an ELF image into a separate address space, and attaches the grants to the new scheduler task.
+When the user types `rtl8139` in the shell, the shell finds that device in the cached PCI list and passes the binary name together with the capability bits to `SpawnDriver`. The kernel validates the user pointers, looks the name up in its driver database, derives the MMIO and IRQ grants from its own view of that device's PCI configuration, loads `rtl8139.bin` as an ELF image into a separate address space, and attaches those grants to the new scheduler task.
 
 The new process discovers the device again. It asks the kernel to map the granted BAR into its MMIO window. The kernel compares the complete physical range with the grant, creates user page-table entries with the required caching and execution attributes, and returns a virtual address. The process can now use volatile loads and stores to access its device registers directly, but it cannot map unrelated physical regions.
 

@@ -419,6 +419,21 @@ const DRIVER_DB: &[(u16, u16, &str)] = &[
 > This directly addresses the existing but so far unused gap: the PCI layer finds
 > devices, but nobody binds drivers to them. The driver manager closes that gap.
 
+> **Implementation note:** steps 1–3 above live **in the kernel**, not in the
+> Ring-3 caller — see `kernel/src/drivers/driver_db.rs`. The reason is that
+> "grants are derived from the device's PCI data" is only a security property if
+> the *kernel* does the deriving. A Ring-3 driver manager that computed
+> `mmio_regions` itself would be an unprivileged process choosing which physical
+> memory a driver may map, which `MapPhysical` would then honour — so any caller
+> holding `SPAWN_DRIVER` could name a kernel frame instead of a device BAR and
+> defeat address-space isolation (§3.5's IOMMU gap is about a *malicious device*;
+> this would have been a gap for merely a *malicious caller*). `SpawnDriver`
+> therefore takes only the driver's name and derives the grants itself; the
+> matching table lives in the kernel. A `UserDriverGrants` argument, if supplied,
+> is treated as a request to be validated against the derived grant, never
+> adopted. The caller's capability bits are likewise masked to
+> `DRIVER_GRANTABLE_CAPS`, so `SPAWN_DRIVER` cannot propagate into a driver.
+
 ---
 
 ## 7. User-side library: `lib_driver`

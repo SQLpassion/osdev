@@ -197,15 +197,26 @@ pub fn syscall_irq_ack_impl(vector: u64) -> SyscallResult<u64> {
 
 /// Spawns a user-space driver process with dedicated capabilities and resource grants.
 ///
+/// Resource grants are derived by the **kernel** from its own PCI enumeration
+/// (`drivers::driver_db`), never adopted from the caller. A caller-supplied physical
+/// range would let any task holding `SPAWN_DRIVER` map arbitrary physical memory —
+/// including kernel frames — into a Ring-3 address space through `MapPhysical`, and
+/// thereby defeat the address-space isolation the capability system exists to provide
+/// (`docs/todo_drivers.md` §3, §6). The binary name selects which device the driver may
+/// bind to; `grants_ptr` is only a *request*, cross-checked against the derived grant.
+///
 /// Arguments:
 /// - `name_ptr`: Pointer to null-terminated driver binary filename in user memory.
-/// - `caps_flags`: Bitflags representing coarse capabilities (`Capabilities`).
-/// - `grants_ptr`: Pointer to `UserDriverGrants` struct in user memory (or null for empty grants).
+/// - `caps_flags`: Bitflags representing coarse capabilities (`Capabilities`), masked to
+///   `driver_db::DRIVER_GRANTABLE_CAPS` so that `SPAWN_DRIVER` is never propagated.
+/// - `grants_ptr`: Pointer to a `UserDriverGrants` *request* in user memory, or null to
+///   accept the kernel-derived grant unconditionally.
 pub fn syscall_spawn_driver_impl(
     name_ptr: *const u8,
     caps_flags: u64,
     grants_ptr: *const crate::syscall::types::UserDriverGrants,
 ) -> SyscallResult<u64> {
+    use crate::drivers::driver_db::{self, BindError};
     use crate::process::capabilities::{Capabilities, DriverCaps, ResourceGrants};
     use crate::process::ExecError;
     use crate::syscall::types::{is_valid_user_buffer_readable, UserDriverGrants};
@@ -231,8 +242,10 @@ pub fn syscall_spawn_driver_impl(
     // Step 2: Read binary filename from user space.
     let name = super::fs::read_user_string(name_ptr, 128)?;
 
-    // Step 3: Parse UserDriverGrants if supplied.
-    let grants = if !grants_ptr.is_null() {
+    // Step 3: Read the caller's grant *request*, if one was supplied. The values are
+    // never adopted — they are only cross-checked in step 5 so that a caller asking for
+    // a region outside its device is rejected loudly instead of silently downgraded.
+    let requested = if !grants_ptr.is_null() {
         if !is_valid_user_buffer_readable(
             grants_ptr as *const u8,
             core::mem::size_of::<UserDriverGrants>(),
@@ -242,32 +255,70 @@ pub fn syscall_spawn_driver_impl(
         // SAFETY:
         // - `is_valid_user_buffer_readable` verified the buffer is canonical and mapped.
         // - `read_unaligned` is safe for any alignment.
-        let raw_grants = unsafe { core::ptr::read_unaligned(grants_ptr) };
-
-        let mut mmio_regions = Vec::new();
-        if raw_grants.mmio_len > 0 {
-            mmio_regions.push((raw_grants.mmio_base, raw_grants.mmio_len));
-        }
-
-        let mut irqs = Vec::new();
-        if raw_grants.irq != 0xFF {
-            irqs.push(raw_grants.irq);
-        }
-
-        ResourceGrants {
-            mmio_regions,
-            irqs,
-            mmio_bump: USER_MMIO_BASE,
-        }
+        Some(unsafe { core::ptr::read_unaligned(grants_ptr) })
     } else {
-        ResourceGrants {
-            mmio_regions: Vec::new(),
-            irqs: Vec::new(),
-            mmio_bump: USER_MMIO_BASE,
+        None
+    };
+
+    // Step 4: Derive the authoritative grants from the kernel's own PCI enumeration.
+    // An unregistered binary receives no grants at all; it can still be spawned (it is
+    // then just an ordinary Ring-3 program), but it may not carry an MMIO/IRQ request.
+    let grants = match driver_db::derive_grants(&name) {
+        Ok((grants, device)) => {
+            crate::logging::logln(
+                "driver",
+                format_args!(
+                    "SpawnDriver: bound '{}' to PCI device {:04x}:{:04x}, IRQ {}",
+                    name, device.vendor_id, device.device_id, device.interrupt_line
+                ),
+            );
+            grants
+        }
+        Err(BindError::UnknownDriver) => {
+            // Reject a grant request for a binary the kernel does not know as a driver:
+            // there is no PCI device to validate it against.
+            if requested.is_some_and(|req| req.mmio_len > 0 || req.irq != 0xFF) {
+                crate::logging::logln(
+                    "driver",
+                    format_args!(
+                        "SpawnDriver: refused grant request for unregistered driver '{}'",
+                        name
+                    ),
+                );
+                return Err(SyscallError::PermissionDenied);
+            }
+
+            ResourceGrants {
+                mmio_regions: Vec::new(),
+                irqs: Vec::new(),
+                mmio_bump: USER_MMIO_BASE,
+            }
+        }
+        Err(reason) => {
+            crate::logging::logln(
+                "driver",
+                format_args!("SpawnDriver: cannot bind driver '{}': {:?}", name, reason),
+            );
+            return Err(SyscallError::InvalidArg);
         }
     };
 
-    // Step 4: Spawn the task by loading ELF executable from VFS.
+    // Step 5: Reject a request that contradicts the derived grant. The caller may ask
+    // for less (base 0 / IRQ 0xFF mean "no preference"), but never for something else.
+    if let Some(req) = requested {
+        if !driver_db::request_matches_grants(&grants, req.mmio_base, req.irq) {
+            crate::logging::logln(
+                "driver",
+                format_args!(
+                    "SpawnDriver: '{}' requested MMIO {:#x} / IRQ {} outside its device grant",
+                    name, req.mmio_base, req.irq
+                ),
+            );
+            return Err(SyscallError::PermissionDenied);
+        }
+    }
+
+    // Step 6: Spawn the task by loading ELF executable from VFS.
     let result = crate::process::exec_from_vfs(&name);
     let tid = match result {
         Ok(tid) => tid,
@@ -283,21 +334,27 @@ pub fn syscall_spawn_driver_impl(
         Err(ExecError::SpawnFailed) | Err(ExecError::Io) => return Err(SyscallError::Io),
     };
 
-    // Step 5: Assign parent task linkage.
+    // Step 7: Assign parent task linkage.
     if let Some(caller_id) = scheduler::current_task_id() {
         scheduler::set_task_parent(tid, caller_id);
     }
 
-    // Step 6: Construct and attach DriverCaps to newly created task.
-    let caps = DriverCaps::new(Capabilities::from_bits_truncate(caps_flags as u32), grants);
+    // Step 8: Construct and attach DriverCaps to newly created task. The requested
+    // flags are masked to the driver-grantable set, so a driver can never inherit
+    // SPAWN_DRIVER and mint further drivers with capabilities of its own choosing.
+    let granted_caps = driver_db::sanitize_driver_caps(caps_flags);
+    let caps = DriverCaps::new(granted_caps, grants);
     let caps_ptr = Box::into_raw(Box::new(caps));
     scheduler::set_task_caps(tid, caps_ptr);
 
     crate::logging::logln(
         "driver",
         format_args!(
-            "SpawnDriver: created driver '{}' as task {} with caps {:#x}",
-            name, tid, caps_flags
+            "SpawnDriver: created driver '{}' as task {} with caps {:#x} (requested {:#x})",
+            name,
+            tid,
+            granted_caps.bits(),
+            caps_flags
         ),
     );
 

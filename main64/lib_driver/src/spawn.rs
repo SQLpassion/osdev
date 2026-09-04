@@ -3,12 +3,22 @@
 use crate::kernel_types::{decode_result, SysError, SyscallId, UserDriverGrants};
 use crate::raw::syscall3;
 
-/// Spawns a driver binary with specified capabilities and optional resource grants.
+/// Spawns a driver binary with specified capabilities.
+///
+/// The MMIO regions and IRQ vectors the spawned driver may touch are derived by the
+/// **kernel** from its own PCI enumeration, keyed on `name`
+/// (`kernel/src/drivers/driver_db.rs`). Grants are therefore not something the caller
+/// hands out: `grants` is only an optional *request* that the kernel cross-checks
+/// against the device it bound the driver to, rejecting anything outside it with
+/// `PermissionDenied`. Pass `None` to accept the kernel-derived grant as-is.
+///
+/// Likewise, `caps` is masked to the driver-grantable flags, so `SPAWN_DRIVER` cannot
+/// be propagated into the spawned driver.
 ///
 /// Arguments:
 /// - `name`: Binary name as byte slice or string (must be null-terminated or valid string).
 /// - `caps`: Coarse capability bitflags (e.g. `Capabilities::MMIO | Capabilities::IRQ`).
-/// - `grants`: Optional reference to `UserDriverGrants` struct defining authorized MMIO regions and IRQ lines.
+/// - `grants`: Optional reference to a `UserDriverGrants` request to be validated.
 pub fn spawn_driver(
     name: &str,
     caps: u64,
