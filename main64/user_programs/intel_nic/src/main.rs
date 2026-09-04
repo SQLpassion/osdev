@@ -96,31 +96,24 @@ pub extern "C" fn _start() -> ! {
             break;
         }
     }
-    let (bar_phys, bar_size) = match mmio_bar {
-        Some(b) => (
-            b.address,
-            if b.size != 0 {
-                b.size as usize
-            } else {
-                128 * 1024
-            },
-        ),
+    // A size-0 BAR cannot be granted an MMIO window by the kernel (see
+    // `driver_db::mmio_windows`, which skips unsizable BARs rather than
+    // fabricating a length), so guessing a size here would only ever produce
+    // a `Mmio::map` call the kernel is guaranteed to reject. Fail loudly
+    // instead of pretending a fallback size could ever work.
+    let bar = match mmio_bar {
+        Some(b) => b,
+        None if dev.bars[0].address != 0 => dev.bars[0],
         None => {
-            if dev.bars[0].address != 0 {
-                (
-                    dev.bars[0].address,
-                    if dev.bars[0].size != 0 {
-                        dev.bars[0].size as usize
-                    } else {
-                        128 * 1024
-                    },
-                )
-            } else {
-                println!("[Intel NIC] Error: BAR 0 MMIO address is 0.");
-                process::exit();
-            }
+            println!("[Intel NIC] Error: BAR 0 MMIO address is 0.");
+            process::exit();
         }
     };
+    if bar.size == 0 {
+        println!("[Intel NIC] Error: MMIO BAR reported size 0; no grantable MMIO window.");
+        process::exit();
+    }
+    let (bar_phys, bar_size) = (bar.address, bar.size as usize);
 
     println!(
         "[Intel NIC] Mapping MMIO BAR at {:#x} ({} KB)...",

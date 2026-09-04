@@ -83,30 +83,21 @@ pub extern "C" fn _start() -> ! {
             break;
         }
     }
-    let (bar_phys, bar_size) = match mmio_bar {
-        Some(b) => (b.address, if b.size != 0 { b.size as usize } else { 256 }),
-        None => {
-            if dev.bars[1].address != 0 {
-                (
-                    dev.bars[1].address,
-                    if dev.bars[1].size != 0 {
-                        dev.bars[1].size as usize
-                    } else {
-                        256
-                    },
-                )
-            } else {
-                (
-                    dev.bars[0].address,
-                    if dev.bars[0].size != 0 {
-                        dev.bars[0].size as usize
-                    } else {
-                        256
-                    },
-                )
-            }
-        }
-    };
+    // A size-0 BAR cannot be granted an MMIO window by the kernel (see
+    // `driver_db::mmio_windows`, which skips unsizable BARs rather than
+    // fabricating a length), so guessing a size here would only ever produce
+    // a `Mmio::map` call the kernel is guaranteed to reject. Fail loudly
+    // instead of pretending a fallback size could ever work.
+    let bar = mmio_bar.unwrap_or(if dev.bars[1].address != 0 {
+        dev.bars[1]
+    } else {
+        dev.bars[0]
+    });
+    if bar.address == 0 || bar.size == 0 {
+        println!("[RTL8139] Error: MMIO BAR address/size is 0; no grantable MMIO window.");
+        process::exit();
+    }
+    let (bar_phys, bar_size) = (bar.address, bar.size as usize);
 
     // Step 3: Map physical MMIO registers.
     let mmio = match Mmio::map(bar_phys, bar_size) {
