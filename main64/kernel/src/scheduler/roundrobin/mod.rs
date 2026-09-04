@@ -55,6 +55,8 @@ pub use api::{
 #[allow(unused_imports)]
 pub use spawn::{spawn_kernel_task, spawn_user_task, spawn_user_task_owning_code};
 #[allow(unused_imports)]
+pub(crate) use wait::unblock_task_locked;
+#[allow(unused_imports)]
 pub use wait::{
     block_task, terminate_task, unblock_task, wait_for_task_exit, wait_for_task_exit_with,
 };

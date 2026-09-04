@@ -319,3 +319,52 @@ fn test_irq_wait_times_out_when_no_irq_fires() {
     sched::terminate_task(task_id);
     irq_bridge::reset_bindings_for_test();
 }
+
+/// Tests that terminating a driver task registered as its own IRQ's waiter
+/// does not deadlock the scheduler.
+///
+/// `remove_task` runs inside `terminate_task`'s `with_scheduler` critical
+/// section and calls `irq_bridge::release_task`, which wakes any task
+/// registered on that IRQ's wait queue. `SCHED` is a non-reentrant spinlock,
+/// so if that wake path re-acquired it (as the ordinary lock-acquiring
+/// `unblock_task` would), this test would hang until the QEMU test-runner
+/// timeout instead of completing.
+#[test_case]
+fn test_irq_release_task_does_not_deadlock_scheduler_lock() {
+    irq_bridge::reset_bindings_for_test();
+    let task1_id = sched::spawn_kernel_task(test_task_loop).expect("spawn task 1");
+    let slot1 = task_id_slot(task1_id);
+
+    let grants1 = ResourceGrants {
+        mmio_regions: vec![],
+        irqs: vec![9],
+        mmio_bump: vmm::USER_MMIO_BASE,
+    };
+    let caps1_ptr = Box::into_raw(Box::new(DriverCaps::new(Capabilities::IRQ, grants1)));
+    set_task_caps(task1_id, caps1_ptr);
+
+    set_running_slot_for_test(Some(slot1));
+    let sub_res = dispatch_checked(SyscallId::IRQ_SUBSCRIBE, 9, 0, 0, 0);
+    assert_eq!(
+        sub_res,
+        Ok(SYSCALL_OK),
+        "Task 1 should successfully subscribe to IRQ 9"
+    );
+
+    // Simulate task1 being blocked inside an infinite-timeout IrqWait: it is
+    // registered as the binding's waiter but has not consumed a pending IRQ.
+    assert!(
+        irq_bridge::register_waiter_for_test(9, task1_id),
+        "test setup: task1 must be registered as IRQ 9's waiter"
+    );
+
+    set_running_slot_for_test(None);
+    sched::terminate_task(task1_id);
+
+    assert!(
+        !irq_bridge::is_driver_irq(9),
+        "IRQ 9 binding must be released even when the owner was a registered waiter"
+    );
+
+    irq_bridge::reset_bindings_for_test();
+}

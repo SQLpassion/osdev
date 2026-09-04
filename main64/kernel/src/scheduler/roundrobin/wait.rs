@@ -3,7 +3,7 @@
 use super::manager::{
     free_pending_address_spaces, remove_task, take_pending_address_spaces_for_free,
 };
-use super::types::{task_id_generation, task_id_slot, TaskState};
+use super::types::{task_id_generation, task_id_slot, SchedulerMetadata, TaskState};
 use super::{
     arch_callbacks, current_task_id, is_running, task_generation, with_scheduler, yield_now,
 };
@@ -39,15 +39,25 @@ pub fn block_task(task_id: usize) {
 /// Safe to call from IRQ context (the scheduler spinlock handles
 /// interrupt masking internally).
 pub fn unblock_task(task_id: usize) {
+    with_scheduler(|meta| unblock_task_locked(meta, task_id));
+}
+
+/// Same effect as [`unblock_task`], but operates directly on an
+/// already-locked `meta` instead of acquiring `SCHED` itself.
+///
+/// Required by call sites that run *inside* a `with_scheduler`/`SCHED.lock()`
+/// critical section already (e.g. `irq_bridge::release_task`, invoked from
+/// `remove_task`): `SCHED` is a non-reentrant spinlock, so calling
+/// `unblock_task` from such a context would spin forever trying to
+/// re-acquire a lock this same core already holds.
+pub(crate) fn unblock_task_locked(meta: &mut SchedulerMetadata, task_id: usize) {
     let slot = task_id_slot(task_id);
-    with_scheduler(|meta| {
-        if slot < meta.slots.len()
-            && meta.slots[slot].used
-            && meta.slots[slot].state == TaskState::Blocked
-        {
-            meta.slots[slot].state = TaskState::Ready;
-        }
-    });
+    if slot < meta.slots.len()
+        && meta.slots[slot].used
+        && meta.slots[slot].state == TaskState::Blocked
+    {
+        meta.slots[slot].state = TaskState::Ready;
+    }
 }
 
 /// Terminates `task_id`, removing it from the run queue and freeing its slot.

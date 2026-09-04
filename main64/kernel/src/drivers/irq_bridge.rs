@@ -13,6 +13,7 @@ use crate::arch::interrupts::{
 };
 use crate::drivers::time;
 use crate::scheduler;
+use crate::scheduler::SchedulerMetadata;
 use crate::sync::singlewaitqueue::SingleWaitQueue;
 use crate::sync::waitqueue_adapter::{sleep_if_single, wake_all_single};
 use crate::syscall::SyscallError;
@@ -249,7 +250,15 @@ pub fn ack(vector: u8, task_id: usize) -> Result<(), SyscallError> {
 /// If the vector's ISR bit is still set (the task died between the IRQ firing
 /// and calling `IrqAck`), a final EOI is sent so the line does not stay
 /// masked at the PIC with no subscriber left to acknowledge it.
-pub fn release_task(task_id: usize) {
+///
+/// Takes the scheduler's already-locked `meta` rather than acquiring `SCHED`
+/// itself: `remove_task` (the sole caller) runs inside a `with_scheduler`/
+/// `SCHED.lock()` critical section, and `SCHED` is a non-reentrant spinlock.
+/// A task can die (crash, `terminate_task`) while still registered as its own
+/// waiter in `binding.waitq` (blocked in an infinite-timeout `IrqWait`); waking
+/// it via the ordinary lock-acquiring `unblock_task` would then spin forever
+/// trying to re-acquire the lock this same core already holds.
+pub fn release_task(meta: &mut SchedulerMetadata, task_id: usize) {
     if task_id == 0 {
         return;
     }
@@ -264,7 +273,9 @@ pub fn release_task(task_id: usize) {
         }
 
         binding.pending.store(false, Ordering::Release);
-        wake_all_single(&binding.waitq);
+        binding
+            .waitq
+            .wake_all(|waiter| scheduler::unblock_task_locked(meta, waiter));
 
         if is_in_service(idx as u8) {
             end_of_interrupt(idx as u8);
@@ -274,6 +285,21 @@ pub fn release_task(task_id: usize) {
         // unmasked would let the device keep raising interrupts that are
         // merely auto-EOI'd by `dispatch_irq`'s no-handler path.
         mask_irq(idx as u8);
+    }
+}
+
+/// Test-only: directly registers `task_id` as `vector`'s wait-queue waiter,
+/// without going through the blocking loop in [`wait`].
+///
+/// Lets integration tests reproduce the state `wait()` reaches via
+/// `sleep_if_single`'s `register_waiter` call — a task genuinely registered
+/// as its own IRQ's waiter — without needing real preemption to freeze a
+/// task while it is mid-block.
+#[doc(hidden)]
+pub fn register_waiter_for_test(vector: u8, task_id: usize) -> bool {
+    match irq_to_index(vector) {
+        Some(idx) => IRQ_BINDINGS[idx].waitq.register_waiter(task_id),
+        None => false,
     }
 }
 
