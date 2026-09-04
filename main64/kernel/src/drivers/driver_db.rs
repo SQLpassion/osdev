@@ -258,6 +258,12 @@ pub fn derive_grants(name: &str) -> Result<(ResourceGrants, PciDevice), BindErro
             continue;
         }
 
+        // Step 4b: Only now — once this specific device is exclusively reserved
+        // for the driver being spawned — enable its Command Register bits. PCI
+        // enumeration deliberately leaves every device's I/O/Memory/Bus-Master
+        // bits untouched so an ungranted device never decodes MMIO or masters DMA.
+        pci::enable_device(device);
+
         // Step 5: Derive the IRQ grant from the device's interrupt line. 0xFF
         // means "no interrupt routed", which is not a grantable vector.
         let mut irqs = Vec::new();
