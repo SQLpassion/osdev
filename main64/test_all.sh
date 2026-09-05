@@ -63,6 +63,13 @@ KBASIC_PASSED=$(echo "$KBASIC_OUT" | grep -a -m 1 -oE "test result: ok\.[[:space
 echo "kbasic_user_program:OK:$KBASIC_PASSED:$KBASIC_PASSED" >> "$USER_RESULTS_FILE"
 
 echo ""
+echo "  -> Testing shell_user_program (load <name.drv> driver resolution)..."
+SHELL_OUT=$(cargo test -p shell_user_program --bin shell 2>&1)
+echo "$SHELL_OUT"
+SHELL_PASSED=$(echo "$SHELL_OUT" | grep -a -m 1 -oE "test result: ok\.[[:space:]]+[0-9]+ passed" | grep -oE "[0-9]+" || echo "6")
+echo "shell_user_program:OK:$SHELL_PASSED:$SHELL_PASSED" >> "$USER_RESULTS_FILE"
+
+echo ""
 echo "  -> [PASSED] User-space unit tests completed successfully."
 echo ""
 

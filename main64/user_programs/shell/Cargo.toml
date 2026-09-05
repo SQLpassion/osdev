@@ -13,5 +13,4 @@ lib_kaos = { path = "../../lib_kaos" }
 [[bin]]
 name = "shell"
 path = "src/main.rs"
-test = false
 bench = false
