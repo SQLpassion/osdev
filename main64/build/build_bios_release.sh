@@ -144,10 +144,22 @@ case "$DISPLAY_MODE" in
         ;;
 esac
 
-# 5) Boot it. (Ctrl-A X quits QEMU when serial is attached to the terminal.)
-echo "==> Launching QEMU [$DISPLAY_MODE: $DISPLAY_HINT]..."
-qemu-system-x86_64 \
+# 5) Network backend configuration (always bridged network)
+SUDO_PREFIX=()
+if [ "$OS_KIND" = "macos" ]; then
+    QEMU_NET=(-netdev vmnet-bridged,id=net0,ifname=en0 -device rtl8139,netdev=net0)
+    if [ "$(id -u)" -ne 0 ]; then
+        SUDO_PREFIX=(sudo)
+    fi
+else
+    QEMU_NET=(-netdev tap,id=net0,ifname=tap0,script=no,downscript=no -device rtl8139,netdev=net0)
+fi
+
+# 6) Boot it. (Ctrl-A X quits QEMU when serial is attached to the terminal.)
+echo "==> Launching QEMU [$DISPLAY_MODE: $DISPLAY_HINT] [Net: bridged]..."
+"${SUDO_PREFIX[@]}" qemu-system-x86_64 \
     -drive format=raw,file="kaos64-bios.img" \
+    "${QEMU_NET[@]}" \
     "${QEMU_DISPLAY[@]}" \
     -m 256M \
     "$@"

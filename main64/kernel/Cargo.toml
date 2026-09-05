@@ -135,3 +135,18 @@ name = "scroll_dirty_range_test"
 
 [[test]]
 name = "logging_capture_snapshot_test"
+
+[[test]]
+name = "capabilities_test"
+
+[[test]]
+name = "driver_mmio_test"
+
+[[test]]
+name = "driver_irq_test"
+
+[[test]]
+name = "driver_spawn_test"
+
+[[test]]
+name = "driver_rtl8139_test"

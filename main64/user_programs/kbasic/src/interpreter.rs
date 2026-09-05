@@ -84,7 +84,9 @@ impl Interpreter {
     ///
     /// The interactive REPL calls this after each executed line so that command
     /// output appears immediately; [`execute_script`](Self::execute_script)
-    /// flushes once at the end of a run.
+    /// flushes once at the end of a run. That REPL (`_start`) is `cfg(not(test))`,
+    /// so this has no caller under `cargo test`.
+    #[cfg_attr(test, allow(dead_code))]
     pub fn flush_output(&mut self) {
         self.output.flush();
     }

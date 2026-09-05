@@ -1,0 +1,434 @@
+//! Hardware IRQ bridge for user-space device drivers.
+//!
+//! Maps PIC IRQ lines (0..15) to Ring-3 driver tasks, executes minimal Ring-0
+//! trampolines that wake waiting driver tasks on interrupt, and mediates PIC EOI
+//! acknowledgment on user-space request (`IrqAck`).
+
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+
+use crate::arch::interrupts::pic::{end_of_interrupt, is_in_service, mask_irq, unmask_irq};
+use crate::arch::interrupts::types::{IRQ_BASE, IRQ_LINES};
+use crate::arch::interrupts::{
+    register_irq_handler, registered_irq_handler, IrqHandler, SavedRegisters,
+};
+use crate::drivers::time;
+use crate::scheduler;
+use crate::scheduler::SchedulerMetadata;
+use crate::sync::singlewaitqueue::SingleWaitQueue;
+use crate::sync::waitqueue_adapter::{sleep_if_single, wake_all_single};
+use crate::syscall::SyscallError;
+
+/// Number of hardware PIC IRQ vectors supported (IRQ0..IRQ15).
+pub const IRQ_COUNT: usize = IRQ_LINES;
+
+/// Per-vector binding between a hardware IRQ line and the driver task waiting for it.
+pub struct IrqBinding {
+    /// Packed task ID of the subscribed driver task. 0 = unsubscribed.
+    pub task_id: AtomicUsize,
+    /// Set to true by the trampoline when an IRQ fires; cleared by IrqWait.
+    pub pending: AtomicBool,
+    /// `rdtsc()` timestamp of the most recent occasion the trampoline found
+    /// this line's PIC ISR bit newly set (i.e. a real hardware assertion, not
+    /// a re-run for an already-in-service line — see the doc comment on
+    /// [`driver_irq_trampoline`]). `0` means "not currently in service" —
+    /// either never fired, or already acknowledged via [`ack`] or the
+    /// watchdog in [`check_stale_bindings`].
+    ///
+    /// Exists so [`check_stale_bindings`] can bound how long a subscribed
+    /// line is allowed to sit in-service without the driver task calling
+    /// `IrqAck`: `dispatch_irq` never sends EOI for a driver-subscribed
+    /// vector on its own (see its doc comment), so a driver task that is
+    /// merely slow, descheduled, or live-locked elsewhere — not dead, so
+    /// `remove_task`'s cleanup never runs — would otherwise wedge this PIC
+    /// ISR bit (and, for a slave-PIC line, the master's cascade line)
+    /// indefinitely, blocking every same-or-lower-priority interrupt.
+    pub isr_set_since_tsc: AtomicU64,
+    /// The driver task blocks on this queue in IrqWait.
+    pub waitq: SingleWaitQueue,
+}
+
+impl IrqBinding {
+    /// Creates a new, unbound IRQ binding entry.
+    pub const fn new() -> Self {
+        Self {
+            task_id: AtomicUsize::new(0),
+            pending: AtomicBool::new(false),
+            isr_set_since_tsc: AtomicU64::new(0),
+            waitq: SingleWaitQueue::new(),
+        }
+    }
+}
+
+impl Default for IrqBinding {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Static binding table — one entry per PIC IRQ line (0..15).
+static IRQ_BINDINGS: [IrqBinding; IRQ_COUNT] = [
+    IrqBinding::new(),
+    IrqBinding::new(),
+    IrqBinding::new(),
+    IrqBinding::new(),
+    IrqBinding::new(),
+    IrqBinding::new(),
+    IrqBinding::new(),
+    IrqBinding::new(),
+    IrqBinding::new(),
+    IrqBinding::new(),
+    IrqBinding::new(),
+    IrqBinding::new(),
+    IrqBinding::new(),
+    IrqBinding::new(),
+    IrqBinding::new(),
+    IrqBinding::new(),
+];
+
+/// Maps a vector number (either raw IRQ line 0..15 or IDT vector 32..47) to IRQ line index 0..15.
+pub fn irq_to_index(vector: u8) -> Option<usize> {
+    if (IRQ_BASE..IRQ_BASE + (IRQ_COUNT as u8)).contains(&vector) {
+        Some((vector - IRQ_BASE) as usize)
+    } else if (vector as usize) < IRQ_COUNT {
+        Some(vector as usize)
+    } else {
+        None
+    }
+}
+
+/// Maps an IRQ line index (0..15) to its corresponding IDT interrupt vector (32..47).
+pub fn irq_index_to_vector(index: usize) -> u8 {
+    (IRQ_BASE as usize + index) as u8
+}
+
+/// Returns whether an IRQ line currently has an active user-space driver binding.
+pub fn is_driver_irq(irq: u8) -> bool {
+    if (irq as usize) < IRQ_COUNT {
+        IRQ_BINDINGS[irq as usize].task_id.load(Ordering::Acquire) != 0
+    } else {
+        false
+    }
+}
+
+/// Generic Ring-0 IRQ trampoline registered for driver-subscribed vectors.
+///
+/// Runs in top-half interrupt context — strictly lock-free and non-allocating.
+/// Does NOT send PIC EOI: the device asserts the line until serviced by the driver,
+/// so sending EOI early would produce spurious interrupts before the driver reads ISR.
+pub fn driver_irq_trampoline(vector: u8, regs: &mut SavedRegisters) -> *mut SavedRegisters {
+    // Step 1: Map incoming vector to direct IRQ line index.
+    let idx = match irq_to_index(vector) {
+        Some(i) => i,
+        None => return regs as *mut SavedRegisters,
+    };
+    let binding = &IRQ_BINDINGS[idx];
+
+    // Step 2: Mark IRQ pending for consumer task in Ring 3.
+    binding.pending.store(true, Ordering::Release);
+
+    // Step 3: Record when this line's ISR bit became set, so
+    // `check_stale_bindings` can bound how long it is allowed to stay
+    // in-service without an `IrqAck`. `rdtsc()` is a cheap, lock-free read —
+    // safe to call unconditionally from this top-half context.
+    binding
+        .isr_set_since_tsc
+        .store(time::rdtsc(), Ordering::Release);
+
+    // Step 4: Wake the driver task blocked on this IRQ's wait queue.
+    wake_all_single(&binding.waitq);
+
+    regs as *mut SavedRegisters
+}
+
+/// Subscribes `task_id` to receive notifications for `vector`.
+pub fn subscribe(vector: u8, task_id: usize) -> Result<(), SyscallError> {
+    let idx = irq_to_index(vector).ok_or(SyscallError::InvalidArg)?;
+    let binding = &IRQ_BINDINGS[idx];
+
+    // Step 1: Atomically claim exclusive ownership of the vector slot.
+    if binding
+        .task_id
+        .compare_exchange(0, task_id, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return Err(SyscallError::InvalidArg);
+    }
+    binding.isr_set_since_tsc.store(0, Ordering::Release);
+
+    let idt_vector = irq_index_to_vector(idx);
+
+    // Step 2: Refuse to silently steal a line already serviced by a
+    // kernel-internal handler (e.g. `ata`'s IRQ14 handler, registered at
+    // boot). On real hardware a legacy PCI interrupt line is routinely
+    // shared between the device a driver task was granted and an unrelated
+    // device the kernel already services directly; overwriting that handler
+    // here would break the kernel's own device silently. Re-claiming a line
+    // this bridge itself registered earlier (e.g. respawning the same
+    // driver) is fine, since `driver_irq_trampoline` is idempotent to
+    // re-register.
+    if let Some(existing) = registered_irq_handler(idt_vector) {
+        if !core::ptr::fn_addr_eq(existing, driver_irq_trampoline as IrqHandler) {
+            binding.task_id.store(0, Ordering::Release);
+            return Err(SyscallError::PermissionDenied);
+        }
+    }
+
+    // Step 3: Register the top-half trampoline for this hardware vector.
+    register_irq_handler(idt_vector, driver_irq_trampoline);
+
+    // Step 4: Unmask the line at the 8259 itself. `mask_pic()` at boot only
+    // unmasks the lines the kernel services directly; without this, the PIC
+    // never forwards the interrupt to the CPU no matter how the IDT/task
+    // binding above is set up.
+    unmask_irq(idx as u8);
+
+    Ok(())
+}
+
+/// Blocks `task_id` until an IRQ fires on `vector`, an event is already
+/// pending, or (when `timeout_ms != 0`) the timeout elapses.
+///
+/// `timeout_ms == 0` means "wait forever", matching the documented contract
+/// of the `IrqWait` syscall (`syscall_irq_wait_impl`).
+pub fn wait(vector: u8, task_id: usize, timeout_ms: u32) -> Result<(), SyscallError> {
+    let idx = irq_to_index(vector).ok_or(SyscallError::InvalidArg)?;
+    let binding = &IRQ_BINDINGS[idx];
+
+    // Step 1: Verify that the caller is the subscribed owner of this IRQ line.
+    if binding.task_id.load(Ordering::Acquire) != task_id {
+        return Err(SyscallError::InvalidArg);
+    }
+
+    // Step 2: If an IRQ has already fired and is pending, consume it immediately.
+    if binding.pending.swap(false, Ordering::AcqRel) {
+        return Ok(());
+    }
+
+    // Step 3: An infinite wait blocks on the single wait queue exactly as
+    // before, woken only by the top-half trampoline or by `release_task` on
+    // the owner's exit.
+    if timeout_ms == 0 {
+        loop {
+            let outcome = sleep_if_single(&binding.waitq, task_id, || {
+                !binding.pending.load(Ordering::Acquire)
+            });
+
+            if outcome.should_yield() {
+                scheduler::yield_now();
+            }
+
+            if binding.pending.swap(false, Ordering::AcqRel) {
+                return Ok(());
+            }
+        }
+    }
+
+    // Step 4: A bounded wait cannot use `scheduler::block_task` (as
+    // `sleep_if_single` does above): once blocked, this task would only ever
+    // resume when woken by the trampoline or `release_task`, which defeats
+    // the timeout entirely. Instead, poll cooperatively via `yield_now()` and
+    // compare against a TSC deadline computed from `timeout_ms`. A real IRQ
+    // during the poll is still observed: `driver_irq_trampoline` sets
+    // `pending` unconditionally, regardless of wait-queue registration.
+    let ticks_per_ms = time::tsc_ticks_per_us().saturating_mul(1000);
+    let deadline = time::rdtsc().saturating_add(ticks_per_ms.saturating_mul(timeout_ms as u64));
+
+    loop {
+        scheduler::yield_now();
+
+        if binding.pending.swap(false, Ordering::AcqRel) {
+            return Ok(());
+        }
+
+        if time::rdtsc() >= deadline {
+            return Err(SyscallError::Timeout);
+        }
+    }
+}
+
+/// Acknowledges an IRQ event and sends the PIC EOI command.
+pub fn ack(vector: u8, task_id: usize) -> Result<(), SyscallError> {
+    let idx = irq_to_index(vector).ok_or(SyscallError::InvalidArg)?;
+    let binding = &IRQ_BINDINGS[idx];
+
+    // Step 1: Verify ownership of this IRQ vector before acknowledging.
+    if binding.task_id.load(Ordering::Acquire) != task_id {
+        return Err(SyscallError::InvalidArg);
+    }
+
+    // Step 2: Send PIC EOI now that the user driver has serviced device registers.
+    end_of_interrupt(idx as u8);
+
+    // Step 3: The driver acknowledged in time — this occurrence is no longer
+    // a `check_stale_bindings` watchdog candidate.
+    binding.isr_set_since_tsc.store(0, Ordering::Release);
+
+    Ok(())
+}
+
+/// How long a driver-subscribed IRQ line may sit in-service (PIC ISR bit
+/// set, no `IrqAck` yet) before [`check_stale_bindings`] forces an EOI on its
+/// behalf.
+///
+/// Generous enough that a driver task merely waiting for a round-robin time
+/// slice never trips it under normal load, but short enough that the window
+/// during which this line (and, for a slave-PIC line, the master's cascade
+/// line) blocks every same-or-lower-priority interrupt stays bounded instead
+/// of open-ended.
+const IRQ_ACK_WATCHDOG_TIMEOUT_MS: u32 = 500;
+
+/// Forces a PIC EOI on any driver-subscribed IRQ line that has sat in-service
+/// longer than [`IRQ_ACK_WATCHDOG_TIMEOUT_MS`] without the owning task calling
+/// `IrqAck`.
+///
+/// Called from the scheduler's timer-tick path, so this runs periodically
+/// regardless of which line (if any) is stuck — unlike `dispatch_irq`'s own
+/// EOI epilogue, which only ever runs in response to a *new* interrupt on the
+/// specific vector that just fired, and therefore never observes a line that
+/// is silently sitting in-service with nothing left to dispatch.
+///
+/// This does not unsubscribe the slow task or touch `pending`/the wait
+/// queue — the driver may still be alive and will still see (and can still
+/// consume) the event once it runs again via `IrqWait`. It only unblocks the
+/// PIC so every *other* interrupt on that line's priority level or below can
+/// keep flowing. A level-triggered device whose status register the driver
+/// still has not serviced will typically re-assert the line immediately
+/// after this EOI, re-running `driver_irq_trampoline` and refreshing the
+/// timestamp — which is the expected, self-limiting outcome: bounded
+/// re-triggering instead of an indefinite block.
+pub fn check_stale_bindings() {
+    let ticks_per_ms = time::tsc_ticks_per_us().saturating_mul(1000);
+    let timeout_ticks = ticks_per_ms.saturating_mul(IRQ_ACK_WATCHDOG_TIMEOUT_MS as u64);
+    let now = time::rdtsc();
+
+    for (idx, binding) in IRQ_BINDINGS.iter().enumerate() {
+        let since = binding.isr_set_since_tsc.load(Ordering::Acquire);
+        if since == 0 {
+            continue;
+        }
+        if now.saturating_sub(since) < timeout_ticks {
+            continue;
+        }
+        if !is_in_service(idx as u8) {
+            // Already acknowledged through the normal path; nothing to force.
+            binding.isr_set_since_tsc.store(0, Ordering::Release);
+            continue;
+        }
+
+        crate::logging::logln(
+            "irq_bridge",
+            format_args!(
+                "check_stale_bindings: IRQ{} still in-service after {}ms with no IrqAck \
+                 from task {:#x} — forcing EOI to avoid wedging the PIC",
+                idx,
+                IRQ_ACK_WATCHDOG_TIMEOUT_MS,
+                binding.task_id.load(Ordering::Acquire)
+            ),
+        );
+        end_of_interrupt(idx as u8);
+        binding.isr_set_since_tsc.store(0, Ordering::Release);
+    }
+}
+
+/// Releases every IRQ binding owned by `task_id`.
+///
+/// Called from the scheduler's `remove_task` — the single choke point reached
+/// by both explicit termination (`Exit`/`terminate_task`) and zombie-reaping
+/// after a crash (`#PF`/`#GP`/`#DE`) — so a driver task's death never leaves a
+/// stale owner behind. Without this, `IRQ_BINDINGS[idx].task_id` would keep
+/// pointing at the dead task forever: `subscribe()`'s
+/// `compare_exchange(0, ...)` would fail for any future subscriber on that
+/// vector, and `is_driver_irq()` would keep suppressing `dispatch_irq`'s
+/// auto-EOI epilogue, wedging the PIC line until reboot.
+///
+/// If the vector's ISR bit is still set (the task died between the IRQ firing
+/// and calling `IrqAck`), a final EOI is sent so the line does not stay
+/// masked at the PIC with no subscriber left to acknowledge it.
+///
+/// Takes the scheduler's already-locked `meta` rather than acquiring `SCHED`
+/// itself: `remove_task` (the sole caller) runs inside a `with_scheduler`/
+/// `SCHED.lock()` critical section, and `SCHED` is a non-reentrant spinlock.
+/// A task can die (crash, `terminate_task`) while still registered as its own
+/// waiter in `binding.waitq` (blocked in an infinite-timeout `IrqWait`); waking
+/// it via the ordinary lock-acquiring `unblock_task` would then spin forever
+/// trying to re-acquire the lock this same core already holds.
+pub fn release_task(meta: &mut SchedulerMetadata, task_id: usize) {
+    if task_id == 0 {
+        return;
+    }
+
+    for (idx, binding) in IRQ_BINDINGS.iter().enumerate() {
+        if binding
+            .task_id
+            .compare_exchange(task_id, 0, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            continue;
+        }
+
+        binding.pending.store(false, Ordering::Release);
+        binding.isr_set_since_tsc.store(0, Ordering::Release);
+        binding
+            .waitq
+            .wake_all(|waiter| scheduler::unblock_task_locked(meta, waiter));
+
+        if is_in_service(idx as u8) {
+            end_of_interrupt(idx as u8);
+        }
+
+        // Re-mask the line: no task is left to service it, and leaving it
+        // unmasked would let the device keep raising interrupts that are
+        // merely auto-EOI'd by `dispatch_irq`'s no-handler path.
+        mask_irq(idx as u8);
+    }
+}
+
+/// Test-only: directly registers `task_id` as `vector`'s wait-queue waiter,
+/// without going through the blocking loop in [`wait`].
+///
+/// Lets integration tests reproduce the state `wait()` reaches via
+/// `sleep_if_single`'s `register_waiter` call — a task genuinely registered
+/// as its own IRQ's waiter — without needing real preemption to freeze a
+/// task while it is mid-block.
+#[doc(hidden)]
+pub fn register_waiter_for_test(vector: u8, task_id: usize) -> bool {
+    match irq_to_index(vector) {
+        Some(idx) => IRQ_BINDINGS[idx].waitq.register_waiter(task_id),
+        None => false,
+    }
+}
+
+/// Resets all IRQ bindings and clears handlers (for unit tests / teardown).
+pub fn reset_bindings_for_test() {
+    for binding in IRQ_BINDINGS.iter() {
+        binding.task_id.store(0, Ordering::Release);
+        binding.pending.store(false, Ordering::Release);
+        binding.isr_set_since_tsc.store(0, Ordering::Release);
+        wake_all_single(&binding.waitq);
+    }
+}
+
+/// Test-only: directly sets `vector`'s `isr_set_since_tsc` timestamp,
+/// without going through the trampoline.
+///
+/// Lets integration tests simulate "this line's ISR bit has been set since
+/// `tsc_value`" — the state [`check_stale_bindings`] watches for — without
+/// needing a real, sustained hardware IRQ assertion.
+#[doc(hidden)]
+pub fn set_isr_set_since_for_test(vector: u8, tsc_value: u64) -> bool {
+    match irq_to_index(vector) {
+        Some(idx) => {
+            IRQ_BINDINGS[idx]
+                .isr_set_since_tsc
+                .store(tsc_value, Ordering::Release);
+            true
+        }
+        None => false,
+    }
+}
+
+/// Test-only: reads `vector`'s current `isr_set_since_tsc` bookkeeping value.
+#[doc(hidden)]
+pub fn isr_set_since_for_test(vector: u8) -> Option<u64> {
+    irq_to_index(vector).map(|idx| IRQ_BINDINGS[idx].isr_set_since_tsc.load(Ordering::Acquire))
+}

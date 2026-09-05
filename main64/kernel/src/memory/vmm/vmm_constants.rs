@@ -33,6 +33,11 @@ pub const USER_HEAP_SIZE: u64 = 0x0000_0000_1000_0000;
 /// User heap end address (exclusive).
 pub const USER_HEAP_END: u64 = USER_HEAP_BASE + USER_HEAP_SIZE;
 
+/// Base virtual address for MMIO regions mapped into driver address spaces.
+/// Placed above the user heap to avoid collisions with program data.
+/// Each MapPhysical call advances a per-task bump pointer from this base.
+pub const USER_MMIO_BASE: u64 = 0x0000_7800_0000_0000;
+
 /// Exclusive upper bound of the canonical "low half" of the virtual address
 /// space that per-task user mappings (Code/Stack/Heap and any future
 /// mmap-created regions) live in.

@@ -58,6 +58,8 @@ mcopy   -i "$IMG@@$PART_OFFSET" "user_programs/filedemo/filedemo.bin" ::/FILEDEM
 mcopy   -i "$IMG@@$PART_OFFSET" "user_programs/exception_test/except.bin" ::/EXCEPT.BIN
 mcopy   -i "$IMG@@$PART_OFFSET" "user_programs/tui_app/tui.bin"       ::/TUI.BIN
 mcopy   -i "$IMG@@$PART_OFFSET" "user_programs/kbasic/kbasic.bin"     ::/KBASIC.BIN
+mcopy   -i "$IMG@@$PART_OFFSET" "user_programs/rtl8139/rtl8139.bin"   ::/RTL8139.BIN
+mcopy   -i "$IMG@@$PART_OFFSET" "user_programs/intel_nic/intel_nic.bin" ::/INTLNIC.BIN
 mcopy   -i "$IMG@@$PART_OFFSET" "user_programs/kbasic/src/demo.bas"   ::/DEMO.BAS
 echo "==> $IMG ready. Flash to a USB stick with (DESTRUCTIVE - pick the right device!):"
 echo "        sudo dd if=$IMG of=/dev/<your-usb> bs=4M conv=fsync"
@@ -167,16 +169,27 @@ case "$DISPLAY_MODE" in
         ;;
 esac
 
-# 5) Boot it. (Ctrl-A X quits QEMU when serial is attached to the terminal.)
+# 5) Network backend configuration (always bridged network)
+SUDO_PREFIX=()
+if [ "$OS_KIND" = "macos" ]; then
+    QEMU_NET=(-netdev vmnet-bridged,id=net0,ifname=en0 -device rtl8139,netdev=net0)
+    if [ "$(id -u)" -ne 0 ]; then
+        SUDO_PREFIX=(sudo)
+    fi
+else
+    QEMU_NET=(-netdev tap,id=net0,ifname=tap0,script=no,downscript=no -device rtl8139,netdev=net0)
+fi
+
+# 6) Boot it. (Ctrl-A X quits QEMU when serial is attached to the terminal.)
 echo "==> OVMF code: $OVMF_CODE"
-echo "==> Launching QEMU [$DISPLAY_MODE: $DISPLAY_HINT]..."
-qemu-system-x86_64 \
+echo "==> Launching QEMU [$DISPLAY_MODE: $DISPLAY_HINT] [Net: bridged]..."
+"${SUDO_PREFIX[@]}" qemu-system-x86_64 \
     -machine q35 \
     -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
     -drive if=pflash,format=raw,file="$OVMF_VARS" \
     -drive format=raw,file="$IMG" \
     -vga virtio \
     "${QEMU_DISPLAY[@]}" \
-    -net none \
+    "${QEMU_NET[@]}" \
     -m 256M \
     "$@"

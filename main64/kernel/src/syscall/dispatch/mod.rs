@@ -20,6 +20,7 @@ use crate::syscall::{syscall_result_to_raw, SyscallError, SyscallId, SyscallResu
 
 pub mod bios;
 pub mod console;
+pub mod driver;
 pub mod fs;
 pub mod pci;
 pub mod process;
@@ -74,6 +75,15 @@ pub const fn syscall_name_for_number(syscall_nr: u64) -> &'static str {
         SyscallId::GET_TIME => "GetTime",
         SyscallId::POLL_KEY => "PollKey",
         SyscallId::GET_CONSOLE_DIMENSIONS => "GetConsoleDimensions",
+        SyscallId::MAP_PHYSICAL => "MapPhysical",
+        SyscallId::UNMAP_PHYSICAL => "UnmapPhysical",
+        SyscallId::IRQ_SUBSCRIBE => "IrqSubscribe",
+        SyscallId::IRQ_WAIT => "IrqWait",
+        SyscallId::IRQ_ACK => "IrqAck",
+        SyscallId::SPAWN_DRIVER => "SpawnDriver",
+        SyscallId::ALLOC_DMA => "AllocDma",
+        SyscallId::FREE_DMA => "FreeDma",
+        SyscallId::VIRT_TO_PHYS => "VirtToPhys",
         _ => "Unknown",
     }
 }
@@ -142,6 +152,19 @@ pub fn dispatch_checked(
         }
         SyscallId::POLL_KEY => process::syscall_poll_key_impl(),
         SyscallId::GET_CONSOLE_DIMENSIONS => console::syscall_get_console_dimensions_impl(),
+        SyscallId::MAP_PHYSICAL => driver::syscall_map_physical_impl(arg0, arg1 as usize, arg2),
+        SyscallId::UNMAP_PHYSICAL => driver::syscall_unmap_physical_impl(arg0, arg1 as usize),
+        SyscallId::IRQ_SUBSCRIBE => driver::syscall_irq_subscribe_impl(arg0),
+        SyscallId::IRQ_WAIT => driver::syscall_irq_wait_impl(arg0, arg1),
+        SyscallId::IRQ_ACK => driver::syscall_irq_ack_impl(arg0),
+        SyscallId::SPAWN_DRIVER => driver::syscall_spawn_driver_impl(
+            arg0 as *const u8,
+            arg1,
+            arg2 as *const crate::syscall::types::UserDriverGrants,
+        ),
+        SyscallId::ALLOC_DMA => driver::syscall_alloc_dma_impl(arg0 as usize, arg1 as *mut u64),
+        SyscallId::FREE_DMA => driver::syscall_free_dma_impl(arg0, arg1 as usize),
+        SyscallId::VIRT_TO_PHYS => driver::syscall_virt_to_phys_impl(arg0),
         _ => Err(SyscallError::Unsupported),
     };
 

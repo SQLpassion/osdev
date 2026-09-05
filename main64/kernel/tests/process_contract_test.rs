@@ -384,7 +384,7 @@ fn test_map_program_image_into_user_address_space_zeroes_bootstrap_stack_page() 
         }
     });
 
-    vmm::destroy_user_address_space(loaded.cr3);
+    vmm::destroy_user_address_space(loaded.cr3, &[]);
 
     // Release code PFNs explicitly because current VMM teardown keeps USER_CODE
     // leaf PFNs reserved to support temporary kernel-text alias mappings.
@@ -427,6 +427,58 @@ fn test_exec_from_vfs_spawns_user_task() {
     assert!(
         iret_frame.rsp == process::USER_PROGRAM_INITIAL_RSP,
         "spawned user task IRET rsp must match process user rsp contract"
+    );
+
+    assert!(
+        scheduler::terminate_task(task_id),
+        "spawned user task must be terminatable for test cleanup"
+    );
+}
+
+/// Contract: `exec_from_vfs_blocked` spawns a task directly in
+/// `TaskState::Blocked`, which stays unselectable by the round-robin
+/// scheduler across timer ticks until explicitly unblocked, at which point it
+/// becomes `Ready` again.
+///
+/// This is the mechanism `SpawnDriver` relies on to close a race where the
+/// newly spawned task could otherwise be selected and run (and potentially
+/// crash) before parent linkage, its `driver_db` reservation, and its
+/// `DriverCaps` are attached — see `SpawnKind::User::start_blocked`.
+#[test_case]
+fn test_exec_from_vfs_blocked_spawns_task_blocked_until_unblocked() {
+    scheduler::init();
+    scheduler::set_kernel_address_space_cr3(vmm::get_pml4_address());
+
+    let task_id = process::exec_from_vfs_blocked("hello.bin")
+        .expect("hello.bin exec path must spawn user task");
+
+    assert_eq!(
+        scheduler::task_state(task_id),
+        Some(TaskState::Blocked),
+        "exec_from_vfs_blocked must spawn the task directly in TaskState::Blocked"
+    );
+
+    scheduler::start();
+    let mut bootstrap = SavedRegisters::default();
+    let mut current = &mut bootstrap as *mut SavedRegisters;
+
+    // A blocked task must never be selected by the round-robin scheduler,
+    // no matter how many timer ticks elapse.
+    for _ in 0..3 {
+        current = scheduler::on_timer_tick(current);
+    }
+    assert_eq!(
+        scheduler::task_state(task_id),
+        Some(TaskState::Blocked),
+        "a blocked task must still be Blocked after repeated timer ticks, \
+         never selected to run"
+    );
+
+    scheduler::unblock_task(task_id);
+    assert_eq!(
+        scheduler::task_state(task_id),
+        Some(TaskState::Ready),
+        "unblock_task must make the task selectable again"
     );
 
     assert!(

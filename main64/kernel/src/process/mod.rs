@@ -3,9 +3,13 @@
 //! Provides end-to-end exec wiring (load image via the VFS, map into a user
 //! address space, spawn a scheduler user task).
 
+pub mod capabilities;
 pub mod elf;
 mod loader;
 mod types;
+
+#[allow(unused_imports)]
+pub use capabilities::{Capabilities, DriverCaps, ResourceGrants};
 
 #[allow(unused_imports)]
 pub use types::{
@@ -15,6 +19,7 @@ pub use types::{
 
 #[allow(unused_imports)]
 pub use loader::{
-    exec_from_image, exec_from_vfs, load_program_image, load_program_into_user_address_space,
-    map_program_image_into_user_address_space, validate_program_image_len,
+    exec_from_image, exec_from_vfs, exec_from_vfs_blocked, load_program_image,
+    load_program_into_user_address_space, map_program_image_into_user_address_space,
+    validate_program_image_len,
 };

@@ -3,6 +3,8 @@
 pub mod ahci;
 pub mod ata;
 pub mod block;
+pub mod driver_db;
+pub mod irq_bridge;
 pub mod keyboard;
 pub mod pci;
 pub mod screen;

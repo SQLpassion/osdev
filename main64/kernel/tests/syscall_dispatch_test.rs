@@ -407,6 +407,15 @@ fn test_decode_result_maps_known_errors() {
         syscall::decode_result(syscall::SYSCALL_ERR_OUT_OF_MEMORY) == Err(SysError::OutOfMemory),
         "SYSCALL_ERR_OUT_OF_MEMORY must decode to SysError::OutOfMemory"
     );
+    assert!(
+        syscall::decode_result(syscall::SYSCALL_ERR_PERMISSION_DENIED)
+            == Err(SysError::PermissionDenied),
+        "SYSCALL_ERR_PERMISSION_DENIED must decode to SysError::PermissionDenied"
+    );
+    assert!(
+        syscall::decode_result(syscall::SYSCALL_ERR_TIMEOUT) == Err(SysError::Timeout),
+        "SYSCALL_ERR_TIMEOUT must decode to SysError::Timeout"
+    );
 }
 
 /// Contract: decode_result keeps values below error sentinels as success.
@@ -416,7 +425,7 @@ fn test_decode_result_maps_known_errors() {
 /// Failure Impact: Indicates a regression in subsystem behavior, ABI/layout, synchronization, or lifecycle semantics and should be treated as release-blocking until understood.
 #[test_case]
 fn test_decode_result_accepts_value_below_error_sentinels() {
-    let raw = syscall::SYSCALL_ERR_PERMISSION_DENIED - 1;
+    let raw = syscall::SYSCALL_ERR_TIMEOUT - 1;
     assert!(
         syscall::decode_result(raw) == Ok(raw),
         "value below reserved error sentinels must remain a successful return"

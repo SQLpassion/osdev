@@ -48,10 +48,10 @@ pub use diagnostics::{
 pub use mapping::{
     clone_kernel_pml4_for_user, configure_uc_mapping, configure_wc_mapping,
     destroy_user_address_space, destroy_user_address_space_with_page_counts, map_user_code_page,
-    map_user_page, map_virtual_to_physical, map_virtual_to_physical_uc, map_virtual_to_physical_wc,
-    populate_page_table_path, switch_page_directory, try_map_virtual_to_physical,
-    unmap_user_heap_region, unmap_virtual_address, unmap_without_release, with_address_space,
-    MapError,
+    map_user_mmio_page, map_user_page, map_virtual_to_physical, map_virtual_to_physical_uc,
+    map_virtual_to_physical_wc, populate_page_table_path, switch_page_directory,
+    try_map_virtual_to_physical, unmap_user_heap_region, unmap_virtual_address,
+    unmap_without_release, with_address_space, MapError,
 };
 #[allow(unused_imports)]
 pub use page_fault::{
@@ -60,7 +60,7 @@ pub use page_fault::{
 #[allow(unused_imports)]
 pub use page_table::{
     invlpg, is_user_page_readable, is_user_page_writable, is_va_mapped, read_cr3,
-    reserve_firmware_page_tables, write_cr3, PAGE_MASK, PML4_TABLE_ADDR,
+    reserve_firmware_page_tables, virt_to_phys_current, write_cr3, PAGE_MASK, PML4_TABLE_ADDR,
 };
 
 /// Temporary kernel virtual address used as a one-page scratch mapping when
@@ -91,6 +91,9 @@ pub enum UserRegion {
 
     /// Writable heap region for user programs.
     Heap,
+
+    /// Memory-mapped I/O region for device drivers.
+    Mmio,
 }
 
 struct VmmState {
@@ -219,6 +222,11 @@ pub fn classify_user_region(virtual_address: u64) -> Option<UserRegion> {
     // Heap window represents the user-mode heap memory range.
     if (USER_HEAP_BASE..USER_HEAP_END).contains(&virtual_address) {
         return Some(UserRegion::Heap);
+    }
+
+    // MMIO window represents user-mode device registers.
+    if (USER_MMIO_BASE..USER_STACK_GUARD_BASE).contains(&virtual_address) {
+        return Some(UserRegion::Mmio);
     }
 
     // Any other VA is outside supported user ranges.

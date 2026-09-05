@@ -165,6 +165,25 @@ pub fn register_irq_handler(vector: u8, handler: IrqHandler) {
     }
 }
 
+/// Returns the handler currently registered for `vector`, if any.
+///
+/// Lets a caller that manages per-line ownership itself (namely
+/// `irq_bridge::subscribe`) detect whether registering its own handler would
+/// silently replace a pre-existing kernel-internal handler — e.g. `ata`'s
+/// `IRQ14_PRIMARY_ATA_VECTOR` handler — on a legacy PCI interrupt line shared
+/// with a user-space driver's device. `register_irq_handler` itself performs
+/// no such check because most callers (kernel subsystems at boot) are the
+/// sole, permanent owner of their vector and have nothing to conflict with.
+pub fn registered_irq_handler(vector: u8) -> Option<IrqHandler> {
+    let irq_idx = irq_slot_index(vector)?;
+
+    // SAFETY:
+    // - This requires `unsafe` because it dereferences a raw pointer, which Rust cannot validate.
+    // - Reads the immutable snapshot of the singleton handler table.
+    // - `irq_idx` is derived from validated IRQ range and is in-bounds for `IRQ_LINES`.
+    unsafe { (*STATE.irq_handlers.get())[irq_idx] }
+}
+
 fn clear_irq_handlers() {
     // SAFETY:
     // - This requires `unsafe` because it dereferences or performs arithmetic on raw pointers, which Rust cannot validate.
@@ -227,7 +246,11 @@ pub(crate) fn dispatch_irq(vector: u8, frame: &mut SavedRegisters) -> *mut Saved
     // ISR bit set (see doc comment above and `is_in_service`). A software
     // `int` on this vector never sets that bit, so it naturally skips EOI
     // here instead of requiring the caller to bypass this dispatch path.
-    if (IRQ_BASE..IRQ_BASE + 16).contains(&vector) && is_in_service(vector - IRQ_BASE) {
+    // Driver-subscribed IRQs defer EOI until user-space calls `IrqAck`.
+    if (IRQ_BASE..IRQ_BASE + 16).contains(&vector)
+        && is_in_service(vector - IRQ_BASE)
+        && !crate::drivers::irq_bridge::is_driver_irq(vector - IRQ_BASE)
+    {
         end_of_interrupt(vector - IRQ_BASE);
     }
 

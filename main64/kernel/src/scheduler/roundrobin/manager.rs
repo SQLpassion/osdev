@@ -7,7 +7,10 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use super::context::free_task_stack;
-use super::types::{SchedulerArchCallbacks, SchedulerMetadata, TaskEntry, TaskState};
+use super::types::{
+    pack_task_id, PendingAddressSpaceEntry, SchedulerArchCallbacks, SchedulerMetadata, TaskEntry,
+    TaskState,
+};
 use super::{active_cr3_value, kernel_cr3_value, set_active_cr3};
 use crate::arch::fpu;
 use crate::arch::interrupts::{InterruptStackFrame, SavedRegisters};
@@ -157,6 +160,56 @@ pub(crate) fn remove_task(
 
     meta.slots[task_id].fpu_state = ptr::null_mut();
 
+    // Take ownership of any still-open `DriverCaps` allocation records
+    // (`AllocDma`/`MapPhysical` ranges) before the capability block below is
+    // freed. The deferred address-space teardown (see
+    // `pending_free_address_spaces`) runs after `DriverCaps` is gone, so this
+    // is the only point where it is still possible to tell a device BAR
+    // window (`MmioAllocKind::Mmio`, which must never be handed back to the
+    // PMM) apart from PMM-owned RAM in that task's MMIO VA window.
+    //
+    // This moves the allocator's existing `Vec` out via `mem::take` instead
+    // of allocating a fresh, filtered copy: a previous version built a new
+    // `Vec` sized by `try_reserve`, whose failure under OOM left the entire
+    // address space — code, stack, heap, and page tables, not just the MMIO
+    // window — leaked forever rather than risk corrupting PMM bookkeeping.
+    // Moving the list cannot fail, so that fallback is no longer reachable.
+    let mmio_skip_release = if meta.slots[task_id].caps.is_null() {
+        alloc::vec::Vec::new()
+    } else {
+        // SAFETY:
+        // - `caps` is still a live, uniquely-owned allocation at this point
+        //   (freed just below).
+        // - `mem::take` leaves an empty (non-allocating) `Vec` behind in its
+        //   place, so the subsequent `Box::from_raw` drop below still sees a
+        //   valid, well-formed `DriverCaps`.
+        core::mem::take(&mut unsafe { &mut *meta.slots[task_id].caps }.allocations)
+    };
+
+    // Free the driver capability block if this was a driver task.
+    if !meta.slots[task_id].caps.is_null() {
+        // SAFETY:
+        // - `caps` was heap-allocated at driver spawn time with `Box::into_raw`.
+        // - This is the unique owner of the allocation and `remove_task` is called
+        //   exactly once per slot lifecycle.
+        // - The pointer is nulled out immediately after deallocation.
+        drop(unsafe { alloc::boxed::Box::from_raw(meta.slots[task_id].caps) });
+        meta.slots[task_id].caps = ptr::null_mut();
+    }
+
+    // Release any hardware IRQ bindings this task held, so a driver task's
+    // exit (including a crash reaped via `reap_zombies`) does not leave its
+    // subscribed vector permanently owned by a dead task. Must run before the
+    // slot below is cleared, since it needs the still-live generation to
+    // reconstruct the packed task ID that `irq_bridge` stores as the owner.
+    let packed_id = pack_task_id(task_id, meta.slots[task_id].generation);
+    crate::drivers::irq_bridge::release_task(meta, packed_id);
+
+    // Release any PCI device binding this task held, so a driver task's exit
+    // does not leave its device permanently unavailable to future SpawnDriver
+    // calls (see `driver_db::release_task`). Same ordering constraint as above.
+    crate::drivers::driver_db::release_task(packed_id);
+
     // Move the stack to the pending-free list instead of freeing it now.
     // This keeps the stack range visible to `frame_within_any_task_stack`
     // until the next timer tick, preventing stale task frames from being
@@ -223,9 +276,15 @@ pub(crate) fn remove_task(
     // Final step: push user address-space for deferred cleanup.
     // Releasing the address space is a slow operation that must happen outside
     // the scheduler lock.
+    //
+    // A failure to reserve room for this one `(cr3, allocations)` entry is the
+    // only remaining OOM path here (the allocation-list capture above can no
+    // longer fail — see `mmio_skip_release`), and leaking just this address
+    // space is the safe fallback, consistent with the CR3-in-use case above.
     if let Some(cr3) = cleanup {
         if meta.pending_free_address_spaces.try_reserve(1).is_ok() {
-            meta.pending_free_address_spaces.push(cr3);
+            meta.pending_free_address_spaces
+                .push((cr3, mmio_skip_release));
         }
     }
 
@@ -541,13 +600,15 @@ pub(crate) fn free_pending_stacks(stacks: &[(*mut u8, usize)]) {
 }
 
 /// Drains `pending_free_address_spaces` for deallocation.
-pub(crate) fn take_pending_address_spaces_for_free(meta: &mut SchedulerMetadata) -> Vec<u64> {
+pub(crate) fn take_pending_address_spaces_for_free(
+    meta: &mut SchedulerMetadata,
+) -> Vec<PendingAddressSpaceEntry> {
     core::mem::take(&mut meta.pending_free_address_spaces)
 }
 
 /// Frees pending address spaces outside the scheduler lock.
-pub(crate) fn free_pending_address_spaces(address_spaces: &[u64]) {
-    for &cr3 in address_spaces {
-        vmm::destroy_user_address_space(cr3);
+pub(crate) fn free_pending_address_spaces(address_spaces: &[PendingAddressSpaceEntry]) {
+    for (cr3, mmio_skip_release) in address_spaces {
+        vmm::destroy_user_address_space(*cr3, mmio_skip_release);
     }
 }

@@ -46,13 +46,19 @@ mod wait;
 
 #[allow(unused_imports)]
 pub use api::{
-    current_task_id, current_user_heap_top, is_parent_of, is_task_privileged, is_user_task,
-    reset_initialization_for_test, set_current_user_heap_top, set_task_parent,
-    set_task_user_context, slot_table_len, task_context, task_frame_ptr, task_generation,
-    task_iret_frame, task_state, try_increment_exec_count,
+    current_task_caps, current_task_id, current_user_heap_top, is_parent_of, is_task_privileged,
+    is_user_task, reset_initialization_for_test, set_current_user_heap_top,
+    set_running_slot_for_test, set_task_caps, set_task_parent, set_task_user_context,
+    slot_table_len, task_context, task_frame_ptr, task_generation, task_iret_frame, task_state,
+    try_increment_exec_count,
 };
 #[allow(unused_imports)]
-pub use spawn::{spawn_kernel_task, spawn_user_task, spawn_user_task_owning_code};
+pub use spawn::{
+    spawn_kernel_task, spawn_user_task, spawn_user_task_owning_code,
+    spawn_user_task_owning_code_blocked,
+};
+#[allow(unused_imports)]
+pub(crate) use wait::unblock_task_locked;
 #[allow(unused_imports)]
 pub use wait::{
     block_task, terminate_task, unblock_task, wait_for_task_exit, wait_for_task_exit_with,
@@ -293,6 +299,14 @@ pub fn init() {
 
                 slot.fpu_state = ptr::null_mut();
 
+                if !slot.caps.is_null() {
+                    // SAFETY:
+                    // - `caps` was heap-allocated at driver spawn time with `Box::into_raw`.
+                    // - We are resetting the scheduler; no task will access this block.
+                    drop(unsafe { alloc::boxed::Box::from_raw(slot.caps) });
+                    slot.caps = ptr::null_mut();
+                }
+
                 if !slot.stack_base.is_null() && stacks_to_free.try_reserve(1).is_ok() {
                     stacks_to_free.push((slot.stack_base, slot.stack_size));
                 }
@@ -380,7 +394,16 @@ pub fn set_kernel_address_space_cr3(kernel_cr3: u64) {
 }
 
 /// IRQ adapter that routes PIT ticks into the scheduler core.
+///
+/// Also runs the IRQ-ack watchdog (`irq_bridge::check_stale_bindings`) on
+/// every genuine PIT tick: `dispatch_irq` never auto-EOIs a driver-subscribed
+/// vector (see its doc comment), so without a periodic, tick-driven check
+/// nothing would ever notice a line whose driver task is slow, descheduled,
+/// or live-locked elsewhere (not dead, so `remove_task`'s own cleanup never
+/// runs) sitting in-service indefinitely and blocking every same-or-lower
+/// priority interrupt.
 fn timer_irq_handler(_vector: u8, frame: &mut SavedRegisters) -> *mut SavedRegisters {
+    crate::drivers::irq_bridge::check_stale_bindings();
     on_timer_tick(frame as *mut SavedRegisters)
 }
 
@@ -418,7 +441,7 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
     // (`!meta.started`) returns before this binding is ever used or dropped.
     #[cfg_attr(not(debug_assertions), allow(unused_mut))]
     let mut stacks_to_free: Vec<(*mut u8, usize)>;
-    let address_spaces_to_free: Vec<u64>;
+    let address_spaces_to_free: Vec<PendingAddressSpaceEntry>;
     let removed_zombie_tasks: bool;
 
     let result = {

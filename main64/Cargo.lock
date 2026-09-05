@@ -24,6 +24,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "intel_nic_user_program"
+version = "0.1.0"
+dependencies = [
+ "lib_driver",
+ "lib_kaos",
+ "lib_net",
+]
+
+[[package]]
 name = "kaos_kernel"
 version = "0.1.0"
 
@@ -43,8 +52,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "lib_driver"
+version = "0.1.0"
+
+[[package]]
 name = "lib_kaos"
 version = "0.1.0"
+
+[[package]]
+name = "lib_net"
+version = "0.1.0"
+dependencies = [
+ "lib_driver",
+]
 
 [[package]]
 name = "lib_tui"
@@ -61,9 +81,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rtl8139_user_program"
+version = "0.1.0"
+dependencies = [
+ "lib_driver",
+ "lib_kaos",
+ "lib_net",
+]
+
+[[package]]
 name = "shell_user_program"
 version = "0.1.0"
 dependencies = [
+ "lib_driver",
  "lib_kaos",
 ]
 

@@ -5,7 +5,7 @@ pub mod manager;
 pub mod types;
 
 #[allow(unused_imports)]
-pub use calibration::rdtsc;
+pub use calibration::{rdtsc, tsc_ticks_per_us};
 #[allow(unused_imports)]
 pub use manager::{get_time, init};
 #[allow(unused_imports)]

@@ -17,6 +17,7 @@ use kaos_kernel::memory::vmm::page_table::{
     PDP_TABLE_BASE, PD_TABLE_BASE, PML4_TABLE_ADDR, PT_ENTRIES, PT_TABLE_BASE, RECURSIVE_SLOT,
 };
 use kaos_kernel::memory::{heap, pmm, vmm};
+use kaos_kernel::process::capabilities::MmioAllocKind;
 
 /// Entry point for the VMM integration test kernel.
 #[no_mangle]
@@ -474,7 +475,7 @@ fn test_destroy_user_address_space_releases_user_leaf_and_table_frames() {
         "mapped leaf PFN must match allocated data frame"
     );
 
-    vmm::destroy_user_address_space(user_cr3);
+    vmm::destroy_user_address_space(user_cr3, &[]);
 
     pmm::with_pmm(|mgr| {
         assert!(
@@ -522,7 +523,7 @@ fn test_destroy_user_address_space_releases_single_owner_code_leaf_frame() {
             .expect("test code VA should map in cloned address space");
     });
 
-    vmm::destroy_user_address_space(user_cr3);
+    vmm::destroy_user_address_space(user_cr3, &[]);
 
     pmm::with_pmm(|mgr| {
         assert!(
@@ -570,7 +571,7 @@ fn test_destroy_user_address_space_keeps_shared_code_leaf_frame_until_last_relea
 
     // Destroying the user address space releases only the user-side mapping's
     // ownership; the outer alias still owns the frame, so it must survive.
-    vmm::destroy_user_address_space(user_cr3);
+    vmm::destroy_user_address_space(user_cr3, &[]);
 
     pmm::with_pmm(|mgr| {
         assert!(
@@ -610,7 +611,7 @@ fn test_destroy_user_address_space_with_page_counts_releases_mapped_code_and_sta
 
     // Exactly one mapped code page at USER_CODE_BASE and one mapped stack page
     // at USER_STACK_TOP-4KiB should be torn down.
-    vmm::destroy_user_address_space_with_page_counts(user_cr3, 1, 1);
+    vmm::destroy_user_address_space_with_page_counts(user_cr3, 1, 1, &[]);
 
     pmm::with_pmm(|mgr| {
         assert!(
@@ -662,12 +663,47 @@ fn test_destroy_user_address_space_reclaims_mapping_outside_known_regions() {
         "mapped leaf PFN must match the allocated frame"
     );
 
-    vmm::destroy_user_address_space(user_cr3);
+    vmm::destroy_user_address_space(user_cr3, &[]);
 
     pmm::with_pmm(|mgr| {
         assert!(
             !mgr.release_pfn(leaf.pfn),
             "teardown's catch-all pass must have already reclaimed the out-of-window mapping"
+        );
+    });
+}
+
+/// Contract: destroy_user_address_space's `mmio_skip_release` ranges are unmapped
+/// by the generic catch-all reclaim pass, but their PFN is never handed to
+/// `release_pfn` — a device MMIO BAR window physical address must not be added
+/// to the PMM free list alongside PMM-owned RAM frames.
+/// Given: The subsystem is initialized with the explicit preconditions in this test body, including any literal addresses, vectors, sizes, flags, and constants used below.
+/// When: The exact operation sequence in this function is executed against that state.
+/// Then: All assertions must hold for the checked values and state transitions, preserving the contract "destroy_user_address_space's mmio_skip_release ranges are unmapped but never released".
+/// Failure Impact: Indicates a regression that could return a live MMIO/DMA leaf frame's physical address to the PMM free list, or leave it mapped after teardown.
+#[test_case]
+fn test_destroy_user_address_space_skips_release_for_mmio_ranges() {
+    const MMIO_SKIP_VA: u64 = vmm::USER_MMIO_BASE;
+
+    let user_cr3 = vmm::clone_kernel_pml4_for_user();
+    let leaf = pmm::with_pmm(|mgr| mgr.alloc_frame().expect("leaf frame allocation failed"));
+
+    vmm::with_address_space(user_cr3, || {
+        vmm::try_map_virtual_to_physical(MMIO_SKIP_VA, leaf.physical_address())
+            .expect("mapping the MMIO-window VA should still succeed at the page-table level");
+    });
+
+    vmm::destroy_user_address_space(user_cr3, &[(MMIO_SKIP_VA, 1, MmioAllocKind::Mmio)]);
+
+    // Note: `user_cr3`'s root PML4 frame was released by the call above, so the
+    // address space itself is no longer safe to re-enter here. The PMM check
+    // below is what actually distinguishes "unmapped, not released" from
+    // "unmapped and released" — see the sibling out-of-window test above for
+    // the same pattern.
+    pmm::with_pmm(|mgr| {
+        assert!(
+            mgr.release_pfn(leaf.pfn),
+            "teardown must not have released a PFN listed in mmio_skip_release"
         );
     });
 }
@@ -979,7 +1015,7 @@ fn test_aaa_map_user_page_propagates_out_of_memory_from_path_setup() {
     });
 
     // Release the cloned PML4 root frame.
-    vmm::destroy_user_address_space(user_cr3);
+    vmm::destroy_user_address_space(user_cr3, &[]);
 }
 
 #[test_case]
@@ -1435,7 +1471,7 @@ fn test_destroy_user_address_space_reclaims_sparse_out_of_window_mappings() {
         }
     });
 
-    vmm::destroy_user_address_space(user_cr3);
+    vmm::destroy_user_address_space(user_cr3, &[]);
 
     for frame in &frames {
         pmm::with_pmm(|mgr| {

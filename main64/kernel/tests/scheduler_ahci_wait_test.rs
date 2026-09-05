@@ -84,7 +84,7 @@ extern "C" fn task2() -> ! {
 }
 
 extern "C" fn orchestrator_task() -> ! {
-    let t1_id = sched::spawn_kernel_task(task1).expect("task1 should spawn");
+    let _t1_id = sched::spawn_kernel_task(task1).expect("task1 should spawn");
     let t2_id = sched::spawn_kernel_task(task2).expect("task2 should spawn");
 
     // Wait for task1 to acquire the lock

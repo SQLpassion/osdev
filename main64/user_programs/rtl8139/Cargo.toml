@@ -1,0 +1,18 @@
+[package]
+name = "rtl8139_user_program"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+kernel = []
+
+[dependencies]
+lib_driver = { path = "../../lib_driver" }
+lib_kaos = { path = "../../lib_kaos" }
+lib_net = { path = "../../lib_net" }
+
+[[bin]]
+name = "rtl8139"
+path = "src/main.rs"
+bench = false
+

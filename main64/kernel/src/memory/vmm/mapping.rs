@@ -1,6 +1,7 @@
 use crate::arch::constants::PAGE_SIZE_U64;
 use crate::arch::interrupts;
 use crate::memory::pmm;
+use crate::process::capabilities::MmioAllocKind;
 
 use super::page_table::{
     alloc_frame_phys, alloc_frame_phys_or_panic, entry_ptr, invlpg, page_align_down, pd_index,
@@ -664,12 +665,16 @@ pub fn clone_kernel_pml4_for_user() -> u64 {
 ///   releases them,
 /// - prunes and releases now-empty PT/PD/PDP pages,
 /// - releases the root PML4 frame itself.
-pub fn destroy_user_address_space(pml4_phys: u64) {
+pub fn destroy_user_address_space(
+    pml4_phys: u64,
+    mmio_skip_release: &[(u64, usize, MmioAllocKind)],
+) {
     // Note: single-core, IF-disabled
     destroy_user_address_space_with_page_counts(
         pml4_phys,
         (USER_CODE_SIZE / PAGE_SIZE_U64) as usize,
         (USER_STACK_SIZE / PAGE_SIZE_U64) as usize,
+        mmio_skip_release,
     );
 }
 
@@ -701,6 +706,19 @@ pub fn destroy_user_address_space(pml4_phys: u64) {
 /// downward from [`USER_STACK_TOP`], matching how user stacks are allocated.
 /// Count values are clamped to configured region capacities.
 ///
+/// `mmio_skip_release` lists `(page_va_start, num_pages, kind)` entries —
+/// moved wholesale from the exiting task's `DriverCaps::allocations` before
+/// that block was freed — describing every `AllocDma`/`MapPhysical` range the
+/// task still held open at exit. Only entries whose `kind` is
+/// `MmioAllocKind::Mmio` (a device MMIO BAR window, never PMM-owned RAM) are
+/// treated specially: the catch-all scan in step 3 still unmaps every page in
+/// these ranges (so nothing stays mapped after teardown), but skips
+/// `release_pfn` for them, since that physical address was never owned by the
+/// PMM and must not be added to its free list. A `Dma`-kind entry (an
+/// `AllocDma` buffer the task never freed) is real PMM-owned RAM and is
+/// released normally, exactly like any other page in the scan. Pass `&[]` for
+/// a task that never held an MMIO or DMA grant.
+///
 /// ## What this function does NOT do
 /// - It does not touch any kernel-half mappings (PML4 entries 256 and above), nor
 ///   PML4 slot 0 (the low-memory identity map). Those are shared with every other
@@ -716,6 +734,7 @@ pub fn destroy_user_address_space_with_page_counts(
     pml4_phys: u64,
     code_page_count: usize,
     stack_page_count_from_top: usize,
+    mmio_skip_release: &[(u64, usize, MmioAllocKind)],
 ) {
     // Note: single-core, IF-disabled
     // Always operate on a canonical page-aligned root frame.
@@ -755,11 +774,15 @@ pub fn destroy_user_address_space_with_page_counts(
         unmap_user_heap_region();
 
         // Step 4: Catch-all — reclaim any other present user mapping outside the
-        // three windows above (e.g. a future mmap-created region). Code/Stack/Heap
-        // were already cleared, so in the common case this scan finds nothing left
-        // and is a cheap no-op; it exists so nothing in the user PML4 slot range can
-        // be silently leaked at teardown.
-        reclaim_user_range(USER_CODE_BASE, USER_ADDRESS_SPACE_SCAN_END);
+        // three windows above (e.g. a future mmap-created region, or this task's
+        // MMIO/DMA window). Code/Stack/Heap were already cleared, so in the common
+        // case this scan only has the MMIO/DMA window left to walk; it exists so
+        // nothing in the user PML4 slot range can be silently leaked at teardown.
+        reclaim_user_range(
+            USER_CODE_BASE,
+            USER_ADDRESS_SPACE_SCAN_END,
+            mmio_skip_release,
+        );
     });
 
     // Finally release the root PML4 frame itself after its hierarchy has been pruned.
@@ -780,7 +803,7 @@ pub fn destroy_user_address_space_with_page_counts(
 /// This traverses intermediate page table directories to efficiently skip
 /// unmapped sub-regions and prunes hierarchy frames as they become empty.
 pub fn unmap_user_heap_region() {
-    reclaim_user_range(USER_HEAP_BASE, USER_HEAP_END);
+    reclaim_user_range(USER_HEAP_BASE, USER_HEAP_END, &[]);
 }
 
 /// Reclaims every present user leaf mapping in `[scan_start, scan_end)`.
@@ -813,7 +836,15 @@ pub fn unmap_user_heap_region() {
 /// correctly, and must only pass bounds known not to overlap
 /// address-space-shared infrastructure (PML4 slot 0's identity map, or the
 /// higher-half kernel slots) — see [`USER_ADDRESS_SPACE_SCAN_END`].
-fn reclaim_user_range(scan_start: u64, scan_end: u64) {
+///
+/// `mmio_skip_release` lists `(page_va_start, num_pages, kind)` entries whose
+/// `Mmio`-kind ranges must be unmapped but never passed to `release_pfn` —
+/// see the parameter doc on [`destroy_user_address_space_with_page_counts`].
+fn reclaim_user_range(
+    scan_start: u64,
+    scan_end: u64,
+    mmio_skip_release: &[(u64, usize, MmioAllocKind)],
+) {
     let mut va = scan_start;
     while va < scan_end {
         match walk_levels(va) {
@@ -833,7 +864,11 @@ fn reclaim_user_range(scan_start: u64, scan_end: u64) {
                 // Page table level exists; reuse the already-resolved path to
                 // clear and prune this one page, then advance by page size.
                 let path = ResolvedPath::for_virtual_address(va);
-                clear_leaf_and_prune(va, path, true);
+                let release_pfn = !mmio_skip_release.iter().any(|&(base, pages, kind)| {
+                    let end = base + (pages as u64) * PAGE_SIZE_U64;
+                    kind == MmioAllocKind::Mmio && va >= base && va < end
+                });
+                clear_leaf_and_prune(va, path, release_pfn);
                 va += PAGE_SIZE_U64;
             }
         }
@@ -882,6 +917,7 @@ pub fn map_user_page(virtual_address: u64, pfn: u64, writable: bool) -> Result<(
         Some(UserRegion::Code) => false,
         Some(UserRegion::Stack) => true,
         Some(UserRegion::Heap) => true,
+        Some(UserRegion::Mmio) => true,
         Some(UserRegion::Guard) => {
             return Err(MapError::UserGuardPage { virtual_address });
         }
@@ -925,6 +961,91 @@ pub fn map_user_code_page(
     }
 
     map_user_leaf(virtual_address, pfn, writable, !executable)
+}
+
+/// Maps one user virtual page inside the MMIO window with PCD (cache disable),
+/// writable, user, and no-execute permissions for device hardware registers.
+///
+/// Preconditions: callers must run this only inside a critical section with
+/// interrupts disabled for the full duration and a stable CR3.
+pub fn map_user_mmio_page(virtual_address: u64, pfn: u64) -> Result<(), MapError> {
+    // Note: single-core, IF-disabled
+    let virtual_address = page_align_down(virtual_address);
+
+    match classify_user_region(virtual_address) {
+        Some(UserRegion::Mmio) => {}
+        Some(UserRegion::Guard) => {
+            return Err(MapError::UserGuardPage { virtual_address });
+        }
+        _ => {
+            return Err(MapError::NotUserRegion { virtual_address });
+        }
+    }
+
+    map_user_mmio_leaf(virtual_address, pfn)
+}
+
+/// Installs (or idempotently updates) an MMIO user leaf mapping with
+/// present, writable, user, no_execute, PCD, and PWT flags set (strongly uncacheable).
+fn map_user_mmio_leaf(virtual_address: u64, pfn: u64) -> Result<(), MapError> {
+    // Note: single-core, IF-disabled
+    debug_assert!(
+        !interrupts::are_enabled(),
+        "map_user_mmio_leaf: must run with interrupts disabled; \
+         see map_user_mmio_page preconditions"
+    );
+
+    // Step 1: Ensure all intermediate page table levels (PML4, PDP, PD) exist and are marked user-accessible.
+    populate_page_table_path(virtual_address, true)?;
+    let pt = table_at(pt_table_addr(virtual_address));
+    let pt_idx = pt_index(virtual_address);
+
+    // Step 2: Handle idempotent remap if the leaf is already present.
+    if table_entry(pt, pt_idx).present() {
+        let current_pfn = table_entry(pt, pt_idx).frame();
+
+        if current_pfn != pfn {
+            return Err(MapError::AlreadyMapped {
+                virtual_address,
+                current_pfn,
+                requested_pfn: pfn,
+            });
+        }
+
+        // SAFETY:
+        // - `pt` is a valid PT page mapped into the recursive paging window.
+        // - `pt_idx < PT_ENTRIES` (0..512).
+        // - Interrupts are disabled on this core and CR3 is stable.
+        unsafe {
+            let e = entry_ptr(pt, pt_idx);
+            (*e).set_writable(true);
+            (*e).set_user(true);
+            (*e).set_no_execute(true);
+            (*e).set_pcd(true);
+            (*e).set_pwt(true);
+        }
+
+        invlpg(virtual_address);
+        return Ok(());
+    }
+
+    // Step 3: Fresh mapping path for previously non-present leaf.
+    // SAFETY:
+    // - `pt` is a valid PT page mapped in the recursive window.
+    // - `pt_idx < PT_ENTRIES`.
+    // - Interrupts are disabled and CR3 is stable.
+    unsafe {
+        let e = entry_ptr(pt, pt_idx);
+        (*e).set_mapping(pfn, true, true, true);
+        (*e).set_no_execute(true);
+        (*e).set_pcd(true);
+        (*e).set_pwt(true);
+    }
+
+    // Invalidate stale translation for this VA in current TLB context.
+    invlpg(virtual_address);
+
+    Ok(())
 }
 
 /// Shared leaf-mapping body behind [`map_user_page`] and [`map_user_code_page`]:

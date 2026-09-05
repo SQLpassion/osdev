@@ -8,12 +8,18 @@ use alloc::vec::Vec;
 
 use crate::arch::fpu;
 use crate::arch::interrupts::{InterruptStackFrame, SavedRegisters};
+use crate::process::capabilities::MmioAllocKind;
 
 /// Entry point type for schedulable kernel tasks.
 ///
 /// Tasks are entered via a synthetic interrupt-return frame and are expected
 /// to never return.
 pub type KernelTaskFn = extern "C" fn() -> !;
+
+/// A terminated user task's address-space root (CR3), paired with whatever
+/// `DriverCaps::allocations` entries (`(page_va_start, num_pages, kind)`) it
+/// still held open at exit. See [`SchedulerMetadata::pending_free_address_spaces`].
+pub type PendingAddressSpaceEntry = (u64, Vec<(u64, usize, MmioAllocKind)>);
 
 /// Internal task-construction descriptor for the shared spawn path.
 ///
@@ -42,6 +48,23 @@ pub enum SpawnKind {
         /// every other user task (in particular anything spawned via `Exec`)
         /// must default to `false`.
         privileged: bool,
+
+        /// Whether the task is created directly in [`TaskState::Blocked`]
+        /// instead of [`TaskState::Ready`].
+        ///
+        /// A task is normally `Ready` (and therefore already sitting in the
+        /// run queue, eligible for the very next timer tick) by the time its
+        /// spawn call returns. A caller that must still finish irrevocable
+        /// kernel-side setup after spawning — e.g. `SpawnDriver` assigning
+        /// parent linkage, resolving a `driver_db` device reservation, and
+        /// attaching `DriverCaps` — cannot let the task run before that setup
+        /// completes: a timer tick landing in the gap could select and run
+        /// (and potentially crash) the new task first, permanently stranding
+        /// state that assumed setup would finish uninterrupted. Starting the
+        /// task `Blocked` closes that race entirely, rather than narrowing it
+        /// with a `block_task` call made just slightly too late. The caller
+        /// must call [`super::unblock_task`] once setup is complete.
+        start_blocked: bool,
     },
 }
 
@@ -198,6 +221,13 @@ pub struct TaskEntry {
     ///
     /// Raw pointer instead of `Box<FpuState>` because `TaskEntry: Copy`.
     pub fpu_state: *mut fpu::FpuState,
+
+    /// Hardware capabilities and resource grants for this task.
+    /// `null` for normal (unprivileged) programs.
+    /// Heap-allocated at driver spawn time; freed in `remove_task`.
+    ///
+    /// Raw pointer instead of `Box<DriverCaps>` because `TaskEntry: Copy`.
+    pub caps: *mut crate::process::capabilities::DriverCaps,
 }
 
 impl TaskEntry {
@@ -218,6 +248,7 @@ impl TaskEntry {
             stack_base: ptr::null_mut(),
             stack_size: 0,
             fpu_state: ptr::null_mut(),
+            caps: ptr::null_mut(),
         }
     }
 
@@ -294,12 +325,26 @@ pub struct SchedulerMetadata {
     pub pending_free_stacks: Vec<(*mut u8, usize)>,
 
     /// Address spaces (CR3 roots) from terminated user tasks awaiting
-    /// deallocation.
+    /// deallocation, paired with whatever `DriverCaps::allocations` entries
+    /// (`(page_va_start, num_pages, kind)`) the task still held open at exit.
     ///
     /// Destroying an address space is a slow operation that traverses page
     /// tables and modifies PMM structures. It must happen outside the scheduler
     /// spinlock to keep interrupt latency low.
-    pub pending_free_address_spaces: Vec<u64>,
+    ///
+    /// The allocation list is moved (not copied) out of `DriverCaps` in
+    /// `remove_task` before that block is freed, because by the time this
+    /// address space is actually torn down the task's `DriverCaps` is long
+    /// gone. Without it, the generic catch-all reclaim in
+    /// `destroy_user_address_space_with_page_counts` cannot distinguish a
+    /// device BAR window from PMM-owned RAM and would call `release_pfn` on
+    /// the BAR's physical address — see the module note on
+    /// `MmioAllocKind::Mmio`. Moving the list (instead of allocating a fresh,
+    /// filtered copy) means this capture can never fail under OOM, unlike the
+    /// previous `try_reserve`-based copy whose failure forced the entire
+    /// address space — code, stack, heap, and page tables, not just the MMIO
+    /// window — to leak forever rather than risk corrupting PMM bookkeeping.
+    pub pending_free_address_spaces: Vec<PendingAddressSpaceEntry>,
 
     /// Slot index of the task whose FPU/SSE state is currently live in the
     /// CPU's XMM/x87 registers.

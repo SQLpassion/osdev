@@ -99,7 +99,12 @@ pub fn init() {
                     }
                 }
 
-                // Step 9: Push the discovered device to the global list.
+                // Step 9: Push the discovered device to the global list. The Command
+                // Register (I/O Space, Memory Space, Bus Master) is deliberately left
+                // untouched here — enabling MMIO/DMA decode for a device is done by
+                // `enable_device` only once that specific device has been granted to a
+                // driver task (see `driver_db::derive_grants`), not for every device on
+                // the bus at boot.
                 devices.push(PciDevice {
                     bus,
                     device: slot,
@@ -123,6 +128,41 @@ pub fn init() {
 /// Return a copy of all scanned PCI devices.
 pub fn get_devices() -> Vec<PciDevice> {
     PCI_DEVICES.lock().clone()
+}
+
+/// Enables I/O Space (bit 0), Memory Space (bit 1), and Bus Master (bit 2) in `device`'s
+/// PCI Command Register so its hardware responds to MMIO and DMA.
+///
+/// Must only be called once `device` has been granted to a driver task (see
+/// `driver_db::derive_grants`) — enabling decode/bus-mastering for a device before it
+/// is bound would let any device on the bus respond to MMIO or perform DMA regardless
+/// of whether a driver was ever capability-granted to it.
+pub fn enable_device(device: &PciDevice) {
+    // SAFETY:
+    // - Reading and writing the PCI command register (offset 0x04) in configuration
+    //   space is standard PCI device initialization.
+    let orig_cmd = unsafe { pci_config_read(device.bus, device.device, device.function, 0x04) };
+    let new_cmd = (orig_cmd & 0xFFFF_0000) | ((orig_cmd & 0x0000_FFFF) | 0x0007);
+    unsafe { pci_config_write(device.bus, device.device, device.function, 0x04, new_cmd) };
+}
+
+/// Clears I/O Space (bit 0), Memory Space (bit 1), and Bus Master (bit 2) in
+/// `device`'s PCI Command Register, undoing what [`enable_device`] set.
+///
+/// Must be called once a device is no longer bound to a live driver task —
+/// either because its owning task exited (see `driver_db::release_task`) or
+/// because binding it failed after `enable_device` already ran (see
+/// `driver_db::release_reservation`). Without this, the device keeps
+/// responding to MMIO and mastering DMA after every task that could
+/// legitimately program it is gone, so a still-armed descriptor ring can keep
+/// writing into physical memory the PMM has since handed to an unrelated task.
+pub fn disable_device(device: &PciDevice) {
+    // SAFETY:
+    // - Reading and writing the PCI command register (offset 0x04) in configuration
+    //   space is standard PCI device teardown.
+    let orig_cmd = unsafe { pci_config_read(device.bus, device.device, device.function, 0x04) };
+    let new_cmd = orig_cmd & !0x0007;
+    unsafe { pci_config_write(device.bus, device.device, device.function, 0x04, new_cmd) };
 }
 
 /// Return a copy of a single scanned PCI device.
