@@ -1,8 +1,10 @@
-//! RTL8139 Realtek Fast Ethernet PCI user-space device driver & interactive CLI.
+//! RTL8139 Realtek Fast Ethernet PCI user-space device driver.
 //!
 //! Runs in Ring 3 with hardware isolation using `lib_driver` (`Mmio`, `Irq`, `Dma`).
-//! PCI discovery, MMIO mapping, and the interactive CLI loop are shared with
-//! the Intel NIC driver via `lib_driver_runtime`.
+//! Registers itself as "nic:rtl8139" and runs forever as a background
+//! process serving `NetSend`/`NetRecv`/`DrvQuery` requests from apps (Phase
+//! 2 Step 6) -- PCI discovery, MMIO mapping, and the event loop are shared
+//! with the Intel NIC driver via `lib_driver_runtime`.
 
 #![cfg_attr(not(test), no_std)]
 #![cfg_attr(not(test), no_main)]
@@ -78,15 +80,9 @@ pub extern "C" fn _start() -> ! {
         stack.config.ip, stack.config.gateway
     );
 
-    // Step 5: Hand off to the shared interactive CLI loop.
-    lib_driver_runtime::run_foreground_cli(
-        device,
-        stack,
-        "[RTL8139]",
-        "rtl8139",
-        None,
-        "[rtl8139]> ",
-    )
+    // Step 5: Hand off to the shared background event loop -- registers as
+    // "nic:rtl8139" and never returns under normal operation.
+    lib_driver_runtime::run_background_driver(device, stack, "nic:rtl8139")
 }
 
 #[cfg(not(test))]

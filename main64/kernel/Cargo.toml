@@ -169,3 +169,6 @@ name = "driver_status_test"
 
 [[test]]
 name = "net_client_test"
+
+[[test]]
+name = "driver_background_loop_test"

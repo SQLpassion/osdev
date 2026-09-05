@@ -64,8 +64,8 @@ mcopy -i "$IMG" user_programs/exception_test/except.bin ::/EXCEPT.BIN
 mcopy -i "$IMG" user_programs/shell/shell.bin       ::/SHELL.BIN
 mcopy -i "$IMG" user_programs/tui_app/tui.bin       ::/TUI.BIN
 mcopy -i "$IMG" user_programs/kbasic/kbasic.bin     ::/KBASIC.BIN
-mcopy -i "$IMG" drivers/rtl8139/rtl8139.bin   ::/RTL8139.BIN
-mcopy -i "$IMG" drivers/intel_nic/intel_nic.bin ::/INTLNIC.BIN
+mcopy -i "$IMG" drivers/rtl8139/rtl8139.bin   ::/RTL8139.DRV
+mcopy -i "$IMG" drivers/intel_nic/intel_nic.bin ::/INTLNIC.DRV
 mcopy -i "$IMG" SFile.txt                           ::/SFILE.TXT
 mcopy -i "$IMG" BigFile.txt                         ::/BIGFILE.TXT
 mcopy -i "$IMG" user_programs/kbasic/src/demo.bas   ::/DEMO.BAS
