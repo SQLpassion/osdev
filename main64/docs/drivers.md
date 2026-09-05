@@ -677,6 +677,8 @@ The RTL8139 enables interrupts, but its interactive receive path only polls. The
 
 The regular `exit` command disables the device with `shutdown()` but does not call `drop(device)` before the non-returning `process::exit()`. A panic or `readline()` error skips even `shutdown()`. Although the kernel removes the process address space, a clean driver lifecycle should explicitly dismantle hardware state, IRQ binding, MMIO mapping, and DMA allocations in a defined order.
 
+The `unload` command (§17) inherits the same limitation by construction, not by oversight: `DrvUnload` calls `scheduler::terminate_task()` directly, the same hard-kill path the scheduler already uses to reap a crashed or exited task. It does not run the driver's own shutdown code, so a still-DMA-active NIC is not told to disable bus-mastering before its address space and DMA frames are torn down. Combined with the lack of an IOMMU noted above, a driver unloaded while actively transferring data could in principle have the device write into memory that has since been reused for something else. Building a cooperative shutdown protocol (e.g. a dedicated syscall the driver polls for, mirrored by `unload` waiting for an acknowledgement before killing the task) is future work, not something this command attempts.
+
 In the transmit path, the descriptor wait loop expires after 10,000 iterations without returning an error. The code still writes the slot and starts transmission. It also reports at least 60 bytes for short Ethernet frames without explicitly zeroing the additional bytes before every transmission. Data left from a previous slot use could therefore be emitted as Ethernet padding. A robust implementation should return `IoError` on timeout and clear the padding range.
 
 The protocol stack the driver hands frames to has its own, separately documented limitations — no DHCP, no TCP/UDP, no IP fragmentation, ARP entries with no expiration timer, and so on; see [`docs/networking.md`](networking.md) §11.
@@ -700,4 +702,78 @@ During transmission, the hardware-agnostic `lib_net` protocol stack (`docs/netwo
 When the user exits through `exit` or `quit`, the receiver and interrupt mask are disabled. `process::exit()` then terminates the task without Rust unwinding. The kernel destroys the complete user address space and releases PMM-managed DMA frames; the scheduler also frees the capability block. The waiting shell resumes. The existing `Drop` implementations would perform targeted MMIO and DMA cleanup, but they are not executed on this exact path without an explicit `drop(device)`.
 
 The branch therefore demonstrates a complete vertical slice through an operating system: PCI configuration, page tables, process permissions, syscalls, DMA ring buffers, and network protocols. Because the RTL8139 driver runs in Ring 3, the boundaries between hardware, kernel mechanism, user-space abstraction, and protocol logic become especially clear.
+
+---
+
+## 17. The `drivers.bin` Management Application
+
+Loading a driver used to be a single shell command (`load <name.drv>`) with no counterpart for unloading one or seeing what was currently running. `drivers.bin` (built from [`user_programs/drivers`](../user_programs/drivers)) replaces that one command with a small, standalone Ring-3 REPL dedicated to driver lifecycle management, structurally identical to the shell's own read-eval-print loop: a prompt, a line read via `console::readline()`, and a match over the first whitespace-separated word.
+
+It understands four commands. `help` prints the command list. `list` calls `DrvListCount` and then `DrvListEntry` for each index, printing every currently registered driver's name and packed task id (or a note that none are loaded). `load <name.drv>` runs the same PCI-resolution-then-`SpawnDriver` logic the shell used to run directly (§3-§4), now living in [`user_programs/drivers/src/load_driver.rs`](../user_programs/drivers/src/load_driver.rs). `unload <name>` calls the new `DrvUnload` syscall (§15 documents its hard-kill semantics).
+
+An illustrative session, after typing `drivers.bin` at the shell prompt to launch it (derived directly from `execute_command`'s match arms — see the verification note below for what was actually observed running):
+
+```
+> drivers.bin
+========================================
+    KAOS - Driver Management (DRIVERS.BIN)
+========================================
+Type 'help' to see the list of commands.
+
+drivers> list
+No drivers loaded.
+drivers> load rtl8139.drv
+[drivers] Driver 'RTL8139.DRV' started as TID 2
+drivers> list
+Loaded drivers:
+  nic:rtl8139          tid=2
+drivers> unload nic:rtl8139
+[drivers] Driver 'nic:rtl8139' unloaded.
+drivers> list
+No drivers loaded.
+```
+
+`drivers.bin` has no dedicated `exit` command of its own yet (unlike the shell) — leaving it today means power-cycling or, in a future revision, adding an explicit `exit`/`quit` command mirroring the shell's.
+
+`load`/`unload`'s command-line parsing (present vs. missing argument, trailing words ignored, case-sensitive dispatch) is factored into a pure `parse_command()` function and unit-tested on the host without touching a syscall — the same pattern §14 describes for `resolve_driver_filename`. The syscall-touching behavior of `list`/`load`/`unload` themselves is covered by the kernel-side tests referenced in §14 and §18.
+
+**Verification note:** this environment has no hardware-accelerated x86_64 virtualization (the build host is `aarch64`), so booting the real BIOS/bootloader chain under QEMU's software CPU emulation is slow, and driving the guest's PS/2-keyboard-based REPL interactively would require scripting raw scancode injection via QEMU's QMP `input-send-event` — judged disproportionate effort for this check. What was verified directly: the full disk image (kernel with the new `DrvUnload`/`DrvListCount`/`DrvListEntry` syscalls and `Exec` capability delegation, the updated `SHELL.BIN`, and the new `DRIVERS.BIN`) builds end to end via `helper_build_user_programs.sh` and `helper_make_fat32_bios_image.sh`; `DRIVERS.BIN` is present in the resulting FAT32 image alongside the other user programs; and the image boots successfully through the full bootsector → 16-bit loader → 64-bit loader → kernel chain to a working, keyboard-ready `SHELL.BIN` prompt with no panic, matching every prior boot (confirmed via a captured serial log). The transcript above reflects `drivers.bin`'s actual command-dispatch code, not a captured keystroke session — a human with local keyboard/display access should run through it once to confirm before relying on it in production.
+
+---
+
+## 18. Capability Delegation via `Exec`
+
+`load` and `unload` both require capabilities (`SPAWN_DRIVER`, `UNLOAD_DRIVER`) that an ordinary Ring-3 program does not have. Before this feature, that was not a problem: `load` ran *inside* the shell's own process, and the shell is the one task marked privileged at boot (`kernel/src/main.rs`), so it sailed through `SpawnDriver`'s authorization check directly. Moving `load`/`unload` into a separate `drivers.bin` process broke that shortcut — a process started via `Exec` is, and always was, unconditionally unprivileged (`process::exec_from_vfs`'s own doc comment), regardless of who started it.
+
+The fix is a narrow delegation mechanism on `Exec` itself, not a way to make `drivers.bin` privileged. `Exec` gained a second argument, `requested_caps`, and the kernel computes what to actually grant with a small, pure, unit-tested function:
+
+```rust
+pub fn resolve_delegated_capabilities(
+    caller_privileged: bool,
+    caller_flags: Capabilities,
+    requested: Capabilities,
+) -> Capabilities {
+    if caller_privileged {
+        requested
+    } else {
+        caller_flags & requested
+    }
+}
+```
+
+A privileged caller (the shell) may delegate anything it asks for. An unprivileged caller may delegate at most the capabilities it already holds itself — the intersection of what it has and what it asks for — so a compromised or buggy unprivileged process can never manufacture a capability out of thin air and hand it to a child. When capabilities are granted, `syscall_exec_impl` attaches a `DriverCaps` block to the new task exactly the way `SpawnDriver` does for a driver it spawns (§5), just with `ResourceGrants::default()` — an empty MMIO/IRQ grant, since `drivers.bin` itself never touches hardware directly.
+
+Deciding *which* binary gets *which* capabilities is deliberately kept out of the kernel. The kernel only provides the delegation mechanism; the policy of "only `DRIVERS.BIN`, and only these three bits" lives entirely in the shell's `run_program()`, in a function just as small and just as directly tested:
+
+```rust
+fn requested_capabilities_for(name: &str) -> u64 {
+    if name.eq_ignore_ascii_case("DRIVERS.BIN") {
+        SPAWN_DRIVER | UNLOAD_DRIVER | LIST_DRIVERS
+    } else {
+        0
+    }
+}
+```
+
+Every other program the shell execs — `TUI.BIN`, `KBASIC.BIN`, a plain `hello.bin` — still gets exactly zero delegated capabilities, identical to `Exec`'s behavior before this feature existed. This split mirrors `SpawnDriver`'s own design: the kernel enforces a hard security *invariant* (a caller can never delegate more than it has), while a trusted, auditable piece of user-space code owns the *policy* of who the invariant actually applies to. Both the mechanism (`resolve_delegated_capabilities`) and the policy (`requested_capabilities_for`) are covered by their own host-level unit tests, and the full path — shell delegates, `drivers.bin` receives exactly those three capabilities and nothing more, and every other exec'd program still receives none — is covered end-to-end by a dedicated kernel integration test suite (`kernel/tests/exec_capability_delegation_test.rs`).
 
