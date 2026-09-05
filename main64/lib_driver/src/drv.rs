@@ -2,7 +2,7 @@
 //! publishing (`DrvRegister`/`DrvLookup`, `NetSend`/`NetRecv`,
 //! `DrvPublishStatus`/`DrvQuery`).
 
-use crate::kernel_types::{decode_result, SysError, SyscallId, UserDriverStatus};
+use crate::kernel_types::{decode_result, SysError, SyscallId, UserDriverInfo, UserDriverStatus};
 use crate::raw::{syscall1, syscall2, syscall3, syscall4};
 
 /// Maximum length, in bytes, of a driver name accepted by `DrvRegister`/`DrvLookup`.
@@ -128,6 +128,79 @@ pub fn publish_status(status: &UserDriverStatus) -> Result<(), SysError> {
     decode_result(raw).map(|_| ())
 }
 
+/// Terminates a registered driver task by name (hard kill — no clean device
+/// shutdown, see `docs/drivers.md` §15).
+///
+/// Requires the caller to have been delegated `Capabilities::UNLOAD_DRIVER`
+/// at `Exec` time (or to be privileged) — ordinary Ring-3 apps cannot unload
+/// a driver. Fails with `SysError::InvalidArgument` if `name` is not
+/// currently registered.
+pub fn unload_driver(name: &[u8]) -> Result<(), SysError> {
+    if name.is_empty() || name.len() > DRIVER_NAME_LEN {
+        return Err(SysError::InvalidArgument);
+    }
+
+    // SAFETY:
+    // - Invokes the DrvUnload syscall (nr. 45).
+    // - `name` is a valid, borrowed slice for the duration of this call.
+    let raw = unsafe {
+        syscall2(
+            SyscallId::DRV_UNLOAD,
+            name.as_ptr() as u64,
+            name.len() as u64,
+        )
+    };
+    decode_result(raw).map(|_| ())
+}
+
+/// Returns the number of currently registered driver tasks.
+pub fn driver_count() -> Result<usize, SysError> {
+    // SAFETY: Invokes the DrvListCount syscall (nr. 46), which takes no arguments.
+    let raw = unsafe { syscall1(SyscallId::DRV_LIST_COUNT, 0) };
+    decode_result(raw).map(|n| n as usize)
+}
+
+/// Resolves metadata for one registered driver, by index (see
+/// [`driver_count`] for the valid range). Indices are a snapshot artifact,
+/// not a stable identity — see the syscall's kernel doc comment.
+pub fn driver_info(index: usize) -> Result<UserDriverInfo, SysError> {
+    let mut out = core::mem::MaybeUninit::<UserDriverInfo>::uninit();
+    // SAFETY:
+    // - Invokes the DrvListEntry syscall (nr. 47).
+    // - `out` is a valid, writable destination for exactly
+    //   `size_of::<UserDriverInfo>()` bytes for the duration of this call;
+    //   the kernel only writes into it on success (`decode_result(raw)` is
+    //   checked with `?` below before `out` is ever read).
+    let raw = unsafe {
+        syscall2(
+            SyscallId::DRV_LIST_ENTRY,
+            index as u64,
+            out.as_mut_ptr() as u64,
+        )
+    };
+    decode_result(raw)?;
+    // SAFETY: the syscall succeeded, so the kernel wrote a complete
+    // `UserDriverInfo` into `out` before returning.
+    Ok(unsafe { out.assume_init() })
+}
+
+/// Fills `out` with metadata for every currently registered driver, up to
+/// `out.len()` entries, and returns how many were written.
+///
+/// Calls [`driver_count`] once, then [`driver_info`] for each index in
+/// turn — the registry is not locked across the whole call, so this is a
+/// best-effort snapshot rather than a transactional read (matches every
+/// other count-then-fetch syscall pair in this crate, e.g. PCI device
+/// enumeration).
+pub fn list_drivers(out: &mut [UserDriverInfo]) -> Result<usize, SysError> {
+    let count = driver_count()?;
+    let n = count.min(out.len());
+    for (i, slot) in out.iter_mut().take(n).enumerate() {
+        *slot = driver_info(i)?;
+    }
+    Ok(n)
+}
+
 /// Reads the last status snapshot published by `driver_id` via
 /// [`publish_status`]. Fails with `SysError::InvalidArgument` if `driver_id`
 /// is unknown or has never published.
@@ -144,4 +217,26 @@ pub fn query_status(driver_id: u64) -> Result<UserDriverStatus, SysError> {
     // SAFETY: the syscall succeeded, so the kernel wrote a complete
     // `UserDriverStatus` into `out` before returning.
     Ok(unsafe { out.assume_init() })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // These only exercise `unload_driver`'s length validation, which returns
+    // before ever reaching the `DrvUnload` syscall — safe to run as a plain
+    // host unit test, unlike the syscall-touching code paths in this module
+    // (which require the kernel's `int 0x80` handler and are only covered by
+    // `kernel/tests/driver_unload_test.rs`).
+
+    #[test]
+    fn test_unload_driver_rejects_empty_name() {
+        assert_eq!(unload_driver(b""), Err(SysError::InvalidArgument));
+    }
+
+    #[test]
+    fn test_unload_driver_rejects_name_too_long() {
+        let too_long = [b'a'; DRIVER_NAME_LEN + 1];
+        assert_eq!(unload_driver(&too_long), Err(SysError::InvalidArgument));
+    }
 }
