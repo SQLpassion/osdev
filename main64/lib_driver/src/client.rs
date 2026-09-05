@@ -1,5 +1,9 @@
-use lib_driver::drv;
-use lib_driver::{SysError, UserDriverStatus};
+//! Ring-3 client for talking to a running background NIC driver through the
+//! kernel's `DrvLookup`/`NetSend`/`NetRecv`/`DrvQuery` syscalls
+//! (`docs/nic_driver_design.md` §4.7).
+
+use crate::drv;
+use crate::{SysError, UserDriverStatus};
 
 /// Ring-3 handle to a running background NIC driver, resolved by name
 /// (e.g. `"nic:rtl8139"`, `"nic:intel_nic"`) through the kernel

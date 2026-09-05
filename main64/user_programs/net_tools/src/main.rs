@@ -17,11 +17,11 @@ extern crate alloc;
 mod util;
 
 #[cfg(not(test))]
+use lib_driver::client::NicClient;
+#[cfg(not(test))]
 use lib_kaos::{console, print, println, process};
 #[cfg(not(test))]
 use lib_net::{Ipv4Address, MacAddress, NetworkEvent, NetworkStack};
-#[cfg(not(test))]
-use lib_net_client::NicClient;
 #[cfg(not(test))]
 use util::{
     format_arp_table, format_ifconfig, parse_command_line, parse_ping_target, ping_loss_percent,

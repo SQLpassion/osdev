@@ -10,7 +10,6 @@ kernel = []
 lib_driver = { path = "../../lib_driver" }
 lib_kaos = { path = "../../lib_kaos" }
 lib_net = { path = "../../lib_net" }
-lib_net_client = { path = "../../lib_net_client" }
 
 [[bin]]
 name = "net_tools"

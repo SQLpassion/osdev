@@ -1,4 +1,4 @@
-//! Integration tests for `lib_net_client::NicClient` (Phase 2 Step 4 of
+//! Integration tests for `lib_driver::client::NicClient` (Phase 2 Step 4 of
 //! `docs/nic_driver_design.md`).
 //!
 //! `NicClient`'s methods are thin wrappers around raw `int 0x80` syscalls
@@ -10,9 +10,9 @@
 //! `int 0x80` here is a real, correctly-handled software interrupt, not a
 //! no-op or a fault -- exactly like a genuine syscall, just issued from ring
 //! 0 instead of ring 3 (a lower-CPL caller may always invoke a gate with a
-//! less-restrictive DPL). This lets the test call `lib_net_client`/
-//! `lib_driver` directly instead of going through `dispatch_checked`, so it
-//! exercises the exact production code path (register marshaling,
+//! less-restrictive DPL). This lets the test call `lib_driver` directly
+//! instead of going through `dispatch_checked`, so it exercises the exact
+//! production code path (register marshaling,
 //! `int 0x80`, `decode_result`) rather than re-implementing it.
 //!
 //! One consequence of this technique: every pointer argument the *test*
@@ -50,8 +50,8 @@ use kaos_kernel::drivers::registry;
 use kaos_kernel::memory::{heap, pmm, vmm};
 use kaos_kernel::scheduler::{self as sched, set_running_slot_for_test, task_id_slot};
 
+use lib_driver::client::NicClient;
 use lib_driver::{drv, SysError};
-use lib_net_client::NicClient;
 
 #[no_mangle]
 #[link_section = ".text.boot"]

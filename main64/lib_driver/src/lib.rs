@@ -7,6 +7,9 @@
 //! - [`drv`]  — Driver name registration/resolution, packet transport, and
 //!   status publishing (DrvRegister/DrvLookup, NetSend/NetRecv,
 //!   DrvPublishStatus/DrvQuery)
+//! - [`client`] — `NicClient`, a Ring-3 handle wrapping `drv`'s
+//!   DrvLookup/NetSend/NetRecv/DrvQuery calls for an app talking to an
+//!   already-running background NIC driver
 
 #![no_std]
 #![allow(dead_code)]
@@ -23,6 +26,7 @@ pub use kernel_types::{
 
 mod raw;
 
+pub mod client;
 pub mod dma;
 pub mod drv;
 pub mod irq;

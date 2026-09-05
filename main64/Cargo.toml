@@ -10,7 +10,6 @@ members = [
     "lib_driver_runtime",
     "lib_kaos",
     "lib_net",
-    "lib_net_client",
     "lib_tui",
     "user_programs/filedemo",
     "user_programs/exception_test",
