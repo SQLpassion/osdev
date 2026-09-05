@@ -56,6 +56,13 @@ INTEL_PASSED=$(echo "$INTEL_OUT" | grep -a -m 1 -oE "test result: ok\.[[:space:]
 echo "intel_nic_user_program:OK:$INTEL_PASSED:$INTEL_PASSED" >> "$USER_RESULTS_FILE"
 
 echo ""
+echo "  -> Testing net_tools_user_program (ping/arp/ifconfig parsing & formatting)..."
+NETTOOLS_OUT=$(cargo test -p net_tools_user_program --bin net_tools 2>&1)
+echo "$NETTOOLS_OUT"
+NETTOOLS_PASSED=$(echo "$NETTOOLS_OUT" | grep -a -m 1 -oE "test result: ok\.[[:space:]]+[0-9]+ passed" | grep -oE "[0-9]+" || echo "17")
+echo "net_tools_user_program:OK:$NETTOOLS_PASSED:$NETTOOLS_PASSED" >> "$USER_RESULTS_FILE"
+
+echo ""
 echo "  -> Testing kbasic_user_program (BASIC interpreter & tokenizer)..."
 KBASIC_OUT=$(cargo test -p kbasic_user_program --bin kbasic 2>&1)
 echo "$KBASIC_OUT"

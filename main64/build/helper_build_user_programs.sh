@@ -216,4 +216,24 @@ strip_debug_info intel_nic.bin
 echo "-> Built: $INTEL_NIC_DIR/intel_nic.bin"
 ls -la intel_nic.bin
 
+NET_TOOLS_DIR="$PROJECT_ROOT/user_programs/net_tools"
+echo ""
+echo "-> Building net_tools user program..."
+
+cd "$NET_TOOLS_DIR"
+
+if [ "$PROFILE" = "release" ]; then
+    cargo +nightly build --release --target x86_64-unknown-none -Z build-std=core,alloc
+    INPUT_ELF="$PROJECT_ROOT/target/x86_64-unknown-none/release/net_tools"
+else
+    cargo +nightly build --target x86_64-unknown-none
+    INPUT_ELF="$PROJECT_ROOT/target/x86_64-unknown-none/debug/net_tools"
+fi
+
+cp "$INPUT_ELF" net_tools.bin
+strip_debug_info net_tools.bin
+
+echo "-> Built: $NET_TOOLS_DIR/net_tools.bin"
+ls -la net_tools.bin
+
 

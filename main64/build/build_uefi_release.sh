@@ -60,6 +60,7 @@ mcopy   -i "$IMG@@$PART_OFFSET" "user_programs/tui_app/tui.bin"       ::/TUI.BIN
 mcopy   -i "$IMG@@$PART_OFFSET" "user_programs/kbasic/kbasic.bin"     ::/KBASIC.BIN
 mcopy   -i "$IMG@@$PART_OFFSET" "drivers/rtl8139/rtl8139.bin"   ::/RTL8139.DRV
 mcopy   -i "$IMG@@$PART_OFFSET" "drivers/intel_nic/intel_nic.bin" ::/INTLNIC.DRV
+mcopy   -i "$IMG@@$PART_OFFSET" "user_programs/net_tools/net_tools.bin" ::/NETTOOLS.BIN
 mcopy   -i "$IMG@@$PART_OFFSET" "user_programs/kbasic/src/demo.bas"   ::/DEMO.BAS
 echo "==> $IMG ready. Flash to a USB stick with (DESTRUCTIVE - pick the right device!):"
 echo "        sudo dd if=$IMG of=/dev/<your-usb> bs=4M conv=fsync"

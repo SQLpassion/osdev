@@ -66,6 +66,7 @@ mcopy -i "$IMG" user_programs/tui_app/tui.bin       ::/TUI.BIN
 mcopy -i "$IMG" user_programs/kbasic/kbasic.bin     ::/KBASIC.BIN
 mcopy -i "$IMG" drivers/rtl8139/rtl8139.bin   ::/RTL8139.DRV
 mcopy -i "$IMG" drivers/intel_nic/intel_nic.bin ::/INTLNIC.DRV
+mcopy -i "$IMG" user_programs/net_tools/net_tools.bin ::/NETTOOLS.BIN
 mcopy -i "$IMG" SFile.txt                           ::/SFILE.TXT
 mcopy -i "$IMG" BigFile.txt                         ::/BIGFILE.TXT
 mcopy -i "$IMG" user_programs/kbasic/src/demo.bas   ::/DEMO.BAS
