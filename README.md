@@ -29,6 +29,9 @@ hardware.
 - **Storage stack** — ATA PIO + AHCI/SATA block devices, GPT partitions, FAT32, and a single-mount VFS.
 - **Console subsystem** — runtime-polymorphic VGA text-mode *and* linear graphics framebuffer backends.
 - **PCI bus driver** with BAR sizing and device enumeration.
+- **Loadable Ring-3 device drivers** — capability-gated syscalls (MMIO/IRQ/DMA/spawn) let
+  RTL8139 and Intel Gigabit NIC drivers run as ordinary, `load`-able background processes,
+  with a shared Ethernet/ARP/IPv4/ICMP stack and an IPC-based `net-tools` (ping/arp/ifconfig).
 - **Text User Interface (TUI)** framework with multi-tab windowing.
 - **Custom `no_std` test framework** that boots each integration test as its own kernel in QEMU.
 
@@ -67,25 +70,34 @@ for the full mechanics.
 ```
 osdev/
 ├── main64/                  # The operating system (Cargo workspace)
-│   ├── kernel/              # The Rust kernel (crate: kernel)
+│   ├── kernel/              # The Rust kernel (crate: kaos_kernel)
 │   │   └── src/
 │   │       ├── arch/        # x86_64: GDT/TSS, IDT, interrupts, FPU, MSR, ports
 │   │       ├── memory/      # PMM, VMM, heap allocator
 │   │       ├── scheduler/   # Round-robin preemptive scheduler
 │   │       ├── sync/        # SpinLock & scheduler-aware wait queues
 │   │       ├── syscall/     # int 0x80 dispatch, ABI, user-pointer checks
-│   │       ├── drivers/     # PCI, AHCI, ATA, keyboard, serial, screen, timer
+│   │       ├── drivers/     # PCI, AHCI, ATA, keyboard, serial, screen, timer,
+│   │       │                # driver name registry & IRQ bridge for Ring-3 drivers
 │   │       ├── io/          # GPT, VFS, FAT32
 │   │       ├── console/     # VGA text-mode + framebuffer backends
 │   │       └── process/     # Process types and the user-program loader
 │   ├── kaosldr_16/          # Stage 1+2 BIOS loaders (assembly)
 │   ├── kaosldr_64/          # Stage 3 long-mode loader (Rust)
 │   ├── kaosldr_uefi/        # UEFI loader → BOOTX64.EFI (Rust)
-│   ├── lib_kaos/            # Ring-3 user-space runtime / syscall library
+│   ├── lib_kaos/            # Ring-3 user-space runtime / syscall library (general purpose)
 │   ├── lib_tui/             # User-space TUI library
-│   ├── user_programs/       # Ring-3 programs: shell, hello, readline, kbasic, filedemo, tui_app
+│   ├── lib_driver/          # Ring-3 syscall ABI for driver operations (mmio/irq/drv/
+│   │                        # spawn/dma, NicClient) — also used directly by the kernel
+│   │                        # test harness and by the shell's `load` command
+│   ├── lib_driver_runtime/  # Shared PCI discovery + background-driver event loop,
+│   │                        # used only by the two NIC driver binaries below
+│   ├── lib_net/             # Hardware-agnostic Ethernet/ARP/IPv4/ICMP stack
+│   ├── drivers/             # Ring-3 NIC drivers, loadable via the shell: rtl8139, intel_nic
+│   ├── user_programs/       # Ring-3 programs: shell, hello, readline, kbasic, filedemo,
+│   │                        # exception_test, tui_app, net_tools
 │   ├── docs/                # Subsystem documentation (see below)
-│   └── build*.sh            # Build & image-generation scripts
+│   └── build/               # Build & image-generation scripts
 ├── LICENSE                  # MIT
 └── README.md
 ```
@@ -101,34 +113,45 @@ The OS is a Cargo workspace under `main64/` and requires the **Rust nightly** to
 
 ### BIOS image (QEMU)
 
-```bash
-# macOS (host)
-./build_bios_debug.sh   && qemu-system-x86_64 -drive format=raw,file=kaos64-bios.img --serial stdio
-./build_bios_release.sh && qemu-system-x86_64 -drive format=raw,file=kaos64-bios.img --serial stdio
+`build/build_bios_debug.sh` and `build/build_bios_release.sh` compile the kernel, loaders,
+and all user programs/drivers, assemble the FAT32 image, and launch QEMU themselves —
+no separate `qemu-system-x86_64` invocation needed.
 
-# Inside the dev container
-./build_bios_debug_devcontainer.sh && qemu-system-x86_64 -drive format=raw,file=kaos64-bios.img -display curses
+```bash
+# macOS (host) — opens a GUI window + serial console by default
+./build/build_bios_debug.sh
+./build/build_bios_release.sh
+
+# Inside the dev container / headless Linux (serial console only)
+./build/build_bios_debug_devcontainer.sh
 ```
+
+Override the display with `DISPLAY_MODE=gui|serial|vnc`, e.g.
+`DISPLAY_MODE=serial ./build/build_bios_debug.sh`. Any extra arguments are forwarded to
+`qemu-system-x86_64` (e.g. `-s -S` to wait for a GDB connection on port 1234).
 
 ### UEFI image (QEMU + OVMF)
 
 ```bash
-./build_uefi_debug.sh
+./build/build_uefi_debug.sh
 ```
 
 This produces a GPT disk image (`kaos64-uefi.img`) with a FAT32 EFI System Partition
-containing `/EFI/BOOT/BOOTX64.EFI`. The same image can be written 1:1 to a USB stick and
-booted on real UEFI hardware. Requires QEMU + OVMF, `gptfdisk` (`sgdisk`) and `mtools`
-(`brew install qemu gptfdisk mtools` on macOS; preinstalled in the dev container).
+containing `/EFI/BOOT/BOOTX64.EFI`, boots it in QEMU + OVMF, and can be written 1:1 to a
+USB stick to boot on real UEFI hardware. Requires QEMU + OVMF, `gptfdisk` (`sgdisk`) and
+`mtools` (`brew install qemu gptfdisk mtools` on macOS; preinstalled in the dev container).
 
 ### Running the test suite
 
 ```bash
-cargo test -p kernel    # from main64/
+# Everything: kernel tests, every user-program's host unit tests, fmt, clippy
+./test_all.sh    # from main64/
+
+# Kernel integration tests only (each test boots as its own kernel in QEMU)
+cd kernel && cargo test
 ```
 
-Each integration test is compiled into a standalone kernel binary that boots in QEMU and
-signals pass/fail via the `isa-debug-exit` device. See [`testing.md`](main64/docs/testing.md).
+See [`testing.md`](main64/docs/testing.md) for how the custom `no_std` test framework works.
 
 ### Running on real hardware
 
@@ -174,20 +197,19 @@ Detailed, implementation-level documentation for each subsystem lives in
 |---|---|
 | [pci.md](main64/docs/pci.md) | PCI bus driver, configuration space, BAR sizing |
 | [storage.md](main64/docs/storage.md) | Storage stack: ATA/AHCI → block device → GPT → FAT → VFS |
-
 | [console.md](main64/docs/console.md) | Console subsystem: VGA text-mode and framebuffer backends |
 | [tui.md](main64/docs/tui.md) | Text User Interface framework architecture |
+
+### Drivers & networking
+| Document | Topic |
+|---|---|
+| [drivers.md](main64/docs/drivers.md) | Ring-3 user-space driver architecture from first principles: capabilities, MMIO/IRQ/DMA syscalls, and the RTL8139 driver walkthrough |
+| [networking.md](main64/docs/networking.md) | The `lib_net` protocol stack (Ethernet/ARP/IPv4/ICMP) explained OSI-layer by OSI-layer, down to byte offsets, plus how `ping` works end to end across the driver/net-tools process split |
 
 ### Testing
 | Document | Topic |
 |---|---|
 | [testing.md](main64/docs/testing.md) | The custom `no_std` kernel test framework |
-
-### Design notes & roadmap
-| Document | Topic |
-|---|---|
-| [todo_drivers.md](main64/docs/todo_drivers.md) | *(Planned)* dynamic, loadable Ring-3 user-space driver infrastructure |
-| [todo_uefi_kernel_pagetables.md](main64/docs/todo_uefi_kernel_pagetables.md) | Plan for kernel-owned page tables on the UEFI path |
 
 ---
 

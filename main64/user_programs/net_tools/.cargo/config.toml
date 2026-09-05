@@ -1,9 +1,9 @@
 [target.x86_64-unknown-none]
 rustflags = [
-    "-C", "link-arg=-Tuser_programs/intel_nic/link.ld",
+    "-C", "link-arg=-Tuser_programs/net_tools/link.ld",
     "-C", "link-arg=-z",
     "-C", "link-arg=max-page-size=0x1000",
-    "-C", "link-arg=-Map=intel_nic.map",
+    "-C", "link-arg=-Map=net_tools.map",
     "-C", "code-model=large",
     "-C", "relocation-model=static",
     "-C", "no-redzone=yes",

@@ -5,7 +5,7 @@
 
 This document explains the driver architecture implemented on `feature/drivers` from first principles. Its purpose is not merely to describe **what** the code does, but to explain **why** each layer exists and how data, permissions, and hardware events move through the system. The concrete example is a Realtek RTL8139 network driver that runs as an ordinary Ring 3 process while retaining controlled access to PCI hardware, MMIO registers, DMA memory, and interrupts.
 
-The text follows the real lifetime of the driver. It begins with the necessary hardware and operating-system concepts, follows the driver from the shell through the new kernel syscalls, and then examines device initialization and the transmit and receive paths. The final sections explain the small Ethernet, ARP, IPv4, and ICMP stack, the build and test infrastructure, and the current technical limitations.
+The text follows the real lifetime of the driver. It begins with the necessary hardware and operating-system concepts, follows the driver from the shell through the new kernel syscalls, and then examines device initialization and the transmit and receive paths. The final sections explain the build and test infrastructure and the current technical limitations. The protocol stack the driver hands frames to — Ethernet, ARP, IPv4, and ICMP — is documented separately in [`docs/networking.md`](networking.md), since it is hardware-agnostic and lives in its own crate, `lib_net`.
 
 The most important implementation files are:
 
@@ -13,9 +13,8 @@ The most important implementation files are:
 * [`kernel/src/syscall/dispatch/driver.rs`](../kernel/src/syscall/dispatch/driver.rs)
 * [`kernel/src/drivers/irq_bridge.rs`](../kernel/src/drivers/irq_bridge.rs)
 * [`lib_driver`](../lib_driver/src/lib.rs)
-* [`user_programs/rtl8139/src/rtl8139.rs`](../user_programs/rtl8139/src/rtl8139.rs)
-* [`user_programs/rtl8139/src/net`](../user_programs/rtl8139/src/net/mod.rs)
-* [`user_programs/rtl8139/src/main.rs`](../user_programs/rtl8139/src/main.rs)
+* [`drivers/rtl8139/src/rtl8139.rs`](../drivers/rtl8139/src/rtl8139.rs)
+* [`drivers/rtl8139/src/main.rs`](../drivers/rtl8139/src/main.rs)
 
 ---
 
@@ -77,7 +76,7 @@ The change is located in [`kernel/src/drivers/pci/mod.rs`](../kernel/src/drivers
 
 A Base Address Register, or BAR, describes an address range provided by a device. With a memory BAR, the range looks like memory from the CPU's perspective, but it is not ordinary RAM. A read may return current device state, and a write may initiate a hardware operation.
 
-This mechanism is called Memory-Mapped I/O, or MMIO. The RTL8139 exposes registers for its MAC address, receive buffer, interrupt state, and transmit buffers. Their offsets are defined in [`rtl8139.rs`](../user_programs/rtl8139/src/rtl8139.rs):
+This mechanism is called Memory-Mapped I/O, or MMIO. The RTL8139 exposes registers for its MAC address, receive buffer, interrupt state, and transmit buffers. Their offsets are defined in [`rtl8139.rs`](../drivers/rtl8139/src/rtl8139.rs):
 
 ```rust
 pub const REG_MAC0: usize = 0x00;
@@ -577,158 +576,24 @@ Only packets with the Receive OK bit and a plausible length are accepted. Four C
 
 The next record begins on a four-byte boundary after the device header and packet. When the offset reaches the end of the 8192-byte ring, it wraps modulo the ring size. Finally, the driver writes `rx_offset - 0x10` to `CAPR`, informing the device how much data software has consumed.
 
-The interactive program currently polls the ring:
+The driver's background event loop (`lib_driver_runtime::run_background_driver()`) polls the ring in a loop, feeding every received frame into the `lib_net` protocol stack and unconditionally forwarding it to any application waiting on this driver's channel:
 
 ```rust
 while let Some(len) = device.poll_next_packet(&mut rx_buf) {
-    let event = stack.handle_rx_packet(&rx_buf[..len], |reply| {
+    let _event = stack.handle_rx_packet(&rx_buf[..len], |reply| {
         let _ = device.transmit(reply);
     });
-
-    // Interpret the event for display.
+    let _ = net_send(own_id, &rx_buf[..len]);
 }
 ```
 
-Although the IRQ infrastructure exists, this production receive path does not call `wait_irq()`. It performs short spin loops between polling attempts.
+Although the IRQ infrastructure exists, this receive path does not call `wait_irq()`. It performs short spin loops between polling attempts.
+
+What `stack.handle_rx_packet()` does with that byte slice — Ethernet framing, ARP resolution, IPv4, and ICMP Echo — belongs to the hardware-agnostic `lib_net` crate and is documented in full, byte layout included, in [`docs/networking.md`](networking.md).
 
 ---
 
-## 12. Moving a Raw Frame Through the Network Stack
-
-The network stack is intentionally small and integrated into the driver program. It contains four layers:
-
-```text
-Ethernet II
-    |
-    +-- EtherType 0x0806 --> ARP
-    |
-    +-- EtherType 0x0800 --> IPv4
-                                |
-                                +-- Protocol 1 --> ICMP Echo
-```
-
-Each layer receives a byte slice, validates its own header, and passes only its payload to the next layer. Parsers borrow their payload slices rather than allocating and copying them again.
-
-### 12.1 Ethernet II
-
-An Ethernet II header is 14 bytes long. The first six bytes are the destination MAC address, the next six are the source MAC, and the final two contain the EtherType:
-
-```text
-0               6              12       14
-+---------------+---------------+--------+------------------+
-| Destination   | Source MAC    | Type   | Payload          |
-| MAC, 6 bytes  | 6 bytes       | 2 B    |                  |
-+---------------+---------------+--------+------------------+
-```
-
-[`ethernet.rs`](../user_programs/rtl8139/src/net/ethernet.rs) reads the EtherType using `u16::from_be_bytes`, because network protocols use network byte order, which is big endian. The parser does not allocate a payload copy; it returns `&data[14..]`.
-
-On reception, `NetworkStack::handle_rx_packet()` accepts only frames addressed to the driver's MAC or to the broadcast address. It then dispatches ARP and IPv4 by EtherType. Unknown types are ignored.
-
-### 12.2 ARP
-
-Ethernet delivers frames to MAC addresses, while applications reason about IPv4 addresses. ARP resolves an IPv4 address to a MAC address. A request effectively asks, “Who owns `192.168.1.1`?” The owner responds with its MAC address.
-
-[`arp.rs`](../user_programs/rtl8139/src/net/arp.rs) models the 28-byte Ethernet/IPv4 ARP packet. When building a request, the target MAC inside the ARP payload is unknown and therefore zero. The surrounding Ethernet frame is sent to `FF:FF:FF:FF:FF:FF`.
-
-```rust
-pub fn build_request(
-    sender_mac: MacAddress,
-    sender_ip: Ipv4Address,
-    target_ip: Ipv4Address,
-) -> Self {
-    Self {
-        hardware_type: 1,
-        protocol_type: 0x0800,
-        hardware_len: 6,
-        protocol_len: 4,
-        opcode: opcode::REQUEST,
-        sender_mac,
-        sender_ip,
-        target_mac: MacAddress::ZERO,
-        target_ip,
-    }
-}
-```
-
-For every successfully parsed ARP packet, the stack learns the sender's IP-to-MAC mapping. If a request targets the local IP address, it automatically generates a reply. A received reply also updates the cache and produces `NetworkEvent::ArpReplyReceived` for the CLI.
-
-The ARP table is a simple `Vec<(Ipv4Address, MacAddress)>`, so lookups are linear. That is sufficient and easy to understand for this small educational stack.
-
-### 12.3 IPv4
-
-[`ipv4.rs`](../user_programs/rtl8139/src/net/ipv4.rs) can parse IPv4 headers with an IHL of at least five, while its serializer always generates a fixed 20-byte header without options. The parser validates the version, header length, total length, and header checksum.
-
-The Internet checksum adds 16-bit words using one's-complement arithmetic. Carries from the upper half are folded into the lower 16 bits, and the result is inverted:
-
-```rust
-pub fn compute_checksum(data: &[u8]) -> u16 {
-    let mut sum: u32 = 0;
-    let mut i = 0;
-
-    while i + 1 < data.len() {
-        let word = u16::from_be_bytes([data[i], data[i + 1]]);
-        sum = sum.wrapping_add(word as u32);
-        i += 2;
-    }
-
-    if i < data.len() {
-        sum = sum.wrapping_add((data[i] as u32) << 8);
-    }
-
-    while (sum >> 16) != 0 {
-        sum = (sum & 0xFFFF) + (sum >> 16);
-    }
-
-    !(sum as u16)
-}
-```
-
-When this function processes an entire valid header that already contains its checksum, the result is zero. The parser uses that property for validation.
-
-Generated packets use TTL 64 and set the Don't Fragment bit. Fragmentation and reassembly are not implemented. Incoming packets are only processed further when their destination is the configured local address or `255.255.255.255`.
-
-### 12.4 ICMP Echo
-
-ICMP carries control messages inside IPv4. This branch implements only Echo Request, type 8, and Echo Reply, type 0, which are the basis of `ping`.
-
-The eight-byte Echo header contains the type, code, checksum, identifier, and sequence number, followed by an arbitrary payload. [`icmp.rs`](../user_programs/rtl8139/src/net/icmp.rs) initially zeros the checksum field, copies the header and payload, computes the checksum over the complete ICMP message, and inserts it into the final packet.
-
-When the stack receives an Echo Request for its own address, it copies the identifier, sequence number, and payload into an Echo Reply. It builds a new IPv4 header and then a new Ethernet frame. The destination MAC is taken from the ARP cache; if the entry is missing, the current implementation falls back to Ethernet broadcast.
-
----
-
-## 13. Routing and the Interactive Ping Command
-
-The stack starts with static settings for a `192.168.1.0/24` network. Its default address is `192.168.1.200`, the mask is `255.255.255.0`, the gateway is `192.168.1.1`, and the DNS server is `192.168.1.3`. The CLI can change them through `ifconfig` and `set ip`, `set gw`, `set mask`, or `set dns`.
-
-For a ping, `is_same_subnet()` determines whether the destination can be reached directly. It applies the mask to both addresses byte by byte and compares the network portions:
-
-```rust
-if (self_ip[i] & mask[i]) != (other_ip[i] & mask[i]) {
-    return false;
-}
-```
-
-For a local destination, the ARP next hop is the destination itself. For a remote subnet, it is the default gateway. Without a configured gateway, the command reports “Destination Host Unreachable.”
-
-If the relevant ARP entry is missing, the stack broadcasts a request and polls for approximately one second. It then sends four ICMP Echo Requests using identifier `0x1337` and increasing sequence numbers. A reply only belongs to the current request if its source address, identifier, and sequence number all match.
-
-Timing uses the x86 `RDTSC` instruction. This returns CPU-counter ticks rather than milliseconds. The conversion assumes two billion ticks per second:
-
-```rust
-let cycles = end_time.saturating_sub(send_time);
-let milliseconds = cycles / 2_000_000;
-let tenths = (cycles % 2_000_000) / 200_000;
-```
-
-This is useful for a demonstration under a matching QEMU configuration, but it is not a general time source. Physical and virtual CPUs may expose a different TSC frequency.
-
-Before entering `listen`, the CLI drains pending keyboard events. Otherwise, the Enter key used to submit the command could immediately stop listening. It also discards stale packets accumulated in the DMA ring while the user was at the prompt. Only then does it begin reporting new ARP and ICMP events.
-
----
-
-## 14. Resource Lifetime and RAII
+## 12. Resource Lifetime and RAII
 
 Rust's RAII model is useful for driver resources. A resource is tied to an object and released by its `Drop` implementation. `Mmio` unmaps its region when dropped, and `DmaBuffer` unmaps and frees its frames. `Rtl8139Device` directly owns all three objects. If the device value leaves a normal scope or is passed to `drop(device)`, cleanup occurs in reverse ownership order.
 
@@ -766,11 +631,11 @@ MMIO and DMA have different ownership semantics. For MMIO, the device owns the p
 
 ---
 
-## 15. Build Integration, ELF Layout, and QEMU
+## 13. Build Integration, ELF Layout, and QEMU
 
 `lib_driver` and `rtl8139_user_program` are new Cargo workspace members. The driver is built for `x86_64-unknown-none` without the standard library. It uses `core`, the existing allocator through `alloc`, `lib_kaos`, and `lib_driver`.
 
-The linker script [`user_programs/rtl8139/link.ld`](../user_programs/rtl8139/link.ld) selects `_start` as the entry point and places code at virtual address `0x0000_7000_0000_0000`. It creates two PT_LOAD segments. Code and read-only data occupy a readable and executable segment, while data and BSS occupy a readable and writable segment.
+The linker script [`drivers/rtl8139/link.ld`](../drivers/rtl8139/link.ld) selects `_start` as the entry point and places code at virtual address `0x0000_7000_0000_0000`. It creates two PT_LOAD segments. Code and read-only data occupy a readable and executable segment, while data and BSS occupy a readable and writable segment.
 
 Page alignment between the segments is necessary because the kernel enforces ELF permissions at page granularity. If executable code and writable data shared one page, the loader could not represent the intended permissions cleanly.
 
@@ -778,7 +643,7 @@ The build helpers copy `RTL8139.BIN` into both BIOS and UEFI disk images. QEMU i
 
 ---
 
-## 16. What the Tests Actually Verify
+## 14. What the Tests Actually Verify
 
 The new test programs validate the layers independently. [`capabilities_test.rs`](../kernel/tests/capabilities_test.rs) checks bit operations, the capability-free initial state of ordinary tasks, and attachment and cleanup of a `DriverCaps` block.
 
@@ -794,7 +659,7 @@ The new [`test_all.sh`](../test_all.sh) runs user-space protocol tests, kernel t
 
 ---
 
-## 17. Security and Implementation Limits
+## 15. Security and Implementation Limits
 
 This architecture isolates driver code from the kernel much better than a Ring 0 driver, but it is not yet equivalent to a production driver framework.
 
@@ -812,15 +677,17 @@ The RTL8139 enables interrupts, but its interactive receive path only polls. The
 
 The regular `exit` command disables the device with `shutdown()` but does not call `drop(device)` before the non-returning `process::exit()`. A panic or `readline()` error skips even `shutdown()`. Although the kernel removes the process address space, a clean driver lifecycle should explicitly dismantle hardware state, IRQ binding, MMIO mapping, and DMA allocations in a defined order.
 
+The `unload` command (§17) inherits the same limitation by construction, not by oversight: `DrvUnload` calls `scheduler::terminate_task()` directly, the same hard-kill path the scheduler already uses to reap a crashed or exited task. It does not run the driver's own shutdown code, so a still-DMA-active NIC is not told to disable bus-mastering before its address space and DMA frames are torn down. Combined with the lack of an IOMMU noted above, a driver unloaded while actively transferring data could in principle have the device write into memory that has since been reused for something else. Building a cooperative shutdown protocol (e.g. a dedicated syscall the driver polls for, mirrored by `unload` waiting for an acknowledgement before killing the task) is future work, not something this command attempts.
+
 In the transmit path, the descriptor wait loop expires after 10,000 iterations without returning an error. The code still writes the slot and starts transmission. It also reports at least 60 bytes for short Ethernet frames without explicitly zeroing the additional bytes before every transmission. Data left from a previous slot use could therefore be emitted as Ethernet padding. A robust implementation should return `IoError` on timeout and clear the padding range.
 
-The network stack is deliberately small. It has no DHCP, no DNS resolution despite the configurable DNS address, no TCP, no UDP, no IPv4 fragment reassembly, and no ICMP error handling. ARP entries have neither an expiration time nor a size limit. The static default configuration must also match the bridged LAN; `192.168.1.200` may already be occupied or the network may use a completely different prefix.
+The protocol stack the driver hands frames to has its own, separately documented limitations — no DHCP, no TCP/UDP, no IP fragmentation, ARP entries with no expiration timer, and so on; see [`docs/networking.md`](networking.md) §11.
 
 Finally, QEMU networking depends on host configuration. `en0` is not the active interface on every Mac, and Linux requires `tap0` to be created with appropriate permissions and attached to a bridge before the scripts run.
 
 ---
 
-## 18. The Entire Path as One Continuous Story
+## 16. The Entire Path as One Continuous Story
 
 During boot, the kernel scans the PCI bus. It reads vendor IDs, device IDs, BARs, and IRQ lines and enables Memory Space and Bus Mastering. QEMU provides an emulated RTL8139 device.
 
@@ -830,9 +697,83 @@ The new process discovers the device again. It asks the kernel to map the grante
 
 For reception and transmission, the driver requests contiguous DMA frames. The kernel marks them in the PMM, maps them into the same process, and returns both virtual and physical base addresses. The driver writes the physical addresses into RTL8139 registers. CPU and network card can now refer to the same memory through their respective address views.
 
-During transmission, the network stack serializes ICMP, places an IPv4 header in front of it, and places an Ethernet header in front of that. The driver copies the completed frame into a TX DMA slot and starts the hardware by writing a TSD register. During reception, the card writes a frame into the RX ring. The driver reads the device-specific ring header, removes the CRC, and passes a byte slice to the Ethernet parser. That parser forwards ARP or IPv4 payloads until the stack may automatically generate an ARP Reply or ICMP Echo Reply.
+During transmission, the hardware-agnostic `lib_net` protocol stack (`docs/networking.md`) serializes a complete Ethernet/IPv4/ICMP frame. The driver copies that completed frame into a TX DMA slot and starts the hardware by writing a TSD register. During reception, the card writes a frame into the RX ring. The driver reads the device-specific ring header, removes the CRC, and passes the remaining byte slice to `lib_net`, which may respond automatically with an ARP Reply or an ICMP Echo Reply.
 
 When the user exits through `exit` or `quit`, the receiver and interrupt mask are disabled. `process::exit()` then terminates the task without Rust unwinding. The kernel destroys the complete user address space and releases PMM-managed DMA frames; the scheduler also frees the capability block. The waiting shell resumes. The existing `Drop` implementations would perform targeted MMIO and DMA cleanup, but they are not executed on this exact path without an explicit `drop(device)`.
 
 The branch therefore demonstrates a complete vertical slice through an operating system: PCI configuration, page tables, process permissions, syscalls, DMA ring buffers, and network protocols. Because the RTL8139 driver runs in Ring 3, the boundaries between hardware, kernel mechanism, user-space abstraction, and protocol logic become especially clear.
+
+---
+
+## 17. The `drivers.bin` Management Application
+
+Loading a driver used to be a single shell command (`load <name.drv>`) with no counterpart for unloading one or seeing what was currently running. `drivers.bin` (built from [`user_programs/drivers`](../user_programs/drivers)) replaces that one command with a small, standalone Ring-3 REPL dedicated to driver lifecycle management, structurally identical to the shell's own read-eval-print loop: a prompt, a line read via `console::readline()`, and a match over the first whitespace-separated word.
+
+It understands four commands. `help` prints the command list. `list` calls `DrvListCount` and then `DrvListEntry` for each index, printing every currently registered driver's name and packed task id (or a note that none are loaded). `load <name.drv>` runs the same PCI-resolution-then-`SpawnDriver` logic the shell used to run directly (§3-§4), now living in [`user_programs/drivers/src/load_driver.rs`](../user_programs/drivers/src/load_driver.rs). `unload <name>` calls the new `DrvUnload` syscall (§15 documents its hard-kill semantics).
+
+An illustrative session, after typing `drivers.bin` at the shell prompt to launch it (derived directly from `execute_command`'s match arms — see the verification note below for what was actually observed running):
+
+```
+> drivers.bin
+========================================
+    KAOS - Driver Management (DRIVERS.BIN)
+========================================
+Type 'help' to see the list of commands.
+
+drivers> list
+No drivers loaded.
+drivers> load rtl8139.drv
+[drivers] Driver 'RTL8139.DRV' started as TID 2
+drivers> list
+Loaded drivers:
+  nic:rtl8139          tid=2
+drivers> unload nic:rtl8139
+[drivers] Driver 'nic:rtl8139' unloaded.
+drivers> list
+No drivers loaded.
+```
+
+`drivers.bin` has no dedicated `exit` command of its own yet (unlike the shell) — leaving it today means power-cycling or, in a future revision, adding an explicit `exit`/`quit` command mirroring the shell's.
+
+`load`/`unload`'s command-line parsing (present vs. missing argument, trailing words ignored, case-sensitive dispatch) is factored into a pure `parse_command()` function and unit-tested on the host without touching a syscall — the same pattern §14 describes for `resolve_driver_filename`. The syscall-touching behavior of `list`/`load`/`unload` themselves is covered by the kernel-side tests referenced in §14 and §18.
+
+**Verification note:** this environment has no hardware-accelerated x86_64 virtualization (the build host is `aarch64`), so booting the real BIOS/bootloader chain under QEMU's software CPU emulation is slow, and driving the guest's PS/2-keyboard-based REPL interactively would require scripting raw scancode injection via QEMU's QMP `input-send-event` — judged disproportionate effort for this check. What was verified directly: the full disk image (kernel with the new `DrvUnload`/`DrvListCount`/`DrvListEntry` syscalls and `Exec` capability delegation, the updated `SHELL.BIN`, and the new `DRIVERS.BIN`) builds end to end via `helper_build_user_programs.sh` and `helper_make_fat32_bios_image.sh`; `DRIVERS.BIN` is present in the resulting FAT32 image alongside the other user programs; and the image boots successfully through the full bootsector → 16-bit loader → 64-bit loader → kernel chain to a working, keyboard-ready `SHELL.BIN` prompt with no panic, matching every prior boot (confirmed via a captured serial log). The transcript above reflects `drivers.bin`'s actual command-dispatch code, not a captured keystroke session — a human with local keyboard/display access should run through it once to confirm before relying on it in production.
+
+---
+
+## 18. Capability Delegation via `Exec`
+
+`load` and `unload` both require capabilities (`SPAWN_DRIVER`, `UNLOAD_DRIVER`) that an ordinary Ring-3 program does not have. Before this feature, that was not a problem: `load` ran *inside* the shell's own process, and the shell is the one task marked privileged at boot (`kernel/src/main.rs`), so it sailed through `SpawnDriver`'s authorization check directly. Moving `load`/`unload` into a separate `drivers.bin` process broke that shortcut — a process started via `Exec` is, and always was, unconditionally unprivileged (`process::exec_from_vfs`'s own doc comment), regardless of who started it.
+
+The fix is a narrow delegation mechanism on `Exec` itself, not a way to make `drivers.bin` privileged. `Exec` gained a second argument, `requested_caps`, and the kernel computes what to actually grant with a small, pure, unit-tested function:
+
+```rust
+pub fn resolve_delegated_capabilities(
+    caller_privileged: bool,
+    caller_flags: Capabilities,
+    requested: Capabilities,
+) -> Capabilities {
+    if caller_privileged {
+        requested
+    } else {
+        caller_flags & requested
+    }
+}
+```
+
+A privileged caller (the shell) may delegate anything it asks for. An unprivileged caller may delegate at most the capabilities it already holds itself — the intersection of what it has and what it asks for — so a compromised or buggy unprivileged process can never manufacture a capability out of thin air and hand it to a child. When capabilities are granted, `syscall_exec_impl` attaches a `DriverCaps` block to the new task exactly the way `SpawnDriver` does for a driver it spawns (§5), just with `ResourceGrants::default()` — an empty MMIO/IRQ grant, since `drivers.bin` itself never touches hardware directly.
+
+Deciding *which* binary gets *which* capabilities is deliberately kept out of the kernel. The kernel only provides the delegation mechanism; the policy of "only `DRIVERS.BIN`, and only these three bits" lives entirely in the shell's `run_program()`, in a function just as small and just as directly tested:
+
+```rust
+fn requested_capabilities_for(name: &str) -> u64 {
+    if name.eq_ignore_ascii_case("DRIVERS.BIN") {
+        SPAWN_DRIVER | UNLOAD_DRIVER | LIST_DRIVERS
+    } else {
+        0
+    }
+}
+```
+
+Every other program the shell execs — `TUI.BIN`, `KBASIC.BIN`, a plain `hello.bin` — still gets exactly zero delegated capabilities, identical to `Exec`'s behavior before this feature existed. This split mirrors `SpawnDriver`'s own design: the kernel enforces a hard security *invariant* (a caller can never delegate more than it has), while a trusted, auditable piece of user-space code owns the *policy* of who the invariant actually applies to. Both the mechanism (`resolve_delegated_capabilities`) and the policy (`requested_capabilities_for`) are covered by their own host-level unit tests, and the full path — shell delegates, `drivers.bin` receives exactly those three capabilities and nothing more, and every other exec'd program still receives none — is covered end-to-end by a dedicated kernel integration test suite (`kernel/tests/exec_capability_delegation_test.rs`).
 

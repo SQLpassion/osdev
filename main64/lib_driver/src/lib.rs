@@ -4,6 +4,12 @@
 //! - [`mmio`] — Memory-Mapped I/O mapping and direct volatile register access
 //! - [`irq`]  — Hardware interrupt subscription, waiting, and acknowledgment
 //! - [`spawn`] — Driver spawning primitives
+//! - [`drv`]  — Driver name registration/resolution, packet transport, and
+//!   status publishing (DrvRegister/DrvLookup, NetSend/NetRecv,
+//!   DrvPublishStatus/DrvQuery)
+//! - [`client`] — `NicClient`, a Ring-3 handle wrapping `drv`'s
+//!   DrvLookup/NetSend/NetRecv/DrvQuery calls for an app talking to an
+//!   already-running background NIC driver
 
 #![no_std]
 #![allow(dead_code)]
@@ -14,11 +20,16 @@ mod kernel_types;
 
 #[allow(unused_imports)]
 pub(crate) use kernel_types::{decode_result, SyscallId};
-pub use kernel_types::{SysError, UserDriverGrants};
+pub use kernel_types::{
+    SysError, UserArpEntry, UserDriverGrants, UserDriverInfo, UserDriverStatus, MAX_ARP_ENTRIES,
+    USER_DRIVER_NAME_LEN,
+};
 
 mod raw;
 
+pub mod client;
 pub mod dma;
+pub mod drv;
 pub mod irq;
 pub mod mmio;
 pub mod spawn;

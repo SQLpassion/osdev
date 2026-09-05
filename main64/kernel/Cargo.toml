@@ -16,6 +16,9 @@ harness = false
 
 [dependencies]
 
+[dev-dependencies]
+lib_driver = { path = "../lib_driver" }
+
 [[bin]]
 name = "kaos_kernel"
 test = false
@@ -150,3 +153,21 @@ name = "driver_spawn_test"
 
 [[test]]
 name = "driver_rtl8139_test"
+
+[[test]]
+name = "driver_registry_test"
+
+[[test]]
+name = "net_ring_test"
+
+[[test]]
+name = "net_ring_wakeup_test"
+
+[[test]]
+name = "driver_status_test"
+
+[[test]]
+name = "net_client_test"
+
+[[test]]
+name = "driver_background_loop_test"

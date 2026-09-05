@@ -3,6 +3,14 @@
 version = 4
 
 [[package]]
+name = "drivers_user_program"
+version = "0.1.0"
+dependencies = [
+ "lib_driver",
+ "lib_kaos",
+]
+
+[[package]]
 name = "exception_test_user_program"
 version = "0.1.0"
 dependencies = [
@@ -28,6 +36,7 @@ name = "intel_nic_user_program"
 version = "0.1.0"
 dependencies = [
  "lib_driver",
+ "lib_driver_runtime",
  "lib_kaos",
  "lib_net",
 ]
@@ -35,6 +44,9 @@ dependencies = [
 [[package]]
 name = "kaos_kernel"
 version = "0.1.0"
+dependencies = [
+ "lib_driver",
+]
 
 [[package]]
 name = "kaosldr_64"
@@ -56,6 +68,15 @@ name = "lib_driver"
 version = "0.1.0"
 
 [[package]]
+name = "lib_driver_runtime"
+version = "0.1.0"
+dependencies = [
+ "lib_driver",
+ "lib_kaos",
+ "lib_net",
+]
+
+[[package]]
 name = "lib_kaos"
 version = "0.1.0"
 
@@ -74,6 +95,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "net_tools_user_program"
+version = "0.1.0"
+dependencies = [
+ "lib_driver",
+ "lib_kaos",
+ "lib_net",
+]
+
+[[package]]
 name = "readline_user_program"
 version = "0.1.0"
 dependencies = [
@@ -85,6 +115,7 @@ name = "rtl8139_user_program"
 version = "0.1.0"
 dependencies = [
  "lib_driver",
+ "lib_driver_runtime",
  "lib_kaos",
  "lib_net",
 ]
@@ -93,7 +124,6 @@ dependencies = [
 name = "shell_user_program"
 version = "0.1.0"
 dependencies = [
- "lib_driver",
  "lib_kaos",
 ]
 

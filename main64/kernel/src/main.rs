@@ -398,6 +398,12 @@ pub extern "C" fn KernelMain(boot_info_raw: u64) -> ! {
     let shell_pid = process::exec_from_image(&shell_image, true)
         .expect("failed to spawn SHELL.BIN user-mode task");
 
+    // Registered so `on_timer_tick` can shut down the instant the root shell
+    // is reaped, instead of relying solely on this function's own
+    // `wait_for_task_exit` call below to ever regain the CPU (see the doc
+    // comment on `SchedulerMetadata::root_task_id`).
+    scheduler::set_root_task_id(shell_pid as usize);
+
     // On the UEFI path there is no serial console on real hardware, so leave a
     // visible breadcrumb on the framebuffer. If boot stalls after "Starting...",
     // whether these lines appear localizes the failure: missing => exec/mapping

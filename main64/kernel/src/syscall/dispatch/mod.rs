@@ -84,6 +84,15 @@ pub const fn syscall_name_for_number(syscall_nr: u64) -> &'static str {
         SyscallId::ALLOC_DMA => "AllocDma",
         SyscallId::FREE_DMA => "FreeDma",
         SyscallId::VIRT_TO_PHYS => "VirtToPhys",
+        SyscallId::DRV_REGISTER => "DrvRegister",
+        SyscallId::DRV_LOOKUP => "DrvLookup",
+        SyscallId::NET_SEND => "NetSend",
+        SyscallId::NET_RECV => "NetRecv",
+        SyscallId::DRV_PUBLISH_STATUS => "DrvPublishStatus",
+        SyscallId::DRV_QUERY => "DrvQuery",
+        SyscallId::DRV_UNLOAD => "DrvUnload",
+        SyscallId::DRV_LIST_COUNT => "DrvListCount",
+        SyscallId::DRV_LIST_ENTRY => "DrvListEntry",
         _ => "Unknown",
     }
 }
@@ -127,7 +136,7 @@ pub fn dispatch_checked(
         SyscallId::END_OF_FILE => fs::syscall_end_of_file_impl(arg0),
         SyscallId::PRINT_ROOT_DIRECTORY => fs::syscall_print_root_directory_impl(),
         SyscallId::MMAP => process::syscall_mmap_impl(arg0, arg1 as usize),
-        SyscallId::EXEC => process::syscall_exec_impl(arg0 as *const u8),
+        SyscallId::EXEC => process::syscall_exec_impl(arg0 as *const u8, arg1),
         SyscallId::WAIT => process::syscall_wait_impl(arg0),
         SyscallId::SHUTDOWN => process::syscall_shutdown_impl(),
         SyscallId::WRITE_FRAMEBUFFER => {
@@ -165,6 +174,17 @@ pub fn dispatch_checked(
         SyscallId::ALLOC_DMA => driver::syscall_alloc_dma_impl(arg0 as usize, arg1 as *mut u64),
         SyscallId::FREE_DMA => driver::syscall_free_dma_impl(arg0, arg1 as usize),
         SyscallId::VIRT_TO_PHYS => driver::syscall_virt_to_phys_impl(arg0),
+        SyscallId::DRV_REGISTER => driver::syscall_drv_register_impl(arg0, arg1),
+        SyscallId::DRV_LOOKUP => driver::syscall_drv_lookup_impl(arg0, arg1),
+        SyscallId::NET_SEND => driver::syscall_net_send_impl(arg0, arg1, arg2),
+        SyscallId::NET_RECV => driver::syscall_net_recv_impl(arg0, arg1, arg2, arg3),
+        SyscallId::DRV_PUBLISH_STATUS => driver::syscall_drv_publish_status_impl(arg0),
+        SyscallId::DRV_QUERY => driver::syscall_drv_query_impl(arg0, arg1),
+        SyscallId::DRV_UNLOAD => driver::syscall_drv_unload_impl(arg0, arg1),
+        SyscallId::DRV_LIST_COUNT => driver::syscall_drv_list_count_impl(),
+        SyscallId::DRV_LIST_ENTRY => {
+            driver::syscall_drv_list_entry_impl(arg0, arg1 as *mut crate::syscall::UserDriverInfo)
+        }
         _ => Err(SyscallError::Unsupported),
     };
 

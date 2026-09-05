@@ -80,6 +80,25 @@ pub enum SyscallId {
     FreeDma = 37,
     /// Translate user virtual address to physical address.
     VirtToPhys = 38,
+    /// Register the calling driver task under a well-known name (e.g. "nic:rtl8139").
+    DrvRegister = 39,
+    /// Resolve the task id of a driver previously registered via DrvRegister.
+    DrvLookup = 40,
+    /// Send a raw packet to/from a driver channel (role-based direction).
+    NetSend = 41,
+    /// Receive a raw packet to/from a driver channel (role-based direction).
+    NetRecv = 42,
+    /// Publish the calling driver task's current status snapshot.
+    DrvPublishStatus = 43,
+    /// Read the last status snapshot published by a driver.
+    DrvQuery = 44,
+    /// Terminate a registered driver task by name (hard kill — see
+    /// `docs/drivers.md` §15 for the no-clean-shutdown caveat).
+    DrvUnload = 45,
+    /// Retrieve the number of currently registered driver tasks.
+    DrvListCount = 46,
+    /// Retrieve metadata for a specific registered driver by its index.
+    DrvListEntry = 47,
 }
 
 impl SyscallId {
@@ -181,6 +200,24 @@ impl SyscallId {
     pub const FREE_DMA: u64 = Self::FreeDma as u64;
     /// Syscall number for VirtToPhys.
     pub const VIRT_TO_PHYS: u64 = Self::VirtToPhys as u64;
+    /// Syscall number for DrvRegister.
+    pub const DRV_REGISTER: u64 = Self::DrvRegister as u64;
+    /// Syscall number for DrvLookup.
+    pub const DRV_LOOKUP: u64 = Self::DrvLookup as u64;
+    /// Syscall number for NetSend.
+    pub const NET_SEND: u64 = Self::NetSend as u64;
+    /// Syscall number for NetRecv.
+    pub const NET_RECV: u64 = Self::NetRecv as u64;
+    /// Syscall number for DrvPublishStatus.
+    pub const DRV_PUBLISH_STATUS: u64 = Self::DrvPublishStatus as u64;
+    /// Syscall number for DrvQuery.
+    pub const DRV_QUERY: u64 = Self::DrvQuery as u64;
+    /// Syscall number for DrvUnload.
+    pub const DRV_UNLOAD: u64 = Self::DrvUnload as u64;
+    /// Syscall number for DrvListCount.
+    pub const DRV_LIST_COUNT: u64 = Self::DrvListCount as u64;
+    /// Syscall number for DrvListEntry.
+    pub const DRV_LIST_ENTRY: u64 = Self::DrvListEntry as u64;
 }
 
 /// Unknown syscall number.
@@ -555,6 +592,78 @@ pub struct UserDateTime {
     pub second: u8,
     /// Explicit padding for 8-byte alignment structure size matching.
     pub _padding: [u8; 7],
+}
+
+/// Maximum ARP entries carried in a single `UserDriverStatus` snapshot.
+pub const MAX_ARP_ENTRIES: usize = 16;
+
+/// User-space representation of one resolved ARP table entry.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UserArpEntry {
+    /// Resolved IPv4 address octets.
+    pub ip: [u8; 4],
+    /// Resolved MAC address.
+    pub mac: [u8; 6],
+    /// Explicit padding — `mac` is 6 bytes, leaving this struct unaligned
+    /// to a 4-byte boundary otherwise.
+    pub _padding: [u8; 2],
+}
+
+/// User-space snapshot of a driver's current status, exchanged via
+/// `DrvPublishStatus` (driver → kernel) and `DrvQuery` (kernel → app).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UserDriverStatus {
+    /// Hardware MAC address.
+    pub mac: [u8; 6],
+    /// Explicit padding for 4-byte alignment of the IPv4 fields below.
+    pub _padding0: [u8; 2],
+    /// Configured IPv4 address.
+    pub ip: [u8; 4],
+    /// Configured subnet mask.
+    pub subnet_mask: [u8; 4],
+    /// Configured default gateway.
+    pub gateway: [u8; 4],
+    /// Configured DNS server.
+    pub dns: [u8; 4],
+    /// Total packets received.
+    pub rx_packets: u64,
+    /// Total bytes received.
+    pub rx_bytes: u64,
+    /// Total packets transmitted.
+    pub tx_packets: u64,
+    /// Total bytes transmitted.
+    pub tx_bytes: u64,
+    /// Non-zero if the link is currently up.
+    pub link_up: u8,
+    /// Explicit padding for 4-byte alignment of `arp_entry_count`.
+    pub _padding1: [u8; 3],
+    /// Number of valid entries in `arp_entries` (`<= MAX_ARP_ENTRIES`).
+    pub arp_entry_count: u32,
+    /// Resolved ARP table entries; only the first `arp_entry_count` are valid.
+    pub arp_entries: [UserArpEntry; MAX_ARP_ENTRIES],
+}
+
+/// Maximum length, in bytes, of a driver name in a [`UserDriverInfo`]
+/// snapshot. Must match `drivers::registry::DRIVER_NAME_LEN` — enforced by a
+/// compile-time assertion in `syscall::dispatch::driver`, since this
+/// low-level ABI type intentionally does not depend on the higher-level
+/// driver registry module.
+pub const USER_DRIVER_NAME_LEN: usize = 32;
+
+/// User-space snapshot of one registered driver, returned by `DrvListEntry`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UserDriverInfo {
+    /// Driver name bytes, left-aligned; only `name[..name_len]` is meaningful.
+    pub name: [u8; USER_DRIVER_NAME_LEN],
+    /// Number of valid bytes in `name`.
+    pub name_len: u32,
+    /// Explicit padding for 8-byte alignment of `tid`.
+    pub _padding: u32,
+    /// Packed (slot, generation) task id currently serving this driver.
+    pub tid: u64,
 }
 
 /// User-space representation of driver resource grants for `SpawnDriver`.

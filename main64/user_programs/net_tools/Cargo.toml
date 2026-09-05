@@ -1,5 +1,5 @@
 [package]
-name = "rtl8139_user_program"
+name = "net_tools_user_program"
 version = "0.1.0"
 edition = "2021"
 
@@ -12,7 +12,6 @@ lib_kaos = { path = "../../lib_kaos" }
 lib_net = { path = "../../lib_net" }
 
 [[bin]]
-name = "rtl8139"
+name = "net_tools"
 path = "src/main.rs"
 bench = false
-

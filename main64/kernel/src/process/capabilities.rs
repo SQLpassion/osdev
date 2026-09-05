@@ -23,10 +23,26 @@ impl Capabilities {
     /// May call SpawnDriver — reserved for the driver manager only.
     pub const SPAWN_DRIVER: Self = Self(1 << 2);
 
+    /// May call Unload to terminate a registered driver task by name.
+    /// Delegated by `Exec` only to the trusted `DRIVERS.BIN` binary, never to
+    /// a spawned driver itself (see `driver_db::sanitize_driver_caps`).
+    pub const UNLOAD_DRIVER: Self = Self(1 << 3);
+
+    /// May call ListDrivers to enumerate currently registered driver tasks.
+    /// Delegated by `Exec` only to the trusted `DRIVERS.BIN` binary, never to
+    /// a spawned driver itself (see `driver_db::sanitize_driver_caps`).
+    pub const LIST_DRIVERS: Self = Self(1 << 4);
+
     /// Creates capabilities from a raw bitmask, ignoring unknown bits.
     #[inline]
     pub const fn from_bits_truncate(bits: u32) -> Self {
-        Self(bits & (Self::MMIO.0 | Self::IRQ.0 | Self::SPAWN_DRIVER.0))
+        Self(
+            bits & (Self::MMIO.0
+                | Self::IRQ.0
+                | Self::SPAWN_DRIVER.0
+                | Self::UNLOAD_DRIVER.0
+                | Self::LIST_DRIVERS.0),
+        )
     }
 
     /// Returns the underlying raw bitmask value.

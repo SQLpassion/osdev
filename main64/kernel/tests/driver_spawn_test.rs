@@ -308,30 +308,30 @@ fn test_sanitize_driver_caps_strips_spawn_driver() {
 #[test_case]
 fn test_driver_db_lookup() {
     assert!(
-        driver_db::is_known_driver("rtl8139.bin"),
-        "rtl8139.bin must be a registered driver"
+        driver_db::is_known_driver("rtl8139.drv"),
+        "rtl8139.drv must be a registered driver"
     );
     assert!(
-        driver_db::is_known_driver("RTL8139.BIN"),
+        driver_db::is_known_driver("RTL8139.DRV"),
         "driver names must be matched case-insensitively"
     );
     assert!(
-        driver_db::is_known_driver("INTLNIC.BIN"),
-        "intlnic.bin must be a registered driver"
+        driver_db::is_known_driver("INTLNIC.DRV"),
+        "intlnic.drv must be a registered driver"
     );
     assert!(
         !driver_db::is_known_driver("hello.bin"),
         "an ordinary user program must not be a registered driver"
     );
 
-    let rtl_ids = driver_db::lookup_driver("rtl8139.bin").expect("rtl8139 entry");
+    let rtl_ids = driver_db::lookup_driver("rtl8139.drv").expect("rtl8139 entry");
     assert!(
         rtl_ids.contains(&(0x10EC, 0x8139)),
-        "rtl8139.bin must be bound to 10EC:8139"
+        "rtl8139.drv must be bound to 10EC:8139"
     );
     assert!(
         !rtl_ids.contains(&(0x8086, 0x100E)),
-        "rtl8139.bin must not be allowed to bind to an Intel NIC"
+        "rtl8139.drv must not be allowed to bind to an Intel NIC"
     );
 }
 
@@ -460,7 +460,7 @@ fn test_mmio_windows_accepts_non_overflowing_bar() {
 /// This drives `driver_db`'s reservation registry directly (via
 /// `reserve_device_for_test`/`confirm_binding`/`release_task`) rather than
 /// through the full `SpawnDriver` syscall, because the QEMU configuration
-/// used by the test runner attaches no PCI NIC: `derive_grants("rtl8139.bin")`
+/// used by the test runner attaches no PCI NIC: `derive_grants("rtl8139.drv")`
 /// would only ever observe `BindError::DeviceNotPresent` here, never reaching
 /// a live device to bind. The registry logic under test is identical either way
 /// — `derive_grants` calls exactly this same `reserve_device` internally.

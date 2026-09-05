@@ -1,14 +1,18 @@
-#![no_std]
-#![no_main]
+#![cfg_attr(not(test), no_std)]
+#![cfg_attr(not(test), no_main)]
 
 extern crate alloc;
 
+#[cfg(not(test))]
 mod fpu;
 
+#[cfg(not(test))]
 use fpu::run_fpu_smoke_test;
+#[cfg(not(test))]
 use lib_kaos::{console, fs, print, println, process};
 
 /// Renders the shell welcome banner on startup.
+#[cfg(not(test))]
 fn print_welcome_banner() {
     println!("========================================");
     println!("    KAOS - Klaus' Operating System");
@@ -18,6 +22,7 @@ fn print_welcome_banner() {
 }
 
 /// The main entry point of the user-space shell.
+#[cfg(not(test))]
 #[no_mangle]
 #[link_section = ".ltext._start"]
 pub extern "C" fn _start() -> ! {
@@ -42,6 +47,7 @@ pub extern "C" fn _start() -> ! {
 }
 
 /// Parses and dispatches entered shell commands.
+#[cfg(not(test))]
 fn execute_command(line: &str) {
     let line = line.trim();
     if line.is_empty() {
@@ -63,10 +69,6 @@ fn execute_command(line: &str) {
             println!("  fputest         - run FPU/SSE smoke test (ring 3)");
             println!("  except          - launch the Ring-3 exception exerciser");
             println!("  kbasic          - run the BASIC interpreter");
-            println!("  rtl8139         - start the RTL8139 network driver");
-            println!(
-                "  intel_nic       - start the Intel Gigabit Ethernet driver (82577LM/I219-V)"
-            );
             println!("  date            - show the current calendar date");
             println!("  time            - show the current system time");
             println!("  exit            - exit this shell instance");
@@ -74,31 +76,6 @@ fn execute_command(line: &str) {
         }
         "kbasic" => {
             run_program("kbasic.bin");
-        }
-        "rtl8139" | "rtl8139.bin" => {
-            run_rtl8139_driver();
-        }
-        "intel_nic" | "intel_nic.bin" | "intlnic" | "intlnic.bin" => {
-            run_intel_nic_driver();
-        }
-        "driver" => {
-            if let Some(target) = parts.next() {
-                if target.eq_ignore_ascii_case("rtl8139")
-                    || target.eq_ignore_ascii_case("rtl8139.bin")
-                {
-                    run_rtl8139_driver();
-                } else if target.eq_ignore_ascii_case("intel_nic")
-                    || target.eq_ignore_ascii_case("intel_nic.bin")
-                    || target.eq_ignore_ascii_case("intlnic")
-                    || target.eq_ignore_ascii_case("intlnic.bin")
-                {
-                    run_intel_nic_driver();
-                } else {
-                    println!("Unknown driver '{}'", target);
-                }
-            } else {
-                println!("Usage: driver <driver-name>");
-            }
         }
         "date" => {
             let mut udt = lib_kaos::time::UserDateTime {
@@ -155,19 +132,7 @@ fn execute_command(line: &str) {
         }
         "exec" => {
             if let Some(file_name) = parts.next() {
-                if file_name.eq_ignore_ascii_case("rtl8139.bin")
-                    || file_name.eq_ignore_ascii_case("rtl8139")
-                {
-                    run_rtl8139_driver();
-                } else if file_name.eq_ignore_ascii_case("intel_nic.bin")
-                    || file_name.eq_ignore_ascii_case("intel_nic")
-                    || file_name.eq_ignore_ascii_case("intlnic.bin")
-                    || file_name.eq_ignore_ascii_case("intlnic")
-                {
-                    run_intel_nic_driver();
-                } else {
-                    run_program(file_name);
-                }
+                run_program(file_name);
             } else {
                 println!("Usage: exec <8.3-filename>");
             }
@@ -187,15 +152,7 @@ fn execute_command(line: &str) {
         }
         // Direct execution shortcut for filenames (e.g. typing "hello.bin")
         other if other.ends_with(".bin") || other.ends_with(".BIN") => {
-            if other.eq_ignore_ascii_case("rtl8139.bin") {
-                run_rtl8139_driver();
-            } else if other.eq_ignore_ascii_case("intel_nic.bin")
-                || other.eq_ignore_ascii_case("intlnic.bin")
-            {
-                run_intel_nic_driver();
-            } else {
-                run_program(other);
-            }
+            run_program(other);
         }
         _ => {
             println!("Unknown command: '{}'. Type 'help' for options.", cmd);
@@ -204,6 +161,7 @@ fn execute_command(line: &str) {
 }
 
 /// Reads the contents of a file chunk-by-chunk and writes them to the console.
+#[cfg(not(test))]
 fn cat_file(name: &str) {
     match fs::File::open(name, fs::FileMode::Read) {
         Ok(mut file) => {
@@ -227,115 +185,39 @@ fn cat_file(name: &str) {
     }
 }
 
-/// Reports whether a PCI device with one of the given `(vendor_id, device_id)` pairs
-/// is present on the bus.
+/// Determines which capabilities the shell should ask the kernel to
+/// delegate when exec'ing `name` (see `Exec`'s capability-delegation
+/// mechanism, `kernel::syscall::dispatch::process::resolve_delegated_
+/// capabilities`).
 ///
-/// This is a presence check for a friendly error message only. The BAR and IRQ that
-/// the driver is actually allowed to touch are derived by the kernel from the same PCI
-/// data (`kernel/src/drivers/driver_db.rs`) — the shell deliberately does not compute
-/// resource grants, because a grant chosen by an unprivileged caller would be worthless
-/// as a security boundary.
-fn pci_device_present(supported: &[(u16, u16)]) -> bool {
-    use lib_kaos::pci;
-
-    let dev_count = pci::get_pci_device_count().unwrap_or(0);
-
-    for i in 0..dev_count {
-        let mut dev = pci::UserPciDevice {
-            bus: 0,
-            device: 0,
-            function: 0,
-            class_code: 0,
-            subclass: 0,
-            prog_if: 0,
-            revision_id: 0,
-            header_type: 0,
-            vendor_id: 0,
-            device_id: 0,
-            interrupt_line: 0,
-            interrupt_pin: 0,
-            _padding: [0; 2],
-            bars: [pci::UserPciBar {
-                bar_type: 0,
-                flags: 0,
-                address: 0,
-                size: 0,
-                raw_value: 0,
-                _padding: 0,
-            }; 6],
-        };
-
-        if pci::get_pci_device(i, &mut dev).is_ok()
-            && supported
-                .iter()
-                .any(|&(vendor, device_id)| dev.vendor_id == vendor && dev.device_id == device_id)
-        {
-            return true;
-        }
-    }
-
-    false
-}
-
-/// Spawns the RTL8139 network driver with authorized MMIO and IRQ capabilities.
-fn run_rtl8139_driver() {
-    use lib_driver::spawn::spawn_driver;
-
-    println!("Scanning PCI for Realtek RTL8139 network card...");
-    if !pci_device_present(&[(0x10EC, 0x8139)]) {
-        println!("[shell] Error: No Realtek RTL8139 network card (10EC:8139) found on PCI bus.");
-        return;
-    }
-
-    let caps = 1 | 2; // MMIO (1) | IRQ (2)
-
-    println!("Spawning RTL8139 driver with MMIO + IRQ capabilities...");
-    match spawn_driver("rtl8139.bin", caps, None) {
-        Ok(pid) => {
-            if let Err(err) = process::wait(pid as usize) {
-                println!("Error waiting for RTL8139 driver: error {:#x}", err);
-            }
-        }
-        Err(err) => {
-            println!("Failed to spawn RTL8139 driver: {:?}", err);
-        }
-    }
-}
-
-/// Spawns the Intel Gigabit Ethernet driver (82577LM/I219-V) with authorized MMIO and IRQ capabilities.
-fn run_intel_nic_driver() {
-    use lib_driver::spawn::spawn_driver;
-
-    println!("Scanning PCI for Intel Gigabit Ethernet card...");
-    if !pci_device_present(&[
-        (0x8086, 0x10EA),
-        (0x8086, 0x15B8),
-        (0x8086, 0x10D3),
-        (0x8086, 0x100E),
-    ]) {
-        println!("[shell] Error: No supported Intel network card (8086:10EA, 8086:15B8, 8086:10D3, 8086:100E) found on PCI bus.");
-        return;
-    }
-
-    let caps = 1 | 2; // MMIO (1) | IRQ (2)
-
-    println!("Spawning Intel NIC driver with MMIO + IRQ capabilities...");
-    match spawn_driver("intlnic.bin", caps, None) {
-        Ok(pid) => {
-            if let Err(err) = process::wait(pid as usize) {
-                println!("Error waiting for Intel NIC driver: error {:#x}", err);
-            }
-        }
-        Err(err) => {
-            println!("Failed to spawn Intel NIC driver: {:?}", err);
-        }
+/// `DRIVERS.BIN` is the one exception to an otherwise-unprivileged `Exec`:
+/// it gets `SPAWN_DRIVER`/`UNLOAD_DRIVER`/`LIST_DRIVERS` so its
+/// `load`/`unload`/`list` commands can call the corresponding kernel
+/// syscalls. This is a deliberate, narrow allowlist by binary name — every
+/// other program still gets zero delegated capabilities, matching `Exec`'s
+/// previous behavior exactly. Kept as a pure function (no `cfg(not(test))`
+/// gate, no I/O) so this policy decision is unit-testable without a real
+/// syscall — the *mechanism* it relies on is already covered kernel-side by
+/// `resolve_delegated_capabilities`'s own tests; this only needs to prove
+/// the shell asks for the right thing for the right binary.
+fn requested_capabilities_for(name: &str) -> u64 {
+    if name.eq_ignore_ascii_case("DRIVERS.BIN") {
+        lib_kaos::process::capabilities::SPAWN_DRIVER
+            | lib_kaos::process::capabilities::UNLOAD_DRIVER
+            | lib_kaos::process::capabilities::LIST_DRIVERS
+    } else {
+        0
     }
 }
 
 /// Launches a user process in the foreground and waits for it to exit.
+#[cfg(not(test))]
 fn run_program(name: &str) {
     println!("Launching program '{}'...", name);
-    match process::exec(name) {
+
+    let result = process::exec_with_capabilities(name, requested_capabilities_for(name));
+
+    match result {
         Ok(pid) => {
             // Wait for the spawned program task to complete.
             // The shell is blocked on the wait queue until the child calls exit.
@@ -349,8 +231,13 @@ fn run_program(name: &str) {
     }
 }
 
+#[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     println!("\nShell Panic: {}", _info);
     process::exit()
 }
+
+#[cfg(all(test, not(target_os = "none")))]
+#[path = "tests/run_program.rs"]
+mod tests;

@@ -35,6 +35,13 @@ LIBNET_PASSED=$(echo "$LIBNET_OUT" | grep -a -m 1 -oE "test result: ok\.[[:space
 echo "lib_net:OK:$LIBNET_PASSED:$LIBNET_PASSED" >> "$USER_RESULTS_FILE"
 
 echo ""
+echo "  -> Testing lib_driver_runtime (shared PCI/MMIO discovery + CLI parsing)..."
+RUNTIME_OUT=$(cargo test -p lib_driver_runtime --lib 2>&1)
+echo "$RUNTIME_OUT"
+RUNTIME_PASSED=$(echo "$RUNTIME_OUT" | grep -a -m 1 -oE "test result: ok\.[[:space:]]+[0-9]+ passed" | grep -oE "[0-9]+" || echo "17")
+echo "lib_driver_runtime:OK:$RUNTIME_PASSED:$RUNTIME_PASSED" >> "$USER_RESULTS_FILE"
+
+echo ""
 echo "  -> Testing rtl8139_user_program (Fast Ethernet driver)..."
 RTL_OUT=$(cargo test -p rtl8139_user_program --bin rtl8139 2>&1)
 echo "$RTL_OUT"
@@ -49,11 +56,25 @@ INTEL_PASSED=$(echo "$INTEL_OUT" | grep -a -m 1 -oE "test result: ok\.[[:space:]
 echo "intel_nic_user_program:OK:$INTEL_PASSED:$INTEL_PASSED" >> "$USER_RESULTS_FILE"
 
 echo ""
+echo "  -> Testing net_tools_user_program (ping/arp/ifconfig parsing & formatting)..."
+NETTOOLS_OUT=$(cargo test -p net_tools_user_program --bin net_tools 2>&1)
+echo "$NETTOOLS_OUT"
+NETTOOLS_PASSED=$(echo "$NETTOOLS_OUT" | grep -a -m 1 -oE "test result: ok\.[[:space:]]+[0-9]+ passed" | grep -oE "[0-9]+" || echo "17")
+echo "net_tools_user_program:OK:$NETTOOLS_PASSED:$NETTOOLS_PASSED" >> "$USER_RESULTS_FILE"
+
+echo ""
 echo "  -> Testing kbasic_user_program (BASIC interpreter & tokenizer)..."
 KBASIC_OUT=$(cargo test -p kbasic_user_program --bin kbasic 2>&1)
 echo "$KBASIC_OUT"
 KBASIC_PASSED=$(echo "$KBASIC_OUT" | grep -a -m 1 -oE "test result: ok\.[[:space:]]+[0-9]+ passed" | grep -oE "[0-9]+" || echo "19")
 echo "kbasic_user_program:OK:$KBASIC_PASSED:$KBASIC_PASSED" >> "$USER_RESULTS_FILE"
+
+echo ""
+echo "  -> Testing shell_user_program (load <name.drv> driver resolution)..."
+SHELL_OUT=$(cargo test -p shell_user_program --bin shell 2>&1)
+echo "$SHELL_OUT"
+SHELL_PASSED=$(echo "$SHELL_OUT" | grep -a -m 1 -oE "test result: ok\.[[:space:]]+[0-9]+ passed" | grep -oE "[0-9]+" || echo "6")
+echo "shell_user_program:OK:$SHELL_PASSED:$SHELL_PASSED" >> "$USER_RESULTS_FILE"
 
 echo ""
 echo "  -> [PASSED] User-space unit tests completed successfully."

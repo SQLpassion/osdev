@@ -201,6 +201,68 @@ pub fn _print(args: core::fmt::Arguments) {
     writer.flush();
 }
 
+/// Buffering sink for the `serial_print!`/`serial_println!` macros.
+///
+/// Mirrors [`ConsoleWriter`], but flushes via [`write_serial`] instead of
+/// [`writeline`] — for background/daemon-style processes (e.g. NIC drivers)
+/// whose diagnostic output should never compete with a foreground REPL for
+/// the shared VGA console. A background task's own startup banner printed
+/// to the VGA console can otherwise scroll away a REPL's prompt the moment
+/// the scheduler switches to it (e.g. while the REPL blocks on `GetChar`).
+#[doc(hidden)]
+pub struct SerialWriter {
+    buf: [u8; CONSOLE_WRITE_BUF],
+    len: usize,
+}
+
+impl SerialWriter {
+    #[inline(always)]
+    fn new() -> Self {
+        Self {
+            buf: [0u8; CONSOLE_WRITE_BUF],
+            len: 0,
+        }
+    }
+
+    #[inline(always)]
+    fn flush(&mut self) {
+        if self.len > 0 {
+            let _ = write_serial(&self.buf[..self.len]);
+            self.len = 0;
+        }
+    }
+}
+
+impl core::fmt::Write for SerialWriter {
+    #[inline(always)]
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        let mut bytes = s.as_bytes();
+
+        while !bytes.is_empty() {
+            let remaining = self.buf.len() - self.len;
+            if remaining == 0 {
+                self.flush();
+                continue;
+            }
+            let to_copy = bytes.len().min(remaining);
+            self.buf[self.len..self.len + to_copy].copy_from_slice(&bytes[..to_copy]);
+            self.len += to_copy;
+            bytes = &bytes[to_copy..];
+        }
+
+        Ok(())
+    }
+}
+
+#[doc(hidden)]
+#[inline(always)]
+pub fn _print_serial(args: core::fmt::Arguments) {
+    use core::fmt::Write;
+    let mut writer = SerialWriter::new();
+    let _ = writer.write_fmt(args);
+    writer.flush();
+}
+
 /// Extended key event decoded from the `ReadKey` syscall return value.
 ///
 /// The kernel encodes key events as a single byte:

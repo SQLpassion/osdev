@@ -180,6 +180,17 @@ pub fn task_generation(task_id: usize) -> Option<u64> {
     })
 }
 
+/// Registers `task_id` as the root shell task, so `on_timer_tick` can trigger
+/// `arch::power::shutdown()` the instant it is reaped.
+///
+/// Must be called exactly once, right after the root shell is spawned (see
+/// `KernelMain`). See the doc comment on `SchedulerMetadata::root_task_id`
+/// for why this exists instead of relying solely on `KernelMain`'s
+/// bootstrap-context `wait_for_task_exit` call.
+pub fn set_root_task_id(task_id: usize) {
+    with_scheduler(|meta| meta.root_task_id = Some(task_id));
+}
+
 /// Gets the user heap top address of the current task.
 ///
 /// Returns `None` if there is no current task or it is not a user task.
@@ -388,4 +399,23 @@ pub fn set_running_slot_for_test(slot: Option<usize>) {
     with_scheduler(|meta| {
         meta.running_slot = slot;
     });
+}
+
+/// Sets the privileged-syscall capability flag on `task_id` directly, for
+/// unit tests that need a privileged caller without spawning a real user
+/// task via `spawn_user_task(.., privileged: true)` (which requires a
+/// dedicated address space — unnecessary overhead, and unrelated teardown
+/// hazards, for tests that never actually run the caller's own code).
+///
+/// Returns `false` if `task_id` is invalid or refers to an unused slot.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn set_task_privileged_for_test(task_id: usize, privileged: bool) -> bool {
+    let slot = task_id_slot(task_id);
+    with_scheduler(|meta| {
+        if slot >= meta.slots.len() || !meta.slots[slot].used {
+            return false;
+        }
+        meta.slots[slot].privileged = privileged;
+        true
+    })
 }
