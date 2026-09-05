@@ -251,7 +251,35 @@ pub fn syscall_mmap_impl(addr: u64, length: usize) -> SyscallResult<u64> {
 /// over".
 const MAX_CHILD_EXECS: u32 = 32;
 
-/// Implements `Exec(name_ptr)`: load and spawn a new user task from the filesystem.
+/// Computes which capabilities a caller may delegate to a child it is about
+/// to spawn via `Exec`, given its own privilege/capability state and what it
+/// requested.
+///
+/// A privileged caller (only the boot shell today) may delegate anything it
+/// requests. An unprivileged caller may delegate at most the capabilities it
+/// already holds itself — the intersection of `caller_flags` and
+/// `requested` — so it can never grant a child more than it has.
+///
+/// Pure and side-effect free by design: kept separate from
+/// [`syscall_exec_impl`] so the delegation *decision* is unit-testable
+/// without needing a scheduler, a VFS, or a real spawned task (mirrors the
+/// existing convention of extracting pure decision logic out of
+/// syscall-touching code, e.g. the shell's `resolve_driver_filename`).
+pub fn resolve_delegated_capabilities(
+    caller_privileged: bool,
+    caller_flags: crate::process::capabilities::Capabilities,
+    requested: crate::process::capabilities::Capabilities,
+) -> crate::process::capabilities::Capabilities {
+    if caller_privileged {
+        requested
+    } else {
+        caller_flags & requested
+    }
+}
+
+/// Implements `Exec(name_ptr, requested_caps)`: load and spawn a new user
+/// task from the filesystem, optionally delegating a subset of the caller's
+/// own capabilities to it.
 ///
 /// Reads the name string from user space safely and invokes the file loader.
 /// Each `ExecError` variant is mapped to the most appropriate `SyscallError`
@@ -265,7 +293,19 @@ const MAX_CHILD_EXECS: u32 = 32;
 /// or the filesystem are ever touched. On a successful spawn, the new task's
 /// `parent` is recorded as the caller so `Wait` can later scope which task
 /// ids the caller is authorized to wait on (see `syscall_wait_impl`).
-pub fn syscall_exec_impl(name_ptr: *const u8) -> SyscallResult<u64> {
+///
+/// # Capability delegation
+/// `requested_caps` lets a caller ask for specific coarse [`Capabilities`]
+/// bits to be attached to the child it is about to spawn — e.g. the
+/// privileged shell delegating `SPAWN_DRIVER`/`UNLOAD_DRIVER`/`LIST_DRIVERS`
+/// to `DRIVERS.BIN`. A privileged caller may delegate anything it requests; an
+/// unprivileged caller may delegate at most the capabilities it already holds
+/// itself — it can never grant a child more than it has. The *policy* of
+/// which capabilities to request for which binary is deliberately kept out of
+/// the kernel: it lives entirely in the caller (see the shell's `run_program`,
+/// which only requests these three when exec'ing `DRIVERS.BIN`).
+pub fn syscall_exec_impl(name_ptr: *const u8, requested_caps: u64) -> SyscallResult<u64> {
+    use crate::process::capabilities::{Capabilities, DriverCaps, ResourceGrants};
     use crate::process::ExecError;
 
     // Step 1: Clear global keyboard buffers so that any leftover shell keystrokes
@@ -286,6 +326,23 @@ pub fn syscall_exec_impl(name_ptr: *const u8) -> SyscallResult<u64> {
 
     // Step 3: Decode the null-terminated string from user-space memory.
     let name = super::fs::read_user_string(name_ptr, 128)?;
+
+    // Step 3b: Resolve which of the requested capabilities the caller is
+    // actually entitled to delegate to the not-yet-spawned child. Captured
+    // now, before `exec_from_vfs` below, so this reads the *caller's* own
+    // capability state — the currently running task does not change until a
+    // later yield/context switch, but capturing it up front matches the
+    // pattern `syscall_spawn_driver_impl` uses for its own authorization
+    // check and avoids any doubt about which task's caps are being read.
+    let requested = Capabilities::from_bits_truncate(requested_caps as u32);
+    let caller_flags = scheduler::current_task_caps()
+        .map(|caps| caps.flags)
+        .unwrap_or(Capabilities::NONE);
+    let granted = resolve_delegated_capabilities(
+        scheduler::is_task_privileged(task_id),
+        caller_flags,
+        requested,
+    );
 
     // Step 4: Attempt to load the program image and spawn a user task.
     let result = crate::process::exec_from_vfs(&name);
@@ -315,6 +372,32 @@ pub fn syscall_exec_impl(name_ptr: *const u8) -> SyscallResult<u64> {
     // annotate.
     if let Ok(tid) = result {
         scheduler::set_task_parent(tid, task_id);
+
+        // Step 6b: Attach the delegated capabilities (if any) to the new
+        // task. A task with no `DriverCaps` block behaves exactly as before
+        // this feature existed (fully unprivileged); this only allocates a
+        // capability block for the caller that is actually entitled to
+        // delegate something. Allocated manually rather than dropping the
+        // exec on OOM: the spawn has already succeeded, so a failure to
+        // allocate this small, best-effort block should not turn a
+        // successful exec into a reported failure — the child simply starts
+        // without the capabilities it would otherwise have been granted.
+        if granted != Capabilities::NONE {
+            let caps = DriverCaps::new(granted, ResourceGrants::default());
+            let caps_layout = core::alloc::Layout::new::<DriverCaps>();
+            // SAFETY: `caps_layout` is a valid, non-zero-sized layout for `DriverCaps`.
+            let caps_ptr = unsafe { alloc::alloc::alloc(caps_layout) } as *mut DriverCaps;
+            if !caps_ptr.is_null() {
+                // SAFETY:
+                // - `caps_ptr` was just allocated with the layout of `DriverCaps` and
+                //   holds no initialized value yet.
+                // - `write` moves `caps` into it without dropping any prior contents,
+                //   matching `Box::from_raw`'s expectations for `remove_task`'s later
+                //   deallocation (same global allocator, same layout).
+                unsafe { caps_ptr.write(caps) };
+                scheduler::set_task_caps(tid, caps_ptr);
+            }
+        }
     }
 
     // Step 7: Map ExecError variants to distinct SyscallError codes.

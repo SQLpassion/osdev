@@ -68,7 +68,37 @@ fn test_capabilities_bitflags() {
     let truncated = Capabilities::from_bits_truncate(0xFFFF_FFFF);
     assert_eq!(
         truncated.bits(),
-        (Capabilities::MMIO | Capabilities::IRQ | Capabilities::SPAWN_DRIVER).bits()
+        (Capabilities::MMIO
+            | Capabilities::IRQ
+            | Capabilities::SPAWN_DRIVER
+            | Capabilities::UNLOAD_DRIVER
+            | Capabilities::LIST_DRIVERS)
+            .bits()
+    );
+}
+
+/// Tests that the driver-management delegation bits (`UNLOAD_DRIVER`,
+/// `LIST_DRIVERS`) are distinct, non-overlapping bitflags that survive
+/// `from_bits_truncate` like the pre-existing coarse flags.
+#[test_case]
+fn test_unload_and_list_drivers_capability_bits() {
+    let unload = Capabilities::UNLOAD_DRIVER;
+    let list = Capabilities::LIST_DRIVERS;
+
+    assert_ne!(unload.bits(), 0);
+    assert_ne!(list.bits(), 0);
+    assert_ne!(unload.bits(), list.bits());
+
+    let combined = unload | list;
+    assert!(combined.contains(Capabilities::UNLOAD_DRIVER));
+    assert!(combined.contains(Capabilities::LIST_DRIVERS));
+    assert!(!combined.contains(Capabilities::SPAWN_DRIVER));
+
+    let truncated = Capabilities::from_bits_truncate(combined.bits());
+    assert_eq!(
+        truncated.bits(),
+        combined.bits(),
+        "UNLOAD_DRIVER and LIST_DRIVERS must survive from_bits_truncate unchanged"
     );
 }
 

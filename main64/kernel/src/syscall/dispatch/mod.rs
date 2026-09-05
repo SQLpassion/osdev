@@ -133,7 +133,7 @@ pub fn dispatch_checked(
         SyscallId::END_OF_FILE => fs::syscall_end_of_file_impl(arg0),
         SyscallId::PRINT_ROOT_DIRECTORY => fs::syscall_print_root_directory_impl(),
         SyscallId::MMAP => process::syscall_mmap_impl(arg0, arg1 as usize),
-        SyscallId::EXEC => process::syscall_exec_impl(arg0 as *const u8),
+        SyscallId::EXEC => process::syscall_exec_impl(arg0 as *const u8, arg1),
         SyscallId::WAIT => process::syscall_wait_impl(arg0),
         SyscallId::SHUTDOWN => process::syscall_shutdown_impl(),
         SyscallId::WRITE_FRAMEBUFFER => {

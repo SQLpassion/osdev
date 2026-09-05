@@ -19,6 +19,9 @@ pub use dispatch::{
 };
 
 #[allow(unused_imports)]
+pub use dispatch::process::resolve_delegated_capabilities;
+
+#[allow(unused_imports)]
 pub use types::{
     decode_result, is_valid_user_buffer, is_valid_user_buffer_writable, syscall_error_to_raw,
     syscall_result_to_raw, user_alias_rip, user_alias_va_for_kernel, SysError, SyscallError,

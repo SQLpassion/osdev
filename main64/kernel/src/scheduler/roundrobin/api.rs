@@ -400,3 +400,22 @@ pub fn set_running_slot_for_test(slot: Option<usize>) {
         meta.running_slot = slot;
     });
 }
+
+/// Sets the privileged-syscall capability flag on `task_id` directly, for
+/// unit tests that need a privileged caller without spawning a real user
+/// task via `spawn_user_task(.., privileged: true)` (which requires a
+/// dedicated address space — unnecessary overhead, and unrelated teardown
+/// hazards, for tests that never actually run the caller's own code).
+///
+/// Returns `false` if `task_id` is invalid or refers to an unused slot.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn set_task_privileged_for_test(task_id: usize, privileged: bool) -> bool {
+    let slot = task_id_slot(task_id);
+    with_scheduler(|meta| {
+        if slot >= meta.slots.len() || !meta.slots[slot].used {
+            return false;
+        }
+        meta.slots[slot].privileged = privileged;
+        true
+    })
+}

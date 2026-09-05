@@ -2,16 +2,48 @@
 
 use crate::{
     decode_result,
-    raw::{syscall0, syscall1},
+    raw::{syscall0, syscall1, syscall2},
     SysError, SyscallId, MAX_PATH_LEN,
 };
+
+/// Coarse capability bits that `exec_with_capabilities` may ask the kernel to
+/// delegate to a spawned child. Mirrors `kernel::process::capabilities::Capabilities`
+/// (see `kernel/src/process/capabilities.rs`) — kept as raw bit constants here
+/// since user-space processes only ever pass these as an opaque `u64` and
+/// never need the kernel-side `Capabilities` type itself.
+pub mod capabilities {
+    /// May call SpawnDriver — reserved for the driver manager only.
+    pub const SPAWN_DRIVER: u64 = 1 << 2;
+    /// May call Unload to terminate a registered driver task by name.
+    pub const UNLOAD_DRIVER: u64 = 1 << 3;
+    /// May call ListDrivers to enumerate currently registered driver tasks.
+    pub const LIST_DRIVERS: u64 = 1 << 4;
+}
 
 /// Executes a flat binary from the mounted filesystem.
 ///
 /// `name` is automatically null-terminated in a stack buffer before the syscall.
 /// Returns the task ID of the spawned process on success.
+///
+/// Delegates no capabilities to the spawned child. Use
+/// [`exec_with_capabilities`] to delegate a subset of the caller's own
+/// capabilities (only ever effective for a privileged caller, or one that
+/// already holds the requested bits itself — see the kernel's `Exec` handler).
 #[inline(always)]
 pub fn exec(name: &str) -> Result<usize, SysError> {
+    exec_with_capabilities(name, 0)
+}
+
+/// Same as [`exec`], but additionally requests that `requested_caps` (a
+/// bitmask built from [`capabilities`]) be delegated to the spawned child.
+///
+/// The kernel grants at most the intersection of what is requested and what
+/// the caller itself is entitled to delegate — an unprivileged caller can
+/// never grant a child more than it already holds itself. See
+/// `kernel::syscall::dispatch::process::syscall_exec_impl` for the exact
+/// authorization rule.
+#[inline(always)]
+pub fn exec_with_capabilities(name: &str, requested_caps: u64) -> Result<usize, SysError> {
     let mut buf = [0u8; MAX_PATH_LEN];
     let name_bytes = name.as_bytes();
     if name_bytes.len() >= MAX_PATH_LEN {
@@ -24,7 +56,7 @@ pub fn exec(name: &str) -> Result<usize, SysError> {
         // SAFETY:
         // - `buf` is a valid null-terminated string on the stack.
         // - The kernel validates the pointer at the syscall boundary.
-        syscall1(SyscallId::Exec as u64, buf.as_ptr() as u64)
+        syscall2(SyscallId::Exec as u64, buf.as_ptr() as u64, requested_caps)
     };
     decode_result(raw).map(|pid| pid as usize)
 }

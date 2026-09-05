@@ -48,9 +48,9 @@ mod wait;
 pub use api::{
     current_task_caps, current_task_id, current_user_heap_top, is_parent_of, is_task_privileged,
     is_user_task, reset_initialization_for_test, set_current_user_heap_top, set_root_task_id,
-    set_running_slot_for_test, set_task_caps, set_task_parent, set_task_user_context,
-    slot_table_len, task_context, task_frame_ptr, task_generation, task_iret_frame, task_state,
-    try_increment_exec_count,
+    set_running_slot_for_test, set_task_caps, set_task_parent, set_task_privileged_for_test,
+    set_task_user_context, slot_table_len, task_context, task_frame_ptr, task_generation,
+    task_iret_frame, task_state, try_increment_exec_count,
 };
 #[allow(unused_imports)]
 pub use spawn::{
