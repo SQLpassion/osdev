@@ -11,11 +11,10 @@ use lib_kaos::{console, print, println, process};
 /// Parsed shell-style command line for the `drivers` REPL.
 ///
 /// Only the commands implemented so far have a dedicated variant; anything
-/// else (including `unload`, not implemented until its own phase) falls
-/// into [`Command::Unknown`]. This mirrors the shell's own `execute_command`
-/// dispatch, but factored out as a pure function so it is unit-testable
-/// without a scheduler, VFS, or real syscalls (see this project's
-/// `resolve_driver_filename` convention).
+/// else falls into [`Command::Unknown`]. This mirrors the shell's own
+/// `execute_command` dispatch, but factored out as a pure function so it is
+/// unit-testable without a scheduler, VFS, or real syscalls (see this
+/// project's `resolve_driver_filename` convention).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Command<'a> {
     /// Blank input (whitespace-only or empty) — the REPL loop silently
@@ -29,10 +28,11 @@ enum Command<'a> {
     List,
     /// `load <name>` — the filename argument, or `None` if omitted.
     Load(Option<&'a str>),
+    /// `unload <name>` — the driver name argument, or `None` if omitted.
+    Unload(Option<&'a str>),
     /// Anything else, including a recognized command name typed in the
-    /// wrong case (dispatch is case-sensitive, matching the shell), or
-    /// `unload` before its own phase lands. Carries the first
-    /// whitespace-separated word of the input line.
+    /// wrong case (dispatch is case-sensitive, matching the shell). Carries
+    /// the first whitespace-separated word of the input line.
     Unknown(&'a str),
 }
 
@@ -53,6 +53,7 @@ fn parse_command(line: &str) -> Command<'_> {
         "help" => Command::Help,
         "list" => Command::List,
         "load" => Command::Load(parts.next()),
+        "unload" => Command::Unload(parts.next()),
         other => Command::Unknown(other),
     }
 }
@@ -118,6 +119,35 @@ fn print_driver_list() {
     }
 }
 
+/// Terminates a loaded driver by name.
+///
+/// `unload` is a hard kill: the kernel's `DrvUnload` syscall calls
+/// `scheduler::terminate_task` directly, which does not run the driver's
+/// own shutdown path (no `drop(device)`, no disabling DMA/bus-mastering —
+/// see `docs/drivers.md` §15, and `kernel/src/syscall/dispatch/driver.rs`'s
+/// `syscall_drv_unload_impl` doc comment). This is a known limitation of
+/// this kernel's driver model (no IOMMU), not something this command works
+/// around.
+#[cfg(not(test))]
+fn unload_driver(name: &str) {
+    match lib_driver::drv::unload_driver(name.as_bytes()) {
+        Ok(()) => println!("[drivers] Driver '{}' unloaded.", name),
+        Err(lib_driver::SysError::PermissionDenied) => {
+            println!(
+                "[drivers] Not authorized to unload '{}' (missing UNLOAD_DRIVER capability).",
+                name
+            );
+        }
+        Err(lib_driver::SysError::InvalidArgument) => {
+            println!(
+                "[drivers] '{}' is not a loaded driver (or the name is invalid).",
+                name
+            );
+        }
+        Err(err) => println!("[drivers] Failed to unload '{}': {:?}", name, err),
+    }
+}
+
 /// Parses and dispatches one entered `drivers` REPL command line.
 #[cfg(not(test))]
 fn execute_command(line: &str) {
@@ -127,6 +157,8 @@ fn execute_command(line: &str) {
         Command::List => print_driver_list(),
         Command::Load(Some(file)) => load_driver::load_driver(file),
         Command::Load(None) => println!("Usage: load <name.drv>"),
+        Command::Unload(Some(name)) => unload_driver(name),
+        Command::Unload(None) => println!("Usage: unload <name>"),
         Command::Unknown(cmd) => {
             println!("Unknown command: '{}'. Type 'help' for options.", cmd);
         }

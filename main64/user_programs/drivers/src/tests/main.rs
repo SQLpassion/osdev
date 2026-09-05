@@ -79,12 +79,24 @@ fn test_parse_command_load_ignores_extra_arguments_past_the_first() {
 }
 
 #[test]
-fn test_parse_command_unload_is_unknown_before_its_own_phase() {
-    // `unload` is implemented in a later phase (issue #106); until then it
-    // must fall through to `Unknown`, not panic or be silently accepted.
+fn test_parse_command_unload_with_argument() {
     assert_eq!(
         parse_command("unload nic:rtl8139"),
-        Command::Unknown("unload")
+        Command::Unload(Some("nic:rtl8139"))
+    );
+}
+
+#[test]
+fn test_parse_command_unload_without_argument() {
+    assert_eq!(parse_command("unload"), Command::Unload(None));
+    assert_eq!(parse_command("unload   "), Command::Unload(None));
+}
+
+#[test]
+fn test_parse_command_unload_ignores_extra_arguments_past_the_first() {
+    assert_eq!(
+        parse_command("unload nic:rtl8139 extra stuff"),
+        Command::Unload(Some("nic:rtl8139"))
     );
 }
 
