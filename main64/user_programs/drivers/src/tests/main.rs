@@ -101,6 +101,16 @@ fn test_parse_command_unload_ignores_extra_arguments_past_the_first() {
 }
 
 #[test]
+fn test_parse_command_exit_with_no_arguments() {
+    assert_eq!(parse_command("exit"), Command::Exit);
+}
+
+#[test]
+fn test_parse_command_exit_with_extra_arguments_is_still_exit() {
+    assert_eq!(parse_command("exit now please"), Command::Exit);
+}
+
+#[test]
 fn test_parse_command_ignores_leading_and_trailing_whitespace() {
     assert_eq!(parse_command("  help  "), Command::Help);
     assert_eq!(parse_command("  list  "), Command::List);

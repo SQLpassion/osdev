@@ -30,6 +30,11 @@ enum Command<'a> {
     Load(Option<&'a str>),
     /// `unload <name>` — the driver name argument, or `None` if omitted.
     Unload(Option<&'a str>),
+    /// `exit` — terminate this process and return to the shell. Any extra
+    /// words on the line are ignored. Does not unload any driver: exiting
+    /// only terminates this REPL's own task, and loaded drivers are
+    /// independent, unrelated tasks that keep running.
+    Exit,
     /// Anything else, including a recognized command name typed in the
     /// wrong case (dispatch is case-sensitive, matching the shell). Carries
     /// the first whitespace-separated word of the input line.
@@ -54,6 +59,7 @@ fn parse_command(line: &str) -> Command<'_> {
         "list" => Command::List,
         "load" => Command::Load(parts.next()),
         "unload" => Command::Unload(parts.next()),
+        "exit" => Command::Exit,
         other => Command::Unknown(other),
     }
 }
@@ -75,6 +81,7 @@ fn print_help() {
     println!("  list              - list currently loaded drivers");
     println!("  load <name.drv>   - load a driver from the filesystem");
     println!("  unload <name>     - unload a currently loaded driver");
+    println!("  exit              - exit this application and return to the shell");
 }
 
 /// Prints the `list` command's output: every currently loaded driver's name
@@ -159,6 +166,7 @@ fn execute_command(line: &str) {
         Command::Load(None) => println!("Usage: load <name.drv>"),
         Command::Unload(Some(name)) => unload_driver(name),
         Command::Unload(None) => println!("Usage: unload <name>"),
+        Command::Exit => process::exit(),
         Command::Unknown(cmd) => {
             println!("Unknown command: '{}'. Type 'help' for options.", cmd);
         }
