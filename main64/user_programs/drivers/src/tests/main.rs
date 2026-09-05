@@ -54,11 +54,34 @@ fn test_parse_command_is_case_sensitive() {
 }
 
 #[test]
-fn test_parse_command_load_and_unload_are_unknown_before_their_own_phases() {
-    // `load`/`unload` are implemented in later phases (issues #105/#106);
-    // until then they must fall through to `Unknown`, not panic or be
-    // silently accepted.
-    assert_eq!(parse_command("load rtl8139.drv"), Command::Unknown("load"));
+fn test_parse_command_load_with_argument() {
+    assert_eq!(
+        parse_command("load rtl8139.drv"),
+        Command::Load(Some("rtl8139.drv"))
+    );
+}
+
+#[test]
+fn test_parse_command_load_without_argument() {
+    assert_eq!(parse_command("load"), Command::Load(None));
+    assert_eq!(parse_command("load   "), Command::Load(None));
+}
+
+#[test]
+fn test_parse_command_load_ignores_extra_arguments_past_the_first() {
+    // Only the first whitespace-separated word after `load` is taken as the
+    // filename — matches the shell's own `exec <file>`/`cat <file>`, which
+    // never treated trailing words as anything but noise.
+    assert_eq!(
+        parse_command("load rtl8139.drv extra stuff"),
+        Command::Load(Some("rtl8139.drv"))
+    );
+}
+
+#[test]
+fn test_parse_command_unload_is_unknown_before_its_own_phase() {
+    // `unload` is implemented in a later phase (issue #106); until then it
+    // must fall through to `Unknown`, not panic or be silently accepted.
     assert_eq!(
         parse_command("unload nic:rtl8139"),
         Command::Unknown("unload")

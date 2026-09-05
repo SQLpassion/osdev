@@ -3,14 +3,16 @@
 
 extern crate alloc;
 
+mod load_driver;
+
 #[cfg(not(test))]
 use lib_kaos::{console, print, println, process};
 
 /// Parsed shell-style command line for the `drivers` REPL.
 ///
 /// Only the commands implemented so far have a dedicated variant; anything
-/// else (including `load`/`unload`, not implemented until later) falls into
-/// [`Command::Unknown`]. This mirrors the shell's own `execute_command`
+/// else (including `unload`, not implemented until its own phase) falls
+/// into [`Command::Unknown`]. This mirrors the shell's own `execute_command`
 /// dispatch, but factored out as a pure function so it is unit-testable
 /// without a scheduler, VFS, or real syscalls (see this project's
 /// `resolve_driver_filename` convention).
@@ -25,9 +27,11 @@ enum Command<'a> {
     /// `list` — enumerate currently loaded drivers. Any extra words on the
     /// line are ignored.
     List,
+    /// `load <name>` — the filename argument, or `None` if omitted.
+    Load(Option<&'a str>),
     /// Anything else, including a recognized command name typed in the
     /// wrong case (dispatch is case-sensitive, matching the shell), or
-    /// `load`/`unload` before their own phases land. Carries the first
+    /// `unload` before its own phase lands. Carries the first
     /// whitespace-separated word of the input line.
     Unknown(&'a str),
 }
@@ -48,6 +52,7 @@ fn parse_command(line: &str) -> Command<'_> {
     match cmd {
         "help" => Command::Help,
         "list" => Command::List,
+        "load" => Command::Load(parts.next()),
         other => Command::Unknown(other),
     }
 }
@@ -120,6 +125,8 @@ fn execute_command(line: &str) {
         Command::Empty => {}
         Command::Help => print_help(),
         Command::List => print_driver_list(),
+        Command::Load(Some(file)) => load_driver::load_driver(file),
+        Command::Load(None) => println!("Usage: load <name.drv>"),
         Command::Unknown(cmd) => {
             println!("Unknown command: '{}'. Type 'help' for options.", cmd);
         }
