@@ -204,6 +204,7 @@ Detailed, implementation-level documentation for each subsystem lives in
 | Document | Topic |
 |---|---|
 | [drivers.md](main64/docs/drivers.md) | Ring-3 user-space driver architecture from first principles: capabilities, MMIO/IRQ/DMA syscalls, and the RTL8139 driver walkthrough |
+| [networking.md](main64/docs/networking.md) | The `lib_net` protocol stack (Ethernet/ARP/IPv4/ICMP) explained OSI-layer by OSI-layer, down to byte offsets, plus how `ping` works end to end across the driver/net-tools process split |
 
 ### Testing
 | Document | Topic |

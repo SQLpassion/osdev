@@ -5,7 +5,7 @@
 
 This document explains the driver architecture implemented on `feature/drivers` from first principles. Its purpose is not merely to describe **what** the code does, but to explain **why** each layer exists and how data, permissions, and hardware events move through the system. The concrete example is a Realtek RTL8139 network driver that runs as an ordinary Ring 3 process while retaining controlled access to PCI hardware, MMIO registers, DMA memory, and interrupts.
 
-The text follows the real lifetime of the driver. It begins with the necessary hardware and operating-system concepts, follows the driver from the shell through the new kernel syscalls, and then examines device initialization and the transmit and receive paths. The final sections explain the small Ethernet, ARP, IPv4, and ICMP stack, the build and test infrastructure, and the current technical limitations.
+The text follows the real lifetime of the driver. It begins with the necessary hardware and operating-system concepts, follows the driver from the shell through the new kernel syscalls, and then examines device initialization and the transmit and receive paths. The final sections explain the build and test infrastructure and the current technical limitations. The protocol stack the driver hands frames to — Ethernet, ARP, IPv4, and ICMP — is documented separately in [`docs/networking.md`](networking.md), since it is hardware-agnostic and lives in its own crate, `lib_net`.
 
 The most important implementation files are:
 
@@ -14,7 +14,6 @@ The most important implementation files are:
 * [`kernel/src/drivers/irq_bridge.rs`](../kernel/src/drivers/irq_bridge.rs)
 * [`lib_driver`](../lib_driver/src/lib.rs)
 * [`drivers/rtl8139/src/rtl8139.rs`](../drivers/rtl8139/src/rtl8139.rs)
-* [`user_programs/rtl8139/src/net`](../user_programs/rtl8139/src/net/mod.rs)
 * [`drivers/rtl8139/src/main.rs`](../drivers/rtl8139/src/main.rs)
 
 ---
@@ -577,158 +576,24 @@ Only packets with the Receive OK bit and a plausible length are accepted. Four C
 
 The next record begins on a four-byte boundary after the device header and packet. When the offset reaches the end of the 8192-byte ring, it wraps modulo the ring size. Finally, the driver writes `rx_offset - 0x10` to `CAPR`, informing the device how much data software has consumed.
 
-The interactive program currently polls the ring:
+The driver's background event loop (`lib_driver_runtime::run_background_driver()`) polls the ring in a loop, feeding every received frame into the `lib_net` protocol stack and unconditionally forwarding it to any application waiting on this driver's channel:
 
 ```rust
 while let Some(len) = device.poll_next_packet(&mut rx_buf) {
-    let event = stack.handle_rx_packet(&rx_buf[..len], |reply| {
+    let _event = stack.handle_rx_packet(&rx_buf[..len], |reply| {
         let _ = device.transmit(reply);
     });
-
-    // Interpret the event for display.
+    let _ = net_send(own_id, &rx_buf[..len]);
 }
 ```
 
-Although the IRQ infrastructure exists, this production receive path does not call `wait_irq()`. It performs short spin loops between polling attempts.
+Although the IRQ infrastructure exists, this receive path does not call `wait_irq()`. It performs short spin loops between polling attempts.
+
+What `stack.handle_rx_packet()` does with that byte slice — Ethernet framing, ARP resolution, IPv4, and ICMP Echo — belongs to the hardware-agnostic `lib_net` crate and is documented in full, byte layout included, in [`docs/networking.md`](networking.md).
 
 ---
 
-## 12. Moving a Raw Frame Through the Network Stack
-
-The network stack is intentionally small and integrated into the driver program. It contains four layers:
-
-```text
-Ethernet II
-    |
-    +-- EtherType 0x0806 --> ARP
-    |
-    +-- EtherType 0x0800 --> IPv4
-                                |
-                                +-- Protocol 1 --> ICMP Echo
-```
-
-Each layer receives a byte slice, validates its own header, and passes only its payload to the next layer. Parsers borrow their payload slices rather than allocating and copying them again.
-
-### 12.1 Ethernet II
-
-An Ethernet II header is 14 bytes long. The first six bytes are the destination MAC address, the next six are the source MAC, and the final two contain the EtherType:
-
-```text
-0               6              12       14
-+---------------+---------------+--------+------------------+
-| Destination   | Source MAC    | Type   | Payload          |
-| MAC, 6 bytes  | 6 bytes       | 2 B    |                  |
-+---------------+---------------+--------+------------------+
-```
-
-[`ethernet.rs`](../user_programs/rtl8139/src/net/ethernet.rs) reads the EtherType using `u16::from_be_bytes`, because network protocols use network byte order, which is big endian. The parser does not allocate a payload copy; it returns `&data[14..]`.
-
-On reception, `NetworkStack::handle_rx_packet()` accepts only frames addressed to the driver's MAC or to the broadcast address. It then dispatches ARP and IPv4 by EtherType. Unknown types are ignored.
-
-### 12.2 ARP
-
-Ethernet delivers frames to MAC addresses, while applications reason about IPv4 addresses. ARP resolves an IPv4 address to a MAC address. A request effectively asks, “Who owns `192.168.1.1`?” The owner responds with its MAC address.
-
-[`arp.rs`](../user_programs/rtl8139/src/net/arp.rs) models the 28-byte Ethernet/IPv4 ARP packet. When building a request, the target MAC inside the ARP payload is unknown and therefore zero. The surrounding Ethernet frame is sent to `FF:FF:FF:FF:FF:FF`.
-
-```rust
-pub fn build_request(
-    sender_mac: MacAddress,
-    sender_ip: Ipv4Address,
-    target_ip: Ipv4Address,
-) -> Self {
-    Self {
-        hardware_type: 1,
-        protocol_type: 0x0800,
-        hardware_len: 6,
-        protocol_len: 4,
-        opcode: opcode::REQUEST,
-        sender_mac,
-        sender_ip,
-        target_mac: MacAddress::ZERO,
-        target_ip,
-    }
-}
-```
-
-For every successfully parsed ARP packet, the stack learns the sender's IP-to-MAC mapping. If a request targets the local IP address, it automatically generates a reply. A received reply also updates the cache and produces `NetworkEvent::ArpReplyReceived` for the CLI.
-
-The ARP table is a simple `Vec<(Ipv4Address, MacAddress)>`, so lookups are linear. That is sufficient and easy to understand for this small educational stack.
-
-### 12.3 IPv4
-
-[`ipv4.rs`](../user_programs/rtl8139/src/net/ipv4.rs) can parse IPv4 headers with an IHL of at least five, while its serializer always generates a fixed 20-byte header without options. The parser validates the version, header length, total length, and header checksum.
-
-The Internet checksum adds 16-bit words using one's-complement arithmetic. Carries from the upper half are folded into the lower 16 bits, and the result is inverted:
-
-```rust
-pub fn compute_checksum(data: &[u8]) -> u16 {
-    let mut sum: u32 = 0;
-    let mut i = 0;
-
-    while i + 1 < data.len() {
-        let word = u16::from_be_bytes([data[i], data[i + 1]]);
-        sum = sum.wrapping_add(word as u32);
-        i += 2;
-    }
-
-    if i < data.len() {
-        sum = sum.wrapping_add((data[i] as u32) << 8);
-    }
-
-    while (sum >> 16) != 0 {
-        sum = (sum & 0xFFFF) + (sum >> 16);
-    }
-
-    !(sum as u16)
-}
-```
-
-When this function processes an entire valid header that already contains its checksum, the result is zero. The parser uses that property for validation.
-
-Generated packets use TTL 64 and set the Don't Fragment bit. Fragmentation and reassembly are not implemented. Incoming packets are only processed further when their destination is the configured local address or `255.255.255.255`.
-
-### 12.4 ICMP Echo
-
-ICMP carries control messages inside IPv4. This branch implements only Echo Request, type 8, and Echo Reply, type 0, which are the basis of `ping`.
-
-The eight-byte Echo header contains the type, code, checksum, identifier, and sequence number, followed by an arbitrary payload. [`icmp.rs`](../user_programs/rtl8139/src/net/icmp.rs) initially zeros the checksum field, copies the header and payload, computes the checksum over the complete ICMP message, and inserts it into the final packet.
-
-When the stack receives an Echo Request for its own address, it copies the identifier, sequence number, and payload into an Echo Reply. It builds a new IPv4 header and then a new Ethernet frame. The destination MAC is taken from the ARP cache; if the entry is missing, the current implementation falls back to Ethernet broadcast.
-
----
-
-## 13. Routing and the Interactive Ping Command
-
-The stack starts with static settings for a `192.168.1.0/24` network. Its default address is `192.168.1.200`, the mask is `255.255.255.0`, the gateway is `192.168.1.1`, and the DNS server is `192.168.1.3`. The CLI can change them through `ifconfig` and `set ip`, `set gw`, `set mask`, or `set dns`.
-
-For a ping, `is_same_subnet()` determines whether the destination can be reached directly. It applies the mask to both addresses byte by byte and compares the network portions:
-
-```rust
-if (self_ip[i] & mask[i]) != (other_ip[i] & mask[i]) {
-    return false;
-}
-```
-
-For a local destination, the ARP next hop is the destination itself. For a remote subnet, it is the default gateway. Without a configured gateway, the command reports “Destination Host Unreachable.”
-
-If the relevant ARP entry is missing, the stack broadcasts a request and polls for approximately one second. It then sends four ICMP Echo Requests using identifier `0x1337` and increasing sequence numbers. A reply only belongs to the current request if its source address, identifier, and sequence number all match.
-
-Timing uses the x86 `RDTSC` instruction. This returns CPU-counter ticks rather than milliseconds. The conversion assumes two billion ticks per second:
-
-```rust
-let cycles = end_time.saturating_sub(send_time);
-let milliseconds = cycles / 2_000_000;
-let tenths = (cycles % 2_000_000) / 200_000;
-```
-
-This is useful for a demonstration under a matching QEMU configuration, but it is not a general time source. Physical and virtual CPUs may expose a different TSC frequency.
-
-Before entering `listen`, the CLI drains pending keyboard events. Otherwise, the Enter key used to submit the command could immediately stop listening. It also discards stale packets accumulated in the DMA ring while the user was at the prompt. Only then does it begin reporting new ARP and ICMP events.
-
----
-
-## 14. Resource Lifetime and RAII
+## 12. Resource Lifetime and RAII
 
 Rust's RAII model is useful for driver resources. A resource is tied to an object and released by its `Drop` implementation. `Mmio` unmaps its region when dropped, and `DmaBuffer` unmaps and frees its frames. `Rtl8139Device` directly owns all three objects. If the device value leaves a normal scope or is passed to `drop(device)`, cleanup occurs in reverse ownership order.
 
@@ -766,7 +631,7 @@ MMIO and DMA have different ownership semantics. For MMIO, the device owns the p
 
 ---
 
-## 15. Build Integration, ELF Layout, and QEMU
+## 13. Build Integration, ELF Layout, and QEMU
 
 `lib_driver` and `rtl8139_user_program` are new Cargo workspace members. The driver is built for `x86_64-unknown-none` without the standard library. It uses `core`, the existing allocator through `alloc`, `lib_kaos`, and `lib_driver`.
 
@@ -778,7 +643,7 @@ The build helpers copy `RTL8139.BIN` into both BIOS and UEFI disk images. QEMU i
 
 ---
 
-## 16. What the Tests Actually Verify
+## 14. What the Tests Actually Verify
 
 The new test programs validate the layers independently. [`capabilities_test.rs`](../kernel/tests/capabilities_test.rs) checks bit operations, the capability-free initial state of ordinary tasks, and attachment and cleanup of a `DriverCaps` block.
 
@@ -794,7 +659,7 @@ The new [`test_all.sh`](../test_all.sh) runs user-space protocol tests, kernel t
 
 ---
 
-## 17. Security and Implementation Limits
+## 15. Security and Implementation Limits
 
 This architecture isolates driver code from the kernel much better than a Ring 0 driver, but it is not yet equivalent to a production driver framework.
 
@@ -814,13 +679,13 @@ The regular `exit` command disables the device with `shutdown()` but does not ca
 
 In the transmit path, the descriptor wait loop expires after 10,000 iterations without returning an error. The code still writes the slot and starts transmission. It also reports at least 60 bytes for short Ethernet frames without explicitly zeroing the additional bytes before every transmission. Data left from a previous slot use could therefore be emitted as Ethernet padding. A robust implementation should return `IoError` on timeout and clear the padding range.
 
-The network stack is deliberately small. It has no DHCP, no DNS resolution despite the configurable DNS address, no TCP, no UDP, no IPv4 fragment reassembly, and no ICMP error handling. ARP entries have neither an expiration time nor a size limit. The static default configuration must also match the bridged LAN; `192.168.1.200` may already be occupied or the network may use a completely different prefix.
+The protocol stack the driver hands frames to has its own, separately documented limitations — no DHCP, no TCP/UDP, no IP fragmentation, ARP entries with no expiration timer, and so on; see [`docs/networking.md`](networking.md) §11.
 
 Finally, QEMU networking depends on host configuration. `en0` is not the active interface on every Mac, and Linux requires `tap0` to be created with appropriate permissions and attached to a bridge before the scripts run.
 
 ---
 
-## 18. The Entire Path as One Continuous Story
+## 16. The Entire Path as One Continuous Story
 
 During boot, the kernel scans the PCI bus. It reads vendor IDs, device IDs, BARs, and IRQ lines and enables Memory Space and Bus Mastering. QEMU provides an emulated RTL8139 device.
 
@@ -830,7 +695,7 @@ The new process discovers the device again. It asks the kernel to map the grante
 
 For reception and transmission, the driver requests contiguous DMA frames. The kernel marks them in the PMM, maps them into the same process, and returns both virtual and physical base addresses. The driver writes the physical addresses into RTL8139 registers. CPU and network card can now refer to the same memory through their respective address views.
 
-During transmission, the network stack serializes ICMP, places an IPv4 header in front of it, and places an Ethernet header in front of that. The driver copies the completed frame into a TX DMA slot and starts the hardware by writing a TSD register. During reception, the card writes a frame into the RX ring. The driver reads the device-specific ring header, removes the CRC, and passes a byte slice to the Ethernet parser. That parser forwards ARP or IPv4 payloads until the stack may automatically generate an ARP Reply or ICMP Echo Reply.
+During transmission, the hardware-agnostic `lib_net` protocol stack (`docs/networking.md`) serializes a complete Ethernet/IPv4/ICMP frame. The driver copies that completed frame into a TX DMA slot and starts the hardware by writing a TSD register. During reception, the card writes a frame into the RX ring. The driver reads the device-specific ring header, removes the CRC, and passes the remaining byte slice to `lib_net`, which may respond automatically with an ARP Reply or an ICMP Echo Reply.
 
 When the user exits through `exit` or `quit`, the receiver and interrupt mask are disabled. `process::exit()` then terminates the task without Rust unwinding. The kernel destroys the complete user address space and releases PMM-managed DMA frames; the scheduler also frees the capability block. The waiting shell resumes. The existing `Drop` implementations would perform targeted MMIO and DMA cleanup, but they are not executed on this exact path without an explicit `drop(device)`.
 
