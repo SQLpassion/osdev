@@ -84,6 +84,10 @@ pub enum SyscallId {
     DrvRegister = 39,
     /// Resolve the task id of a driver previously registered via DrvRegister.
     DrvLookup = 40,
+    /// Send a raw packet to/from a driver channel (role-based direction).
+    NetSend = 41,
+    /// Receive a raw packet to/from a driver channel (role-based direction).
+    NetRecv = 42,
 }
 
 impl SyscallId {
@@ -189,6 +193,10 @@ impl SyscallId {
     pub const DRV_REGISTER: u64 = Self::DrvRegister as u64;
     /// Syscall number for DrvLookup.
     pub const DRV_LOOKUP: u64 = Self::DrvLookup as u64;
+    /// Syscall number for NetSend.
+    pub const NET_SEND: u64 = Self::NetSend as u64;
+    /// Syscall number for NetRecv.
+    pub const NET_RECV: u64 = Self::NetRecv as u64;
 }
 
 /// Unknown syscall number.

@@ -86,6 +86,8 @@ pub const fn syscall_name_for_number(syscall_nr: u64) -> &'static str {
         SyscallId::VIRT_TO_PHYS => "VirtToPhys",
         SyscallId::DRV_REGISTER => "DrvRegister",
         SyscallId::DRV_LOOKUP => "DrvLookup",
+        SyscallId::NET_SEND => "NetSend",
+        SyscallId::NET_RECV => "NetRecv",
         _ => "Unknown",
     }
 }
@@ -169,6 +171,8 @@ pub fn dispatch_checked(
         SyscallId::VIRT_TO_PHYS => driver::syscall_virt_to_phys_impl(arg0),
         SyscallId::DRV_REGISTER => driver::syscall_drv_register_impl(arg0, arg1),
         SyscallId::DRV_LOOKUP => driver::syscall_drv_lookup_impl(arg0, arg1),
+        SyscallId::NET_SEND => driver::syscall_net_send_impl(arg0, arg1, arg2),
+        SyscallId::NET_RECV => driver::syscall_net_recv_impl(arg0, arg1, arg2, arg3),
         _ => Err(SyscallError::Unsupported),
     };
 

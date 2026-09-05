@@ -1,7 +1,7 @@
 //! Driver infrastructure syscall handlers (MMIO, IRQ bridge, SpawnDriver).
 
 use crate::arch::constants::PAGE_SIZE_U64;
-use crate::drivers::registry;
+use crate::drivers::{registry, time};
 use crate::memory::vmm::{
     self, map_user_mmio_page, read_cr3, unmap_without_release, with_address_space, USER_MMIO_BASE,
     USER_STACK_GUARD_BASE,
@@ -770,4 +770,156 @@ pub fn syscall_drv_lookup_impl(name_ptr: u64, name_len: u64) -> SyscallResult<u6
     registry::lookup(&name_buf[..name_len])
         .map(|tid| tid as u64)
         .ok_or(SyscallError::InvalidArg)
+}
+
+/// Sends a raw packet to/from a driver channel.
+///
+/// **Role-based direction** (see the design-decision note on Phase 2 Step 2
+/// / this syscall's GitHub issue for the full rationale — this resolves an
+/// inconsistency in `docs/nic_driver_design.md` §4.4 vs §4.5, which describes
+/// six conceptual operations but allocates only two syscall numbers here):
+/// - Caller is an ordinary app (its own tid != `driver_id`): pushes into
+///   `driver_id`'s TX ring (App → Driver).
+/// - Caller **is** the driver itself (its own tid == `driver_id`): pushes
+///   into its own RX ring (Driver → App).
+///
+/// Arguments:
+/// - `driver_id`: Packed task id of the target driver channel (from `DrvLookup`,
+///   or the caller's own tid if it is that driver).
+/// - `packet_ptr`/`packet_len`: Raw packet bytes in user memory;
+///   `0 < packet_len <= registry::MAX_PACKET_LEN`.
+pub fn syscall_net_send_impl(
+    driver_id: u64,
+    packet_ptr: u64,
+    packet_len: u64,
+) -> SyscallResult<u64> {
+    // Step 1: validate the packet length before touching the pointer.
+    if packet_len == 0 || packet_len > registry::MAX_PACKET_LEN as u64 {
+        return Err(SyscallError::InvalidArg);
+    }
+    let packet_len = packet_len as usize;
+    let packet_ptr = packet_ptr as *const u8;
+
+    // Step 2: validate the buffer is canonical, in range, and mapped
+    // present+readable before dereferencing it.
+    if !is_valid_user_buffer_readable(packet_ptr, packet_len) {
+        return Err(SyscallError::InvalidArg);
+    }
+
+    // Step 3: copy the packet into a kernel-local buffer. Never trust the
+    // user pointer past this point.
+    let mut packet_buf = [0u8; registry::MAX_PACKET_LEN];
+    // SAFETY:
+    // - `is_valid_user_buffer_readable` verified `[packet_ptr, packet_ptr +
+    //   packet_len)` is canonical, in-range, and mapped present+readable.
+    // - `packet_len <= registry::MAX_PACKET_LEN`, so the destination buffer
+    //   is large enough.
+    // - The two ranges cannot overlap: `packet_buf` is a fresh stack allocation.
+    unsafe {
+        core::ptr::copy_nonoverlapping(packet_ptr, packet_buf.as_mut_ptr(), packet_len);
+    }
+
+    // Step 4: role-based direction — see the doc comment above.
+    let caller_is_driver = scheduler::current_task_id() == Some(driver_id as usize);
+
+    // Step 5+6: push into the selected ring. Never blocks: a full ring is
+    // backpressure to the sender (registry::PacketRing::push never blocks).
+    registry::push_packet(
+        driver_id as usize,
+        caller_is_driver,
+        &packet_buf[..packet_len],
+    )?;
+    Ok(SYSCALL_OK)
+}
+
+/// Receives a raw packet to/from a driver channel, mirroring `NetSend`'s
+/// role-based direction (see its doc comment for the full rationale).
+///
+/// Arguments:
+/// - `driver_id`: Packed task id of the target driver channel.
+/// - `buf_ptr`/`buf_len`: Destination buffer in user memory. A packet larger
+///   than `buf_len` is truncated to `buf_len` bytes, matching the truncating
+///   `NicDevice::poll_next_packet` convention already used by the drivers.
+/// - `timeout_ms`: `0` polls once and returns `Timeout` immediately if the
+///   ring is empty — **not** "wait forever" the way `IrqWait`'s `timeout_ms
+///   == 0` behaves. This is a deliberate deviation: the background driver
+///   event loop (`docs/nic_driver_design.md` §4.6) drains its TX ring every
+///   iteration and must never block doing so. A non-zero value blocks up to
+///   that many milliseconds.
+///
+/// Returns the number of bytes copied into `buf_ptr`, or `SysError::Timeout`
+/// if the ring is still empty once the wait (if any) elapses.
+pub fn syscall_net_recv_impl(
+    driver_id: u64,
+    buf_ptr: u64,
+    buf_len: u64,
+    timeout_ms: u64,
+) -> SyscallResult<u64> {
+    // Step 1: validate the destination buffer up front — every return path
+    // below eventually writes into it.
+    let buf_len = buf_len as usize;
+    let buf_ptr = buf_ptr as *mut u8;
+    if !is_valid_user_buffer_writable(buf_ptr as *const u8, buf_len) {
+        return Err(SyscallError::InvalidArg);
+    }
+
+    let caller_is_driver = scheduler::current_task_id() == Some(driver_id as usize);
+    let copy_cap = buf_len.min(registry::MAX_PACKET_LEN);
+    let mut kernel_buf = [0u8; registry::MAX_PACKET_LEN];
+
+    // Step 2: fast path — try once regardless of timeout_ms, so a packet
+    // that is already queued is never delayed by the polling loop below.
+    if let Some(n) = registry::try_pop_packet(
+        driver_id as usize,
+        caller_is_driver,
+        &mut kernel_buf[..copy_cap],
+    )? {
+        // SAFETY:
+        // - `is_valid_user_buffer_writable` verified `buf_ptr` is canonical,
+        //   in-range, and mapped present+writable for `buf_len` bytes.
+        // - `n <= copy_cap <= buf_len`, so the write stays in bounds.
+        unsafe {
+            core::ptr::copy_nonoverlapping(kernel_buf.as_ptr(), buf_ptr, n);
+        }
+        return Ok(n as u64);
+    }
+
+    // Step 3: timeout_ms == 0 means "poll once, non-blocking" here — see the
+    // doc comment above for why this deliberately differs from IrqWait.
+    if timeout_ms == 0 {
+        return Err(SyscallError::Timeout);
+    }
+
+    // Step 4: bounded wait. This cannot use `scheduler::block_task`: once
+    // blocked, this task would only ever resume when something else
+    // unblocks it, which defeats the timeout entirely if no producer ever
+    // shows up — the exact same constraint `syscall_irq_wait_impl` /
+    // `irq_bridge::wait` document for their own bounded branch. Poll
+    // cooperatively via `yield_now()` against a TSC deadline instead.
+    let ticks_per_ms = time::tsc_ticks_per_us().saturating_mul(1000);
+    let deadline = time::rdtsc().saturating_add(ticks_per_ms.saturating_mul(timeout_ms));
+
+    loop {
+        scheduler::yield_now();
+
+        match registry::try_pop_packet(
+            driver_id as usize,
+            caller_is_driver,
+            &mut kernel_buf[..copy_cap],
+        ) {
+            Ok(Some(n)) => {
+                // SAFETY: identical justification as the fast path above.
+                unsafe {
+                    core::ptr::copy_nonoverlapping(kernel_buf.as_ptr(), buf_ptr, n);
+                }
+                return Ok(n as u64);
+            }
+            Ok(None) => {}           // still empty — keep waiting
+            Err(e) => return Err(e), // the driver exited mid-wait
+        }
+
+        if time::rdtsc() >= deadline {
+            return Err(SyscallError::Timeout);
+        }
+    }
 }

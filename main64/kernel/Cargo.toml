@@ -153,3 +153,9 @@ name = "driver_rtl8139_test"
 
 [[test]]
 name = "driver_registry_test"
+
+[[test]]
+name = "net_ring_test"
+
+[[test]]
+name = "net_ring_wakeup_test"
