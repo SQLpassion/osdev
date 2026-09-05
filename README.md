@@ -204,17 +204,11 @@ Detailed, implementation-level documentation for each subsystem lives in
 | Document | Topic |
 |---|---|
 | [drivers.md](main64/docs/drivers.md) | Ring-3 user-space driver architecture from first principles: capabilities, MMIO/IRQ/DMA syscalls, and the RTL8139 driver walkthrough |
-| [nic_driver_design.md](main64/docs/nic_driver_design.md) | NIC drivers as permanent background processes, the `lib_driver`/`lib_driver_runtime`/`lib_net` split, and the IPC-based `net-tools` client |
 
 ### Testing
 | Document | Topic |
 |---|---|
 | [testing.md](main64/docs/testing.md) | The custom `no_std` kernel test framework |
-
-### Design notes & roadmap
-| Document | Topic |
-|---|---|
-| [todo_drivers.md](main64/docs/todo_drivers.md) | Original design proposal for loadable Ring-3 drivers — since implemented; see [drivers.md](main64/docs/drivers.md) and [nic_driver_design.md](main64/docs/nic_driver_design.md) for the current architecture |
 
 ---
 
