@@ -19,7 +19,7 @@ use intel_nic::{IntelNicDevice, NicModel};
 #[cfg(not(test))]
 use lib_driver_runtime::PciMatch;
 #[cfg(not(test))]
-use lib_kaos::{println, process};
+use lib_kaos::{process, serial_println};
 #[cfg(not(test))]
 use lib_net::NetworkStack;
 
@@ -58,18 +58,23 @@ const MODELS: &[NicModel] = &[
 #[no_mangle]
 #[link_section = ".ltext._start"]
 pub extern "C" fn _start() -> ! {
-    println!("==================================================");
-    println!("  KAOS Intel Gigabit Ethernet Driver (Ring 3)");
-    println!("  Supports 82577LM (8086:10EA) & I219-V (8086:15B8)");
-    println!("==================================================");
+    // Diagnostic output goes to the serial port, not the VGA console: this
+    // is a background process that keeps running after startup, and its
+    // own console writes would otherwise scroll away whatever foreground
+    // REPL (shell/drivers.bin) happens to be blocked on keyboard input the
+    // moment the scheduler switches to this task.
+    serial_println!("==================================================");
+    serial_println!("  KAOS Intel Gigabit Ethernet Driver (Ring 3)");
+    serial_println!("  Supports 82577LM (8086:10EA) & I219-V (8086:15B8)");
+    serial_println!("==================================================");
 
     // Step 1: Discover a supported Intel NIC device via PCI subsystem.
     let Some((dev, table_idx)) = lib_driver_runtime::find_pci_device(PCI_TABLE) else {
-        println!("[Intel NIC] Error: No supported Intel Gigabit Ethernet PCI device found.");
+        serial_println!("[Intel NIC] Error: No supported Intel Gigabit Ethernet PCI device found.");
         process::exit();
     };
     let model = MODELS[table_idx];
-    println!(
+    serial_println!(
         "[Intel NIC] Found {}: PCI Bus {:02x}:{:02x}.{:x}, IRQ Line {}",
         model.name(),
         dev.bus,
@@ -82,34 +87,37 @@ pub extern "C" fn _start() -> ! {
     let mmio = match lib_driver_runtime::map_mmio_bar(&dev, Some(0)) {
         Ok(m) => m,
         Err(lib_driver_runtime::MmioMapError::NoUsableBar) => {
-            println!("[Intel NIC] Error: BAR 0 MMIO address/size is 0; no grantable MMIO window.");
+            serial_println!(
+                "[Intel NIC] Error: BAR 0 MMIO address/size is 0; no grantable MMIO window."
+            );
             process::exit();
         }
         Err(lib_driver_runtime::MmioMapError::Map(e)) => {
-            println!("[Intel NIC] Failed to map MMIO registers: {:?}", e);
+            serial_println!("[Intel NIC] Failed to map MMIO registers: {:?}", e);
             process::exit();
         }
     };
 
-    println!("[Intel NIC] Initializing hardware controller and DMA rings...");
+    serial_println!("[Intel NIC] Initializing hardware controller and DMA rings...");
 
     // Step 3: Initialize the Intel controller and DMA descriptor rings.
     let device = match IntelNicDevice::init(model, mmio, dev.interrupt_line) {
         Ok(d) => d,
         Err(e) => {
-            println!("[Intel NIC] Device initialization failed: {:?}", e);
+            serial_println!("[Intel NIC] Device initialization failed: {:?}", e);
             process::exit();
         }
     };
 
     let mac = device.mac();
-    println!("[Intel NIC] Hardware MAC Address: {}", mac);
+    serial_println!("[Intel NIC] Hardware MAC Address: {}", mac);
 
     // Step 4: Initialize the protocol network stack.
     let stack = NetworkStack::new(mac);
-    println!(
+    serial_println!(
         "[Intel NIC] Network initialized: IP {}, Gateway {}",
-        stack.config.ip, stack.config.gateway
+        stack.config.ip,
+        stack.config.gateway
     );
 
     // Step 5: Hand off to the shared background event loop -- registers as

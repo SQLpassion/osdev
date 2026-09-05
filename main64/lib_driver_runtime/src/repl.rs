@@ -146,13 +146,13 @@ pub fn run_background_driver<D: lib_net::NicDevice>(
     // any other caller would -- there is no separate "get my own tid"
     // syscall, and DrvRegister itself does not return one.
     if let Err(e) = lib_driver::drv::drv_register(driver_name.as_bytes()) {
-        lib_kaos::println!("[driver] DrvRegister failed: {:?}", e);
+        lib_kaos::serial_println!("[driver] DrvRegister failed: {:?}", e);
         lib_kaos::process::exit();
     }
     let own_id = match lib_driver::drv::drv_lookup(driver_name.as_bytes()) {
         Ok(id) => id,
         Err(e) => {
-            lib_kaos::println!("[driver] DrvLookup of own name failed: {:?}", e);
+            lib_kaos::serial_println!("[driver] DrvLookup of own name failed: {:?}", e);
             lib_kaos::process::exit();
         }
     };

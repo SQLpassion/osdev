@@ -17,7 +17,7 @@ pub mod rtl8139;
 #[cfg(not(test))]
 use lib_driver_runtime::PciMatch;
 #[cfg(not(test))]
-use lib_kaos::{println, process};
+use lib_kaos::{process, serial_println};
 #[cfg(not(test))]
 use lib_net::NetworkStack;
 #[cfg(not(test))]
@@ -33,18 +33,26 @@ const PCI_TABLE: &[PciMatch] = &[PciMatch {
 #[no_mangle]
 #[link_section = ".ltext._start"]
 pub extern "C" fn _start() -> ! {
-    println!("==================================================");
-    println!("  KAOS RTL8139 Fast Ethernet Driver (Ring 3)");
-    println!("==================================================");
+    // Diagnostic output goes to the serial port, not the VGA console: this
+    // is a background process that keeps running after startup, and its
+    // own console writes would otherwise scroll away whatever foreground
+    // REPL (shell/drivers.bin) happens to be blocked on keyboard input the
+    // moment the scheduler switches to this task.
+    serial_println!("==================================================");
+    serial_println!("  KAOS RTL8139 Fast Ethernet Driver (Ring 3)");
+    serial_println!("==================================================");
 
     // Step 1: Discover the RTL8139 device via PCI subsystem.
     let Some((dev, _)) = lib_driver_runtime::find_pci_device(PCI_TABLE) else {
-        println!("[RTL8139] Error: No Realtek RTL8139 PCI device (0x10EC:0x8139) found.");
+        serial_println!("[RTL8139] Error: No Realtek RTL8139 PCI device (0x10EC:0x8139) found.");
         process::exit();
     };
-    println!(
+    serial_println!(
         "[RTL8139] Found device: PCI Bus {:02x}:{:02x}.{:x}, IRQ Line {}",
-        dev.bus, dev.device, dev.function, dev.interrupt_line
+        dev.bus,
+        dev.device,
+        dev.function,
+        dev.interrupt_line
     );
 
     // Step 2: Map the MMIO BAR (BAR 1 is standard on RTL8139; BAR 0 is the
@@ -52,11 +60,13 @@ pub extern "C" fn _start() -> ! {
     let mmio = match lib_driver_runtime::map_mmio_bar(&dev, Some(1)) {
         Ok(m) => m,
         Err(lib_driver_runtime::MmioMapError::NoUsableBar) => {
-            println!("[RTL8139] Error: MMIO BAR address/size is 0; no grantable MMIO window.");
+            serial_println!(
+                "[RTL8139] Error: MMIO BAR address/size is 0; no grantable MMIO window."
+            );
             process::exit();
         }
         Err(lib_driver_runtime::MmioMapError::Map(e)) => {
-            println!("[RTL8139] Failed to map MMIO registers: {:?}", e);
+            serial_println!("[RTL8139] Failed to map MMIO registers: {:?}", e);
             process::exit();
         }
     };
@@ -65,19 +75,20 @@ pub extern "C" fn _start() -> ! {
     let device = match Rtl8139Device::init(mmio, dev.interrupt_line) {
         Ok(d) => d,
         Err(e) => {
-            println!("[RTL8139] Device initialization failed: {:?}", e);
+            serial_println!("[RTL8139] Device initialization failed: {:?}", e);
             process::exit();
         }
     };
 
     let mac = device.mac();
-    println!("[RTL8139] Hardware MAC Address: {}", mac);
+    serial_println!("[RTL8139] Hardware MAC Address: {}", mac);
 
     // Step 4: Initialize the protocol network stack.
     let stack = NetworkStack::new(mac);
-    println!(
+    serial_println!(
         "[RTL8139] Network initialized: IP {}, Gateway {}",
-        stack.config.ip, stack.config.gateway
+        stack.config.ip,
+        stack.config.gateway
     );
 
     // Step 5: Hand off to the shared background event loop -- registers as

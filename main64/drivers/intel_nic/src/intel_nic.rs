@@ -477,7 +477,7 @@ impl IntelNicDevice {
 
     /// Initializes the Intel Gigabit network controller and descriptor DMA rings.
     pub fn init(model: NicModel, mmio: Mmio, irq: u8) -> Result<Self, SysError> {
-        lib_kaos::println!("[Intel NIC] Phase 1: Controller reset...");
+        lib_kaos::serial_println!("[Intel NIC] Phase 1: Controller reset...");
         // Step 1: Block new PCH PCIe master requests and wait until every request
         // inherited from firmware has retired. Resetting with an outstanding TLP
         // can leave the integrated MAC unable to start a later descriptor read.
@@ -489,7 +489,9 @@ impl IntelNicDevice {
             let start = read_tsc();
             while (mmio.read32(REG_STATUS) & STATUS_GIO_MASTER_ENABLE) != 0 {
                 if read_tsc().wrapping_sub(start) >= HW_OWNERSHIP_TIMEOUT_CYCLES {
-                    lib_kaos::println!("[Intel NIC] Error: PCIe master requests did not quiesce.");
+                    lib_kaos::serial_println!(
+                        "[Intel NIC] Error: PCIe master requests did not quiesce."
+                    );
                     return Err(SysError::IoError);
                 }
                 core::hint::spin_loop();
@@ -516,7 +518,7 @@ impl IntelNicDevice {
         // hardware uses this semaphore for shared PHY and selected MAC resources.
         let swflag_acquired = if model.is_ich_pch() {
             if !acquire_ich_pch_swflag(&mmio) {
-                lib_kaos::println!("[Intel NIC] Error: firmware ownership timeout.");
+                lib_kaos::serial_println!("[Intel NIC] Error: firmware ownership timeout.");
                 return Err(SysError::IoError);
             }
             true
@@ -542,7 +544,7 @@ impl IntelNicDevice {
         if (mmio.read32(REG_CTRL) & CTRL_RST) != 0 {
             delay_tsc_cycles(RESET_RETRY_DELAY_CYCLES);
             if (mmio.read32(REG_CTRL) & CTRL_RST) != 0 {
-                lib_kaos::println!("[Intel NIC] Error: controller reset did not complete.");
+                lib_kaos::serial_println!("[Intel NIC] Error: controller reset did not complete.");
                 return Err(SysError::IoError);
             }
         }
@@ -597,7 +599,7 @@ impl IntelNicDevice {
         }
         delay_tsc_cycles(PRE_RESET_DELAY_CYCLES);
 
-        lib_kaos::println!("[Intel NIC] Phase 2: Reading MAC address...");
+        lib_kaos::serial_println!("[Intel NIC] Phase 2: Reading MAC address...");
         // Step 2: Read hardware MAC address from Receive Address registers (RAL0 / RAH0).
         let ral = mmio.read32(REG_RAL0);
         let rah = mmio.read32(REG_RAH0);
@@ -613,7 +615,9 @@ impl IntelNicDevice {
         // If RAL/RAH were uninitialized by firmware (all 0 or all FF), fallback to EERD EEPROM read.
         // e1000/e1000e EERD: Bit 0 = START, bits 8..15 = word addr. Done bit is bit 4 (or bit 1 on older chips).
         if (mac_bytes == [0; 6] || mac_bytes == [0xFF; 6]) || (rah & (1 << 31)) == 0 {
-            lib_kaos::println!("[Intel NIC] RAL0/RAH0 uninitialized; reading from EEPROM...");
+            lib_kaos::serial_println!(
+                "[Intel NIC] RAL0/RAH0 uninitialized; reading from EEPROM..."
+            );
             for i in 0..3 {
                 // Request EEPROM read at word address i.
                 mmio.write32(REG_EERD, 1 | ((i as u32) << 8));
@@ -646,7 +650,7 @@ impl IntelNicDevice {
         mmio.write32(REG_RAH0, high_mac);
         let _ = mmio.read32(REG_STATUS);
 
-        lib_kaos::println!("[Intel NIC] Phase 3: Allocating DMA buffers...");
+        lib_kaos::serial_println!("[Intel NIC] Phase 3: Allocating DMA buffers...");
 
         // Step 6: Clear only the MTA registers implemented by this MAC family. PCH
         // controllers expose 32 entries; standalone e1000 devices expose 128.
@@ -787,7 +791,7 @@ impl IntelNicDevice {
             }
         }
 
-        lib_kaos::println!("[Intel NIC] Phase 4: Initialization complete.");
+        lib_kaos::serial_println!("[Intel NIC] Phase 4: Initialization complete.");
 
         Ok(Self {
             model,
@@ -824,7 +828,7 @@ impl IntelNicDevice {
         // progress.  A tail update issued with STATUS.LU=0 is not replayed when the
         // link later becomes active, which made the first ARP request disappear.
         if !self.wait_for_link() {
-            lib_kaos::println!(
+            lib_kaos::serial_println!(
                 "[Intel NIC] TX aborted: link did not become ready (STATUS={:#010x}).",
                 self.mmio.read32(REG_STATUS)
             );
@@ -884,7 +888,7 @@ impl IntelNicDevice {
             self.mmio.write32(REG_TDT, self.tx_tail as u32);
             let _ = self.mmio.read32(REG_STATUS);
             if self.mmio.read32(REG_TDT) != self.tx_tail as u32 {
-                lib_kaos::println!(
+                lib_kaos::serial_println!(
                     "[Intel NIC] TX error: TDT write rejected (TDH={}, TDT={}).",
                     self.mmio.read32(REG_TDH),
                     self.mmio.read32(REG_TDT)
@@ -911,7 +915,7 @@ impl IntelNicDevice {
                 // - `slot` remains inside the allocated descriptor ring.
                 // - Volatile read captures the exact software-visible descriptor for diagnostics.
                 let stalled_desc = unsafe { core::ptr::read_volatile(tx_desc_ptr.add(slot)) };
-                lib_kaos::println!(
+                lib_kaos::serial_println!(
                     "[Intel NIC] TX timeout: slot={}, TDH={}, TDT={}, STATUS={:#010x}, TXDCTL={:#010x}.",
                     slot,
                     self.mmio.read32(REG_TDH),
@@ -919,41 +923,41 @@ impl IntelNicDevice {
                     self.mmio.read32(REG_STATUS),
                     self.mmio.read32(REG_TXDCTL)
                 );
-                lib_kaos::println!(
+                lib_kaos::serial_println!(
                     "[Intel NIC] TX ring: TCTL={:#010x}, TDBA={:#010x}:{:08x}, TDLEN={}.",
                     self.mmio.read32(REG_TCTL),
                     self.mmio.read32(REG_TDBAH),
                     self.mmio.read32(REG_TDBAL),
                     self.mmio.read32(REG_TDLEN)
                 );
-                lib_kaos::println!(
+                lib_kaos::serial_println!(
                     "[Intel NIC] Packet buffers: PBA={:#010x}, PBS={:#010x}, desc PA={:#018x}.",
                     self.mmio.read32(REG_PBA),
                     self.mmio.read32(REG_PBS),
                     self._tx_descs.pa()
                 );
-                lib_kaos::println!(
+                lib_kaos::serial_println!(
                     "[Intel NIC] PCIe/PCH: CTRL={:#010x}, GCR={:#010x}, FWSM={:#010x}, EXTCNF={:#010x}.",
                     self.mmio.read32(REG_CTRL),
                     self.mmio.read32(REG_GCR),
                     self.mmio.read32(REG_FWSM),
                     self.mmio.read32(REG_EXTCNF_CTRL)
                 );
-                lib_kaos::println!(
+                lib_kaos::serial_println!(
                     "[Intel NIC] TX config: CTRL_EXT={:#010x}, TIPG={:#010x}, TARC0={:#010x}, TARC1={:#010x}.",
                     self.mmio.read32(REG_CTRL_EXT),
                     self.mmio.read32(REG_TIPG),
                     self.mmio.read32(REG_TARC0),
                     self.mmio.read32(REG_TARC1)
                 );
-                lib_kaos::println!(
+                lib_kaos::serial_println!(
                     "[Intel NIC] Descriptor: buf={:#018x}, len={}, cmd={:#04x}, status={:#04x}.",
                     stalled_desc.buffer_addr,
                     stalled_desc.length,
                     stalled_desc.cmd,
                     stalled_desc.status
                 );
-                lib_kaos::println!(
+                lib_kaos::serial_println!(
                     "[Intel NIC] TX FIFO: H={:#x}, T={:#x}, HS={:#x}, TS={:#x}, PC={:#x}.",
                     self.mmio.read32(REG_TDFH),
                     self.mmio.read32(REG_TDFT),
@@ -961,7 +965,7 @@ impl IntelNicDevice {
                     self.mmio.read32(REG_TDFTS),
                     self.mmio.read32(REG_TDFPC)
                 );
-                lib_kaos::println!(
+                lib_kaos::serial_println!(
                     "[Intel NIC] RX ring: RDH={}, RDT={}, RDBA={:#010x}:{:08x}, RDLEN={}.",
                     self.mmio.read32(REG_RDH),
                     self.mmio.read32(REG_RDT),

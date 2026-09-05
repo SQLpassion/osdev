@@ -66,3 +66,26 @@ macro_rules! println {
         $crate::print!("{}\n", format_args!($($arg)*))
     };
 }
+
+/// Formats and writes to the debug serial port (COM1) instead of the VGA
+/// console. Intended for background/daemon-style processes (e.g. NIC
+/// drivers) whose own diagnostic output must not compete with a foreground
+/// REPL for the shared screen — see [`console::SerialWriter`].
+#[macro_export]
+#[collapse_debuginfo(yes)]
+macro_rules! serial_print {
+    ($($arg:tt)*) => {
+        $crate::console::_print_serial(format_args!($($arg)*))
+    };
+}
+
+#[macro_export]
+#[collapse_debuginfo(yes)]
+macro_rules! serial_println {
+    () => {
+        $crate::serial_print!("\n")
+    };
+    ($($arg:tt)*) => {
+        $crate::serial_print!("{}\n", format_args!($($arg)*))
+    };
+}
