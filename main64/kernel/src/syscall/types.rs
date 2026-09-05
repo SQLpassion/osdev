@@ -92,6 +92,13 @@ pub enum SyscallId {
     DrvPublishStatus = 43,
     /// Read the last status snapshot published by a driver.
     DrvQuery = 44,
+    /// Terminate a registered driver task by name (hard kill — see
+    /// `docs/drivers.md` §15 for the no-clean-shutdown caveat).
+    DrvUnload = 45,
+    /// Retrieve the number of currently registered driver tasks.
+    DrvListCount = 46,
+    /// Retrieve metadata for a specific registered driver by its index.
+    DrvListEntry = 47,
 }
 
 impl SyscallId {
@@ -205,6 +212,12 @@ impl SyscallId {
     pub const DRV_PUBLISH_STATUS: u64 = Self::DrvPublishStatus as u64;
     /// Syscall number for DrvQuery.
     pub const DRV_QUERY: u64 = Self::DrvQuery as u64;
+    /// Syscall number for DrvUnload.
+    pub const DRV_UNLOAD: u64 = Self::DrvUnload as u64;
+    /// Syscall number for DrvListCount.
+    pub const DRV_LIST_COUNT: u64 = Self::DrvListCount as u64;
+    /// Syscall number for DrvListEntry.
+    pub const DRV_LIST_ENTRY: u64 = Self::DrvListEntry as u64;
 }
 
 /// Unknown syscall number.
@@ -630,6 +643,27 @@ pub struct UserDriverStatus {
     pub arp_entry_count: u32,
     /// Resolved ARP table entries; only the first `arp_entry_count` are valid.
     pub arp_entries: [UserArpEntry; MAX_ARP_ENTRIES],
+}
+
+/// Maximum length, in bytes, of a driver name in a [`UserDriverInfo`]
+/// snapshot. Must match `drivers::registry::DRIVER_NAME_LEN` — enforced by a
+/// compile-time assertion in `syscall::dispatch::driver`, since this
+/// low-level ABI type intentionally does not depend on the higher-level
+/// driver registry module.
+pub const USER_DRIVER_NAME_LEN: usize = 32;
+
+/// User-space snapshot of one registered driver, returned by `DrvListEntry`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UserDriverInfo {
+    /// Driver name bytes, left-aligned; only `name[..name_len]` is meaningful.
+    pub name: [u8; USER_DRIVER_NAME_LEN],
+    /// Number of valid bytes in `name`.
+    pub name_len: u32,
+    /// Explicit padding for 8-byte alignment of `tid`.
+    pub _padding: u32,
+    /// Packed (slot, generation) task id currently serving this driver.
+    pub tid: u64,
 }
 
 /// User-space representation of driver resource grants for `SpawnDriver`.

@@ -10,7 +10,7 @@ use crate::process::capabilities::{Capabilities, MmioAllocKind};
 use crate::scheduler;
 use crate::syscall::types::{
     is_valid_user_buffer, is_valid_user_buffer_readable, is_valid_user_buffer_writable,
-    SyscallError, SyscallResult, UserDriverStatus, MAX_ARP_ENTRIES, SYSCALL_OK,
+    SyscallError, SyscallResult, UserDriverInfo, UserDriverStatus, MAX_ARP_ENTRIES, SYSCALL_OK,
 };
 
 /// Maps a physical MMIO region into the calling driver task's address space.
@@ -998,6 +998,116 @@ pub fn syscall_drv_query_impl(driver_id: u64, out_ptr: u64) -> SyscallResult<u64
     // - `write_unaligned` is safe for any alignment.
     unsafe {
         core::ptr::write_unaligned(out_ptr, status);
+    }
+    Ok(SYSCALL_OK)
+}
+
+/// Terminates a registered driver task by name.
+///
+/// Arguments:
+/// - `name_ptr`/`name_len`: driver name bytes in user memory (not required
+///   to be NUL-terminated); same contract as `DrvRegister`/`DrvLookup`.
+///
+/// # Authorization
+/// Requires the caller to hold `Capabilities::UNLOAD_DRIVER` or the
+/// privileged-syscall flag — mirrors `syscall_spawn_driver_impl`'s own gate
+/// (Step 1 there). An ordinary Ring-3 app must not be able to kill an
+/// arbitrary driver task; only `DRIVERS.BIN`, delegated this capability by
+/// the shell at `Exec` time (see `resolve_delegated_capabilities`), can.
+///
+/// # This is a hard kill
+/// Calls [`scheduler::terminate_task`], which does **not** run the driver's
+/// own shutdown path (no `drop(device)`, no disabling DMA/bus-mastering) —
+/// see `docs/drivers.md` §15. Without an IOMMU, a still-DMA-active NIC could
+/// in principle write into freed memory after this call returns. This is an
+/// accepted risk of this kernel's current driver model, not addressed here.
+pub fn syscall_drv_unload_impl(name_ptr: u64, name_len: u64) -> SyscallResult<u64> {
+    // Step 1: verify that the caller holds UNLOAD_DRIVER or is privileged.
+    // Same shape as `syscall_spawn_driver_impl`'s Step 1: a task with no
+    // `DriverCaps` block falls through to the `privileged` scheduler flag,
+    // and a missing current task fails closed rather than defaulting to
+    // "allowed".
+    let caller_caps = scheduler::current_task_caps();
+    let is_authorized = match caller_caps {
+        Some(caps) => caps.flags.contains(Capabilities::UNLOAD_DRIVER),
+        None => scheduler::current_task_id().is_some_and(scheduler::is_task_privileged),
+    };
+    if !is_authorized {
+        return Err(SyscallError::PermissionDenied);
+    }
+
+    // Step 2: validate and copy the name out of user memory.
+    let (name_buf, name_len) = copy_user_driver_name(name_ptr, name_len)?;
+
+    // Step 3: resolve the registered driver's packed task id.
+    let tid = registry::lookup(&name_buf[..name_len]).ok_or(SyscallError::InvalidArg)?;
+
+    // Step 4: hard-kill the task. `terminate_task` -> `remove_task` already
+    // releases this driver's registry entry, MMIO/DMA allocations, IRQ
+    // binding, and PCI device reservation (see `manager.rs::remove_task`).
+    if !scheduler::terminate_task(tid) {
+        return Err(SyscallError::InvalidArg);
+    }
+    Ok(SYSCALL_OK)
+}
+
+/// Returns the number of currently registered driver tasks.
+///
+/// Callable by any task — enumerating driver names/task-ids is not itself a
+/// privileged operation, mirroring `DrvLookup`.
+pub fn syscall_drv_list_count_impl() -> SyscallResult<u64> {
+    Ok(registry::list().len() as u64)
+}
+
+/// Copies metadata for one registered driver into user space, by index.
+///
+/// Arguments:
+/// - `index`: Zero-based index into the current registry snapshot (see
+///   `DrvListCount`). Indices are a snapshot artifact, not a stable
+///   identity — they can shift if a driver registers or exits between the
+///   `DrvListCount` call and this one.
+/// - `out_ptr`: User pointer to a writable [`UserDriverInfo`].
+///
+/// Callable by any task, mirroring `DrvLookup`.
+pub fn syscall_drv_list_entry_impl(index: u64, out_ptr: *mut UserDriverInfo) -> SyscallResult<u64> {
+    // Compile-time guard: `UserDriverInfo::name` and `DriverEntry::name` must
+    // stay the same size, since `entry.name` below is copied into it directly.
+    const _: () = assert!(
+        registry::DRIVER_NAME_LEN == crate::syscall::types::USER_DRIVER_NAME_LEN,
+        "UserDriverInfo::name and registry::DriverEntry::name must have matching lengths"
+    );
+
+    // Step 1: resolve the requested entry before validating the output
+    // buffer, so an out-of-range index fails cheaply without touching user
+    // memory at all.
+    let entries = registry::list();
+    let entry = entries
+        .get(index as usize)
+        .ok_or(SyscallError::InvalidArg)?;
+
+    // Step 2: validate alignment and writability of the destination buffer,
+    // mirroring `syscall_get_pci_device_impl`'s validation of `UserPciDevice`.
+    if !(out_ptr as u64).is_multiple_of(core::mem::align_of::<UserDriverInfo>() as u64) {
+        return Err(SyscallError::InvalidArg);
+    }
+    if !is_valid_user_buffer_writable(out_ptr as *const u8, core::mem::size_of::<UserDriverInfo>())
+    {
+        return Err(SyscallError::InvalidArg);
+    }
+
+    // Step 3: copy the snapshot out.
+    let info = UserDriverInfo {
+        name: entry.name,
+        name_len: entry.name_len as u32,
+        _padding: 0,
+        tid: entry.tid as u64,
+    };
+    // SAFETY:
+    // - Alignment and writability of `out_ptr` were verified in Step 2.
+    // - `write_unaligned` is safe for any alignment (redundant with the
+    //   alignment check above, kept for defense in depth like `DrvQuery`).
+    unsafe {
+        core::ptr::write_unaligned(out_ptr, info);
     }
     Ok(SYSCALL_OK)
 }

@@ -184,6 +184,37 @@ pub fn register(name: &[u8], tid: usize) -> Result<(), SyscallError> {
     Ok(())
 }
 
+/// Snapshot of one registered driver's identity, returned by [`list`].
+///
+/// Carries no packet-ring/status data — same naming-layer-only scope as the
+/// rest of this module (see the module doc comment).
+#[derive(Clone, Copy)]
+pub struct DriverListEntry {
+    /// Driver name bytes, left-aligned; only `name[..name_len]` is meaningful.
+    pub name: [u8; DRIVER_NAME_LEN],
+    /// Number of valid bytes in `name`.
+    pub name_len: usize,
+    /// Packed (slot, generation) task id serving this driver.
+    pub tid: usize,
+}
+
+/// Returns a snapshot of every currently registered driver (name + task id).
+///
+/// Taken under a single lock acquisition, so the result is consistent as of
+/// one instant — a driver that registers or exits immediately afterward is
+/// simply not reflected, same as any other snapshot-style API.
+pub fn list() -> Vec<DriverListEntry> {
+    DRIVER_REGISTRY
+        .lock()
+        .iter()
+        .map(|entry| DriverListEntry {
+            name: entry.name,
+            name_len: entry.name_len,
+            tid: entry.tid,
+        })
+        .collect()
+}
+
 /// Resolves the packed task id registered under `name`, if any.
 pub fn lookup(name: &[u8]) -> Option<usize> {
     DRIVER_REGISTRY
