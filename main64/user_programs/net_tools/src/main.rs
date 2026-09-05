@@ -47,7 +47,7 @@ pub extern "C" fn _start() -> ! {
     let Some(driver_name) =
         probe_driver_name(KNOWN_DRIVER_NAMES, |name| NicClient::open(name).is_ok())
     else {
-        println!("No NIC driver loaded. Run 'load <name>.drv' from the shell first.");
+        println!("No NIC driver loaded. Run 'load <name>.drv' in drivers.bin first.");
         process::exit();
     };
 
