@@ -5,14 +5,11 @@ extern crate alloc;
 
 #[cfg(not(test))]
 mod fpu;
-mod load_driver;
 
 #[cfg(not(test))]
 use fpu::run_fpu_smoke_test;
 #[cfg(not(test))]
 use lib_kaos::{console, fs, print, println, process};
-#[cfg(not(test))]
-use load_driver::load_driver;
 
 /// Renders the shell welcome banner on startup.
 #[cfg(not(test))]
@@ -69,7 +66,6 @@ fn execute_command(line: &str) {
             println!("  dir             - list directory contents of the FAT32 disk");
             println!("  cat <file>      - read and print the contents of a file");
             println!("  exec <file>     - run a program in the foreground");
-            println!("  load <name.drv> - start a NIC driver as a background process");
             println!("  fputest         - run FPU/SSE smoke test (ring 3)");
             println!("  except          - launch the Ring-3 exception exerciser");
             println!("  kbasic          - run the BASIC interpreter");
@@ -80,13 +76,6 @@ fn execute_command(line: &str) {
         }
         "kbasic" => {
             run_program("kbasic.bin");
-        }
-        "load" => {
-            if let Some(file) = parts.next() {
-                load_driver(file);
-            } else {
-                println!("Usage: load <name.drv>");
-            }
         }
         "date" => {
             let mut udt = lib_kaos::time::UserDateTime {
@@ -196,11 +185,39 @@ fn cat_file(name: &str) {
     }
 }
 
+/// Determines which capabilities the shell should ask the kernel to
+/// delegate when exec'ing `name` (see `Exec`'s capability-delegation
+/// mechanism, `kernel::syscall::dispatch::process::resolve_delegated_
+/// capabilities`).
+///
+/// `DRIVERS.BIN` is the one exception to an otherwise-unprivileged `Exec`:
+/// it gets `SPAWN_DRIVER`/`UNLOAD_DRIVER`/`LIST_DRIVERS` so its
+/// `load`/`unload`/`list` commands can call the corresponding kernel
+/// syscalls. This is a deliberate, narrow allowlist by binary name — every
+/// other program still gets zero delegated capabilities, matching `Exec`'s
+/// previous behavior exactly. Kept as a pure function (no `cfg(not(test))`
+/// gate, no I/O) so this policy decision is unit-testable without a real
+/// syscall — the *mechanism* it relies on is already covered kernel-side by
+/// `resolve_delegated_capabilities`'s own tests; this only needs to prove
+/// the shell asks for the right thing for the right binary.
+fn requested_capabilities_for(name: &str) -> u64 {
+    if name.eq_ignore_ascii_case("DRIVERS.BIN") {
+        lib_kaos::process::capabilities::SPAWN_DRIVER
+            | lib_kaos::process::capabilities::UNLOAD_DRIVER
+            | lib_kaos::process::capabilities::LIST_DRIVERS
+    } else {
+        0
+    }
+}
+
 /// Launches a user process in the foreground and waits for it to exit.
 #[cfg(not(test))]
 fn run_program(name: &str) {
     println!("Launching program '{}'...", name);
-    match process::exec(name) {
+
+    let result = process::exec_with_capabilities(name, requested_capabilities_for(name));
+
+    match result {
         Ok(pid) => {
             // Wait for the spawned program task to complete.
             // The shell is blocked on the wait queue until the child calls exit.
@@ -220,3 +237,7 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
     println!("\nShell Panic: {}", _info);
     process::exit()
 }
+
+#[cfg(all(test, not(target_os = "none")))]
+#[path = "tests/run_program.rs"]
+mod tests;

@@ -124,7 +124,6 @@ dependencies = [
 name = "shell_user_program"
 version = "0.1.0"
 dependencies = [
- "lib_driver",
  "lib_kaos",
 ]
 
