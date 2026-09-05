@@ -236,4 +236,24 @@ strip_debug_info net_tools.bin
 echo "-> Built: $NET_TOOLS_DIR/net_tools.bin"
 ls -la net_tools.bin
 
+DRIVERS_DIR="$PROJECT_ROOT/user_programs/drivers"
+echo ""
+echo "-> Building drivers user program..."
+
+cd "$DRIVERS_DIR"
+
+if [ "$PROFILE" = "release" ]; then
+    cargo +nightly build --release --target x86_64-unknown-none -Z build-std=core,alloc
+    INPUT_ELF="$PROJECT_ROOT/target/x86_64-unknown-none/release/drivers"
+else
+    cargo +nightly build --target x86_64-unknown-none
+    INPUT_ELF="$PROJECT_ROOT/target/x86_64-unknown-none/debug/drivers"
+fi
+
+cp "$INPUT_ELF" drivers.bin
+strip_debug_info drivers.bin
+
+echo "-> Built: $DRIVERS_DIR/drivers.bin"
+ls -la drivers.bin
+
 

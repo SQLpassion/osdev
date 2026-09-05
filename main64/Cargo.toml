@@ -11,6 +11,7 @@ members = [
     "lib_kaos",
     "lib_net",
     "lib_tui",
+    "user_programs/drivers",
     "user_programs/filedemo",
     "user_programs/exception_test",
     "user_programs/hello",
