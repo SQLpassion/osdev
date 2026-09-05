@@ -146,12 +146,15 @@ extern "C" fn orchestrator_task() -> ! {
     let recv_res = dispatch_checked(SyscallId::NET_RECV, own_tid as u64, out_va, 64, 2000);
     let recv_len = recv_res.expect("NetRecv must succeed once the producer sends") as usize;
 
-    // Step 4: verify the exact bytes the producer sent were delivered, and
-    // that the producer's send actually happened (not some unrelated packet).
-    assert!(
-        PRODUCER_SENT.load(Ordering::Acquire),
-        "producer must have run and sent before NetRecv returned"
-    );
+    // Step 4: verify the exact bytes the producer sent were delivered.
+    // (Deliberately not also asserting PRODUCER_SENT here: it is set *after*
+    // the producer's NetSend call returns, so a periodic-timer preemption
+    // landing in that window can let NetRecv observe the already-queued
+    // packet and reach this point before the producer resumes far enough to
+    // store the flag -- a race in this flag, not in NetSend/NetRecv
+    // themselves. The payload equality check below is race-free: it can
+    // only succeed if the producer's send already fully completed, since
+    // that is the only source of this exact byte sequence.)
     assert_eq!(recv_len, PAYLOAD.len());
     // SAFETY: `out_va` was mapped writable in `KernelMain` and NetRecv
     // copied `recv_len` bytes into it before returning.
