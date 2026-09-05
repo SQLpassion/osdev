@@ -84,6 +84,8 @@ pub const fn syscall_name_for_number(syscall_nr: u64) -> &'static str {
         SyscallId::ALLOC_DMA => "AllocDma",
         SyscallId::FREE_DMA => "FreeDma",
         SyscallId::VIRT_TO_PHYS => "VirtToPhys",
+        SyscallId::DRV_REGISTER => "DrvRegister",
+        SyscallId::DRV_LOOKUP => "DrvLookup",
         _ => "Unknown",
     }
 }
@@ -165,6 +167,8 @@ pub fn dispatch_checked(
         SyscallId::ALLOC_DMA => driver::syscall_alloc_dma_impl(arg0 as usize, arg1 as *mut u64),
         SyscallId::FREE_DMA => driver::syscall_free_dma_impl(arg0, arg1 as usize),
         SyscallId::VIRT_TO_PHYS => driver::syscall_virt_to_phys_impl(arg0),
+        SyscallId::DRV_REGISTER => driver::syscall_drv_register_impl(arg0, arg1),
+        SyscallId::DRV_LOOKUP => driver::syscall_drv_lookup_impl(arg0, arg1),
         _ => Err(SyscallError::Unsupported),
     };
 

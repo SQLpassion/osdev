@@ -210,6 +210,11 @@ pub(crate) fn remove_task(
     // calls (see `driver_db::release_task`). Same ordering constraint as above.
     crate::drivers::driver_db::release_task(packed_id);
 
+    // Release this task's DriverRegistry name (if any), so a crashed or
+    // exited driver does not permanently squat its "nic:..."-style name —
+    // see `registry::release_task`. Same ordering constraint as above.
+    crate::drivers::registry::release_task(packed_id);
+
     // Move the stack to the pending-free list instead of freeing it now.
     // This keeps the stack range visible to `frame_within_any_task_stack`
     // until the next timer tick, preventing stale task frames from being

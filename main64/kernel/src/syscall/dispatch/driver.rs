@@ -1,6 +1,7 @@
 //! Driver infrastructure syscall handlers (MMIO, IRQ bridge, SpawnDriver).
 
 use crate::arch::constants::PAGE_SIZE_U64;
+use crate::drivers::registry;
 use crate::memory::vmm::{
     self, map_user_mmio_page, read_cr3, unmap_without_release, with_address_space, USER_MMIO_BASE,
     USER_STACK_GUARD_BASE,
@@ -8,7 +9,8 @@ use crate::memory::vmm::{
 use crate::process::capabilities::{Capabilities, MmioAllocKind};
 use crate::scheduler;
 use crate::syscall::types::{
-    is_valid_user_buffer, is_valid_user_buffer_writable, SyscallError, SyscallResult, SYSCALL_OK,
+    is_valid_user_buffer, is_valid_user_buffer_readable, is_valid_user_buffer_writable,
+    SyscallError, SyscallResult, SYSCALL_OK,
 };
 
 /// Maps a physical MMIO region into the calling driver task's address space.
@@ -677,4 +679,95 @@ pub fn syscall_virt_to_phys_impl(user_va: u64) -> SyscallResult<u64> {
 
     // Step 3: Translate virtual address via active page-table walk.
     vmm::virt_to_phys_current(user_va).ok_or(SyscallError::InvalidArg)
+}
+
+/// Copies a user-space driver name into a kernel-owned, fixed-size buffer.
+///
+/// Shared by `syscall_drv_register_impl` and `syscall_drv_lookup_impl`: both
+/// take a `(name_ptr, name_len)` pair rather than a NUL-terminated string, so
+/// `fs::read_user_string`'s NUL-scanning does not apply here.
+///
+/// Returns `InvalidArg` if `name_len` is zero or exceeds
+/// `registry::DRIVER_NAME_LEN`, or if `[name_ptr, name_ptr + name_len)` is not
+/// a valid, mapped, user-readable buffer.
+fn copy_user_driver_name(
+    name_ptr: u64,
+    name_len: u64,
+) -> SyscallResult<([u8; registry::DRIVER_NAME_LEN], usize)> {
+    // Step 1: bound-check the length before touching the pointer at all.
+    if name_len == 0 || name_len > registry::DRIVER_NAME_LEN as u64 {
+        return Err(SyscallError::InvalidArg);
+    }
+    let name_len = name_len as usize;
+    let name_ptr = name_ptr as *const u8;
+
+    // Step 2: validate the buffer is canonical, in range, and actually mapped
+    // present+readable in the caller's address space before dereferencing it
+    // — mirrors syscall_spawn_driver_impl's use of the same check before its
+    // own `read_unaligned` of a user pointer.
+    if !is_valid_user_buffer_readable(name_ptr, name_len) {
+        return Err(SyscallError::InvalidArg);
+    }
+
+    // Step 3: copy the name into a kernel-owned buffer. Never trust the user
+    // pointer past this point — later logic only touches `name_buf`.
+    let mut name_buf = [0u8; registry::DRIVER_NAME_LEN];
+    // SAFETY:
+    // - `is_valid_user_buffer_readable` verified `[name_ptr, name_ptr +
+    //   name_len)` is canonical, in-range, and mapped present+readable in the
+    //   currently active address space.
+    // - `name_len <= registry::DRIVER_NAME_LEN`, so the destination buffer is
+    //   large enough for the copy.
+    // - The two ranges cannot overlap: `name_buf` is a fresh stack allocation.
+    unsafe {
+        core::ptr::copy_nonoverlapping(name_ptr, name_buf.as_mut_ptr(), name_len);
+    }
+
+    Ok((name_buf, name_len))
+}
+
+/// Registers the calling driver task under `name` (e.g. "nic:rtl8139"), so
+/// applications can resolve it later via `DrvLookup`.
+///
+/// Arguments:
+/// - `name_ptr`: Pointer to the driver name bytes in user memory (not
+///   required to be NUL-terminated).
+/// - `name_len`: Length of the name in bytes; must be
+///   `0 < name_len <= registry::DRIVER_NAME_LEN`.
+///
+/// Requires the caller to be a driver task (holds a non-null `DriverCaps`
+/// block — i.e. it was spawned via `SpawnDriver`). Ordinary Ring-3 apps have
+/// no `DriverCaps` and must not be able to squat a driver name.
+pub fn syscall_drv_register_impl(name_ptr: u64, name_len: u64) -> SyscallResult<u64> {
+    // Step 1: caller must be a driver task.
+    scheduler::current_task_caps().ok_or(SyscallError::PermissionDenied)?;
+
+    // Step 2: validate and copy the name out of user memory.
+    let (name_buf, name_len) = copy_user_driver_name(name_ptr, name_len)?;
+
+    // Step 3: register under this task's packed id.
+    let tid = scheduler::current_task_id().ok_or(SyscallError::PermissionDenied)?;
+    registry::register(&name_buf[..name_len], tid)?;
+    Ok(SYSCALL_OK)
+}
+
+/// Resolves the packed task id of a driver previously registered via
+/// `DrvRegister`.
+///
+/// Arguments:
+/// - `name_ptr`: Pointer to the driver name bytes in user memory (not
+///   required to be NUL-terminated).
+/// - `name_len`: Length of the name in bytes; must be
+///   `0 < name_len <= registry::DRIVER_NAME_LEN`.
+///
+/// Callable by any task — resolving a driver's name is not itself a
+/// privileged operation; only registering one is.
+pub fn syscall_drv_lookup_impl(name_ptr: u64, name_len: u64) -> SyscallResult<u64> {
+    // Step 1: validate and copy the name out of user memory.
+    let (name_buf, name_len) = copy_user_driver_name(name_ptr, name_len)?;
+
+    // Step 2: resolve the registered driver's packed task id.
+    registry::lookup(&name_buf[..name_len])
+        .map(|tid| tid as u64)
+        .ok_or(SyscallError::InvalidArg)
 }

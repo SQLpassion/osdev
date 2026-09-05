@@ -80,6 +80,10 @@ pub enum SyscallId {
     FreeDma = 37,
     /// Translate user virtual address to physical address.
     VirtToPhys = 38,
+    /// Register the calling driver task under a well-known name (e.g. "nic:rtl8139").
+    DrvRegister = 39,
+    /// Resolve the task id of a driver previously registered via DrvRegister.
+    DrvLookup = 40,
 }
 
 impl SyscallId {
@@ -181,6 +185,10 @@ impl SyscallId {
     pub const FREE_DMA: u64 = Self::FreeDma as u64;
     /// Syscall number for VirtToPhys.
     pub const VIRT_TO_PHYS: u64 = Self::VirtToPhys as u64;
+    /// Syscall number for DrvRegister.
+    pub const DRV_REGISTER: u64 = Self::DrvRegister as u64;
+    /// Syscall number for DrvLookup.
+    pub const DRV_LOOKUP: u64 = Self::DrvLookup as u64;
 }
 
 /// Unknown syscall number.

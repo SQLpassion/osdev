@@ -4,6 +4,7 @@
 //! - [`mmio`] — Memory-Mapped I/O mapping and direct volatile register access
 //! - [`irq`]  — Hardware interrupt subscription, waiting, and acknowledgment
 //! - [`spawn`] — Driver spawning primitives
+//! - [`drv`]  — Driver name registration and resolution (DrvRegister/DrvLookup)
 
 #![no_std]
 #![allow(dead_code)]
@@ -19,6 +20,7 @@ pub use kernel_types::{SysError, UserDriverGrants};
 mod raw;
 
 pub mod dma;
+pub mod drv;
 pub mod irq;
 pub mod mmio;
 pub mod spawn;
