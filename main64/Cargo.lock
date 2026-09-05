@@ -35,6 +35,10 @@ dependencies = [
 [[package]]
 name = "kaos_kernel"
 version = "0.1.0"
+dependencies = [
+ "lib_driver",
+ "lib_net_client",
+]
 
 [[package]]
 name = "kaosldr_64"
@@ -61,6 +65,13 @@ version = "0.1.0"
 
 [[package]]
 name = "lib_net"
+version = "0.1.0"
+dependencies = [
+ "lib_driver",
+]
+
+[[package]]
+name = "lib_net_client"
 version = "0.1.0"
 dependencies = [
  "lib_driver",

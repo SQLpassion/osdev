@@ -16,6 +16,10 @@ harness = false
 
 [dependencies]
 
+[dev-dependencies]
+lib_driver = { path = "../lib_driver" }
+lib_net_client = { path = "../lib_net_client" }
+
 [[bin]]
 name = "kaos_kernel"
 test = false
@@ -162,3 +166,6 @@ name = "net_ring_wakeup_test"
 
 [[test]]
 name = "driver_status_test"
+
+[[test]]
+name = "net_client_test"
