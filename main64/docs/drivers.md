@@ -13,9 +13,9 @@ The most important implementation files are:
 * [`kernel/src/syscall/dispatch/driver.rs`](../kernel/src/syscall/dispatch/driver.rs)
 * [`kernel/src/drivers/irq_bridge.rs`](../kernel/src/drivers/irq_bridge.rs)
 * [`lib_driver`](../lib_driver/src/lib.rs)
-* [`user_programs/rtl8139/src/rtl8139.rs`](../user_programs/rtl8139/src/rtl8139.rs)
+* [`drivers/rtl8139/src/rtl8139.rs`](../drivers/rtl8139/src/rtl8139.rs)
 * [`user_programs/rtl8139/src/net`](../user_programs/rtl8139/src/net/mod.rs)
-* [`user_programs/rtl8139/src/main.rs`](../user_programs/rtl8139/src/main.rs)
+* [`drivers/rtl8139/src/main.rs`](../drivers/rtl8139/src/main.rs)
 
 ---
 
@@ -77,7 +77,7 @@ The change is located in [`kernel/src/drivers/pci/mod.rs`](../kernel/src/drivers
 
 A Base Address Register, or BAR, describes an address range provided by a device. With a memory BAR, the range looks like memory from the CPU's perspective, but it is not ordinary RAM. A read may return current device state, and a write may initiate a hardware operation.
 
-This mechanism is called Memory-Mapped I/O, or MMIO. The RTL8139 exposes registers for its MAC address, receive buffer, interrupt state, and transmit buffers. Their offsets are defined in [`rtl8139.rs`](../user_programs/rtl8139/src/rtl8139.rs):
+This mechanism is called Memory-Mapped I/O, or MMIO. The RTL8139 exposes registers for its MAC address, receive buffer, interrupt state, and transmit buffers. Their offsets are defined in [`rtl8139.rs`](../drivers/rtl8139/src/rtl8139.rs):
 
 ```rust
 pub const REG_MAC0: usize = 0x00;
@@ -770,7 +770,7 @@ MMIO and DMA have different ownership semantics. For MMIO, the device owns the p
 
 `lib_driver` and `rtl8139_user_program` are new Cargo workspace members. The driver is built for `x86_64-unknown-none` without the standard library. It uses `core`, the existing allocator through `alloc`, `lib_kaos`, and `lib_driver`.
 
-The linker script [`user_programs/rtl8139/link.ld`](../user_programs/rtl8139/link.ld) selects `_start` as the entry point and places code at virtual address `0x0000_7000_0000_0000`. It creates two PT_LOAD segments. Code and read-only data occupy a readable and executable segment, while data and BSS occupy a readable and writable segment.
+The linker script [`drivers/rtl8139/link.ld`](../drivers/rtl8139/link.ld) selects `_start` as the entry point and places code at virtual address `0x0000_7000_0000_0000`. It creates two PT_LOAD segments. Code and read-only data occupy a readable and executable segment, while data and BSS occupy a readable and writable segment.
 
 Page alignment between the segments is necessary because the kernel enforces ELF permissions at page granularity. If executable code and writable data shared one page, the loader could not represent the intended permissions cleanly.
 

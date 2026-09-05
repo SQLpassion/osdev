@@ -28,6 +28,7 @@ name = "intel_nic_user_program"
 version = "0.1.0"
 dependencies = [
  "lib_driver",
+ "lib_driver_runtime",
  "lib_kaos",
  "lib_net",
 ]
@@ -58,6 +59,15 @@ dependencies = [
 [[package]]
 name = "lib_driver"
 version = "0.1.0"
+
+[[package]]
+name = "lib_driver_runtime"
+version = "0.1.0"
+dependencies = [
+ "lib_driver",
+ "lib_kaos",
+ "lib_net",
+]
 
 [[package]]
 name = "lib_kaos"
@@ -96,6 +106,7 @@ name = "rtl8139_user_program"
 version = "0.1.0"
 dependencies = [
  "lib_driver",
+ "lib_driver_runtime",
  "lib_kaos",
  "lib_net",
 ]

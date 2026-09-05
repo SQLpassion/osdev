@@ -1,10 +1,13 @@
 [workspace]
 resolver = "2"
 members = [
+    "drivers/intel_nic",
+    "drivers/rtl8139",
     "kaosldr_64",
     "kaosldr_uefi",
     "kernel",
     "lib_driver",
+    "lib_driver_runtime",
     "lib_kaos",
     "lib_net",
     "lib_net_client",
@@ -12,10 +15,8 @@ members = [
     "user_programs/filedemo",
     "user_programs/exception_test",
     "user_programs/hello",
-    "user_programs/intel_nic",
     "user_programs/kbasic",
     "user_programs/readline",
-    "user_programs/rtl8139",
     "user_programs/shell",
     "user_programs/tui_app",
 ]

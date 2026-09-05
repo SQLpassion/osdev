@@ -176,7 +176,7 @@ strip_debug_info kbasic.bin
 echo "-> Built: $KBASIC_DIR/kbasic.bin"
 ls -la kbasic.bin
 
-RTL8139_DIR="$PROJECT_ROOT/user_programs/rtl8139"
+RTL8139_DIR="$PROJECT_ROOT/drivers/rtl8139"
 echo ""
 echo "-> Building rtl8139 driver user program..."
 
@@ -196,7 +196,7 @@ strip_debug_info rtl8139.bin
 echo "-> Built: $RTL8139_DIR/rtl8139.bin"
 ls -la rtl8139.bin
 
-INTEL_NIC_DIR="$PROJECT_ROOT/user_programs/intel_nic"
+INTEL_NIC_DIR="$PROJECT_ROOT/drivers/intel_nic"
 echo ""
 echo "-> Building intel_nic driver user program..."
 

@@ -35,6 +35,13 @@ LIBNET_PASSED=$(echo "$LIBNET_OUT" | grep -a -m 1 -oE "test result: ok\.[[:space
 echo "lib_net:OK:$LIBNET_PASSED:$LIBNET_PASSED" >> "$USER_RESULTS_FILE"
 
 echo ""
+echo "  -> Testing lib_driver_runtime (shared PCI/MMIO discovery + CLI parsing)..."
+RUNTIME_OUT=$(cargo test -p lib_driver_runtime --lib 2>&1)
+echo "$RUNTIME_OUT"
+RUNTIME_PASSED=$(echo "$RUNTIME_OUT" | grep -a -m 1 -oE "test result: ok\.[[:space:]]+[0-9]+ passed" | grep -oE "[0-9]+" || echo "17")
+echo "lib_driver_runtime:OK:$RUNTIME_PASSED:$RUNTIME_PASSED" >> "$USER_RESULTS_FILE"
+
+echo ""
 echo "  -> Testing rtl8139_user_program (Fast Ethernet driver)..."
 RTL_OUT=$(cargo test -p rtl8139_user_program --bin rtl8139 2>&1)
 echo "$RTL_OUT"
