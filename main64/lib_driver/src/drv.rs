@@ -1,8 +1,9 @@
-//! Driver name registration/resolution and packet transport
-//! (`DrvRegister`/`DrvLookup`, `NetSend`/`NetRecv`).
+//! Driver name registration/resolution, packet transport, and status
+//! publishing (`DrvRegister`/`DrvLookup`, `NetSend`/`NetRecv`,
+//! `DrvPublishStatus`/`DrvQuery`).
 
-use crate::kernel_types::{decode_result, SysError, SyscallId};
-use crate::raw::{syscall2, syscall3, syscall4};
+use crate::kernel_types::{decode_result, SysError, SyscallId, UserDriverStatus};
+use crate::raw::{syscall1, syscall2, syscall3, syscall4};
 
 /// Maximum length, in bytes, of a driver name accepted by `DrvRegister`/`DrvLookup`.
 ///
@@ -114,4 +115,33 @@ pub fn net_recv(driver_id: u64, buf: &mut [u8], timeout_ms: u64) -> Result<usize
         )
     };
     decode_result(raw).map(|n| n as usize)
+}
+
+/// Publishes the calling driver task's current status snapshot for later
+/// [`query_status`] reads. Requires the caller to already be registered via
+/// [`drv_register`].
+pub fn publish_status(status: &UserDriverStatus) -> Result<(), SysError> {
+    // SAFETY:
+    // - Invokes the DrvPublishStatus syscall (nr. 43).
+    // - `status` is a valid, borrowed reference for the duration of this call.
+    let raw = unsafe { syscall1(SyscallId::DRV_PUBLISH_STATUS, status as *const _ as u64) };
+    decode_result(raw).map(|_| ())
+}
+
+/// Reads the last status snapshot published by `driver_id` via
+/// [`publish_status`]. Fails with `SysError::InvalidArgument` if `driver_id`
+/// is unknown or has never published.
+pub fn query_status(driver_id: u64) -> Result<UserDriverStatus, SysError> {
+    let mut out = core::mem::MaybeUninit::<UserDriverStatus>::uninit();
+    // SAFETY:
+    // - Invokes the DrvQuery syscall (nr. 44).
+    // - `out` is a valid, writable destination for exactly
+    //   `size_of::<UserDriverStatus>()` bytes for the duration of this call;
+    //   the kernel only writes into it on success (`decode_result(raw)` is
+    //   checked with `?` below before `out` is ever read).
+    let raw = unsafe { syscall2(SyscallId::DRV_QUERY, driver_id, out.as_mut_ptr() as u64) };
+    decode_result(raw)?;
+    // SAFETY: the syscall succeeded, so the kernel wrote a complete
+    // `UserDriverStatus` into `out` before returning.
+    Ok(unsafe { out.assume_init() })
 }

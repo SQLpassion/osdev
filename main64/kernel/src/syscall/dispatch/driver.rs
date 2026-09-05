@@ -10,7 +10,7 @@ use crate::process::capabilities::{Capabilities, MmioAllocKind};
 use crate::scheduler;
 use crate::syscall::types::{
     is_valid_user_buffer, is_valid_user_buffer_readable, is_valid_user_buffer_writable,
-    SyscallError, SyscallResult, SYSCALL_OK,
+    SyscallError, SyscallResult, UserDriverStatus, MAX_ARP_ENTRIES, SYSCALL_OK,
 };
 
 /// Maps a physical MMIO region into the calling driver task's address space.
@@ -922,4 +922,82 @@ pub fn syscall_net_recv_impl(
             return Err(SyscallError::Timeout);
         }
     }
+}
+
+/// Publishes the calling driver task's current status snapshot for later
+/// `DrvQuery` reads.
+///
+/// Arguments:
+/// - `status_ptr`: Pointer to a `UserDriverStatus` in user memory.
+///
+/// Requires the caller to already be registered via `DrvRegister` (i.e. a
+/// `DriverEntry` for its own tid must exist).
+pub fn syscall_drv_publish_status_impl(status_ptr: u64) -> SyscallResult<u64> {
+    let status_ptr = status_ptr as *const UserDriverStatus;
+
+    // Step 1: validate the buffer is canonical, in range, and mapped
+    // present+readable before dereferencing it.
+    if !is_valid_user_buffer_readable(
+        status_ptr as *const u8,
+        core::mem::size_of::<UserDriverStatus>(),
+    ) {
+        return Err(SyscallError::InvalidArg);
+    }
+
+    // Step 2: copy the whole struct in at once -- never trust a single field
+    // read across the boundary, matching how syscall_spawn_driver_impl
+    // copies UserDriverGrants in.
+    // SAFETY:
+    // - `is_valid_user_buffer_readable` verified the pointed-to range is
+    //   canonical, in-range, and mapped present+readable for
+    //   `size_of::<UserDriverStatus>()` bytes.
+    // - `read_unaligned` is safe for any alignment.
+    let status = unsafe { core::ptr::read_unaligned(status_ptr) };
+
+    // Step 3: reject an arp_entry_count a misbehaving/buggy driver set past
+    // the fixed-size array's actual capacity, rather than trusting it for
+    // later out-of-bounds reads in DrvQuery / its own consumers.
+    if status.arp_entry_count as usize > MAX_ARP_ENTRIES {
+        return Err(SyscallError::InvalidArg);
+    }
+
+    // Step 4: store under this task's packed id.
+    let tid = scheduler::current_task_id().ok_or(SyscallError::PermissionDenied)?;
+    registry::publish_status(tid, status)?;
+    Ok(SYSCALL_OK)
+}
+
+/// Reads the last status snapshot published by a driver.
+///
+/// Arguments:
+/// - `driver_id`: Packed task id of the driver (from `DrvLookup`).
+/// - `out_ptr`: Destination `UserDriverStatus` in user memory.
+///
+/// Returns `InvalidArg` if `driver_id` is unknown or has never published.
+/// Callable by any task.
+pub fn syscall_drv_query_impl(driver_id: u64, out_ptr: u64) -> SyscallResult<u64> {
+    // Step 1: resolve the snapshot before validating the output buffer, so
+    // an unknown/never-published driver_id fails cheaply without touching
+    // user memory at all.
+    let status = registry::query_status(driver_id as usize).ok_or(SyscallError::InvalidArg)?;
+
+    // Step 2: validate the destination buffer.
+    let out_ptr = out_ptr as *mut UserDriverStatus;
+    if !is_valid_user_buffer_writable(
+        out_ptr as *const u8,
+        core::mem::size_of::<UserDriverStatus>(),
+    ) {
+        return Err(SyscallError::InvalidArg);
+    }
+
+    // Step 3: copy the snapshot out.
+    // SAFETY:
+    // - `is_valid_user_buffer_writable` verified the destination range is
+    //   canonical, in-range, and mapped present+writable for
+    //   `size_of::<UserDriverStatus>()` bytes.
+    // - `write_unaligned` is safe for any alignment.
+    unsafe {
+        core::ptr::write_unaligned(out_ptr, status);
+    }
+    Ok(SYSCALL_OK)
 }

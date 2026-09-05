@@ -22,7 +22,8 @@ pub use dispatch::{
 pub use types::{
     decode_result, is_valid_user_buffer, is_valid_user_buffer_writable, syscall_error_to_raw,
     syscall_result_to_raw, user_alias_rip, user_alias_va_for_kernel, SysError, SyscallError,
-    SyscallId, SyscallResult, UserBiosMemoryRegion, UserDateTime, UserDriverGrants, UserPciBar,
-    UserPciDevice, SYSCALL_ERR_INVALID_ARG, SYSCALL_ERR_IO, SYSCALL_ERR_OUT_OF_MEMORY,
-    SYSCALL_ERR_PERMISSION_DENIED, SYSCALL_ERR_TIMEOUT, SYSCALL_ERR_UNSUPPORTED, SYSCALL_OK,
+    SyscallId, SyscallResult, UserArpEntry, UserBiosMemoryRegion, UserDateTime, UserDriverGrants,
+    UserDriverStatus, UserPciBar, UserPciDevice, MAX_ARP_ENTRIES, SYSCALL_ERR_INVALID_ARG,
+    SYSCALL_ERR_IO, SYSCALL_ERR_OUT_OF_MEMORY, SYSCALL_ERR_PERMISSION_DENIED, SYSCALL_ERR_TIMEOUT,
+    SYSCALL_ERR_UNSUPPORTED, SYSCALL_OK,
 };

@@ -159,3 +159,6 @@ name = "net_ring_test"
 
 [[test]]
 name = "net_ring_wakeup_test"
+
+[[test]]
+name = "driver_status_test"

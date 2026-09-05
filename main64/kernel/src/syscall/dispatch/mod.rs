@@ -88,6 +88,8 @@ pub const fn syscall_name_for_number(syscall_nr: u64) -> &'static str {
         SyscallId::DRV_LOOKUP => "DrvLookup",
         SyscallId::NET_SEND => "NetSend",
         SyscallId::NET_RECV => "NetRecv",
+        SyscallId::DRV_PUBLISH_STATUS => "DrvPublishStatus",
+        SyscallId::DRV_QUERY => "DrvQuery",
         _ => "Unknown",
     }
 }
@@ -173,6 +175,8 @@ pub fn dispatch_checked(
         SyscallId::DRV_LOOKUP => driver::syscall_drv_lookup_impl(arg0, arg1),
         SyscallId::NET_SEND => driver::syscall_net_send_impl(arg0, arg1, arg2),
         SyscallId::NET_RECV => driver::syscall_net_recv_impl(arg0, arg1, arg2, arg3),
+        SyscallId::DRV_PUBLISH_STATUS => driver::syscall_drv_publish_status_impl(arg0),
+        SyscallId::DRV_QUERY => driver::syscall_drv_query_impl(arg0, arg1),
         _ => Err(SyscallError::Unsupported),
     };
 

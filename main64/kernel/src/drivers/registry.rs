@@ -19,7 +19,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::sync::spinlock::SpinLock;
-use crate::syscall::SyscallError;
+use crate::syscall::{SyscallError, UserDriverStatus};
 
 /// Maximum number of drivers that may be registered at once.
 pub const MAX_DRIVERS: usize = 16;
@@ -129,6 +129,9 @@ pub struct DriverEntry {
 
     /// Driver → App packets, drained by an app's `NetRecv`.
     rx_ring: PacketRing,
+
+    /// Last status snapshot published via `DrvPublishStatus`, if any.
+    status: Option<UserDriverStatus>,
 }
 
 /// Global driver name registry.
@@ -175,6 +178,7 @@ pub fn register(name: &[u8], tid: usize) -> Result<(), SyscallError> {
         tid,
         tx_ring: PacketRing::new(),
         rx_ring: PacketRing::new(),
+        status: None,
     });
 
     Ok(())
@@ -195,7 +199,6 @@ pub fn lookup(name: &[u8]) -> Option<usize> {
 /// to an entry under the same lock acquisition, without this module exposing
 /// a raw guard type that would let a caller hold the lock across unrelated
 /// work.
-#[allow(dead_code)] // Also consumed by a later Phase-2 step (DrvQuery).
 pub fn with_entry_mut<R>(tid: usize, f: impl FnOnce(&mut DriverEntry) -> R) -> Option<R> {
     DRIVER_REGISTRY
         .lock()
@@ -253,6 +256,25 @@ pub fn try_pop_packet(
         ring.try_pop(out)
     });
     outcome.ok_or(SyscallError::InvalidArg)
+}
+
+/// Stores `status` as `tid`'s current snapshot, overwriting any previous one.
+///
+/// Fails with `InvalidArg` if no entry is registered under `tid` (the caller
+/// never called `DrvRegister`, or has already exited).
+pub fn publish_status(tid: usize, status: UserDriverStatus) -> Result<(), SyscallError> {
+    let outcome = with_entry_mut(tid, |entry| {
+        entry.status = Some(status);
+    });
+    outcome.ok_or(SyscallError::InvalidArg)
+}
+
+/// Returns a copy of `driver_id`'s last published status snapshot.
+///
+/// Returns `None` if no entry is registered under `driver_id`, or if one is
+/// registered but has never called `DrvPublishStatus`.
+pub fn query_status(driver_id: usize) -> Option<UserDriverStatus> {
+    with_entry_mut(driver_id, |entry| entry.status).flatten()
 }
 
 /// Removes any entry registered under `tid`.
