@@ -47,7 +47,7 @@ mod wait;
 #[allow(unused_imports)]
 pub use api::{
     current_task_caps, current_task_id, current_user_heap_top, is_parent_of, is_task_privileged,
-    is_user_task, reset_initialization_for_test, set_current_user_heap_top,
+    is_user_task, reset_initialization_for_test, set_current_user_heap_top, set_root_task_id,
     set_running_slot_for_test, set_task_caps, set_task_parent, set_task_user_context,
     slot_table_len, task_context, task_frame_ptr, task_generation, task_iret_frame, task_state,
     try_increment_exec_count,
@@ -474,6 +474,31 @@ pub fn on_timer_tick(current_frame: *mut SavedRegisters) -> *mut SavedRegisters 
         // is safe.  Their stacks go to pending_free_stacks and will be
         // drained below, after the bootstrap frame detection.
         removed_zombie_tasks = reap_zombies(meta, callbacks);
+
+        // If reaping just removed the root shell task, shut down immediately
+        // instead of relying on `KernelMain`'s bootstrap-context
+        // `wait_for_task_exit` call to ever regain the CPU — an always-ready
+        // background task (e.g. a loaded NIC driver looping on `Yield` and
+        // never blocking) can starve that fallback forever (see the doc
+        // comment on `SchedulerMetadata::root_task_id`). Checked via the raw
+        // slot/generation fields directly, not the public `task_generation`
+        // API, since that re-acquires `SCHED` and would deadlock here.
+        if removed_zombie_tasks {
+            if let Some(root_id) = meta.root_task_id {
+                let slot = task_id_slot(root_id);
+                let expected_generation = task_id_generation(root_id);
+                let root_still_alive = slot < meta.slots.len()
+                    && meta.slots[slot].used
+                    && meta.slots[slot].generation == expected_generation;
+                if !root_still_alive {
+                    // `shutdown()` only performs port I/O and an infinite
+                    // `hlt` loop; it never returns and needs no cleanup, so
+                    // calling it here while `SCHED` is still locked is fine
+                    // -- the lock is never released or used again.
+                    crate::arch::power::shutdown();
+                }
+            }
+        }
 
         if meta.run_queue.is_empty() {
             meta.running_slot = None;

@@ -372,6 +372,20 @@ pub struct SchedulerMetadata {
     /// bound even under a sustained `Exec` loop (itself separately capped
     /// per-task by `MAX_CHILD_EXECS` in `syscall::dispatch::process`).
     pub parent_log: Vec<(usize, usize)>,
+
+    /// Packed task id of the root shell task, set once via
+    /// `scheduler::set_root_task_id` right after it is spawned.
+    ///
+    /// Exists so `on_timer_tick` can trigger `arch::power::shutdown()` the
+    /// moment this specific task is reaped, instead of relying on
+    /// `KernelMain`'s bootstrap-context `wait_for_task_exit` call to ever
+    /// regain the CPU. That bootstrap wait only resumes via
+    /// `select_next_task`'s "all run_queue tasks are blocked" fallback —
+    /// which an always-ready background task (e.g. a loaded NIC driver
+    /// looping on `Yield` and never blocking) can starve forever, silently
+    /// preventing shutdown even though the root shell has already exited
+    /// cleanly.
+    pub root_task_id: Option<usize>,
 }
 
 impl SchedulerMetadata {
@@ -393,6 +407,7 @@ impl SchedulerMetadata {
             pending_free_address_spaces: Vec::new(),
             fpu_owner: None,
             parent_log: Vec::new(),
+            root_task_id: None,
         }
     }
 }

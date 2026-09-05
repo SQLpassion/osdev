@@ -402,6 +402,7 @@ pub(crate) fn reset_scheduler_state(meta: &mut SchedulerMetadata) {
     meta.slots.clear();
     meta.pending_free_stacks.clear();
     meta.pending_free_address_spaces.clear();
+    meta.root_task_id = None;
 
     // Reset lazy-FPU bookkeeping so the next scheduler epoch starts from a
     // clean, defined state. Without this, a stale `fpu_owner` index could be

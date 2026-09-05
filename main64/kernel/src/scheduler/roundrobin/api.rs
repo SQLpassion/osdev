@@ -180,6 +180,17 @@ pub fn task_generation(task_id: usize) -> Option<u64> {
     })
 }
 
+/// Registers `task_id` as the root shell task, so `on_timer_tick` can trigger
+/// `arch::power::shutdown()` the instant it is reaped.
+///
+/// Must be called exactly once, right after the root shell is spawned (see
+/// `KernelMain`). See the doc comment on `SchedulerMetadata::root_task_id`
+/// for why this exists instead of relying solely on `KernelMain`'s
+/// bootstrap-context `wait_for_task_exit` call.
+pub fn set_root_task_id(task_id: usize) {
+    with_scheduler(|meta| meta.root_task_id = Some(task_id));
+}
+
 /// Gets the user heap top address of the current task.
 ///
 /// Returns `None` if there is no current task or it is not a user task.
