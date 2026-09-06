@@ -89,6 +89,7 @@ pub const fn syscall_name_for_number(syscall_nr: u64) -> &'static str {
         SyscallId::DRV_QUERY => "DrvQuery",
         SyscallId::DRV_UNLOAD => "DrvUnload",
         SyscallId::DRV_LIST => "DrvList",
+        SyscallId::DRV_PROBE => "DrvProbe",
         _ => "Unknown",
     }
 }
@@ -157,7 +158,7 @@ pub fn dispatch_checked(
         }
         SyscallId::POLL_KEY => process::syscall_poll_key_impl(),
         SyscallId::GET_CONSOLE_DIMENSIONS => console::syscall_get_console_dimensions_impl(),
-        SyscallId::MAP_PHYSICAL => driver::syscall_map_physical_impl(arg0, arg1 as usize, arg2),
+        SyscallId::MAP_PHYSICAL => driver::syscall_map_physical_impl(arg0, arg1 as usize),
         SyscallId::UNMAP_PHYSICAL => driver::syscall_unmap_physical_impl(arg0, arg1 as usize),
         SyscallId::SPAWN_DRIVER => driver::syscall_spawn_driver_impl(
             arg0 as *const u8,
@@ -177,6 +178,7 @@ pub fn dispatch_checked(
         SyscallId::DRV_LIST => {
             driver::syscall_drv_list_impl(arg0 as *mut crate::syscall::UserDriverInfo, arg1)
         }
+        SyscallId::DRV_PROBE => driver::syscall_drv_probe_impl(arg0 as *const u8),
         _ => Err(SyscallError::Unsupported),
     };
 

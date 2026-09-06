@@ -1,8 +1,7 @@
 //! Host unit tests for the `drivers` REPL's pure command-parsing logic
 //! (`parse_command`). Never touches a syscall, mirroring this project's
-//! convention (see `shell::load_driver`'s `resolve_driver_filename` tests)
-//! of keeping pure, I/O-free decision logic separately testable from the
-//! syscall-touching code around it.
+//! general convention of keeping pure, I/O-free decision logic separately
+//! testable from the syscall-touching code around it.
 
 use super::{parse_command, Command};
 

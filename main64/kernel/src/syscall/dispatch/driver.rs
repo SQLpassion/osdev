@@ -18,8 +18,7 @@ use crate::syscall::types::{
 /// Arguments:
 /// - `phys_addr`: Physical starting address of the device register window.
 /// - `len`: Size of the region in bytes.
-/// - `_flags`: Reserved for future mapping attributes (must be 0).
-pub fn syscall_map_physical_impl(phys_addr: u64, len: usize, _flags: u64) -> SyscallResult<u64> {
+pub fn syscall_map_physical_impl(phys_addr: u64, len: usize) -> SyscallResult<u64> {
     // Step 1: Validate length and ensure address arithmetic does not overflow.
     if len == 0 {
         return Err(SyscallError::InvalidArg);
@@ -1059,4 +1058,34 @@ pub fn syscall_drv_list_impl(out_ptr: *mut UserDriverInfo, max_entries: u64) -> 
     }
 
     Ok(total)
+}
+
+/// Checks whether a driver binary is known to the kernel and currently has
+/// a matching PCI device present, without any of `SpawnDriver`'s side
+/// effects (no device reservation, no Command Register writes).
+///
+/// This lets a caller — concretely, `DRIVERS.BIN`'s `load` command — print
+/// a specific "unknown driver" vs. "no matching device" error *before*
+/// attempting to spawn anything, without hand-duplicating the kernel's own
+/// binary-name-to-PCI-ID table (`driver_db::DRIVER_DB`) client-side the way
+/// an earlier version of this codebase did.
+///
+/// Arguments:
+/// - `name_ptr`: Pointer to a NUL-terminated driver binary filename in user
+///   memory (mirrors `SpawnDriver`'s own `name_ptr` argument).
+///
+/// Returns `Ok(1)` if `name` is a known driver and a matching device is
+/// currently present, `Ok(0)` if `name` is known but no matching device is
+/// present, or `Err(InvalidArg)` if `name` is not a known driver binary at
+/// all.
+///
+/// Callable by any task — a read-only query over the kernel's own
+/// compile-time driver table and its cached PCI enumeration is not a
+/// privileged operation, mirroring `DrvLookup`.
+pub fn syscall_drv_probe_impl(name_ptr: *const u8) -> SyscallResult<u64> {
+    use crate::drivers::driver_db;
+
+    let name = super::fs::read_user_string(name_ptr, 128)?;
+    let present = driver_db::device_present(&name).map_err(|_| SyscallError::InvalidArg)?;
+    Ok(present as u64)
 }

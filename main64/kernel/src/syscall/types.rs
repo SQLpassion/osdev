@@ -91,6 +91,9 @@ pub enum SyscallId {
     DrvUnload = 42,
     /// Retrieve metadata for every currently registered driver in one call.
     DrvList = 43,
+    /// Check whether a driver binary is known and has a matching PCI
+    /// device present, without any of `SpawnDriver`'s side effects.
+    DrvProbe = 44,
 }
 
 impl SyscallId {
@@ -202,6 +205,8 @@ impl SyscallId {
     pub const DRV_UNLOAD: u64 = Self::DrvUnload as u64;
     /// Syscall number for DrvList.
     pub const DRV_LIST: u64 = Self::DrvList as u64;
+    /// Syscall number for DrvProbe.
+    pub const DRV_PROBE: u64 = Self::DrvProbe as u64;
 }
 
 /// Unknown syscall number.

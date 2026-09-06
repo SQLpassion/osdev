@@ -150,35 +150,42 @@ The practical consequence for a reader is that everything in §7 through §12 be
 
 A NIC driver is not launched by typing its own name at the shell prompt, and the shell itself contains no driver-spawning logic at all anymore. Loading a driver is the job of a small, dedicated Ring 3 program, [`user_programs/drivers`](../user_programs/drivers/src/main.rs), which ships on the disk image as `DRIVERS.BIN` and presents its own tiny REPL once the user runs it from the shell. Its `load <name.drv>` command is the direct descendant of what used to be shell code — the file that implements it, [`load_driver.rs`](../user_programs/drivers/src/load_driver.rs), says so explicitly in its own header comment, and is worth reading once because it explains *why* the logic had to move, not just that it did: `spawn_driver` requires the caller to hold `Capabilities::SPAWN_DRIVER`, and a driver-loading command only ever worked before because it happened to run inside the shell's own, already-privileged process. Once driver management became its own separate binary, that binary needed its own, narrowly delegated privilege — described in §21 — before `load` could work again at all.
 
-`load_driver()` first resolves the requested file name against a small built-in table mapping FAT32 8.3 names to the PCI IDs they can service:
+`load_driver()` first asks the kernel whether attempting `SpawnDriver` is even worth it, via `lib_driver::spawn::probe_driver()` — a thin wrapper around a dedicated syscall, `DrvProbe` (§6), that answers exactly one question: is this binary name a known driver, and if so, is a matching PCI device currently present? An earlier version of this file kept its own copy of the binary-name-to-PCI-ID table right here, plus its own loop re-enumerating the PCI bus, purely to print a friendly, specific error message — "unknown driver name" versus "no matching PCI device found" are two different failure modes worth telling apart. That was two independent sources of truth for the same mapping (this file's copy, and the kernel's own `driver_db::DRIVER_DB`, described below) that had to be kept in sync by hand every time a driver was added. `DrvProbe` answers the question directly from the kernel's own table and its own cached PCI enumeration instead, so this file carries no PCI IDs of its own at all:
 
 ```rust
-pub const DRIVER_TABLE: &[(&str, u16, u16)] = &[
-    ("RTL8139.DRV", 0x10EC, 0x8139),
-    ("INTLNIC.DRV", 0x8086, 0x10EA),
-    ("INTLNIC.DRV", 0x8086, 0x15B8),
-    ("INTLNIC.DRV", 0x8086, 0x10D3),
-    ("INTLNIC.DRV", 0x8086, 0x100E),
-];
+match lib_driver::spawn::probe_driver(file) {
+    Err(_) => {
+        println!("[drivers] Unknown driver '{}'.", file);
+        return;
+    }
+    Ok(false) => {
+        println!(
+            "[drivers] Error: no matching PCI device found for '{}'.",
+            file
+        );
+        return;
+    }
+    Ok(true) => {}
+}
 ```
 
-This table exists purely to give the user a friendly, specific error message — "unknown driver name" versus "no matching PCI device found" are two different failure modes worth telling apart — and it never grants anything by itself; the actual resource grant is derived independently inside the kernel, from the kernel's own PCI enumeration, exactly as before. A pure, unit-tested function, `resolve_driver_filename()`, does the matching without touching any syscall, so its logic (case-insensitive name matching, "known name but device absent" versus "name not known at all") can be exercised on an ordinary host machine.
+`DrvProbe`'s kernel-side implementation, `driver_db::device_present()`, asks the exact same question `derive_grants()` (described just below) answers internally while actually spawning a driver — matching the binary name against [`driver_db::DRIVER_DB`](../kernel/src/drivers/driver_db.rs) and then checking whether any of its supported PCI IDs appears in the kernel's cached device list — but without any of `derive_grants`'s side effects: no device reservation, no PCI Command Register writes. It is safe to call purely to ask "would this succeed?"
 
-Once a match is found, `load_driver()` spawns the driver and, critically, does not wait for it:
+Once `probe_driver()` confirms it is worth attempting, `load_driver()` spawns the driver and, critically, does not wait for it:
 
 ```rust
 let caps = 1; // MMIO (1)
 
-// Step 5: spawn in the background -- no process::wait() call.
-match lib_driver::spawn::spawn_driver(canonical_name, caps, None) {
+// Step 3: spawn in the background -- no process::wait() call. `file` is
+// passed through as-is: both `driver_db::lookup_driver` and the FAT32 VFS
+// lookup `SpawnDriver` triggers are already case-insensitive, so no
+// client-side canonicalization is needed.
+match lib_driver::spawn::spawn_driver(file, caps, None) {
     Ok(tid) => {
-        println!(
-            "[drivers] Driver '{}' started as TID {}",
-            canonical_name, tid
-        );
+        println!("[drivers] Driver '{}' started as TID {}", file, tid);
     }
     Err(err) => {
-        println!("[drivers] Failed to load '{}': {:?}", canonical_name, err);
+        println!("[drivers] Failed to load '{}': {:?}", file, err);
     }
 }
 ```
@@ -269,10 +276,11 @@ pub enum SyscallId {
     DrvQuery         = 41,
     DrvUnload        = 42,
     DrvList          = 43,
+    DrvProbe         = 44,
 }
 ```
 
-The first six numbers (30–35) are the original hardware-access primitives this document covers in §7–§8: mapping BARs and managing DMA memory. The remaining eight (36–43) are the driver-naming and packet-transport layer that turns a running driver into an addressable service — §13 covers every one of them in detail, and §20 covers the list/unload calls specifically in the context of `DRIVERS.BIN`.
+The first six numbers (30–35) are the original hardware-access primitives this document covers in §7–§8: mapping BARs and managing DMA memory. The remaining nine (36–44) are the driver-naming and packet-transport layer that turns a running driver into an addressable service — §13 covers every one of them in detail, §4 covers `DrvProbe` in the context of `DRIVERS.BIN`'s `load` command, and §20 covers the list/unload calls specifically in that same context.
 
 [`lib_driver/src/raw.rs`](../lib_driver/src/raw.rs) provides small assembly stubs for one, two, three, or four parameters. A three-argument call is implemented as follows:
 
@@ -887,7 +895,7 @@ user_programs/net_tools/net_tools.bin  ->  NETTOOLS.BIN
 user_programs/drivers/drivers.bin      ->  DRIVERS.BIN
 ```
 
-The `.DRV` extension for the two hardware drivers is purely a naming convention `DRIVERS.BIN`'s `load`/`resolve_driver_filename()` and its own `DRIVER_TABLE` (§4) agree on; it carries no special meaning to the VFS or the ELF loader, which treat it exactly like any other file.
+The `.DRV` extension for the two hardware drivers is purely a naming convention `DRIVERS.BIN`'s `load` and the kernel's own `driver_db::DRIVER_DB` (§4) agree on; it carries no special meaning to the VFS or the ELF loader, which treat it exactly like any other file.
 
 QEMU is given an emulated RTL8139 device (and, depending on configuration, an emulated Intel NIC) so both driver binaries have real, matching hardware to attach to under emulation. On macOS, the scripts use `vmnet-bridged` with `en0`. On Linux, they expect a preconfigured TAP interface named `tap0`. The guest is therefore attached to a bridged Layer 2 network rather than only an isolated virtual network — which is what makes it possible for `net-tools.bin`'s `ping` to reach an actual host outside the emulated machine at all.
 
@@ -897,11 +905,11 @@ QEMU is given an emulated RTL8139 device (and, depending on configuration, an em
 
 The test suite mirrors the architecture's layers closely. [`capabilities_test.rs`](../kernel/tests/capabilities_test.rs) checks bit operations, the capability-free initial state of ordinary tasks, and attachment and cleanup of a `DriverCaps` block.
 
-[`driver_mmio_test.rs`](../kernel/tests/driver_mmio_test.rs) simulates tasks with and without MMIO authority, verifying rejection of missing capabilities, incorrect physical ranges, zero lengths, and overflowing addresses, plus the successful bump-pointer-advance-and-unmap case. [`driver_spawn_test.rs`](../kernel/tests/driver_spawn_test.rs) checks missing `SPAWN_DRIVER` authority, invalid user pointers, the exact ABI layout of `UserDriverGrants`, that `SPAWN_DRIVER` itself is masked out of a spawned driver's capabilities, and that the driver database resolves registered binaries case-insensitively while rejecting unregistered ones. [`driver_rtl8139_test.rs`](../kernel/tests/driver_rtl8139_test.rs) combines MMIO and DMA in a simulated RTL8139 task, importing the real network modules through `#[path]` so the same parsers and serializers run in ordinary host unit tests and inside the QEMU kernel test environment alike.
+[`driver_mmio_test.rs`](../kernel/tests/driver_mmio_test.rs) simulates tasks with and without MMIO authority, verifying rejection of missing capabilities, incorrect physical ranges, zero lengths, and overflowing addresses, plus the successful bump-pointer-advance-and-unmap case. [`driver_spawn_test.rs`](../kernel/tests/driver_spawn_test.rs) checks missing `SPAWN_DRIVER` authority, invalid user pointers, the exact ABI layout of `UserDriverGrants`, that `SPAWN_DRIVER` itself is masked out of a spawned driver's capabilities, that the driver database resolves registered binaries case-insensitively while rejecting unregistered ones, and — both as a pure function and through the `DrvProbe` syscall itself — that `device_present()` tells "unknown driver" and "known driver, no matching device" apart. [`driver_rtl8139_test.rs`](../kernel/tests/driver_rtl8139_test.rs) combines MMIO and DMA in a simulated RTL8139 task, importing the real network modules through `#[path]` so the same parsers and serializers run in ordinary host unit tests and inside the QEMU kernel test environment alike.
 
 The registry and IPC layer §13 describes has its own dedicated coverage: [`driver_registry_test.rs`](../kernel/tests/driver_registry_test.rs) exercises `DrvRegister`/`DrvLookup` directly — duplicate names, a full registry, the capability gate on registration, and the asymmetric "lookup needs no capability" rule. [`net_ring_test.rs`](../kernel/tests/net_ring_test.rs) drives `NetSend`/`NetRecv` against a single simulated task context, including the role-based direction rule and ring backpressure once `RING_CAPACITY` is exceeded. [`net_ring_wakeup_test.rs`](../kernel/tests/net_ring_wakeup_test.rs) goes further and proves the bounded-wait path in §13.2 genuinely works under real preemptive scheduling — a producer task and a blocked-with-timeout `NetRecv` caller both run as real, separately scheduled tasks, since a cooperative `yield_now()`-based poll loop cannot be exercised meaningfully any other way. [`driver_status_test.rs`](../kernel/tests/driver_status_test.rs) covers `DrvPublishStatus`/`DrvQuery`, including the `arp_entry_count` bounds check that protects `DrvQuery` consumers from an out-of-range read. [`driver_unload_test.rs`](../kernel/tests/driver_unload_test.rs) and [`driver_background_loop_test.rs`](../kernel/tests/driver_background_loop_test.rs) round this out: the former exercises `DrvUnload`'s authorization and its full cleanup fan-out through `remove_task`, and the latter — whose own header comment explains why it exists in this particular shape — replicates `run_background_driver()`'s exact steps directly against real kernel syscalls, since the function itself cannot easily be called from a test harness (it never returns, by design).
 
-Both `net-tools.bin`'s and `DRIVERS.BIN`'s pure, I/O-free logic is unit-tested on an ordinary host without touching a syscall at all, following the same convention throughout this codebase: `resolve_driver_filename()`, `parse_command()`/`parse_command_line()`, `format_arp_table()`/`format_ifconfig()`, `parse_ping_target()`, and `probe_driver_name()` are all pure functions with their own `#[cfg(test)]` module, entirely separate from the syscall-touching code around them that only the kernel-side integration tests above can meaningfully exercise. [`test_all.sh`](../test_all.sh) runs user-space protocol tests, kernel tests under QEMU, `cargo fmt --check`, and Clippy, then produces a unified summary.
+Both `net-tools.bin`'s and `DRIVERS.BIN`'s pure, I/O-free logic is unit-tested on an ordinary host without touching a syscall at all, following the same convention throughout this codebase: `parse_command()`/`parse_command_line()`, `format_arp_table()`/`format_ifconfig()`, `parse_ping_target()`, and `probe_driver_name()` are all pure functions with their own `#[cfg(test)]` module, entirely separate from the syscall-touching code around them that only the kernel-side integration tests above can meaningfully exercise. `DRIVERS.BIN`'s `load` no longer has a pure, host-testable half of its own at all — the PCI-ID matching it used to do client-side now happens entirely inside the kernel (`driver_db::device_present()`, exposed via `DrvProbe`), covered by the kernel-side tests §17 references instead. [`test_all.sh`](../test_all.sh) runs user-space protocol tests, kernel tests under QEMU, `cargo fmt --check`, and Clippy, then produces a unified summary.
 
 ---
 
@@ -916,8 +924,6 @@ DMA bookkeeping is also minimal. `FreeDma` does not consult a per-task list of D
 The driver registry and packet-ring layer has its own, newer set of limitations, all a direct consequence of favoring simplicity over exhaustive robustness in this educational codebase. A `PacketRing` never blocks a producer — a full ring (more than `RING_CAPACITY = 32` unread packets queued in one direction) simply rejects the next `push()` with `InvalidArg`, silently from the sender's perspective if that error is ignored, which both `net-tools.bin`'s ARP/ping sends and the driver's own forwarding calls in fact do (`let _ = ...`). A sustained mismatch between how fast one side produces packets and how fast the other drains them therefore drops traffic rather than exerting any real backpressure a caller could react to. There is also no protection against name-squatting beyond first-come-first-served registration order: any task holding a non-null `DriverCaps` block — which today only ever means a task spawned via `SpawnDriver` — can register any name at all, including one that happens to collide with a name a future, better-behaved driver might want; `driver_db`'s own binary-name-to-PCI-ID table is what keeps this from being exploitable in practice today, but the registry itself enforces no relationship between a name and the identity of whoever is allowed to claim it. Two independent `NetworkStack` instances — the driver's own and every application's separately seeded copy — genuinely diverge over the life of a session, as §14.2 describes for `net-tools.bin`'s ARP table specifically; this is a deliberate simplicity trade-off (no shared-state synchronization protocol exists or is planned), not a bug, but it does mean an application's view of "what the network looks like" is only ever as fresh as its last `DrvQuery`.
 
 The MMIO bump allocator never reuses virtual holes. A long-lived process that repeatedly maps and unmaps regions still advances toward the stack guard. This simple design is adequate for a NIC driver's mostly one-time BAR and DMA setup at startup, which is the only time either concrete driver in this codebase actually calls `MapPhysical`/`AllocDma` at all.
-
-The `flags` parameter of `MapPhysical` is documented as reserved but is not currently required to be zero. It has no effect today, but it should be validated before future semantics are assigned to those bits.
 
 As §9 describes, neither NIC driver uses hardware interrupts at all — both poll `poll_next_packet()` every scheduler slice regardless of whether a frame has actually arrived. This is a deliberate simplicity trade-off, but it does mean an idle NIC driver still burns a full scheduling turn every cycle checking hardware that has nothing new to report.
 
@@ -982,7 +988,7 @@ drivers> list
 No drivers loaded.
 ```
 
-`load`/`unload`'s command-line parsing (present vs. missing argument, trailing words ignored, case-sensitive dispatch) is factored into a pure `parse_command()` function and unit-tested on the host without touching a syscall, the same pattern this document's §17 describes for `resolve_driver_filename()`. The syscall-touching behavior of `list`/`load`/`unload` themselves is covered by the kernel-side tests §17 references.
+`load`/`unload`'s command-line parsing (present vs. missing argument, trailing words ignored, case-sensitive dispatch) is factored into a pure `parse_command()` function and unit-tested on the host without touching a syscall, the same pattern this document's §17 describes for `net-tools.bin`'s pure functions. The syscall-touching behavior of `list`/`load`/`unload` themselves — including the PCI-ID matching `load` now delegates to `DrvProbe` — is covered by the kernel-side tests §17 references.
 
 ---
 

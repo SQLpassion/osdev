@@ -264,7 +264,7 @@ const MAX_CHILD_EXECS: u32 = 32;
 /// [`syscall_exec_impl`] so the delegation *decision* is unit-testable
 /// without needing a scheduler, a VFS, or a real spawned task (mirrors the
 /// existing convention of extracting pure decision logic out of
-/// syscall-touching code, e.g. the shell's `resolve_driver_filename`).
+/// syscall-touching code, e.g. `driver_db::request_matches_grants`).
 pub fn resolve_delegated_capabilities(
     caller_privileged: bool,
     caller_flags: crate::process::capabilities::Capabilities,

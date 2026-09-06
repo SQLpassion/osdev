@@ -1,7 +1,7 @@
 //! Memory-mapped I/O (MMIO) hardware access abstractions.
 
 use crate::kernel_types::{decode_result, SysError, SyscallId};
-use crate::raw::{syscall2, syscall3};
+use crate::raw::syscall2;
 use core::ptr;
 
 /// Represents an active MMIO mapping in the driver's address space.
@@ -23,7 +23,7 @@ impl Mmio {
         // SAFETY:
         // - Invokes MapPhysical syscall (nr. 30).
         // - Arguments are verified by the kernel capability and page-table mapper.
-        let raw_res = unsafe { syscall3(SyscallId::MAP_PHYSICAL, phys, len as u64, 0) };
+        let raw_res = unsafe { syscall2(SyscallId::MAP_PHYSICAL, phys, len as u64) };
         let va = decode_result(raw_res)?;
 
         Ok(Self {

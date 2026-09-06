@@ -1,8 +1,6 @@
 #![cfg_attr(not(test), no_std)]
 #![cfg_attr(not(test), no_main)]
 
-extern crate alloc;
-
 mod load_driver;
 
 #[cfg(not(test))]
@@ -13,8 +11,9 @@ use lib_kaos::{console, print, println, process};
 /// Only the commands implemented so far have a dedicated variant; anything
 /// else falls into [`Command::Unknown`]. This mirrors the shell's own
 /// `execute_command` dispatch, but factored out as a pure function so it is
-/// unit-testable without a scheduler, VFS, or real syscalls (see this
-/// project's `resolve_driver_filename` convention).
+/// unit-testable without a scheduler, VFS, or real syscalls — this
+/// project's general convention of keeping pure, I/O-free decision logic
+/// separately testable from the syscall-touching code around it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Command<'a> {
     /// Blank input (whitespace-only or empty) — the REPL loop silently

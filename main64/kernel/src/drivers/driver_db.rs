@@ -255,6 +255,33 @@ pub fn is_known_driver(name: &str) -> bool {
     lookup_driver(name).is_some()
 }
 
+/// Checks whether `name` is a known driver binary and, if so, whether a
+/// live PCI device it could bind to is currently present.
+///
+/// This answers the same question [`derive_grants`] answers internally
+/// while actually spawning a driver, but without any of that function's
+/// side effects (no device reservation, no Command Register writes) — so a
+/// caller can ask "would `SpawnDriver` succeed?" first. It exists
+/// specifically so user-space callers (`DRIVERS.BIN`'s `load` command) can
+/// print a specific "unknown driver" vs. "no matching device" error without
+/// hand-duplicating [`DRIVER_DB`]'s binary-name-to-PCI-ID mapping
+/// client-side, the way an earlier version of this codebase did.
+///
+/// Returns `Err(BindError::UnknownDriver)` if `name` is not in [`DRIVER_DB`]
+/// at all. Otherwise returns `Ok(true)`/`Ok(false)` depending on whether any
+/// of the driver's supported PCI IDs is currently enumerated — never
+/// `Err(BindError::NoMmioBar)` or `Err(BindError::AllDevicesBound)`, since
+/// this function never reserves anything and never inspects BARs.
+pub fn device_present(name: &str) -> Result<bool, BindError> {
+    let supported = lookup_driver(name).ok_or(BindError::UnknownDriver)?;
+    let devices = pci::get_devices();
+    Ok(devices.iter().any(|dev| {
+        supported
+            .iter()
+            .any(|&(vendor, device_id)| dev.vendor_id == vendor && dev.device_id == device_id)
+    }))
+}
+
 /// Extracts the usable memory BAR windows of a device as `(phys_base, len_bytes)` pairs.
 ///
 /// I/O BARs are ignored: KAOS drivers reach port-mapped registers through the

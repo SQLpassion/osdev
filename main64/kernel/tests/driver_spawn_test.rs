@@ -330,6 +330,71 @@ fn test_driver_db_lookup() {
     );
 }
 
+/// Tests that `device_present` distinguishes "not a known driver at all"
+/// from "known driver, but no matching PCI device enumerated" — the same
+/// two failure modes `DRIVERS.BIN`'s `load` command needs to tell apart,
+/// now answered by the kernel instead of a client-side, hand-duplicated
+/// PCI-ID table.
+#[test_case]
+fn test_device_present_distinguishes_unknown_from_absent() {
+    assert_eq!(
+        driver_db::device_present("hello.bin"),
+        Err(BindError::UnknownDriver),
+        "an ordinary user program must not be a registered driver"
+    );
+
+    // The QEMU configuration used by the test runner attaches no PCI NIC
+    // (see `fake_pci_device`'s doc comment), so a known driver name must
+    // report "no matching device" rather than erroring outright.
+    assert_eq!(
+        driver_db::device_present("rtl8139.drv"),
+        Ok(false),
+        "a known driver with no enumerated device must report false, not UnknownDriver"
+    );
+    assert_eq!(
+        driver_db::device_present("RTL8139.DRV"),
+        Ok(false),
+        "device_present must match driver names case-insensitively, like lookup_driver"
+    );
+}
+
+/// Tests the `DrvProbe` syscall end to end — the same question as
+/// [`test_device_present_distinguishes_unknown_from_absent`], but through
+/// the actual syscall boundary a real caller (`DRIVERS.BIN`) uses.
+#[test_case]
+fn test_drv_probe_syscall_distinguishes_unknown_from_absent() {
+    const NAME_VA: u64 = vmm::USER_CODE_BASE + 0x71_000;
+    let name_phys = vmm::page_table::alloc_frame_phys().expect("frame alloc for name page");
+    let name_pfn = vmm::page_table::phys_to_pfn(name_phys);
+    vmm::map_user_page(NAME_VA, name_pfn, true).expect("map name page");
+
+    // SAFETY: `NAME_VA` was just mapped present, writable, and user-accessible.
+    unsafe {
+        core::ptr::copy_nonoverlapping(c"HELLO.BIN".as_ptr() as *const u8, NAME_VA as *mut u8, 10);
+    }
+    let res = dispatch_checked(SyscallId::DRV_PROBE, NAME_VA, 0, 0, 0);
+    assert_eq!(
+        res,
+        Err(SyscallError::InvalidArg),
+        "DrvProbe on an unregistered binary name must return InvalidArg"
+    );
+
+    // SAFETY: same mapped page, overwritten with a different NUL-terminated name.
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            c"RTL8139.DRV".as_ptr() as *const u8,
+            NAME_VA as *mut u8,
+            12,
+        );
+    }
+    let res = dispatch_checked(SyscallId::DRV_PROBE, NAME_VA, 0, 0, 0);
+    assert_eq!(
+        res,
+        Ok(0),
+        "DrvProbe on a known driver with no enumerated device must return Ok(0), not an error"
+    );
+}
+
 /// Tests that grant derivation refuses to produce grants for an unregistered binary,
 /// which is what keeps an arbitrary program from being handed device resources.
 #[test_case]
