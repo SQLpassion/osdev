@@ -14,7 +14,7 @@ use kaos_kernel::arch::interrupts;
 use kaos_kernel::memory::vmm::page_table::{
     build_kernel_pml4_from_firmware, entry_ptr, pd_index, pd_table_addr, pdp_index, pdp_table_addr,
     phys_to_pfn, pml4_index, pt_index, walk_levels, PageTable, WalkResult, ENTRY_HUGE,
-    PDP_TABLE_BASE, PD_TABLE_BASE, PML4_TABLE_ADDR, PT_ENTRIES, PT_TABLE_BASE, RECURSIVE_SLOT,
+    PDP_TABLE_BASE, PD_TABLE_BASE, PML4_TABLE_ADDR, PT_TABLE_BASE, RECURSIVE_SLOT,
 };
 use kaos_kernel::memory::{heap, pmm, vmm};
 use kaos_kernel::process::capabilities::MmioAllocKind;
@@ -1052,12 +1052,12 @@ fn test_clone_copies_all_entries_and_sets_recursive() {
     let mut dst = PageTable::new();
 
     // Fill every firmware slot with a distinct, recognizable mapping.
-    for i in 0..PT_ENTRIES {
+    for (i, entry) in src.entries.iter_mut().enumerate() {
         let pfn = (i as u64) + 0x10; // arbitrary non-zero, distinct per slot
         let present = true;
         let writable = i % 2 == 0;
         let user = i % 3 == 0;
-        src.entries[i].set_mapping(pfn, present, writable, user);
+        entry.set_mapping(pfn, present, writable, user);
     }
 
     // Arbitrary 4 KiB-aligned "physical" frame backing the destination table.
@@ -1102,8 +1102,8 @@ fn test_clone_copies_all_entries_and_sets_recursive() {
 #[test_case]
 fn test_clone_leaves_source_untouched() {
     let mut src = PageTable::new();
-    for i in 0..PT_ENTRIES {
-        src.entries[i].set_mapping((i as u64) + 1, true, true, false);
+    for (i, entry) in src.entries.iter_mut().enumerate() {
+        entry.set_mapping((i as u64) + 1, true, true, false);
     }
     // Snapshot a few representative slots.
     let s0 = src.entries[0].raw();

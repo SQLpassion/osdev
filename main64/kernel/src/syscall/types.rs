@@ -343,6 +343,11 @@ const USER_CANONICAL_END: u64 = 0x0000_8000_0000_0000;
 /// A valid buffer range does not guarantee the memory is mapped or accessible.
 /// The MMU will enforce page-level permissions at access time, potentially
 /// causing a page fault if the memory is unmapped or inaccessible.
+// The `if ... { return false; } true` tail only looks reducible to `!(...)`
+// when the `#[cfg(feature = "kernel")]` block below is compiled out (e.g. in
+// lib_kaos/lib_driver, which pull this file in without that feature); with
+// the feature on, the block sits between the guard and the final `true`.
+#[allow(clippy::needless_bool)]
 pub fn is_valid_user_buffer(ptr: *const u8, len: usize) -> bool {
     if len == 0 {
         return true;
