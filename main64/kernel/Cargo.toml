@@ -20,7 +20,8 @@ harness = false
 lib_driver = { path = "../lib_driver" }
 
 [[bin]]
-name = "kaos_kernel"
+name = "kaos-kernel"
+path = "src/main.rs"
 test = false
 
 # Integration tests - each runs as a separate kernel in QEMU

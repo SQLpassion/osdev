@@ -12,6 +12,6 @@ lib_kaos = { path = "../../lib_kaos" }
 lib_net = { path = "../../lib_net" }
 
 [[bin]]
-name = "net_tools"
+name = "net-tools"
 path = "src/main.rs"
 bench = false

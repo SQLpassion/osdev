@@ -204,10 +204,10 @@ cd "$INTEL_NIC_DIR"
 
 if [ "$PROFILE" = "release" ]; then
     cargo +nightly build --release --target x86_64-unknown-none -Z build-std=core,alloc
-    INPUT_ELF="$PROJECT_ROOT/target/x86_64-unknown-none/release/intel_nic"
+    INPUT_ELF="$PROJECT_ROOT/target/x86_64-unknown-none/release/intel-nic"
 else
     cargo +nightly build --target x86_64-unknown-none
-    INPUT_ELF="$PROJECT_ROOT/target/x86_64-unknown-none/debug/intel_nic"
+    INPUT_ELF="$PROJECT_ROOT/target/x86_64-unknown-none/debug/intel-nic"
 fi
 
 cp "$INPUT_ELF" intel_nic.bin
@@ -224,10 +224,10 @@ cd "$NET_TOOLS_DIR"
 
 if [ "$PROFILE" = "release" ]; then
     cargo +nightly build --release --target x86_64-unknown-none -Z build-std=core,alloc
-    INPUT_ELF="$PROJECT_ROOT/target/x86_64-unknown-none/release/net_tools"
+    INPUT_ELF="$PROJECT_ROOT/target/x86_64-unknown-none/release/net-tools"
 else
     cargo +nightly build --target x86_64-unknown-none
-    INPUT_ELF="$PROJECT_ROOT/target/x86_64-unknown-none/debug/net_tools"
+    INPUT_ELF="$PROJECT_ROOT/target/x86_64-unknown-none/debug/net-tools"
 fi
 
 cp "$INPUT_ELF" net_tools.bin

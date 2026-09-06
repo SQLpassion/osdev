@@ -50,14 +50,14 @@ echo "rtl8139_user_program:OK:$RTL_PASSED:$RTL_PASSED" >> "$USER_RESULTS_FILE"
 
 echo ""
 echo "  -> Testing intel_nic_user_program (Intel Gigabit Ethernet driver)..."
-INTEL_OUT=$(cargo test -p intel_nic_user_program --bin intel_nic 2>&1)
+INTEL_OUT=$(cargo test -p intel_nic_user_program --bin intel-nic 2>&1)
 echo "$INTEL_OUT"
 INTEL_PASSED=$(echo "$INTEL_OUT" | grep -a -m 1 -oE "test result: ok\.[[:space:]]+[0-9]+ passed" | grep -oE "[0-9]+" || echo "2")
 echo "intel_nic_user_program:OK:$INTEL_PASSED:$INTEL_PASSED" >> "$USER_RESULTS_FILE"
 
 echo ""
 echo "  -> Testing net_tools_user_program (ping/arp/ifconfig parsing & formatting)..."
-NETTOOLS_OUT=$(cargo test -p net_tools_user_program --bin net_tools 2>&1)
+NETTOOLS_OUT=$(cargo test -p net_tools_user_program --bin net-tools 2>&1)
 echo "$NETTOOLS_OUT"
 NETTOOLS_PASSED=$(echo "$NETTOOLS_OUT" | grep -a -m 1 -oE "test result: ok\.[[:space:]]+[0-9]+ passed" | grep -oE "[0-9]+" || echo "17")
 echo "net_tools_user_program:OK:$NETTOOLS_PASSED:$NETTOOLS_PASSED" >> "$USER_RESULTS_FILE"

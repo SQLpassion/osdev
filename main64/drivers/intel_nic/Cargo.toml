@@ -13,6 +13,6 @@ lib_kaos = { path = "../../lib_kaos" }
 lib_net = { path = "../../lib_net" }
 
 [[bin]]
-name = "intel_nic"
+name = "intel-nic"
 path = "src/main.rs"
 bench = false

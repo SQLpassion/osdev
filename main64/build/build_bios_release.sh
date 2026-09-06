@@ -32,7 +32,7 @@ echo "  -> Running cargo build (release, rebuilding core/alloc with -Z build-std
 cargo build --release -Z build-std=core,alloc
 
 echo "  -> Extracting flat binary with rust-objcopy..."
-rust-objcopy -O binary ../target/x86_64-unknown-none/release/kaos_kernel ../target/x86_64-unknown-none/release/kernel.bin
+rust-objcopy -O binary ../target/x86_64-unknown-none/release/kaos-kernel ../target/x86_64-unknown-none/release/kernel.bin
 
 echo "  -> Rust kernel built: target/x86_64-unknown-none/release/kernel.bin"
 ls -la ../target/x86_64-unknown-none/release/kernel.bin
