@@ -985,25 +985,29 @@ pub fn syscall_drv_unload_impl(name_ptr: u64, name_len: u64) -> SyscallResult<u6
     Ok(SYSCALL_OK)
 }
 
-/// Returns the number of currently registered driver tasks.
+/// Copies metadata for every currently registered driver into a user-space
+/// buffer, up to `max_entries` entries, in one syscall.
+///
+/// Arguments:
+/// - `out_ptr`: User pointer to an array of at least `max_entries` writable
+///   [`UserDriverInfo`] slots. Never dereferenced if `max_entries == 0`.
+/// - `max_entries`: Capacity of `out_ptr`, in entries (not bytes).
+///
+/// Returns the *total* number of currently registered drivers, which may
+/// exceed `max_entries` — the caller can compare the two to detect
+/// truncation. Exactly `min(total, max_entries)` entries are written.
+/// `registry::MAX_DRIVERS` bounds the total tightly enough in practice
+/// (16 today) that a caller sizing its buffer to that constant never
+/// observes truncation.
+///
+/// A single registry-lock acquisition produces the whole snapshot, unlike
+/// the earlier count-then-fetch-by-index pair this syscall replaces: there
+/// is no window in which a driver registering or exiting between two calls
+/// could shift what an index refers to.
 ///
 /// Callable by any task — enumerating driver names/task-ids is not itself a
 /// privileged operation, mirroring `DrvLookup`.
-pub fn syscall_drv_list_count_impl() -> SyscallResult<u64> {
-    Ok(registry::list().len() as u64)
-}
-
-/// Copies metadata for one registered driver into user space, by index.
-///
-/// Arguments:
-/// - `index`: Zero-based index into the current registry snapshot (see
-///   `DrvListCount`). Indices are a snapshot artifact, not a stable
-///   identity — they can shift if a driver registers or exits between the
-///   `DrvListCount` call and this one.
-/// - `out_ptr`: User pointer to a writable [`UserDriverInfo`].
-///
-/// Callable by any task, mirroring `DrvLookup`.
-pub fn syscall_drv_list_entry_impl(index: u64, out_ptr: *mut UserDriverInfo) -> SyscallResult<u64> {
+pub fn syscall_drv_list_impl(out_ptr: *mut UserDriverInfo, max_entries: u64) -> SyscallResult<u64> {
     // Compile-time guard: `UserDriverInfo::name` and `DriverEntry::name` must
     // stay the same size, since `entry.name` below is copied into it directly.
     const _: () = assert!(
@@ -1011,37 +1015,48 @@ pub fn syscall_drv_list_entry_impl(index: u64, out_ptr: *mut UserDriverInfo) -> 
         "UserDriverInfo::name and registry::DriverEntry::name must have matching lengths"
     );
 
-    // Step 1: resolve the requested entry before validating the output
-    // buffer, so an out-of-range index fails cheaply without touching user
-    // memory at all.
+    // Step 1: snapshot the registry once. `n` is bounded by the registry's
+    // own fixed capacity (`registry::MAX_DRIVERS`, 16 today) regardless of
+    // what `max_entries` the caller passes, so `n * size_of::<UserDriverInfo>()`
+    // below can never overflow even for a caller-supplied `max_entries` of
+    // `u64::MAX`.
     let entries = registry::list();
-    let entry = entries
-        .get(index as usize)
-        .ok_or(SyscallError::InvalidArg)?;
+    let total = entries.len() as u64;
+    let n = (max_entries as usize).min(entries.len());
+
+    if n == 0 {
+        return Ok(total);
+    }
 
     // Step 2: validate alignment and writability of the destination buffer,
     // mirroring `syscall_get_pci_device_impl`'s validation of `UserPciDevice`.
     if !(out_ptr as u64).is_multiple_of(core::mem::align_of::<UserDriverInfo>() as u64) {
         return Err(SyscallError::InvalidArg);
     }
-    if !is_valid_user_buffer_writable(out_ptr as *const u8, core::mem::size_of::<UserDriverInfo>())
-    {
+    if !is_valid_user_buffer_writable(
+        out_ptr as *const u8,
+        n * core::mem::size_of::<UserDriverInfo>(),
+    ) {
         return Err(SyscallError::InvalidArg);
     }
 
-    // Step 3: copy the snapshot out.
-    let info = UserDriverInfo {
-        name: entry.name,
-        name_len: entry.name_len as u32,
-        _padding: 0,
-        tid: entry.tid as u64,
-    };
-    // SAFETY:
-    // - Alignment and writability of `out_ptr` were verified in Step 2.
-    // - `write_unaligned` is safe for any alignment (redundant with the
-    //   alignment check above, kept for defense in depth like `DrvQuery`).
-    unsafe {
-        core::ptr::write_unaligned(out_ptr, info);
+    // Step 3: copy the snapshot out, entry by entry.
+    for (i, entry) in entries.iter().take(n).enumerate() {
+        let info = UserDriverInfo {
+            name: entry.name,
+            name_len: entry.name_len as u32,
+            _padding: 0,
+            tid: entry.tid as u64,
+        };
+        // SAFETY:
+        // - Alignment and writability of `out_ptr` for `n` entries were
+        //   verified in Step 2, and `i < n`.
+        // - `write_unaligned` is safe for any alignment (redundant with the
+        //   alignment check above, kept for defense in depth like `DrvQuery`).
+        unsafe {
+            core::ptr::write_unaligned(out_ptr.add(i), info);
+        }
     }
-    Ok(SYSCALL_OK)
+
+    Ok(total)
 }

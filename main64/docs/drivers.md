@@ -268,12 +268,11 @@ pub enum SyscallId {
     DrvPublishStatus = 40,
     DrvQuery         = 41,
     DrvUnload        = 42,
-    DrvListCount     = 43,
-    DrvListEntry     = 44,
+    DrvList          = 43,
 }
 ```
 
-The first six numbers (30–35) are the original hardware-access primitives this document covers in §7–§8: mapping BARs and managing DMA memory. The remaining nine (36–44) are the driver-naming and packet-transport layer that turns a running driver into an addressable service — §13 covers every one of them in detail, and §20 covers the three list/unload calls specifically in the context of `DRIVERS.BIN`.
+The first six numbers (30–35) are the original hardware-access primitives this document covers in §7–§8: mapping BARs and managing DMA memory. The remaining eight (36–43) are the driver-naming and packet-transport layer that turns a running driver into an addressable service — §13 covers every one of them in detail, and §20 covers the list/unload calls specifically in the context of `DRIVERS.BIN`.
 
 [`lib_driver/src/raw.rs`](../lib_driver/src/raw.rs) provides small assembly stubs for one, two, three, or four parameters. A three-argument call is implemented as follows:
 
@@ -719,7 +718,7 @@ The explicit `_padding` fields exist for exactly the reason `UserDriverInfo`'s p
 
 ### 13.4 The Ring-3 Wrapper: `lib_driver::drv` and `NicClient`
 
-Every syscall described above has a thin, typed wrapper in [`lib_driver/src/drv.rs`](../lib_driver/src/drv.rs) — `drv_register()`, `drv_lookup()`, `net_send()`, `net_recv()`, `publish_status()`, `query_status()`, plus `unload_driver()`, `driver_count()`, and `driver_info()` for the three syscalls §20 covers. None of these do anything beyond validating an argument's length locally (rejecting an empty or oversized name before ever trapping into the kernel) and translating the raw `Result<u64, SysError>` the syscall returns into whichever richer type makes sense — `query_status()`, for instance, allocates an uninitialized `UserDriverStatus` on the stack, passes its address to the kernel, and only calls `assume_init()` after confirming the syscall actually succeeded.
+Every syscall described above has a thin, typed wrapper in [`lib_driver/src/drv.rs`](../lib_driver/src/drv.rs) — `drv_register()`, `drv_lookup()`, `net_send()`, `net_recv()`, `publish_status()`, `query_status()`, plus `unload_driver()` and `list_drivers()` for the two syscalls §20 covers. None of these do anything beyond validating an argument's length locally (rejecting an empty or oversized name before ever trapping into the kernel) and translating the raw `Result<u64, SysError>` the syscall returns into whichever richer type makes sense — `query_status()`, for instance, allocates an uninitialized `UserDriverStatus` on the stack, passes its address to the kernel, and only calls `assume_init()` after confirming the syscall actually succeeded.
 
 For an application that only ever wants to be a *client* of a running driver — never a driver itself — [`lib_driver::client::NicClient`](../lib_driver/src/client.rs) collapses the four calls it actually needs into a small struct:
 
@@ -950,7 +949,7 @@ The system therefore demonstrates a complete vertical slice through an operating
 
 Loading a driver used to be a single, blocking shell command with no counterpart for unloading one or seeing what was currently running. `DRIVERS.BIN` (built from [`user_programs/drivers`](../user_programs/drivers)) replaces that with a small, standalone Ring 3 REPL dedicated to driver lifecycle management, structurally identical to the shell's own read-eval-print loop: a prompt, a line read via `console::readline()`, and a match over the first whitespace-separated word.
 
-It understands four commands. `help` prints the command list. `list` calls `DrvListCount` and then `DrvListEntry` for each index — reading from the very same registry §13 describes, so this command shows exactly the names any application would be able to resolve via `DrvLookup` at that same instant — and prints every currently registered driver's name and packed task id, or a note that none are loaded. `load <name.drv>` is §4's `load_driver()`. `unload <name>` calls `DrvUnload`, §15's hard-kill.
+It understands four commands. `help` prints the command list. `list` calls `DrvList` once, into a stack buffer sized to the registry's fixed `MAX_DRIVERS` capacity — reading from the very same registry §13 describes, so this command shows exactly the names any application would be able to resolve via `DrvLookup` at that same instant — and prints every currently registered driver's name and packed task id, or a note that none are loaded. `load <name.drv>` is §4's `load_driver()`. `unload <name>` calls `DrvUnload`, §15's hard-kill.
 
 An illustrative session, after typing `drivers.bin` at the shell prompt to launch it:
 

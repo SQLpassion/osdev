@@ -152,52 +152,40 @@ pub fn unload_driver(name: &[u8]) -> Result<(), SysError> {
     decode_result(raw).map(|_| ())
 }
 
-/// Returns the number of currently registered driver tasks.
-pub fn driver_count() -> Result<usize, SysError> {
-    // SAFETY: Invokes the DrvListCount syscall (nr. 43), which takes no arguments.
-    let raw = unsafe { syscall1(SyscallId::DRV_LIST_COUNT, 0) };
-    decode_result(raw).map(|n| n as usize)
-}
+/// Maximum number of drivers the registry can ever hold at once.
+///
+/// Must match `kernel::drivers::registry::MAX_DRIVERS` — duplicated here for
+/// the same reason as `DRIVER_NAME_LEN` above. Sizing a [`list_drivers`]
+/// buffer to this constant guarantees the call never truncates.
+pub const MAX_DRIVERS: usize = 16;
 
-/// Resolves metadata for one registered driver, by index (see
-/// [`driver_count`] for the valid range). Indices are a snapshot artifact,
-/// not a stable identity — see the syscall's kernel doc comment.
-pub fn driver_info(index: usize) -> Result<UserDriverInfo, SysError> {
-    let mut out = core::mem::MaybeUninit::<UserDriverInfo>::uninit();
+/// Fills `out` with metadata for up to `out.len()` currently registered
+/// drivers, in one syscall, and returns the *total* number of currently
+/// registered drivers.
+///
+/// The return value may exceed `out.len()` — that is how a caller detects
+/// truncation, since only `min(returned, out.len())` entries were actually
+/// written. A buffer sized to [`MAX_DRIVERS`] never truncates, since that is
+/// the registry's own fixed capacity.
+///
+/// A single registry-lock acquisition inside the kernel produces the whole
+/// snapshot, so unlike a naive count-then-fetch-by-index design, there is no
+/// window in which a driver registering or exiting mid-call could shift
+/// what an index refers to.
+pub fn list_drivers(out: &mut [UserDriverInfo]) -> Result<usize, SysError> {
     // SAFETY:
-    // - Invokes the DrvListEntry syscall (nr. 44).
-    // - `out` is a valid, writable destination for exactly
-    //   `size_of::<UserDriverInfo>()` bytes for the duration of this call;
-    //   the kernel only writes into it on success (`decode_result(raw)` is
-    //   checked with `?` below before `out` is ever read).
+    // - Invokes the DrvList syscall (nr. 43).
+    // - `out` is a valid, writable slice for the duration of this call; the
+    //   kernel writes at most `out.len()` entries into it, and only ever
+    //   dereferences the pointer at all when `out.len() > 0`.
     let raw = unsafe {
         syscall2(
-            SyscallId::DRV_LIST_ENTRY,
-            index as u64,
+            SyscallId::DRV_LIST,
             out.as_mut_ptr() as u64,
+            out.len() as u64,
         )
     };
-    decode_result(raw)?;
-    // SAFETY: the syscall succeeded, so the kernel wrote a complete
-    // `UserDriverInfo` into `out` before returning.
-    Ok(unsafe { out.assume_init() })
-}
-
-/// Fills `out` with metadata for every currently registered driver, up to
-/// `out.len()` entries, and returns how many were written.
-///
-/// Calls [`driver_count`] once, then [`driver_info`] for each index in
-/// turn — the registry is not locked across the whole call, so this is a
-/// best-effort snapshot rather than a transactional read (matches every
-/// other count-then-fetch syscall pair in this crate, e.g. PCI device
-/// enumeration).
-pub fn list_drivers(out: &mut [UserDriverInfo]) -> Result<usize, SysError> {
-    let count = driver_count()?;
-    let n = count.min(out.len());
-    for (i, slot) in out.iter_mut().take(n).enumerate() {
-        *slot = driver_info(i)?;
-    }
-    Ok(n)
+    decode_result(raw).map(|n| n as usize)
 }
 
 /// Reads the last status snapshot published by `driver_id` via

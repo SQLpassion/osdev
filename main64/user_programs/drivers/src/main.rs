@@ -88,36 +88,31 @@ fn print_help() {
 /// and task id, or a note that none are loaded.
 #[cfg(not(test))]
 fn print_driver_list() {
-    let count = match lib_driver::drv::driver_count() {
-        Ok(count) => count,
-        Err(err) => {
-            println!("list failed: {:?}", err);
-            return;
-        }
-    };
-
-    if count == 0 {
-        println!("No drivers loaded.");
-        return;
-    }
-
     let empty_entry = lib_driver::UserDriverInfo {
         name: [0u8; lib_driver::USER_DRIVER_NAME_LEN],
         name_len: 0,
         _padding: 0,
         tid: 0,
     };
-    let mut entries = alloc::vec![empty_entry; count];
-    let filled = match lib_driver::drv::list_drivers(&mut entries) {
-        Ok(filled) => filled,
+    // Sized to MAX_DRIVERS, the registry's own fixed capacity, so a single
+    // `list_drivers` call always fits every registered driver at once — no
+    // separate count-then-allocate round trip.
+    let mut entries = [empty_entry; lib_driver::drv::MAX_DRIVERS];
+    let total = match lib_driver::drv::list_drivers(&mut entries) {
+        Ok(total) => total,
         Err(err) => {
             println!("list failed: {:?}", err);
             return;
         }
     };
 
+    if total == 0 {
+        println!("No drivers loaded.");
+        return;
+    }
+
     println!("Loaded drivers:");
-    for info in &entries[..filled] {
+    for info in &entries[..total.min(entries.len())] {
         let name_bytes = &info.name[..(info.name_len as usize).min(info.name.len())];
         match core::str::from_utf8(name_bytes) {
             Ok(name) => println!("  {:<20} tid={}", name, info.tid),

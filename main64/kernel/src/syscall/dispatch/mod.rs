@@ -88,8 +88,7 @@ pub const fn syscall_name_for_number(syscall_nr: u64) -> &'static str {
         SyscallId::DRV_PUBLISH_STATUS => "DrvPublishStatus",
         SyscallId::DRV_QUERY => "DrvQuery",
         SyscallId::DRV_UNLOAD => "DrvUnload",
-        SyscallId::DRV_LIST_COUNT => "DrvListCount",
-        SyscallId::DRV_LIST_ENTRY => "DrvListEntry",
+        SyscallId::DRV_LIST => "DrvList",
         _ => "Unknown",
     }
 }
@@ -175,9 +174,8 @@ pub fn dispatch_checked(
         SyscallId::DRV_PUBLISH_STATUS => driver::syscall_drv_publish_status_impl(arg0),
         SyscallId::DRV_QUERY => driver::syscall_drv_query_impl(arg0, arg1),
         SyscallId::DRV_UNLOAD => driver::syscall_drv_unload_impl(arg0, arg1),
-        SyscallId::DRV_LIST_COUNT => driver::syscall_drv_list_count_impl(),
-        SyscallId::DRV_LIST_ENTRY => {
-            driver::syscall_drv_list_entry_impl(arg0, arg1 as *mut crate::syscall::UserDriverInfo)
+        SyscallId::DRV_LIST => {
+            driver::syscall_drv_list_impl(arg0 as *mut crate::syscall::UserDriverInfo, arg1)
         }
         _ => Err(SyscallError::Unsupported),
     };

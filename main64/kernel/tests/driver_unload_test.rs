@@ -1,5 +1,4 @@
-//! Integration tests for the `DrvUnload` / `DrvListCount` / `DrvListEntry`
-//! syscalls (issue #102).
+//! Integration tests for the `DrvUnload` / `DrvList` syscalls (issue #102).
 
 #![no_std]
 #![no_main]
@@ -98,14 +97,7 @@ fn release_user_page(user_va: u64, phys: u64) {
 #[test_case]
 fn test_drv_unload_and_list_syscall_debug_names() {
     assert_eq!(syscall_name_for_number(SyscallId::DRV_UNLOAD), "DrvUnload");
-    assert_eq!(
-        syscall_name_for_number(SyscallId::DRV_LIST_COUNT),
-        "DrvListCount"
-    );
-    assert_eq!(
-        syscall_name_for_number(SyscallId::DRV_LIST_ENTRY),
-        "DrvListEntry"
-    );
+    assert_eq!(syscall_name_for_number(SyscallId::DRV_LIST), "DrvList");
 }
 
 // ---------------------------------------------------------------------------
@@ -259,20 +251,22 @@ fn test_drv_unload_privileged_caller_without_caps_succeeds() {
 }
 
 // ---------------------------------------------------------------------------
-// DrvListCount / DrvListEntry
+// DrvList
 // ---------------------------------------------------------------------------
 
-/// `DrvListCount` reflects an empty registry, and requires no capability at
-/// all — mirrors `DrvLookup`'s "read-only, ungated" contract.
+/// `DrvList` reflects an empty registry, and requires no capability at all —
+/// mirrors `DrvLookup`'s "read-only, ungated" contract. `max_entries == 0`
+/// takes the fast path that never touches `out_ptr`, so a null pointer is
+/// fine here.
 #[test_case]
-fn test_drv_list_count_empty_registry_requires_no_capability() {
+fn test_drv_list_empty_registry_requires_no_capability() {
     registry::reset_for_test();
 
     let task_id = sched::spawn_kernel_task(test_task_loop).expect("spawn task");
     let slot = task_id_slot(task_id);
     set_running_slot_for_test(Some(slot));
 
-    let res = dispatch_checked(SyscallId::DRV_LIST_COUNT, 0, 0, 0, 0);
+    let res = dispatch_checked(SyscallId::DRV_LIST, 0, 0, 0, 0);
     assert_eq!(res, Ok(0));
 
     set_running_slot_for_test(None);
@@ -280,10 +274,10 @@ fn test_drv_list_count_empty_registry_requires_no_capability() {
     registry::reset_for_test();
 }
 
-/// `DrvListCount` and `DrvListEntry` reflect exactly the currently registered
-/// drivers, and shrink again once one is unloaded.
+/// `DrvList` reflects exactly the currently registered drivers in one call,
+/// and shrinks again once one is unloaded.
 #[test_case]
-fn test_drv_list_count_and_entry_reflect_registered_drivers() {
+fn test_drv_list_reflects_registered_drivers() {
     registry::reset_for_test();
 
     let driver_a = sched::spawn_kernel_task(test_task_loop).expect("spawn driver a");
@@ -295,19 +289,19 @@ fn test_drv_list_count_and_entry_reflect_registered_drivers() {
     let slot = task_id_slot(task_id);
     set_running_slot_for_test(Some(slot));
 
-    let count =
-        dispatch_checked(SyscallId::DRV_LIST_COUNT, 0, 0, 0, 0).expect("DrvListCount must succeed");
-    assert_eq!(count, 2);
+    // A buffer big enough for both entries in a single call.
+    let (out_va, out_phys) =
+        write_bytes_to_user_page(0x4000, &[0u8; 2 * core::mem::size_of::<UserDriverInfo>()]);
+    let total = dispatch_checked(SyscallId::DRV_LIST, out_va, 2, 0, 0)
+        .expect("DrvList must succeed") as usize;
+    assert_eq!(total, 2, "DrvList must report the total registered count");
 
-    let (out_va, out_phys) = write_bytes_to_user_page(0x4000, &[0u8; 64]);
     let mut seen_names = alloc::vec::Vec::new();
-    for index in 0..count {
-        let res = dispatch_checked(SyscallId::DRV_LIST_ENTRY, index, out_va, 0, 0);
-        assert!(res.is_ok(), "DrvListEntry({}) must succeed", index);
-
-        // SAFETY: `out_va` was just written by the successful DrvListEntry
-        // call above, and is large enough for `UserDriverInfo`.
-        let info = unsafe { core::ptr::read_unaligned(out_va as *const UserDriverInfo) };
+    for i in 0..total {
+        // SAFETY: `out_va` was just written by the successful DrvList call
+        // above for `total` entries, and each slot is large enough for a
+        // `UserDriverInfo`.
+        let info = unsafe { core::ptr::read_unaligned((out_va as *const UserDriverInfo).add(i)) };
         seen_names.push((
             info.name[..info.name_len as usize].to_vec(),
             info.tid as usize,
@@ -331,33 +325,38 @@ fn test_drv_list_count_and_entry_reflect_registered_drivers() {
     registry::reset_for_test();
 }
 
-/// `DrvListEntry` rejects an out-of-range index without touching the output
-/// buffer.
+/// `max_entries == 0` never dereferences `out_ptr`, even if it is a
+/// completely bogus, non-canonical value — the fast path in
+/// `syscall_drv_list_impl` must return before any pointer validation runs.
 #[test_case]
-fn test_drv_list_entry_out_of_range_returns_invalid_arg() {
+fn test_drv_list_zero_max_entries_does_not_touch_out_ptr() {
     registry::reset_for_test();
+
+    let driver_id = sched::spawn_kernel_task(test_task_loop).expect("spawn driver");
+    assert!(registry::register(b"nic:list-zero-cap", driver_id).is_ok());
 
     let task_id = sched::spawn_kernel_task(test_task_loop).expect("spawn task");
     let slot = task_id_slot(task_id);
     set_running_slot_for_test(Some(slot));
 
-    let (out_va, out_phys) = write_bytes_to_user_page(0x5000, &[0u8; 64]);
-    let res = dispatch_checked(SyscallId::DRV_LIST_ENTRY, 0, out_va, 0, 0);
+    let bogus_ptr = u64::MAX - 8; // non-canonical, would fault if dereferenced
+    let res = dispatch_checked(SyscallId::DRV_LIST, bogus_ptr, 0, 0, 0);
     assert_eq!(
         res,
-        Err(SyscallError::InvalidArg),
-        "index 0 into an empty registry must be rejected"
+        Ok(1),
+        "the total count must still be reported even with no buffer capacity"
     );
 
-    release_user_page(out_va, out_phys);
     set_running_slot_for_test(None);
     sched::terminate_task(task_id);
+    sched::terminate_task(driver_id);
     registry::reset_for_test();
 }
 
-/// `DrvListEntry` rejects a canonical-but-unmapped output pointer.
+/// `DrvList` rejects a canonical-but-unmapped output pointer once
+/// `max_entries > 0` actually requires writing into it.
 #[test_case]
-fn test_drv_list_entry_validates_out_ptr() {
+fn test_drv_list_validates_out_ptr() {
     registry::reset_for_test();
 
     let driver_id = sched::spawn_kernel_task(test_task_loop).expect("spawn driver");
@@ -368,7 +367,7 @@ fn test_drv_list_entry_validates_out_ptr() {
     set_running_slot_for_test(Some(slot));
 
     let unmapped_va = vmm::USER_HEAP_BASE + 0x0FFD_0000;
-    let res = dispatch_checked(SyscallId::DRV_LIST_ENTRY, 0, unmapped_va, 0, 0);
+    let res = dispatch_checked(SyscallId::DRV_LIST, unmapped_va, 1, 0, 0);
     assert_eq!(res, Err(SyscallError::InvalidArg));
 
     set_running_slot_for_test(None);

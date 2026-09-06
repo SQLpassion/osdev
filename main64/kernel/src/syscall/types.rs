@@ -89,10 +89,8 @@ pub enum SyscallId {
     /// Terminate a registered driver task by name (hard kill — see
     /// `docs/drivers.md` §15 for the no-clean-shutdown caveat).
     DrvUnload = 42,
-    /// Retrieve the number of currently registered driver tasks.
-    DrvListCount = 43,
-    /// Retrieve metadata for a specific registered driver by its index.
-    DrvListEntry = 44,
+    /// Retrieve metadata for every currently registered driver in one call.
+    DrvList = 43,
 }
 
 impl SyscallId {
@@ -202,10 +200,8 @@ impl SyscallId {
     pub const DRV_QUERY: u64 = Self::DrvQuery as u64;
     /// Syscall number for DrvUnload.
     pub const DRV_UNLOAD: u64 = Self::DrvUnload as u64;
-    /// Syscall number for DrvListCount.
-    pub const DRV_LIST_COUNT: u64 = Self::DrvListCount as u64;
-    /// Syscall number for DrvListEntry.
-    pub const DRV_LIST_ENTRY: u64 = Self::DrvListEntry as u64;
+    /// Syscall number for DrvList.
+    pub const DRV_LIST: u64 = Self::DrvList as u64;
 }
 
 /// Unknown syscall number.
@@ -640,7 +636,7 @@ pub struct UserDriverStatus {
 /// driver registry module.
 pub const USER_DRIVER_NAME_LEN: usize = 32;
 
-/// User-space snapshot of one registered driver, returned by `DrvListEntry`.
+/// User-space snapshot of one registered driver, returned by `DrvList`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UserDriverInfo {
