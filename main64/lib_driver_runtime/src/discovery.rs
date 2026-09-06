@@ -5,71 +5,55 @@
 //! (see `user_programs/rtl8139/src/tests/rtl8139.rs`, which only tests
 //! hardware-independent helpers, never syscall-touching code).
 
-use lib_kaos::pci::{self, UserPciBar, UserPciDevice};
+use lib_kaos::pci::{UserPciBar, UserPciDevice};
 
-/// One entry in a driver's PCI-match table.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PciMatch {
-    pub vendor_id: u16,
-    pub device_id: u16,
-}
-
-/// Returns the index of the first entry in `table` whose `(vendor_id,
-/// device_id)` matches `dev`, if any. Pure decision logic, no I/O.
-pub fn find_matching_index(table: &[PciMatch], dev: &UserPciDevice) -> Option<usize> {
-    table
-        .iter()
-        .position(|m| m.vendor_id == dev.vendor_id && m.device_id == dev.device_id)
-}
-
-/// Scans the PCI bus for the first device matching any entry in `table`.
-///
-/// Returns the device and the index of the `table` entry it matched, so
-/// callers that need model-specific data keyed by table position (e.g. the
-/// Intel driver's `NicModel`) can look it up without a second match.
-pub fn find_pci_device(table: &[PciMatch]) -> Option<(UserPciDevice, usize)> {
-    // Step 1: enumerate every PCI device the kernel has cached.
-    let dev_count = pci::get_pci_device_count().unwrap_or(0);
-
-    // Step 2: an all-zero UserPciDevice/UserPciBar as the read destination
-    // for each iteration -- mirrors the struct literal both driver main.rs
-    // files used to construct inline before this extraction.
-    let zero_bar = UserPciBar {
-        bar_type: 0,
-        flags: 0,
-        address: 0,
-        size: 0,
-        raw_value: 0,
-        _padding: 0,
-    };
-    let mut dev = UserPciDevice {
-        bus: 0,
-        device: 0,
-        function: 0,
-        class_code: 0,
-        subclass: 0,
-        prog_if: 0,
-        revision_id: 0,
-        header_type: 0,
-        vendor_id: 0,
-        device_id: 0,
-        interrupt_line: 0,
-        interrupt_pin: 0,
-        _padding: [0; 2],
-        bars: [zero_bar; 6],
-    };
-
-    // Step 3: check each enumerated device against the match table in PCI
-    // enumeration order, returning the first hit.
-    for i in 0..dev_count {
-        if pci::get_pci_device(i, &mut dev).is_ok() {
-            if let Some(idx) = find_matching_index(table, &dev) {
-                return Some((dev, idx));
-            }
-        }
+/// Converts `lib_driver`'s ABI mirror of `UserPciDevice` into this crate's
+/// own. Both are independent `#[path]` imports of the same kernel struct
+/// definition (`kernel/src/syscall/types.rs`), so Rust treats them as
+/// distinct, non-interchangeable types despite identical layout — this is
+/// the one place that bridges them.
+fn from_lib_driver_device(dev: lib_driver::UserPciDevice) -> UserPciDevice {
+    let bars = dev.bars.map(|bar| UserPciBar {
+        bar_type: bar.bar_type,
+        flags: bar.flags,
+        address: bar.address,
+        size: bar.size,
+        raw_value: bar.raw_value,
+        _padding: bar._padding,
+    });
+    UserPciDevice {
+        bus: dev.bus,
+        device: dev.device,
+        function: dev.function,
+        class_code: dev.class_code,
+        subclass: dev.subclass,
+        prog_if: dev.prog_if,
+        revision_id: dev.revision_id,
+        header_type: dev.header_type,
+        vendor_id: dev.vendor_id,
+        device_id: dev.device_id,
+        interrupt_line: dev.interrupt_line,
+        interrupt_pin: dev.interrupt_pin,
+        _padding: dev._padding,
+        bars,
     }
+}
 
-    None
+/// Returns the PCI device the kernel bound this driver task to at
+/// `SpawnDriver` time, via `lib_driver::spawn::bound_device`.
+///
+/// Replaces the driver-side PCI bus scan and vendor/device-ID table this
+/// crate used to require (`find_pci_device`/`PciMatch`, removed): the
+/// kernel's own `driver_db::DRIVER_DB` already validated which device this
+/// driver binary may bind to, and already selected the exact device at
+/// `SpawnDriver` time (`derive_grants`) — re-deriving that decision
+/// independently here was two sources of truth for the same mapping, and
+/// could not be relied on to agree with the kernel's choice if more than one
+/// matching card were installed.
+pub fn find_bound_device() -> Option<UserPciDevice> {
+    lib_driver::spawn::bound_device()
+        .ok()
+        .map(from_lib_driver_device)
 }
 
 /// Selects which BAR index to map: the first Memory-type BAR (type 2 or 3)

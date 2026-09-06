@@ -20,8 +20,8 @@ mod kernel_types;
 #[allow(unused_imports)]
 pub(crate) use kernel_types::{decode_result, SyscallId};
 pub use kernel_types::{
-    SysError, UserArpEntry, UserDriverGrants, UserDriverInfo, UserDriverStatus, MAX_ARP_ENTRIES,
-    USER_DRIVER_NAME_LEN,
+    SysError, UserArpEntry, UserDriverGrants, UserDriverInfo, UserDriverStatus, UserPciBar,
+    UserPciDevice, MAX_ARP_ENTRIES, USER_DRIVER_NAME_LEN,
 };
 
 mod raw;

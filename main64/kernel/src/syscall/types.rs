@@ -94,6 +94,9 @@ pub enum SyscallId {
     /// Check whether a driver binary is known and has a matching PCI
     /// device present, without any of `SpawnDriver`'s side effects.
     DrvProbe = 44,
+    /// Retrieve the PCI device the kernel bound the calling driver task to
+    /// at `SpawnDriver` time.
+    DrvBoundDevice = 45,
 }
 
 impl SyscallId {
@@ -207,6 +210,8 @@ impl SyscallId {
     pub const DRV_LIST: u64 = Self::DrvList as u64;
     /// Syscall number for DrvProbe.
     pub const DRV_PROBE: u64 = Self::DrvProbe as u64;
+    /// Syscall number for DrvBoundDevice.
+    pub const DRV_BOUND_DEVICE: u64 = Self::DrvBoundDevice as u64;
 }
 
 /// Unknown syscall number.

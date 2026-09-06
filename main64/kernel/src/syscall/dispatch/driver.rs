@@ -6,12 +6,45 @@ use crate::memory::vmm::{
     self, map_user_mmio_page, read_cr3, unmap_without_release, with_address_space, USER_MMIO_BASE,
     USER_STACK_GUARD_BASE,
 };
-use crate::process::capabilities::{Capabilities, MmioAllocKind};
+use crate::process::capabilities::{Capabilities, DriverCaps, MmioAllocKind};
 use crate::scheduler;
 use crate::syscall::types::{
     is_valid_user_buffer, is_valid_user_buffer_readable, is_valid_user_buffer_writable,
-    SyscallError, SyscallResult, UserDriverInfo, UserDriverStatus, MAX_ARP_ENTRIES, SYSCALL_OK,
+    SyscallError, SyscallResult, UserDriverInfo, UserDriverStatus, UserPciDevice, MAX_ARP_ENTRIES,
+    SYSCALL_OK,
 };
+
+/// Retrieves the calling task's `DriverCaps` and verifies the coarse `MMIO`
+/// capability bit, the shared gate for `MapPhysical`, `UnmapPhysical`,
+/// `AllocDma`, `FreeDma`, and `VirtToPhys` (see each syscall's own doc
+/// comment for why it specifically needs MMIO).
+fn require_mmio_caps() -> SyscallResult<&'static mut DriverCaps> {
+    let caps = scheduler::current_task_caps().ok_or(SyscallError::PermissionDenied)?;
+    if !caps.flags.contains(Capabilities::MMIO) {
+        return Err(SyscallError::PermissionDenied);
+    }
+    Ok(caps)
+}
+
+/// Verifies that the calling task holds `cap` or is privileged.
+///
+/// A task with no `DriverCaps` block (e.g. the privileged boot shell, which
+/// has no capability grants of its own) falls through to the `privileged`
+/// flag on its scheduler slot. Failing closed (`false`) when there is no
+/// current task at all is deliberate: an authorization check must never
+/// default to "allowed" just because it could not identify the caller.
+/// Shared by `SpawnDriver` (gating `SPAWN_DRIVER`) and `DrvUnload` (gating
+/// `UNLOAD_DRIVER`).
+fn require_cap_or_privileged(cap: Capabilities) -> SyscallResult<()> {
+    let is_authorized = match scheduler::current_task_caps() {
+        Some(caps) => caps.flags.contains(cap),
+        None => scheduler::current_task_id().is_some_and(scheduler::is_task_privileged),
+    };
+    if !is_authorized {
+        return Err(SyscallError::PermissionDenied);
+    }
+    Ok(())
+}
 
 /// Maps a physical MMIO region into the calling driver task's address space.
 ///
@@ -28,10 +61,7 @@ pub fn syscall_map_physical_impl(phys_addr: u64, len: usize) -> SyscallResult<u6
         .ok_or(SyscallError::InvalidArg)?;
 
     // Step 2: Retrieve DriverCaps and verify coarse MMIO capability.
-    let caps = scheduler::current_task_caps().ok_or(SyscallError::PermissionDenied)?;
-    if !caps.flags.contains(Capabilities::MMIO) {
-        return Err(SyscallError::PermissionDenied);
-    }
+    let caps = require_mmio_caps()?;
 
     // Step 3: Compute page-aligned ranges for physical memory and virtual allocation.
     let offset_in_page = phys_addr & (PAGE_SIZE_U64 - 1);
@@ -122,10 +152,7 @@ pub fn syscall_unmap_physical_impl(user_va: u64, len: usize) -> SyscallResult<u6
         .ok_or(SyscallError::InvalidArg)?;
 
     // Step 2: Retrieve DriverCaps and verify coarse MMIO capability.
-    let caps = scheduler::current_task_caps().ok_or(SyscallError::PermissionDenied)?;
-    if !caps.flags.contains(Capabilities::MMIO) {
-        return Err(SyscallError::PermissionDenied);
-    }
+    let caps = require_mmio_caps()?;
 
     // Step 3: Validate that virtual address range lies within the user MMIO window.
     if user_va < USER_MMIO_BASE || end_va > USER_STACK_GUARD_BASE {
@@ -185,20 +212,7 @@ pub fn syscall_spawn_driver_impl(
     use alloc::vec::Vec;
 
     // Step 1: Verify that the caller holds SPAWN_DRIVER capability or is privileged.
-    //
-    // A task with no DriverCaps block (e.g. the privileged boot shell, which
-    // has no capability grants of its own) falls through to the `privileged`
-    // flag on its scheduler slot. Failing closed (`false`) when there is no
-    // current task at all is deliberate: an authorization check must never
-    // default to "allowed" just because it could not identify the caller.
-    let caller_caps = scheduler::current_task_caps();
-    let is_authorized = match caller_caps {
-        Some(caps) => caps.flags.contains(Capabilities::SPAWN_DRIVER),
-        None => scheduler::current_task_id().is_some_and(scheduler::is_task_privileged),
-    };
-    if !is_authorized {
-        return Err(SyscallError::PermissionDenied);
-    }
+    require_cap_or_privileged(Capabilities::SPAWN_DRIVER)?;
 
     // Step 2: Read binary filename from user space.
     let name = super::fs::read_user_string(name_ptr, 128)?;
@@ -429,10 +443,7 @@ pub fn syscall_alloc_dma_impl(pages: usize, out_phys: *mut u64) -> SyscallResult
     // into the same MMIO VA window as MapPhysical/UnmapPhysical (which gate
     // on MMIO alone), and is only useful to a driver that can actually
     // program its physical address into a device register.
-    let caps = scheduler::current_task_caps().ok_or(SyscallError::PermissionDenied)?;
-    if !caps.flags.contains(Capabilities::MMIO) {
-        return Err(SyscallError::PermissionDenied);
-    }
+    let caps = require_mmio_caps()?;
 
     // Step 3: Allocate physically contiguous frames from PMM.
     let frame = crate::memory::pmm::with_pmm(|mgr| mgr.alloc_contiguous_frames(pages))
@@ -544,10 +555,7 @@ pub fn syscall_free_dma_impl(user_va: u64, pages: usize) -> SyscallResult<u64> {
     // Step 2: Check DriverCaps. Mirrors AllocDma's MMIO-only gate (see its
     // Step 2 comment) — a task that could allocate a DMA buffer without MMIO
     // could not free one without it either.
-    let caps = scheduler::current_task_caps().ok_or(SyscallError::PermissionDenied)?;
-    if !caps.flags.contains(Capabilities::MMIO) {
-        return Err(SyscallError::PermissionDenied);
-    }
+    let caps = require_mmio_caps()?;
 
     // Step 3: Validate virtual address range.
     if user_va < USER_MMIO_BASE || end_va > USER_STACK_GUARD_BASE {
@@ -600,10 +608,7 @@ pub fn syscall_free_dma_impl(user_va: u64, pages: usize) -> SyscallResult<u64> {
 /// - `user_va`: Virtual address to translate.
 pub fn syscall_virt_to_phys_impl(user_va: u64) -> SyscallResult<u64> {
     // Step 1: Verify task capabilities.
-    let caps = scheduler::current_task_caps().ok_or(SyscallError::PermissionDenied)?;
-    if !caps.flags.contains(Capabilities::MMIO) {
-        return Err(SyscallError::PermissionDenied);
-    }
+    require_mmio_caps()?;
 
     // Step 2: Reject non-canonical or kernel-half addresses before walking the
     // page tables, so a driver task cannot probe kernel virtual memory (which
@@ -956,18 +961,7 @@ pub fn syscall_drv_query_impl(driver_id: u64, out_ptr: u64) -> SyscallResult<u64
 /// accepted risk of this kernel's current driver model, not addressed here.
 pub fn syscall_drv_unload_impl(name_ptr: u64, name_len: u64) -> SyscallResult<u64> {
     // Step 1: verify that the caller holds UNLOAD_DRIVER or is privileged.
-    // Same shape as `syscall_spawn_driver_impl`'s Step 1: a task with no
-    // `DriverCaps` block falls through to the `privileged` scheduler flag,
-    // and a missing current task fails closed rather than defaulting to
-    // "allowed".
-    let caller_caps = scheduler::current_task_caps();
-    let is_authorized = match caller_caps {
-        Some(caps) => caps.flags.contains(Capabilities::UNLOAD_DRIVER),
-        None => scheduler::current_task_id().is_some_and(scheduler::is_task_privileged),
-    };
-    if !is_authorized {
-        return Err(SyscallError::PermissionDenied);
-    }
+    require_cap_or_privileged(Capabilities::UNLOAD_DRIVER)?;
 
     // Step 2: validate and copy the name out of user memory.
     let (name_buf, name_len) = copy_user_driver_name(name_ptr, name_len)?;
@@ -1088,4 +1082,56 @@ pub fn syscall_drv_probe_impl(name_ptr: *const u8) -> SyscallResult<u64> {
     let name = super::fs::read_user_string(name_ptr, 128)?;
     let present = driver_db::device_present(&name).map_err(|_| SyscallError::InvalidArg)?;
     Ok(present as u64)
+}
+
+/// Returns the PCI device the kernel bound the calling driver task to at
+/// `SpawnDriver` time (`driver_db::derive_grants`).
+///
+/// This lets a driver binary recover the exact device it was granted MMIO
+/// access to directly from the kernel's own authoritative binding, instead
+/// of independently re-scanning the PCI bus and re-matching its own copy of
+/// the vendor/device IDs `driver_db::DRIVER_DB` already validated — the same
+/// "two sources of truth" problem `DrvProbe` already solved for `DRIVERS.BIN`
+/// (see its doc comment above), but for the driver binary itself. With
+/// several identical cards installed, an independent re-scan could not
+/// otherwise be relied on to land on the same device `SpawnDriver` reserved.
+///
+/// Arguments:
+/// - `out_ptr`: Destination `UserPciDevice` in user memory.
+///
+/// Requires the caller to be a driver task (holds a non-null `DriverCaps`
+/// block, i.e. was spawned via `SpawnDriver` — mirrors `DrvRegister`'s own
+/// gate). Returns `InvalidArg` if the calling task has no device currently
+/// bound (not a driver task, or a driver binary with no PCI-derived grant).
+pub fn syscall_drv_bound_device_impl(out_ptr: *mut UserPciDevice) -> SyscallResult<u64> {
+    use crate::drivers::{driver_db, pci};
+
+    // Step 1: caller must be a driver task.
+    scheduler::current_task_caps().ok_or(SyscallError::PermissionDenied)?;
+    let tid = scheduler::current_task_id().ok_or(SyscallError::PermissionDenied)?;
+
+    // Step 2: resolve the device SpawnDriver bound this task to, and the
+    // device's live PCI data behind it.
+    let (bus, device, function) =
+        driver_db::bound_device_for_task(tid).ok_or(SyscallError::InvalidArg)?;
+    let dev = pci::get_device_by_location(bus, device, function).ok_or(SyscallError::InvalidArg)?;
+
+    // Step 3: validate the destination buffer, mirroring
+    // `syscall_get_pci_device_impl`'s validation of the same output type.
+    if !(out_ptr as u64).is_multiple_of(core::mem::align_of::<UserPciDevice>() as u64) {
+        return Err(SyscallError::InvalidArg);
+    }
+    if !is_valid_user_buffer_writable(out_ptr as *const u8, core::mem::size_of::<UserPciDevice>()) {
+        return Err(SyscallError::InvalidArg);
+    }
+
+    // Step 4: copy the device out.
+    let user_dev = super::pci::to_user_pci_device(&dev);
+    // SAFETY:
+    // - Alignment and writability of `out_ptr` were verified in Step 3.
+    unsafe {
+        out_ptr.write(user_dev);
+    }
+
+    Ok(SYSCALL_OK)
 }

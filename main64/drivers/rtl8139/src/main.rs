@@ -15,19 +15,11 @@ extern crate alloc;
 pub mod rtl8139;
 
 #[cfg(not(test))]
-use lib_driver_runtime::PciMatch;
-#[cfg(not(test))]
 use lib_kaos::{process, serial_println};
 #[cfg(not(test))]
 use lib_net::NetworkStack;
 #[cfg(not(test))]
 use rtl8139::Rtl8139Device;
-
-#[cfg(not(test))]
-const PCI_TABLE: &[PciMatch] = &[PciMatch {
-    vendor_id: 0x10EC,
-    device_id: 0x8139,
-}];
 
 #[cfg(not(test))]
 #[no_mangle]
@@ -42,9 +34,11 @@ pub extern "C" fn _start() -> ! {
     serial_println!("  KAOS RTL8139 Fast Ethernet Driver (Ring 3)");
     serial_println!("==================================================");
 
-    // Step 1: Discover the RTL8139 device via PCI subsystem.
-    let Some((dev, _)) = lib_driver_runtime::find_pci_device(PCI_TABLE) else {
-        serial_println!("[RTL8139] Error: No Realtek RTL8139 PCI device (0x10EC:0x8139) found.");
+    // Step 1: Recover the RTL8139 device the kernel bound this task to at
+    // `SpawnDriver` time (`driver_db::derive_grants`), rather than
+    // independently re-scanning the PCI bus.
+    let Some(dev) = lib_driver_runtime::find_bound_device() else {
+        serial_println!("[RTL8139] Error: no PCI device bound to this driver task.");
         process::exit();
     };
     serial_println!(

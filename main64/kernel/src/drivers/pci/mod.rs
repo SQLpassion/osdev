@@ -183,6 +183,17 @@ pub fn find_device(vendor_id: u16, device_id: u16) -> Option<PciDevice> {
         .cloned()
 }
 
+/// Find a PCI device by its (bus, device, function) location — the unique
+/// identity `driver_db::bound_device_for_task` resolves a driver's binding
+/// back to.
+pub fn get_device_by_location(bus: u8, device: u8, function: u8) -> Option<PciDevice> {
+    let devices = PCI_DEVICES.lock();
+    devices
+        .iter()
+        .find(|d| d.bus == bus && d.device == device && d.function == function)
+        .cloned()
+}
+
 /// Find a PCI device by Class and Subclass.
 pub fn find_by_class(class_code: u8, subclass: u8) -> Option<PciDevice> {
     let devices = PCI_DEVICES.lock();

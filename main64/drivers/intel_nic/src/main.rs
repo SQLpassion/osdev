@@ -17,42 +17,28 @@ pub mod intel_nic;
 #[cfg(not(test))]
 use intel_nic::{IntelNicDevice, NicModel};
 #[cfg(not(test))]
-use lib_driver_runtime::PciMatch;
-#[cfg(not(test))]
 use lib_kaos::{process, serial_println};
 #[cfg(not(test))]
 use lib_net::NetworkStack;
 
-/// Driver names this table's index into `NicModel` values it was matched
-/// against -- see the `models` table alongside this constant.
+/// Selects the hardware-quirk `NicModel` for a (vendor_id, device_id) pair.
+///
+/// This is a distinct concern from PCI discovery: by the time this runs, the
+/// kernel has already bound this task to a device from its own validated
+/// `driver_db::DRIVER_DB` (see `_start`'s use of `find_bound_device`), so an
+/// ID this function does not recognize means this driver's own model table
+/// has fallen out of sync with the kernel's — an internal inconsistency
+/// worth a specific error, not a normal "device not present" case.
 #[cfg(not(test))]
-const PCI_TABLE: &[PciMatch] = &[
-    PciMatch {
-        vendor_id: 0x8086,
-        device_id: 0x10EA,
-    },
-    PciMatch {
-        vendor_id: 0x8086,
-        device_id: 0x15B8,
-    },
-    PciMatch {
-        vendor_id: 0x8086,
-        device_id: 0x10D3,
-    },
-    PciMatch {
-        vendor_id: 0x8086,
-        device_id: 0x100E,
-    },
-];
-
-/// `NicModel` for each entry in `PCI_TABLE`, at the same index.
-#[cfg(not(test))]
-const MODELS: &[NicModel] = &[
-    NicModel::E1000e,
-    NicModel::I219V,
-    NicModel::E1000e82574L,
-    NicModel::E100082540EM,
-];
+fn model_for_device(vendor_id: u16, device_id: u16) -> Option<NicModel> {
+    match (vendor_id, device_id) {
+        (0x8086, 0x10EA) => Some(NicModel::E1000e),
+        (0x8086, 0x15B8) => Some(NicModel::I219V),
+        (0x8086, 0x10D3) => Some(NicModel::E1000e82574L),
+        (0x8086, 0x100E) => Some(NicModel::E100082540EM),
+        _ => None,
+    }
+}
 
 #[cfg(not(test))]
 #[no_mangle]
@@ -68,12 +54,21 @@ pub extern "C" fn _start() -> ! {
     serial_println!("  Supports 82577LM (8086:10EA) & I219-V (8086:15B8)");
     serial_println!("==================================================");
 
-    // Step 1: Discover a supported Intel NIC device via PCI subsystem.
-    let Some((dev, table_idx)) = lib_driver_runtime::find_pci_device(PCI_TABLE) else {
-        serial_println!("[Intel NIC] Error: No supported Intel Gigabit Ethernet PCI device found.");
+    // Step 1: Recover the Intel NIC device the kernel bound this task to at
+    // `SpawnDriver` time (`driver_db::derive_grants`), rather than
+    // independently re-scanning the PCI bus.
+    let Some(dev) = lib_driver_runtime::find_bound_device() else {
+        serial_println!("[Intel NIC] Error: no PCI device bound to this driver task.");
         process::exit();
     };
-    let model = MODELS[table_idx];
+    let Some(model) = model_for_device(dev.vendor_id, dev.device_id) else {
+        serial_println!(
+            "[Intel NIC] Error: bound device {:04x}:{:04x} has no known NicModel.",
+            dev.vendor_id,
+            dev.device_id
+        );
+        process::exit();
+    };
     serial_println!(
         "[Intel NIC] Found {}: PCI Bus {:02x}:{:02x}.{:x}, IRQ Line {}",
         model.name(),

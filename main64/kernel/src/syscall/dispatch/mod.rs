@@ -90,6 +90,7 @@ pub const fn syscall_name_for_number(syscall_nr: u64) -> &'static str {
         SyscallId::DRV_UNLOAD => "DrvUnload",
         SyscallId::DRV_LIST => "DrvList",
         SyscallId::DRV_PROBE => "DrvProbe",
+        SyscallId::DRV_BOUND_DEVICE => "DrvBoundDevice",
         _ => "Unknown",
     }
 }
@@ -179,6 +180,9 @@ pub fn dispatch_checked(
             driver::syscall_drv_list_impl(arg0 as *mut crate::syscall::UserDriverInfo, arg1)
         }
         SyscallId::DRV_PROBE => driver::syscall_drv_probe_impl(arg0 as *const u8),
+        SyscallId::DRV_BOUND_DEVICE => {
+            driver::syscall_drv_bound_device_impl(arg0 as *mut crate::syscall::types::UserPciDevice)
+        }
         _ => Err(SyscallError::Unsupported),
     };
 

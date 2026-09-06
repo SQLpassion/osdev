@@ -28,31 +28,11 @@ pub fn syscall_get_pci_device_count_impl() -> SyscallResult<u64> {
     Ok(count as u64)
 }
 
-/// Implements `GetPciDevice()`.
-///
-/// Copies metadata of a specific PCI device into user space.
-pub fn syscall_get_pci_device_impl(index: u64, out_ptr: *mut UserPciDevice) -> SyscallResult<u64> {
-    // Step 1: Query the single cached PCI device directly to avoid cloning the entire vector.
-    let dev = match pci::get_device(index as usize) {
-        Some(d) => d,
-        None => return Err(SyscallError::InvalidArg),
-    };
-
-    // Step 2: Validate alignment of the user-space output pointer.
-    // `UserPciDevice` contains u16 fields and requires 2-byte alignment;
-    // `core::ptr::write` to a misaligned address is undefined behavior.
-    if !(out_ptr as u64).is_multiple_of(core::mem::align_of::<UserPciDevice>() as u64) {
-        return Err(SyscallError::InvalidArg);
-    }
-
-    // Step 3: Verify that the user-space output pointer represents a valid,
-    // writable memory range in the Ring-3 address space.
-    let struct_size = core::mem::size_of::<UserPciDevice>();
-    if !is_valid_user_buffer_writable(out_ptr as *const u8, struct_size) {
-        return Err(SyscallError::InvalidArg);
-    }
-
-    // Step 4: Map and construct the user-compatible BAR structures.
+/// Converts a kernel-internal [`pci::PciDevice`] into its user-space ABI
+/// representation. Shared by `GetPciDevice` and `DrvBoundDevice`
+/// (`syscall/dispatch/driver.rs`), which resolve a device through different
+/// lookups but hand it to user space in the same shape.
+pub(super) fn to_user_pci_device(dev: &pci::PciDevice) -> UserPciDevice {
     let mut bars = [UserPciBar {
         bar_type: 0,
         flags: 0,
@@ -87,7 +67,7 @@ pub fn syscall_get_pci_device_impl(index: u64, out_ptr: *mut UserPciDevice) -> S
         };
     }
 
-    let user_dev = UserPciDevice {
+    UserPciDevice {
         bus: dev.bus,
         device: dev.device,
         function: dev.function,
@@ -102,7 +82,35 @@ pub fn syscall_get_pci_device_impl(index: u64, out_ptr: *mut UserPciDevice) -> S
         interrupt_pin: dev.interrupt_pin,
         _padding: [0; 2],
         bars,
+    }
+}
+
+/// Implements `GetPciDevice()`.
+///
+/// Copies metadata of a specific PCI device into user space.
+pub fn syscall_get_pci_device_impl(index: u64, out_ptr: *mut UserPciDevice) -> SyscallResult<u64> {
+    // Step 1: Query the single cached PCI device directly to avoid cloning the entire vector.
+    let dev = match pci::get_device(index as usize) {
+        Some(d) => d,
+        None => return Err(SyscallError::InvalidArg),
     };
+
+    // Step 2: Validate alignment of the user-space output pointer.
+    // `UserPciDevice` contains u16 fields and requires 2-byte alignment;
+    // `core::ptr::write` to a misaligned address is undefined behavior.
+    if !(out_ptr as u64).is_multiple_of(core::mem::align_of::<UserPciDevice>() as u64) {
+        return Err(SyscallError::InvalidArg);
+    }
+
+    // Step 3: Verify that the user-space output pointer represents a valid,
+    // writable memory range in the Ring-3 address space.
+    let struct_size = core::mem::size_of::<UserPciDevice>();
+    if !is_valid_user_buffer_writable(out_ptr as *const u8, struct_size) {
+        return Err(SyscallError::InvalidArg);
+    }
+
+    // Step 4: Map and construct the user-compatible device/BAR structures.
+    let user_dev = to_user_pci_device(&dev);
 
     // SAFETY:
     // - `out_ptr` has been validated to point entirely within present,

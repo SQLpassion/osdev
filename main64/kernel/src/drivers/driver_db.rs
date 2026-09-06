@@ -207,6 +207,22 @@ pub fn release_task(task_id: usize) {
     }
 }
 
+/// Returns the (bus, device, function) of the PCI device currently bound to
+/// `task_id`, if any — the reverse of the forward binding `derive_grants`
+/// establishes and `confirm_binding` resolves.
+///
+/// Backs the `DrvBoundDevice` syscall, which lets a running driver task
+/// recover the exact device the kernel bound it to at spawn time instead of
+/// independently re-scanning the PCI bus and re-matching its own copy of
+/// the vendor/device IDs [`DRIVER_DB`] already validated.
+pub fn bound_device_for_task(task_id: usize) -> Option<(u8, u8, u8)> {
+    let bindings = DEVICE_BINDINGS.lock();
+    bindings
+        .iter()
+        .find(|&&(_, t)| t == task_id)
+        .map(|&(k, _)| decode_device_key(k))
+}
+
 /// Resets all device bindings (for unit tests / teardown).
 pub fn reset_bindings_for_test() {
     DEVICE_BINDINGS.lock().clear();
