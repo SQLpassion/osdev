@@ -191,8 +191,8 @@ fn cat_file(name: &str) {
 /// capabilities`).
 ///
 /// `DRIVERS.BIN` is the one exception to an otherwise-unprivileged `Exec`:
-/// it gets `SPAWN_DRIVER`/`UNLOAD_DRIVER`/`LIST_DRIVERS` so its
-/// `load`/`unload`/`list` commands can call the corresponding kernel
+/// it gets `SPAWN_DRIVER`/`UNLOAD_DRIVER` so its
+/// `load`/`unload` commands can call the corresponding kernel
 /// syscalls. This is a deliberate, narrow allowlist by binary name — every
 /// other program still gets zero delegated capabilities, matching `Exec`'s
 /// previous behavior exactly. Kept as a pure function (no `cfg(not(test))`
@@ -204,7 +204,6 @@ fn requested_capabilities_for(name: &str) -> u64 {
     if name.eq_ignore_ascii_case("DRIVERS.BIN") {
         lib_kaos::process::capabilities::SPAWN_DRIVER
             | lib_kaos::process::capabilities::UNLOAD_DRIVER
-            | lib_kaos::process::capabilities::LIST_DRIVERS
     } else {
         0
     }

@@ -25,20 +25,10 @@ impl Capabilities {
     /// a spawned driver itself (see `driver_db::sanitize_driver_caps`).
     pub const UNLOAD_DRIVER: Self = Self(1 << 3);
 
-    /// May call ListDrivers to enumerate currently registered driver tasks.
-    /// Delegated by `Exec` only to the trusted `DRIVERS.BIN` binary, never to
-    /// a spawned driver itself (see `driver_db::sanitize_driver_caps`).
-    pub const LIST_DRIVERS: Self = Self(1 << 4);
-
     /// Creates capabilities from a raw bitmask, ignoring unknown bits.
     #[inline]
     pub const fn from_bits_truncate(bits: u32) -> Self {
-        Self(
-            bits & (Self::MMIO.0
-                | Self::SPAWN_DRIVER.0
-                | Self::UNLOAD_DRIVER.0
-                | Self::LIST_DRIVERS.0),
-        )
+        Self(bits & (Self::MMIO.0 | Self::SPAWN_DRIVER.0 | Self::UNLOAD_DRIVER.0))
     }
 
     /// Returns the underlying raw bitmask value.
@@ -51,12 +41,6 @@ impl Capabilities {
     #[inline]
     pub const fn contains(self, other: Self) -> bool {
         (self.0 & other.0) == other.0
-    }
-
-    /// Returns the union of two capability sets.
-    #[inline]
-    pub const fn union(self, other: Self) -> Self {
-        Self(self.0 | other.0)
     }
 }
 

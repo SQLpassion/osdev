@@ -297,7 +297,7 @@ pub fn resolve_delegated_capabilities(
 /// # Capability delegation
 /// `requested_caps` lets a caller ask for specific coarse [`Capabilities`]
 /// bits to be attached to the child it is about to spawn — e.g. the
-/// privileged shell delegating `SPAWN_DRIVER`/`UNLOAD_DRIVER`/`LIST_DRIVERS`
+/// privileged shell delegating `SPAWN_DRIVER`/`UNLOAD_DRIVER`
 /// to `DRIVERS.BIN`. A privileged caller may delegate anything it requests; an
 /// unprivileged caller may delegate at most the capabilities it already holds
 /// itself — it can never grant a child more than it has. The *policy* of

@@ -92,9 +92,7 @@ fn test_exec_privileged_caller_delegates_all_requested_capabilities() {
     }
 
     scheduler::set_running_slot_for_test(Some(caller_slot));
-    let requested =
-        (Capabilities::SPAWN_DRIVER | Capabilities::UNLOAD_DRIVER | Capabilities::LIST_DRIVERS)
-            .bits() as u64;
+    let requested = (Capabilities::SPAWN_DRIVER | Capabilities::UNLOAD_DRIVER).bits() as u64;
     let tid = syscall::dispatch_checked(SyscallId::EXEC, NAME_VA, requested, 0, 0)
         .expect("Exec must succeed for a privileged caller requesting delegation")
         as usize;
@@ -137,8 +135,7 @@ fn test_resolve_delegated_capabilities_privileged_caller_gets_everything_request
 /// delegate anything, no matter what it requests.
 #[test_case]
 fn test_resolve_delegated_capabilities_unprivileged_caller_without_caps_grants_none() {
-    let requested =
-        Capabilities::SPAWN_DRIVER | Capabilities::UNLOAD_DRIVER | Capabilities::LIST_DRIVERS;
+    let requested = Capabilities::SPAWN_DRIVER | Capabilities::UNLOAD_DRIVER;
     let granted = syscall::resolve_delegated_capabilities(false, Capabilities::NONE, requested);
     assert_eq!(
         granted,
@@ -154,14 +151,13 @@ fn test_resolve_delegated_capabilities_unprivileged_caller_without_caps_grants_n
 #[test_case]
 fn test_resolve_delegated_capabilities_unprivileged_caller_delegates_only_its_own() {
     let caller_flags = Capabilities::SPAWN_DRIVER;
-    let requested =
-        Capabilities::SPAWN_DRIVER | Capabilities::UNLOAD_DRIVER | Capabilities::LIST_DRIVERS;
+    let requested = Capabilities::SPAWN_DRIVER | Capabilities::UNLOAD_DRIVER;
     let granted = syscall::resolve_delegated_capabilities(false, caller_flags, requested);
     assert_eq!(
         granted,
         Capabilities::SPAWN_DRIVER,
         "child must receive only the capabilities the caller itself held, \
-         never UNLOAD_DRIVER or LIST_DRIVERS which the caller lacked"
+         never UNLOAD_DRIVER which the caller lacked"
     );
 }
 
@@ -170,8 +166,7 @@ fn test_resolve_delegated_capabilities_unprivileged_caller_delegates_only_its_ow
 /// `exec()` wrapper's default behavior stays a strict no-op for delegation.
 #[test_case]
 fn test_resolve_delegated_capabilities_zero_requested_always_yields_none() {
-    let all_caps =
-        Capabilities::SPAWN_DRIVER | Capabilities::UNLOAD_DRIVER | Capabilities::LIST_DRIVERS;
+    let all_caps = Capabilities::SPAWN_DRIVER | Capabilities::UNLOAD_DRIVER;
 
     assert_eq!(
         syscall::resolve_delegated_capabilities(true, Capabilities::NONE, Capabilities::NONE),

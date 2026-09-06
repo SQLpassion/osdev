@@ -60,7 +60,7 @@ fn test_capabilities_bitflags() {
     assert!(combined.contains(Capabilities::UNLOAD_DRIVER));
     assert!(!combined.contains(Capabilities::SPAWN_DRIVER));
 
-    let all = combined.union(spawn);
+    let all = combined | spawn;
     assert!(all.contains(Capabilities::MMIO));
     assert!(all.contains(Capabilities::UNLOAD_DRIVER));
     assert!(all.contains(Capabilities::SPAWN_DRIVER));
@@ -68,36 +68,28 @@ fn test_capabilities_bitflags() {
     let truncated = Capabilities::from_bits_truncate(0xFFFF_FFFF);
     assert_eq!(
         truncated.bits(),
-        (Capabilities::MMIO
-            | Capabilities::SPAWN_DRIVER
-            | Capabilities::UNLOAD_DRIVER
-            | Capabilities::LIST_DRIVERS)
-            .bits()
+        (Capabilities::MMIO | Capabilities::SPAWN_DRIVER | Capabilities::UNLOAD_DRIVER).bits()
     );
 }
 
-/// Tests that the driver-management delegation bits (`UNLOAD_DRIVER`,
-/// `LIST_DRIVERS`) are distinct, non-overlapping bitflags that survive
-/// `from_bits_truncate` like the pre-existing coarse flags.
+/// Tests that the `UNLOAD_DRIVER` delegation bit is distinct from the other
+/// coarse flags and survives `from_bits_truncate` like the pre-existing ones.
 #[test_case]
-fn test_unload_and_list_drivers_capability_bits() {
+fn test_unload_driver_capability_bit() {
     let unload = Capabilities::UNLOAD_DRIVER;
-    let list = Capabilities::LIST_DRIVERS;
 
     assert_ne!(unload.bits(), 0);
-    assert_ne!(list.bits(), 0);
-    assert_ne!(unload.bits(), list.bits());
+    assert!(!Capabilities::SPAWN_DRIVER.contains(unload));
 
-    let combined = unload | list;
+    let combined = unload | Capabilities::SPAWN_DRIVER;
     assert!(combined.contains(Capabilities::UNLOAD_DRIVER));
-    assert!(combined.contains(Capabilities::LIST_DRIVERS));
-    assert!(!combined.contains(Capabilities::SPAWN_DRIVER));
+    assert!(combined.contains(Capabilities::SPAWN_DRIVER));
 
     let truncated = Capabilities::from_bits_truncate(combined.bits());
     assert_eq!(
         truncated.bits(),
         combined.bits(),
-        "UNLOAD_DRIVER and LIST_DRIVERS must survive from_bits_truncate unchanged"
+        "UNLOAD_DRIVER must survive from_bits_truncate unchanged"
     );
 }
 

@@ -9,13 +9,12 @@ use super::requested_capabilities_for;
 
 const SPAWN_DRIVER: u64 = lib_kaos::process::capabilities::SPAWN_DRIVER;
 const UNLOAD_DRIVER: u64 = lib_kaos::process::capabilities::UNLOAD_DRIVER;
-const LIST_DRIVERS: u64 = lib_kaos::process::capabilities::LIST_DRIVERS;
 
 #[test]
-fn test_drivers_bin_gets_exactly_the_three_driver_management_capabilities() {
+fn test_drivers_bin_gets_exactly_the_driver_management_capabilities() {
     assert_eq!(
         requested_capabilities_for("DRIVERS.BIN"),
-        SPAWN_DRIVER | UNLOAD_DRIVER | LIST_DRIVERS
+        SPAWN_DRIVER | UNLOAD_DRIVER
     );
 }
 
@@ -27,11 +26,11 @@ fn test_drivers_bin_match_is_case_insensitive() {
     // unprivileged, non-functional copy of the app.
     assert_eq!(
         requested_capabilities_for("drivers.bin"),
-        SPAWN_DRIVER | UNLOAD_DRIVER | LIST_DRIVERS
+        SPAWN_DRIVER | UNLOAD_DRIVER
     );
     assert_eq!(
         requested_capabilities_for("Drivers.Bin"),
-        SPAWN_DRIVER | UNLOAD_DRIVER | LIST_DRIVERS
+        SPAWN_DRIVER | UNLOAD_DRIVER
     );
 }
 

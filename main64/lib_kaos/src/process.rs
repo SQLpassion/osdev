@@ -16,8 +16,6 @@ pub mod capabilities {
     pub const SPAWN_DRIVER: u64 = 1 << 2;
     /// May call Unload to terminate a registered driver task by name.
     pub const UNLOAD_DRIVER: u64 = 1 << 3;
-    /// May call ListDrivers to enumerate currently registered driver tasks.
-    pub const LIST_DRIVERS: u64 = 1 << 4;
 }
 
 /// Executes a flat binary from the mounted filesystem.
