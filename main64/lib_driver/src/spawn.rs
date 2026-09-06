@@ -17,7 +17,7 @@ use crate::raw::syscall3;
 ///
 /// Arguments:
 /// - `name`: Binary name as byte slice or string (must be null-terminated or valid string).
-/// - `caps`: Coarse capability bitflags (e.g. `Capabilities::MMIO | Capabilities::IRQ`).
+/// - `caps`: Coarse capability bitflags (e.g. `Capabilities::MMIO`).
 /// - `grants`: Optional reference to a `UserDriverGrants` request to be validated.
 pub fn spawn_driver(
     name: &str,
@@ -39,7 +39,7 @@ pub fn spawn_driver(
     };
 
     // SAFETY:
-    // - Invokes SpawnDriver syscall (nr. 35).
+    // - Invokes SpawnDriver syscall (nr. 32).
     // - Validated by kernel capability system and ELF loader.
     let raw = unsafe { syscall3(SyscallId::SPAWN_DRIVER, name_ptr, caps, grants_ptr) };
     decode_result(raw)

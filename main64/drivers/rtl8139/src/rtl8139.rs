@@ -1,6 +1,6 @@
 //! RTL8139 hardware controller, DMA ring buffers, and interrupt handling.
 
-use lib_driver::{dma::DmaBuffer, irq, mmio::Mmio, SysError};
+use lib_driver::{dma::DmaBuffer, mmio::Mmio, SysError};
 use lib_net::{MacAddress, NicDevice};
 
 /// RTL8139 Register Offsets
@@ -121,7 +121,6 @@ fn prepare_tx_frame(packet: &[u8], tx_slot: &mut [u8]) -> Option<usize> {
 /// RTL8139 Hardware Device Driver.
 pub struct Rtl8139Device {
     mmio: Mmio,
-    irq: u8,
     mac: MacAddress,
     _rx_buffer: DmaBuffer,
     rx_offset: usize,
@@ -131,7 +130,7 @@ pub struct Rtl8139Device {
 
 impl Rtl8139Device {
     /// Initializes the RTL8139 hardware controller.
-    pub fn init(mmio: Mmio, irq: u8) -> Result<Self, SysError> {
+    pub fn init(mmio: Mmio) -> Result<Self, SysError> {
         // Step 1: Power on chip (clear power saving).
         mmio.write8(REG_CONFIG1, 0x00);
 
@@ -178,20 +177,14 @@ impl Rtl8139Device {
         // Step 8: Configure Transmit Configuration (Max DMA burst: 0x03000000).
         mmio.write32(REG_TCR, 0x03000000);
 
-        // Step 9: Subscribe to hardware IRQ if valid.
-        if irq != 0 && irq != 0xFF {
-            if let Ok(()) = irq::subscribe(irq) {
-                // Enable RX and TX interrupts
-                mmio.write16(REG_IMR, INT_RX_OK | INT_RX_ERR | INT_TX_OK | INT_TX_ERR);
-            }
-        }
-
-        // Step 10: Enable Transmitter and Receiver.
+        // Step 9: Enable Transmitter and Receiver. This driver polls hardware
+        // RX/TX state directly from its background loop rather than using
+        // interrupts, so no IRQ is subscribed and REG_IMR stays at its
+        // post-reset default (all interrupt sources masked).
         mmio.write8(REG_CHIPCMD, CMD_RX_ENABLE | CMD_TX_ENABLE);
 
         Ok(Self {
             mmio,
-            irq,
             mac,
             _rx_buffer: rx_buffer,
             rx_offset: 0,
@@ -297,21 +290,6 @@ impl Rtl8139Device {
         } else {
             None
         }
-    }
-
-    /// Waits for an IRQ event and acknowledges the interrupt.
-    pub fn wait_irq(&mut self, timeout_ms: u32) -> Result<u16, SysError> {
-        if self.irq == 0 || self.irq == 0xFF {
-            return Ok(0);
-        }
-
-        irq::wait(self.irq, timeout_ms)?;
-        let status = self.mmio.read16(REG_ISR);
-        // Clear ISR bits by writing 1s
-        self.mmio.write16(REG_ISR, status);
-        let _ = irq::ack(self.irq);
-
-        Ok(status)
     }
 
     /// Shuts down the receiver and transmitter.

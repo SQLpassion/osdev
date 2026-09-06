@@ -4,7 +4,7 @@ This document explains KAOS's user-space driver architecture from first principl
 
 The architecture went through an important evolution that this revision of the document reflects. Originally, a NIC driver was launched directly from the shell, which then blocked until the driver process exited — the shell and the driver shared a single, synchronous, foreground relationship, much like running `ls` in a Unix terminal and waiting for it to return. That model is gone. A KAOS NIC driver today is a permanent background service: once started, it registers itself under a well-known name, then loops forever, and no other process ever waits for it to finish. Applications that want to use the network — `net-tools.bin` is the concrete example this document follows end to end — locate the driver by name while it is already running, and exchange data with it across the Ring 3/Ring 3 process boundary using a small, dedicated set of kernel syscalls that copy raw Ethernet frames back and forth. Understanding *that* mechanism — how two independent, mutually distrusting processes cooperate to move packets without ever sharing memory — is the main new content in this revision.
 
-The concrete hardware example throughout is the Realtek RTL8139 network driver, one of two NIC drivers that exist in this codebase today (the other being an Intel Gigabit Ethernet driver covering the 82577LM/I219-V family). Both are ordinary Ring 3 processes that retain controlled access to PCI hardware, MMIO registers, DMA memory, and interrupts, and both share almost all of their infrastructure through a common runtime crate. The protocol stack the drivers hand frames to — Ethernet, ARP, IPv4, and ICMP — is documented separately in [`docs/networking.md`](networking.md), since it is hardware-agnostic and lives in its own crate, `lib_net`. That document's §9 in particular already covers the client-side view of the app↔driver conversation in detail; this document approaches the same conversation from the driver-lifecycle and kernel-mechanism side, and the two are meant to be read together.
+The concrete hardware example throughout is the Realtek RTL8139 network driver, one of two NIC drivers that exist in this codebase today (the other being an Intel Gigabit Ethernet driver covering the 82577LM/I219-V family). Both are ordinary Ring 3 processes that retain controlled access to PCI hardware, MMIO registers, and DMA memory, and both share almost all of their infrastructure through a common runtime crate. The protocol stack the drivers hand frames to — Ethernet, ARP, IPv4, and ICMP — is documented separately in [`docs/networking.md`](networking.md), since it is hardware-agnostic and lives in its own crate, `lib_net`. That document's §9 in particular already covers the client-side view of the app↔driver conversation in detail; this document approaches the same conversation from the driver-lifecycle and kernel-mechanism side, and the two are meant to be read together.
 
 The most important implementation files are:
 
@@ -12,8 +12,7 @@ The most important implementation files are:
 * [`kernel/src/drivers/driver_db.rs`](../kernel/src/drivers/driver_db.rs) — PCI-device-to-driver-name binding and grant derivation
 * [`kernel/src/drivers/registry.rs`](../kernel/src/drivers/registry.rs) — the name registry and per-driver packet rings
 * [`kernel/src/syscall/dispatch/driver.rs`](../kernel/src/syscall/dispatch/driver.rs) — every driver-related syscall implementation
-* [`kernel/src/drivers/irq_bridge.rs`](../kernel/src/drivers/irq_bridge.rs) — hardware interrupt delivery to a Ring 3 task
-* [`lib_driver`](../lib_driver/src/lib.rs) — the user-space wrapper crate (`Mmio`, `Dma`, `Irq`, `drv`, `client`)
+* [`lib_driver`](../lib_driver/src/lib.rs) — the user-space wrapper crate (`Mmio`, `Dma`, `drv`, `client`)
 * [`lib_driver_runtime`](../lib_driver_runtime/src/lib.rs) — PCI discovery helpers and the shared background event loop
 * [`drivers/rtl8139`](../drivers/rtl8139/src/rtl8139.rs) and [`drivers/intel_nic`](../drivers/intel_nic/src/intel_nic.rs) — the two concrete driver binaries
 * [`user_programs/drivers`](../user_programs/drivers/src/main.rs) — `DRIVERS.BIN`, the driver lifecycle manager
@@ -41,13 +40,13 @@ Ring 3
   then returns to its own prompt        then loops forever
              |                                  |
              | SpawnDriver                      | MapPhysical / AllocDma
-             | plus exact grants                | IrqSubscribe / DrvRegister
+             | plus exact grants                | DrvRegister
              | (does not wait)                   | NetRecv / NetSend / DrvPublishStatus
              v                                  v
 ---------------------------- syscall boundary ----------------------------
 Ring 0
 
-  capability checks -> paging -> PMM -> IRQ bridge -> hardware
+  capability checks -> paging -> PMM -> hardware
   driver registry (name -> task id, packet rings, status snapshot)
 
              ^
@@ -64,7 +63,7 @@ The essential idea is that a driver does not receive unrestricted "hardware acce
 
 ## 2. The Four Hardware Concepts Behind the Design
 
-Four concepts carry almost the entire hardware-facing half of the implementation: PCI, BAR/MMIO, DMA, and IRQ. They describe different aspects of communication between the CPU and a device, and they are identical regardless of which of the two concrete drivers you are reading.
+Three concepts carry almost the entire hardware-facing half of the implementation: PCI, BAR/MMIO, and DMA. They describe different aspects of communication between the CPU and a device, and they are identical regardless of which of the two concrete drivers you are reading. A fourth concept, IRQs, is covered briefly below for background — the kernel uses it for its own devices (the timer, the keyboard, the primary ATA controller) — but neither NIC driver in this codebase uses it at all; §9 explains why.
 
 ### 2.1 PCI and Device Identity
 
@@ -120,9 +119,9 @@ The RTL8139 also requires physically contiguous memory. Several consecutive virt
 
 ### 2.4 IRQs and EOI
 
-An Interrupt Request, or IRQ, is an asynchronous signal from a device to the CPU. Instead of continuously inspecting a register, the CPU can perform other work and be interrupted when the device needs attention. The legacy PIC used by this system manages 16 IRQ lines, mapped to IDT vectors 32 through 47.
+An Interrupt Request, or IRQ, is an asynchronous signal from a device to the CPU. Instead of continuously inspecting a register, the CPU can perform other work and be interrupted when the device needs attention. The legacy PIC used by this system manages 16 IRQ lines, mapped to IDT vectors 32 through 47. After an interrupt has been serviced, software must issue an End Of Interrupt, or EOI, to tell the PIC that the line may be used again; the kernel's own interrupt dispatcher (`arch::interrupts::dispatch_irq`) handles this for every IRQ it services — the timer, the keyboard, and the primary ATA controller among them.
 
-After an interrupt has been serviced, software must issue an End Of Interrupt, or EOI, to tell the PIC that the line may be used again. A user-space driver cannot issue this EOI immediately in the first Ring 0 handler. The Ring 3 process must first inspect and acknowledge the interrupt reason in the device itself. Otherwise the device may continue asserting the line and immediately trigger another interrupt. The full mechanism is described in §9; as that section notes, the running drivers actually poll rather than wait on this mechanism today, so it is present and tested infrastructure rather than something exercised on every packet.
+Neither NIC driver in this codebase uses interrupts at all, and the kernel exposes no syscall path that would let a Ring 3 driver subscribe to one. §9 explains why polling, not interrupt-driven I/O, is the design this codebase actually uses.
 
 ---
 
@@ -168,7 +167,7 @@ This table exists purely to give the user a friendly, specific error message —
 Once a match is found, `load_driver()` spawns the driver and, critically, does not wait for it:
 
 ```rust
-let caps = 1 | 2; // MMIO (1) | IRQ (2)
+let caps = 1; // MMIO (1)
 
 // Step 5: spawn in the background -- no process::wait() call.
 match lib_driver::spawn::spawn_driver(canonical_name, caps, None) {
@@ -186,7 +185,7 @@ match lib_driver::spawn::spawn_driver(canonical_name, caps, None) {
 
 The `drivers>` prompt returns immediately, the way a `list` or `help` command would. If the user then types `exit` inside `drivers.bin` to return to the shell, the driver keeps running exactly as before — `drivers.bin`'s own `exit` command terminates only its own REPL task; the driver it started earlier is a completely independent, unrelated scheduled task, and nothing about exiting `drivers.bin` touches it in any way. The only way to stop a running driver from inside KAOS is the explicit `unload <name>` command described in §20, which maps to a deliberate hard kill (§15).
 
-`None` is passed as the resource-grant argument for the same reason it always was: an unprivileged caller could never be trusted to compute its own MMIO/IRQ grant, since a wrong or dishonest value would just be a physical address the caller chose for itself. `derive_grants()`, in [`kernel/src/drivers/driver_db.rs`](../kernel/src/drivers/driver_db.rs), resolves the binary name against the kernel's own driver table, atomically reserves the matching PCI device against a second, concurrent `SpawnDriver` call for the same binary, enables that device's PCI Command Register bits, and only then builds the grant from the device's own BARs and interrupt line. Nothing about the grant ever originates in user space. §6 covers the exact syscall mechanics of `SpawnDriver` in full.
+`None` is passed as the resource-grant argument for the same reason it always was: an unprivileged caller could never be trusted to compute its own MMIO grant, since a wrong or dishonest value would just be a physical address the caller chose for itself. `derive_grants()`, in [`kernel/src/drivers/driver_db.rs`](../kernel/src/drivers/driver_db.rs), resolves the binary name against the kernel's own driver table, atomically reserves the matching PCI device against a second, concurrent `SpawnDriver` call for the same binary, enables that device's PCI Command Register bits, and only then builds the grant from the device's own BARs. Nothing about the grant ever originates in user space. §6 covers the exact syscall mechanics of `SpawnDriver` in full.
 
 ---
 
@@ -200,7 +199,6 @@ pub struct Capabilities(u32);
 impl Capabilities {
     pub const NONE: Self = Self(0);
     pub const MMIO: Self = Self(1 << 0);
-    pub const IRQ: Self = Self(1 << 1);
     pub const SPAWN_DRIVER: Self = Self(1 << 2);
     pub const UNLOAD_DRIVER: Self = Self(1 << 3);
     pub const LIST_DRIVERS: Self = Self(1 << 4);
@@ -208,7 +206,6 @@ impl Capabilities {
 
 pub struct ResourceGrants {
     pub mmio_regions: Vec<(u64, u64)>,
-    pub irqs: Vec<u8>,
     pub mmio_bump: u64,
 }
 ```
@@ -236,7 +233,7 @@ let grant_matched = caps.grants.mmio_regions.iter().any(|&(base, len)| {
 
 A partial overlap is insufficient. The entire requested physical range must fit inside one grant. `checked_add` prevents an integer overflow from wrapping a very large end address back into a small number.
 
-`UNLOAD_DRIVER` and `LIST_DRIVERS` are a later addition to this same set, and their purpose is narrower and more specific than `MMIO`/`IRQ`: they gate `DrvUnload` and enumeration of the driver registry respectively (§13, §20), and neither one is ever handed to a spawned driver itself — only to `DRIVERS.BIN`, by delegation, at `Exec` time (§21). `Capabilities::from_bits_truncate()` masks out any bit the caller didn't legitimately request, and a second mask, `driver_db::DRIVER_GRANTABLE_CAPS`, further restricts what `SpawnDriver` itself will ever attach to a *driver* task — that mask is exactly `MMIO | IRQ`, so a driver process can never end up holding `SPAWN_DRIVER`, `UNLOAD_DRIVER`, or `LIST_DRIVERS` no matter what it asks for, closing off any possibility of a compromised driver spawning further drivers or unloading its siblings.
+`UNLOAD_DRIVER` and `LIST_DRIVERS` are a later addition to this same set, and their purpose is narrower and more specific than `MMIO`: they gate `DrvUnload` and enumeration of the driver registry respectively (§13, §20), and neither one is ever handed to a spawned driver itself — only to `DRIVERS.BIN`, by delegation, at `Exec` time (§21). `Capabilities::from_bits_truncate()` masks out any bit the caller didn't legitimately request, and a second mask, `driver_db::DRIVER_GRANTABLE_CAPS`, further restricts what `SpawnDriver` itself will ever attach to a *driver* task — that mask is exactly `MMIO`, so a driver process can never end up holding `SPAWN_DRIVER`, `UNLOAD_DRIVER`, or `LIST_DRIVERS` no matter what it asks for, closing off any possibility of a compromised driver spawning further drivers or unloading its siblings.
 
 Capabilities belong to scheduler tasks. Because `TaskEntry` is copyable, it stores a raw pointer rather than a `Box<DriverCaps>`:
 
@@ -260,26 +257,23 @@ pub enum SyscallId {
     // Existing syscalls 0..29
     MapPhysical      = 30,
     UnmapPhysical    = 31,
-    IrqSubscribe     = 32,
-    IrqWait          = 33,
-    IrqAck           = 34,
-    SpawnDriver      = 35,
-    AllocDma         = 36,
-    FreeDma          = 37,
-    VirtToPhys       = 38,
-    DrvRegister      = 39,
-    DrvLookup        = 40,
-    NetSend          = 41,
-    NetRecv          = 42,
-    DrvPublishStatus = 43,
-    DrvQuery         = 44,
-    DrvUnload        = 45,
-    DrvListCount     = 46,
-    DrvListEntry     = 47,
+    SpawnDriver      = 32,
+    AllocDma         = 33,
+    FreeDma          = 34,
+    VirtToPhys       = 35,
+    DrvRegister      = 36,
+    DrvLookup        = 37,
+    NetSend          = 38,
+    NetRecv          = 39,
+    DrvPublishStatus = 40,
+    DrvQuery         = 41,
+    DrvUnload        = 42,
+    DrvListCount     = 43,
+    DrvListEntry     = 44,
 }
 ```
 
-The first nine numbers (30–38) are the original hardware-access primitives this document covers in §7–§9: mapping BARs, subscribing to interrupts, and managing DMA memory. The remaining nine (39–47) are the driver-naming and packet-transport layer that turns a running driver into an addressable service — §13 covers every one of them in detail, and §20 covers the three list/unload calls specifically in the context of `DRIVERS.BIN`.
+The first six numbers (30–35) are the original hardware-access primitives this document covers in §7–§8: mapping BARs and managing DMA memory. The remaining nine (36–44) are the driver-naming and packet-transport layer that turns a running driver into an addressable service — §13 covers every one of them in detail, and §20 covers the three list/unload calls specifically in the context of `DRIVERS.BIN`.
 
 [`lib_driver/src/raw.rs`](../lib_driver/src/raw.rs) provides small assembly stubs for one, two, three, or four parameters. A three-argument call is implemented as follows:
 
@@ -429,53 +423,13 @@ The RTL8139 has 32-bit DMA address registers, so the code casts physical address
 
 ---
 
-## 9. Bridging an Interrupt to a Sleeping Process
+## 9. Why KAOS NIC Drivers Poll Instead of Using Interrupts
 
-The IRQ bridge in [`kernel/src/drivers/irq_bridge.rs`](../kernel/src/drivers/irq_bridge.rs) connects two very different execution contexts. A hardware interrupt must do as little work as possible: it cannot take blocking locks, allocate from the heap, or run a network stack. A normal process, however, may sleep and later execute complex Rust code.
+An earlier version of this codebase had a full hardware-IRQ bridge for Ring-3 drivers: a kernel module mapping PIC lines to waiting driver tasks, three syscalls (`IrqSubscribe`/`IrqWait`/`IrqAck`), a top-half trampoline, a watchdog that forced an EOI if a driver task sat on an in-service line too long, and matching subscribe/wait calls in both `Rtl8139Device` and `IntelNicDevice`. It was fully wired up and covered by its own kernel test — and neither driver's background event loop (§12) ever actually called into it on the receive path. Both drivers polled `poll_next_packet()` every loop iteration regardless, which is the only thing that ever drove a received frame through the system. The interrupt subscription, once established at startup, sat unused for the rest of the driver's life.
 
-There is one static `IrqBinding` for every PIC line:
+That mismatch — real infrastructure, zero runtime benefit — is exactly the kind of complexity worth removing rather than working around, so the bridge, its syscalls, and the drivers' own subscribe calls were deleted outright. What remains is simple: a NIC driver's background loop (§12) polls `poll_next_packet()` once per iteration, `yield_now()`s, and repeats. There is no notion of "waiting for a packet" anywhere in this codebase's networking path — an idle NIC driver still cycles through its loop and checks hardware every scheduler slice, at whatever rate cooperative scheduling grants it a turn.
 
-```rust
-pub struct IrqBinding {
-    pub task_id: AtomicUsize,
-    pub pending: AtomicBool,
-    pub waitq: SingleWaitQueue,
-}
-```
-
-`IrqSubscribe` claims a slot through `compare_exchange(0, task_id, ...)`, ensuring exclusive ownership. The kernel then registers a generic trampoline. When the interrupt arrives, this minimal top half only sets the pending flag and wakes the wait queue:
-
-```rust
-pub fn driver_irq_trampoline(
-    vector: u8,
-    regs: &mut SavedRegisters,
-) -> *mut SavedRegisters {
-    let idx = match irq_to_index(vector) {
-        Some(index) => index,
-        None => return regs as *mut SavedRegisters,
-    };
-
-    let binding = &IRQ_BINDINGS[idx];
-    binding.pending.store(true, Ordering::Release);
-    wake_all_single(&binding.waitq);
-    regs as *mut SavedRegisters
-}
-```
-
-The Release and Acquire orderings ensure that the awakened context observes the pending-state change. `IrqWait` first uses `swap(false, ...)` to consume an already pending event. An interrupt is therefore not lost merely because it arrived just before the syscall.
-
-If no event is pending, the task registers with the wait queue and yields the CPU. After waking, it checks again. This loop matters because being awakened is not, by itself, proof that the expected interrupt is pending.
-
-The ordinary interrupt dispatcher automatically sends an EOI for PIC interrupts. Driver-owned interrupts are excluded, so the driver itself must acknowledge the device before the kernel releases the PIC line:
-
-```rust
-irq::wait(self.irq, timeout_ms)?;
-let status = self.mmio.read16(REG_ISR);
-self.mmio.write16(REG_ISR, status);
-irq::ack(self.irq)?;
-```
-
-This entire mechanism is present, wired up during RTL8139 initialization, and covered by its own kernel test — but, as §12 will show, the background event loop that both drivers actually run today does not call `wait_irq()` at all. It polls the hardware directly instead. The IRQ bridge is therefore correctly-functioning infrastructure that the current receive path simply does not exercise; §18 returns to why that is a real, if minor, missed efficiency rather than a bug.
+This is a deliberate trade-off, not an oversight: polling is trivial to reason about and test, has no risk of a wedged PIC line or a missed wakeup, and this codebase's own goal is to be understandable end to end rather than maximally efficient. The concrete cost is CPU time spent on `poll_next_packet()` calls that find nothing, on every driver, on every scheduler slice, forever — §18 returns to this. A future version wanting genuine interrupt-driven RX would need to reintroduce a mechanism along these lines; nothing about that would need to be novel, since the shape of it (a top-half trampoline, a per-line wait queue, a way to defer EOI until a Ring-3 handler has serviced the device) is well understood prior art in this kind of kernel — it just is not present today.
 
 ---
 
@@ -514,7 +468,7 @@ mmio.write32(REG_RCR, rcr);
 
 This accepts all packets, packets matching the physical MAC, multicast, and broadcast. `RCR_WRAP` enables ring-buffer wraparound. Because `AAP` already accepts everything, the software network stack performs an additional destination-MAC check.
 
-If the device has a valid IRQ and subscription succeeds, the driver enables receive and transmit success and error interrupts (this is the subscription the previous section described as currently unused by the receive path). Finally, it sets the receiver-enable and transmitter-enable bits in `CHIPCMD`.
+The driver does not subscribe to the device's hardware IRQ line at all — §9 explains why — so `REG_IMR` (the interrupt mask register) is left at its post-reset default of "everything masked." Finally, the driver sets the receiver-enable and transmitter-enable bits in `CHIPCMD`.
 
 ---
 
@@ -655,7 +609,7 @@ Two design decisions here are worth calling out explicitly, because they are eas
 
 ### 13.1 Registering and Resolving a Name
 
-`DrvRegister` (syscall 39) and `DrvLookup` (syscall 40) are the pair that turn a plain kernel `Vec` into something an application can use. Registering is deliberately the more restricted of the two:
+`DrvRegister` (syscall 36) and `DrvLookup` (syscall 37) are the pair that turn a plain kernel `Vec` into something an application can use. Registering is deliberately the more restricted of the two:
 
 ```rust
 pub fn syscall_drv_register_impl(name_ptr: u64, name_len: u64) -> SyscallResult<u64> {
@@ -681,7 +635,7 @@ pub fn syscall_drv_lookup_impl(name_ptr: u64, name_len: u64) -> SyscallResult<u6
 
 ### 13.2 Sending and Receiving Packets: the Role-Based Direction Rule
 
-The single most important, and least obvious, design decision in this whole layer is that there are only two packet-transport syscalls, `NetSend` (41) and `NetRecv` (42), not four. A naive design would have separate "send to driver" / "receive from driver" calls for an application and separate "send to app" / "receive from app" calls for the driver. KAOS instead gives both roles the same two syscalls, and lets the *direction* of the copy be decided by comparing the calling task's own identity to the `driver_id` argument:
+The single most important, and least obvious, design decision in this whole layer is that there are only two packet-transport syscalls, `NetSend` (38) and `NetRecv` (39), not four. A naive design would have separate "send to driver" / "receive from driver" calls for an application and separate "send to app" / "receive from app" calls for the driver. KAOS instead gives both roles the same two syscalls, and lets the *direction* of the copy be decided by comparing the calling task's own identity to the `driver_id` argument:
 
 ```rust
 // kernel/src/syscall/dispatch/driver.rs, doc comment on NetSend:
@@ -712,7 +666,7 @@ pub fn push_packet(driver_id: usize, caller_is_driver: bool, data: &[u8]) -> Res
 
 Once this rule clicks, both call sites in this document read naturally. When `net-tools.bin` calls `NetSend` with the driver's id, its own tid is obviously not equal to the driver's, so the frame lands in the driver's TX ring — literally "transmit," from the driver's point of view, which is exactly where §12's Step 1 drains it from. When the driver itself, inside its own background loop, calls `NetSend` on its own id (`lib_driver::drv::net_send(own_id, &rx_buf[..len])` in §12's Step 2), its tid trivially equals `driver_id`, so the very same syscall instead lands the frame in the driver's RX ring — "receive," again from the driver's point of view, which is where an application's own `NetRecv` call goes looking for it. One syscall, one small equality check, and both halves of a bidirectional channel fall out of it without ever needing a notion of "the other side's identity" more complicated than a task id comparison.
 
-`NetRecv` mirrors this exactly, popping from the *opposite* ring `NetSend` would have pushed into for the same `caller_is_driver` value, and adds one more piece of behavior worth knowing precisely because it deliberately breaks with a convention already established elsewhere in this codebase. `IrqWait`'s `timeout_ms == 0` means "wait forever" (§9). `NetRecv`'s `timeout_ms == 0` means the opposite: poll the ring exactly once, and return `SysError::Timeout` immediately if it was empty. This is not an oversight; it exists because the driver's own background loop (§12, Step 1) calls `net_recv(own_id, &mut tx_buf, 0)` in a `while let Ok(len) = ...` drain loop specifically because it must never block there even for a moment — a driver that blocked waiting for an application to send it something would stop servicing hardware RX and status publishing for as long as no application had anything to say. A non-zero `timeout_ms` does support a genuine bounded wait, but even that is implemented without ever calling the scheduler's ordinary `block_task()` — a blocked task only resumes when something else unblocks it, which would defeat a timeout entirely if no producer ever shows up. Instead, the kernel busy-polls cooperatively, calling `scheduler::yield_now()` in a loop and checking the ring again after every yield, until either a packet appears or a `RDTSC`-based deadline passes:
+`NetRecv` mirrors this exactly, popping from the *opposite* ring `NetSend` would have pushed into for the same `caller_is_driver` value, and adds one more piece of behavior worth knowing precisely: `timeout_ms == 0` means "poll the ring exactly once, and return `SysError::Timeout` immediately if it was empty" — not "wait forever." This is not an oversight; it exists because the driver's own background loop (§12, Step 1) calls `net_recv(own_id, &mut tx_buf, 0)` in a `while let Ok(len) = ...` drain loop specifically because it must never block there even for a moment — a driver that blocked waiting for an application to send it something would stop servicing hardware RX and status publishing for as long as no application had anything to say. A non-zero `timeout_ms` does support a genuine bounded wait, but even that is implemented without ever calling the scheduler's ordinary `block_task()` — a blocked task only resumes when something else unblocks it, which would defeat a timeout entirely if no producer ever shows up. Instead, the kernel busy-polls cooperatively, calling `scheduler::yield_now()` in a loop and checking the ring again after every yield, until either a packet appears or a `RDTSC`-based deadline passes:
 
 ```rust
 let ticks_per_ms = time::tsc_ticks_per_us().saturating_mul(1000);
@@ -735,7 +689,7 @@ The underlying `PacketRing` itself never blocks either, in either direction: `pu
 
 ### 13.3 Status Publishing: `DrvPublishStatus` and `DrvQuery`
 
-Raw packets alone would let an application send and receive Ethernet frames, but §14's walkthrough of `net-tools.bin` needs more than that before it can even construct its first frame: it needs to know the driver's MAC address, its configured IP address, subnet mask, gateway, and DNS server, and — for the `arp` command — the driver's currently resolved ARP table. `DrvPublishStatus` (43) and `DrvQuery` (44) exist purely to carry this snapshot across the process boundary, following the same "the kernel is the mailbox, nothing is ever shared" rule as the packet rings.
+Raw packets alone would let an application send and receive Ethernet frames, but §14's walkthrough of `net-tools.bin` needs more than that before it can even construct its first frame: it needs to know the driver's MAC address, its configured IP address, subnet mask, gateway, and DNS server, and — for the `arp` command — the driver's currently resolved ARP table. `DrvPublishStatus` (40) and `DrvQuery` (41) exist purely to carry this snapshot across the process boundary, following the same "the kernel is the mailbox, nothing is ever shared" rule as the packet rings.
 
 The driver publishes a complete `UserDriverStatus` struct once per loop iteration (§12, Step 3), and any application can request the latest snapshot at any time:
 
@@ -759,7 +713,7 @@ pub struct UserDriverStatus {
 }
 ```
 
-The explicit `_padding` fields exist for exactly the reason `UserDriverGrants`'s padding does elsewhere in this codebase: this struct is copied wholesale, byte for byte, across the syscall boundary with `read_unaligned`/a raw pointer write, so its layout must be identical and predictable on both sides regardless of what the Rust compiler might otherwise choose to do with alignment. `build_status()`, in [`lib_driver_runtime/src/repl.rs`](../lib_driver_runtime/src/repl.rs), constructs one of these from the driver's live `NetworkStack` every iteration, truncating the ARP table to `MAX_ARP_ENTRIES` (16) if it happens to hold more resolved hosts than that, and always reporting `link_up: 1` — an honest limitation the code's own comment acknowledges: `NicDevice` has no link-state query at all today, so "the interface reached its background loop, meaning hardware initialization already succeeded" is the best proxy for "link up" currently available.
+The explicit `_padding` fields exist for exactly the reason `UserDriverInfo`'s padding does elsewhere in this codebase: this struct is copied wholesale, byte for byte, across the syscall boundary with `read_unaligned`/a raw pointer write, so its layout must be identical and predictable on both sides regardless of what the Rust compiler might otherwise choose to do with alignment. `build_status()`, in [`lib_driver_runtime/src/repl.rs`](../lib_driver_runtime/src/repl.rs), constructs one of these from the driver's live `NetworkStack` every iteration, truncating the ARP table to `MAX_ARP_ENTRIES` (16) if it happens to hold more resolved hosts than that, and always reporting `link_up: 1` — an honest limitation the code's own comment acknowledges: `NicDevice` has no link-state query at all today, so "the interface reached its background loop, meaning hardware initialization already succeeded" is the best proxy for "link up" currently available.
 
 `DrvPublishStatus` requires the caller to already be registered — it looks itself up by the calling task's own tid, and fails if no `DriverEntry` exists for it, which in practice can only happen if a task calls it without ever having called `DrvRegister` first. `DrvQuery`, symmetrically with `DrvLookup`, is callable by anyone and simply returns `InvalidArg` if the named driver id has never published anything yet.
 
@@ -875,7 +829,7 @@ pub fn shutdown(&mut self) {
 
 The honest thing to say about this method today is that nothing in the normal running path ever calls it. This is a direct, structural consequence of §12's architecture: `run_background_driver()` is declared to return `!` and, true to that promise, never does under normal operation. There is no `exit`/`quit` command inside a driver process at all anymore — unlike the shell or `net-tools.bin`, a NIC driver simply has no code path that leads back out of its own infinite loop. `process::exit()` itself has return type `!` and performs no Rust stack unwinding when called, so even if some future code path did call it, local variables — including a `device: Rtl8139Device` sitting on `run_background_driver()`'s own stack frame — would not be dropped through the ordinary route in any case.
 
-The only way a driver task ever stops today is `DrvUnload` (syscall 45), and it is deliberately, explicitly documented as a hard kill rather than a cooperative shutdown request:
+The only way a driver task ever stops today is `DrvUnload` (syscall 42), and it is deliberately, explicitly documented as a hard kill rather than a cooperative shutdown request:
 
 ```rust
 pub fn syscall_drv_unload_impl(name_ptr: u64, name_len: u64) -> SyscallResult<u64> {
@@ -883,8 +837,8 @@ pub fn syscall_drv_unload_impl(name_ptr: u64, name_len: u64) -> SyscallResult<u6
     let tid = registry::lookup(&name_buf[..name_len]).ok_or(SyscallError::InvalidArg)?;
 
     // Step 4: hard-kill the task. `terminate_task` -> `remove_task` already
-    // releases this driver's registry entry, MMIO/DMA allocations, IRQ
-    // binding, and PCI device reservation.
+    // releases this driver's registry entry, MMIO/DMA allocations, and PCI
+    // device reservation.
     if !scheduler::terminate_task(tid) {
         return Err(SyscallError::InvalidArg);
     }
@@ -892,7 +846,7 @@ pub fn syscall_drv_unload_impl(name_ptr: u64, name_len: u64) -> SyscallResult<u6
 }
 ```
 
-`terminate_task()` reaches the scheduler's single common cleanup path, `remove_task()`, the same choke point reached whether a task exits normally, crashes, or is killed like this. That one function is what actually calls `driver_db::release_task()` (releasing the PCI device reservation so a future `load` can reclaim it), `irq_bridge::release_task()` (freeing an IRQ subscription slot), and `registry::release_task()` (removing the now-dead entry from the very registry §13 describes, so a stale `DrvLookup` can never resolve to a task id that no longer exists) — plus the ordinary VMM teardown that reclaims every PMM-owned frame the task's address space still referenced, including its DMA buffers. What none of this does is run a single instruction of the driver's own code: `shutdown()` is never invoked, so the NIC itself is never told to stop, its receiver and interrupt mask are never disabled, and if it was mid-transmission when the kill happened, the hardware's own view of its DMA buffers becomes stale the instant those physical frames are returned to the PMM's free list and handed to something else.
+`terminate_task()` reaches the scheduler's single common cleanup path, `remove_task()`, the same choke point reached whether a task exits normally, crashes, or is killed like this. That one function is what actually calls `driver_db::release_task()` (releasing the PCI device reservation so a future `load` can reclaim it) and `registry::release_task()` (removing the now-dead entry from the very registry §13 describes, so a stale `DrvLookup` can never resolve to a task id that no longer exists) — plus the ordinary VMM teardown that reclaims every PMM-owned frame the task's address space still referenced, including its DMA buffers. What none of this does is run a single instruction of the driver's own code: `shutdown()` is never invoked, so the NIC itself is never told to stop, its receiver and interrupt mask are never disabled, and if it was mid-transmission when the kill happened, the hardware's own view of its DMA buffers becomes stale the instant those physical frames are returned to the PMM's free list and handed to something else.
 
 §18 discusses the resulting risk in the context of KAOS's other DMA-safety limitations; the short version repeated here for completeness is that this is a known, accepted gap rather than an oversight, and building a cooperative shutdown protocol — a dedicated syscall a driver polls for, mirrored by `unload` waiting for an acknowledgement before killing the task — remains future work.
 
@@ -901,8 +855,8 @@ The ownership picture, updated for the current architecture, looks like this:
 ```text
 TaskEntry
   `-- DriverCaps
-        |-- capability bits (MMIO | IRQ, only)
-        `-- MMIO and IRQ grants
+        |-- capability bits (MMIO only)
+        `-- MMIO grants
 
 Rtl8139Device (never dropped in the normal, no-exit run path)
   |-- Mmio         --Drop, if ever reached--> UnmapPhysical
@@ -911,7 +865,6 @@ Rtl8139Device (never dropped in the normal, no-exit run path)
 
 DrvUnload -> scheduler::terminate_task -> remove_task
   |-- driver_db::release_task    (PCI device reservation)
-  |-- irq_bridge::release_task   (IRQ subscription slot)
   |-- registry::release_task     (name -> tid entry, packet rings, status)
   `-- VMM teardown                (every PMM-owned frame, including DMA)
 ```
@@ -945,7 +898,7 @@ QEMU is given an emulated RTL8139 device (and, depending on configuration, an em
 
 The test suite mirrors the architecture's layers closely. [`capabilities_test.rs`](../kernel/tests/capabilities_test.rs) checks bit operations, the capability-free initial state of ordinary tasks, and attachment and cleanup of a `DriverCaps` block.
 
-[`driver_mmio_test.rs`](../kernel/tests/driver_mmio_test.rs) simulates tasks with and without MMIO authority, verifying rejection of missing capabilities, incorrect physical ranges, zero lengths, and overflowing addresses, plus the successful bump-pointer-advance-and-unmap case. [`driver_irq_test.rs`](../kernel/tests/driver_irq_test.rs) ensures that only the owner can subscribe to and acknowledge an IRQ line, that a second task cannot claim the same line, and exercises the trampoline's pending-event path directly. [`driver_spawn_test.rs`](../kernel/tests/driver_spawn_test.rs) checks missing `SPAWN_DRIVER` authority, invalid user pointers, the exact ABI layout of `UserDriverGrants`, that `SPAWN_DRIVER` itself is masked out of a spawned driver's capabilities, and that the driver database resolves registered binaries case-insensitively while rejecting unregistered ones. [`driver_rtl8139_test.rs`](../kernel/tests/driver_rtl8139_test.rs) combines MMIO, IRQ, and DMA in a simulated RTL8139 task, importing the real network modules through `#[path]` so the same parsers and serializers run in ordinary host unit tests and inside the QEMU kernel test environment alike.
+[`driver_mmio_test.rs`](../kernel/tests/driver_mmio_test.rs) simulates tasks with and without MMIO authority, verifying rejection of missing capabilities, incorrect physical ranges, zero lengths, and overflowing addresses, plus the successful bump-pointer-advance-and-unmap case. [`driver_spawn_test.rs`](../kernel/tests/driver_spawn_test.rs) checks missing `SPAWN_DRIVER` authority, invalid user pointers, the exact ABI layout of `UserDriverGrants`, that `SPAWN_DRIVER` itself is masked out of a spawned driver's capabilities, and that the driver database resolves registered binaries case-insensitively while rejecting unregistered ones. [`driver_rtl8139_test.rs`](../kernel/tests/driver_rtl8139_test.rs) combines MMIO and DMA in a simulated RTL8139 task, importing the real network modules through `#[path]` so the same parsers and serializers run in ordinary host unit tests and inside the QEMU kernel test environment alike.
 
 The registry and IPC layer §13 describes has its own dedicated coverage: [`driver_registry_test.rs`](../kernel/tests/driver_registry_test.rs) exercises `DrvRegister`/`DrvLookup` directly — duplicate names, a full registry, the capability gate on registration, and the asymmetric "lookup needs no capability" rule. [`net_ring_test.rs`](../kernel/tests/net_ring_test.rs) drives `NetSend`/`NetRecv` against a single simulated task context, including the role-based direction rule and ring backpressure once `RING_CAPACITY` is exceeded. [`net_ring_wakeup_test.rs`](../kernel/tests/net_ring_wakeup_test.rs) goes further and proves the bounded-wait path in §13.2 genuinely works under real preemptive scheduling — a producer task and a blocked-with-timeout `NetRecv` caller both run as real, separately scheduled tasks, since a cooperative `yield_now()`-based poll loop cannot be exercised meaningfully any other way. [`driver_status_test.rs`](../kernel/tests/driver_status_test.rs) covers `DrvPublishStatus`/`DrvQuery`, including the `arp_entry_count` bounds check that protects `DrvQuery` consumers from an out-of-range read. [`driver_unload_test.rs`](../kernel/tests/driver_unload_test.rs) and [`driver_background_loop_test.rs`](../kernel/tests/driver_background_loop_test.rs) round this out: the former exercises `DrvUnload`'s authorization and its full cleanup fan-out through `remove_task`, and the latter — whose own header comment explains why it exists in this particular shape — replicates `run_background_driver()`'s exact steps directly against real kernel syscalls, since the function itself cannot easily be called from a test harness (it never returns, by design).
 
@@ -967,7 +920,7 @@ The MMIO bump allocator never reuses virtual holes. A long-lived process that re
 
 The `flags` parameter of `MapPhysical` is documented as reserved but is not currently required to be zero. It has no effect today, but it should be validated before future semantics are assigned to those bits.
 
-`IrqWait` accepts a timeout in milliseconds and passes it into the bridge, but the bridge currently ignores it. A nonzero timeout therefore does not time out. More significantly, as §9 and §12 both note, neither concrete driver's background event loop actually calls `wait_irq()` in its receive path at all — the IRQ subscription happens during initialization and is fully wired up and tested, but the running loop polls hardware directly instead of sleeping until an interrupt wakes it. This means the IRQ bridge, while functionally correct, does not currently reduce CPU use in either running driver; a driver spends CPU time every scheduler slice checking `poll_next_packet()` regardless of whether a frame has actually arrived.
+As §9 describes, neither NIC driver uses hardware interrupts at all — both poll `poll_next_packet()` every scheduler slice regardless of whether a frame has actually arrived. This is a deliberate simplicity trade-off, but it does mean an idle NIC driver still burns a full scheduling turn every cycle checking hardware that has nothing new to report.
 
 In the transmit path, the descriptor wait loop expires after 10,000 iterations without returning an error; the code still writes the slot and starts transmission regardless. It also reports at least 60 bytes for short Ethernet frames without explicitly zeroing the additional bytes before every transmission — data left over from a previous use of that slot could in principle be emitted as Ethernet padding, though `lib_net` itself always hands the driver a frame it has already zero-padded correctly (`docs/networking.md` §3.1), so this is currently a latent risk rather than an observed one.
 
@@ -981,13 +934,13 @@ Finally, QEMU networking depends on host configuration. `en0` is not the active 
 
 During boot, the kernel scans the PCI bus. It reads vendor IDs, device IDs, BARs, and IRQ lines. QEMU provides emulated RTL8139 and/or Intel NIC hardware for the guest to find there.
 
-At some later point, the user runs `drivers.bin` from the shell — an `Exec` call that, uniquely for this one binary name, delegates `SPAWN_DRIVER`, `UNLOAD_DRIVER`, and `LIST_DRIVERS` to it (§21). Inside its own tiny REPL, the user types `load rtl8139.drv`. `DRIVERS.BIN` resolves that name against its own PCI-ID table, confirms a matching device is actually present on the live PCI bus, and calls `SpawnDriver` — which validates the caller's capability, derives the actual MMIO/IRQ grant from the kernel's own view of that device (never trusting anything the caller supplied), spawns the new task in a blocked state, attaches its grant, confirms the PCI device reservation, and only then unblocks it. `DRIVERS.BIN` prints the new task's id and its own prompt returns immediately — there is no waiting, and from this point `DRIVERS.BIN` and the driver it just started have nothing more to do with each other.
+At some later point, the user runs `drivers.bin` from the shell — an `Exec` call that, uniquely for this one binary name, delegates `SPAWN_DRIVER`, `UNLOAD_DRIVER`, and `LIST_DRIVERS` to it (§21). Inside its own tiny REPL, the user types `load rtl8139.drv`. `DRIVERS.BIN` resolves that name against its own PCI-ID table, confirms a matching device is actually present on the live PCI bus, and calls `SpawnDriver` — which validates the caller's capability, derives the actual MMIO grant from the kernel's own view of that device (never trusting anything the caller supplied), spawns the new task in a blocked state, attaches its grant, confirms the PCI device reservation, and only then unblocks it. `DRIVERS.BIN` prints the new task's id and its own prompt returns immediately — there is no waiting, and from this point `DRIVERS.BIN` and the driver it just started have nothing more to do with each other.
 
 The new process discovers its device again on its own, maps the granted BAR into its MMIO window, initializes the controller, allocates and wires up DMA rings, and constructs its own `NetworkStack`. It then calls `run_background_driver()` and, from that call onward, never executes another line of code outside that function's own infinite loop: registering itself under a fixed name in the kernel's driver registry, then forever draining queued outbound packets, polling real hardware for inbound ones, running each through its own protocol stack, forwarding every inbound frame onward to whoever might be listening, publishing a fresh status snapshot, and yielding.
 
 Independently, and at any later time, the user runs `net-tools.bin`. It has no hardware access whatsoever. It resolves the driver's name through the same registry the driver registered itself in, reads a status snapshot to learn the driver's MAC and IP configuration, and seeds its own, entirely separate copy of the same protocol stack. When the user types `ping 192.168.1.1`, that second `NetworkStack` constructs a complete Ethernet/ARP or Ethernet/IPv4/ICMP frame exactly the way the driver's own stack would, and hands it to the kernel via `NetSend` — which, because the calling task is not the driver, lands it in the driver's TX ring. The driver's background loop, running as its own independently scheduled task and utterly unaware that anything just happened until its next iteration reaches Step 1, drains that ring and transmits the frame over real MMIO and DMA. A reply arrives over the wire; the driver's `poll_next_packet()` picks it up, the driver's own stack looks at it and does nothing further with it beyond updating its own cache, and the very same loop iteration unconditionally forwards a copy back through `NetSend` — this time as the driver, landing it in its own RX ring — where `net-tools.bin`'s own polling `NetRecv` call picks it up, runs it through its own stack a second time, and finally recognizes the matching `IcmpEchoReply` event that lets it print a result to the user.
 
-If the user later runs `unload rtl8139` in `DRIVERS.BIN`, the kernel resolves the name in the registry one last time and hard-kills the driver task outright — releasing its PCI device reservation, its IRQ subscription, its registry entry, and every PMM-owned frame its address space held, but never running a single instruction of the driver's own shutdown code, since there is no cooperative protocol asking it to run any.
+If the user later runs `unload rtl8139` in `DRIVERS.BIN`, the kernel resolves the name in the registry one last time and hard-kills the driver task outright — releasing its PCI device reservation, its registry entry, and every PMM-owned frame its address space held, but never running a single instruction of the driver's own shutdown code, since there is no cooperative protocol asking it to run any.
 
 The system therefore demonstrates a complete vertical slice through an operating system: PCI configuration, page tables, process permissions, syscalls, DMA ring buffers, kernel-mediated inter-process packet transport, and network protocols — three genuinely independent, mutually distrusting Ring 3 processes (a driver-lifecycle manager, a permanent driver service, and an on-demand client application) cooperating entirely through capability-checked syscalls and a small kernel-owned registry, never once sharing a page of memory with one another.
 
@@ -1054,7 +1007,7 @@ pub fn resolve_delegated_capabilities(
 }
 ```
 
-A privileged caller (the shell) may delegate anything it asks for. An unprivileged caller may delegate at most the capabilities it already holds itself — the intersection of what it has and what it asks for — so a compromised or buggy unprivileged process can never manufacture a capability out of thin air and hand it to a child. When capabilities are granted, `syscall_exec_impl` attaches a `DriverCaps` block to the new task exactly the way `SpawnDriver` does for a driver it spawns (§6), just with `ResourceGrants::default()` — an empty MMIO/IRQ grant, since `DRIVERS.BIN` itself never touches hardware directly; it only ever asks the kernel to do so on its behalf, on a device it never sees the address of.
+A privileged caller (the shell) may delegate anything it asks for. An unprivileged caller may delegate at most the capabilities it already holds itself — the intersection of what it has and what it asks for — so a compromised or buggy unprivileged process can never manufacture a capability out of thin air and hand it to a child. When capabilities are granted, `syscall_exec_impl` attaches a `DriverCaps` block to the new task exactly the way `SpawnDriver` does for a driver it spawns (§6), just with `ResourceGrants::default()` — an empty MMIO grant, since `DRIVERS.BIN` itself never touches hardware directly; it only ever asks the kernel to do so on its behalf, on a device it never sees the address of.
 
 Deciding *which* binary gets *which* capabilities is deliberately kept out of the kernel. The kernel only provides the delegation mechanism; the policy of "only `DRIVERS.BIN`, and only these three bits" lives entirely in the shell's `run_program()`, in a function just as small and just as directly tested:
 

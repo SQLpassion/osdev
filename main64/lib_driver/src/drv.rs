@@ -30,7 +30,7 @@ pub fn drv_register(name: &[u8]) -> Result<(), SysError> {
     }
 
     // SAFETY:
-    // - Invokes the DrvRegister syscall (nr. 39).
+    // - Invokes the DrvRegister syscall (nr. 36).
     // - `name` is a valid, borrowed slice for the duration of this call, so
     //   the pointer/length pair handed to the kernel stays valid until the
     //   syscall returns.
@@ -52,7 +52,7 @@ pub fn drv_lookup(name: &[u8]) -> Result<u64, SysError> {
     }
 
     // SAFETY:
-    // - Invokes the DrvLookup syscall (nr. 40).
+    // - Invokes the DrvLookup syscall (nr. 37).
     // - `name` is a valid, borrowed slice for the duration of this call.
     let raw = unsafe {
         syscall2(
@@ -77,7 +77,7 @@ pub fn net_send(driver_id: u64, packet: &[u8]) -> Result<(), SysError> {
     }
 
     // SAFETY:
-    // - Invokes the NetSend syscall (nr. 41).
+    // - Invokes the NetSend syscall (nr. 38).
     // - `packet` is a valid, borrowed slice for the duration of this call.
     let raw = unsafe {
         syscall3(
@@ -94,15 +94,14 @@ pub fn net_send(driver_id: u64, packet: &[u8]) -> Result<(), SysError> {
 /// [`net_send`]'s role-based direction.
 ///
 /// `timeout_ms == 0` polls once and returns `Err(SysError::Timeout)`
-/// immediately if nothing is queued — this deliberately differs from
-/// `IrqWait`'s "0 = wait forever" convention; see `NetRecv`'s kernel doc
-/// comment for why. A non-zero value blocks up to that many milliseconds.
+/// immediately if nothing is queued; see `NetRecv`'s kernel doc comment for
+/// why. A non-zero value blocks up to that many milliseconds.
 ///
 /// Returns the number of bytes copied into `buf` (a packet larger than
 /// `buf.len()` is truncated).
 pub fn net_recv(driver_id: u64, buf: &mut [u8], timeout_ms: u64) -> Result<usize, SysError> {
     // SAFETY:
-    // - Invokes the NetRecv syscall (nr. 42).
+    // - Invokes the NetRecv syscall (nr. 39).
     // - `buf` is a valid, borrowed, mutable slice for the duration of this
     //   call; the kernel writes at most `buf.len()` bytes into it.
     let raw = unsafe {
@@ -122,7 +121,7 @@ pub fn net_recv(driver_id: u64, buf: &mut [u8], timeout_ms: u64) -> Result<usize
 /// [`drv_register`].
 pub fn publish_status(status: &UserDriverStatus) -> Result<(), SysError> {
     // SAFETY:
-    // - Invokes the DrvPublishStatus syscall (nr. 43).
+    // - Invokes the DrvPublishStatus syscall (nr. 40).
     // - `status` is a valid, borrowed reference for the duration of this call.
     let raw = unsafe { syscall1(SyscallId::DRV_PUBLISH_STATUS, status as *const _ as u64) };
     decode_result(raw).map(|_| ())
@@ -141,7 +140,7 @@ pub fn unload_driver(name: &[u8]) -> Result<(), SysError> {
     }
 
     // SAFETY:
-    // - Invokes the DrvUnload syscall (nr. 45).
+    // - Invokes the DrvUnload syscall (nr. 42).
     // - `name` is a valid, borrowed slice for the duration of this call.
     let raw = unsafe {
         syscall2(
@@ -155,7 +154,7 @@ pub fn unload_driver(name: &[u8]) -> Result<(), SysError> {
 
 /// Returns the number of currently registered driver tasks.
 pub fn driver_count() -> Result<usize, SysError> {
-    // SAFETY: Invokes the DrvListCount syscall (nr. 46), which takes no arguments.
+    // SAFETY: Invokes the DrvListCount syscall (nr. 43), which takes no arguments.
     let raw = unsafe { syscall1(SyscallId::DRV_LIST_COUNT, 0) };
     decode_result(raw).map(|n| n as usize)
 }
@@ -166,7 +165,7 @@ pub fn driver_count() -> Result<usize, SysError> {
 pub fn driver_info(index: usize) -> Result<UserDriverInfo, SysError> {
     let mut out = core::mem::MaybeUninit::<UserDriverInfo>::uninit();
     // SAFETY:
-    // - Invokes the DrvListEntry syscall (nr. 47).
+    // - Invokes the DrvListEntry syscall (nr. 44).
     // - `out` is a valid, writable destination for exactly
     //   `size_of::<UserDriverInfo>()` bytes for the duration of this call;
     //   the kernel only writes into it on success (`decode_result(raw)` is
@@ -207,7 +206,7 @@ pub fn list_drivers(out: &mut [UserDriverInfo]) -> Result<usize, SysError> {
 pub fn query_status(driver_id: u64) -> Result<UserDriverStatus, SysError> {
     let mut out = core::mem::MaybeUninit::<UserDriverStatus>::uninit();
     // SAFETY:
-    // - Invokes the DrvQuery syscall (nr. 44).
+    // - Invokes the DrvQuery syscall (nr. 41).
     // - `out` is a valid, writable destination for exactly
     //   `size_of::<UserDriverStatus>()` bytes for the duration of this call;
     //   the kernel only writes into it on success (`decode_result(raw)` is

@@ -1,4 +1,4 @@
-//! Driver infrastructure syscall handlers (MMIO, IRQ bridge, SpawnDriver).
+//! Driver infrastructure syscall handlers (MMIO, DMA, SpawnDriver).
 
 use crate::arch::constants::PAGE_SIZE_U64;
 use crate::drivers::{registry, time};
@@ -158,68 +158,6 @@ pub fn syscall_unmap_physical_impl(user_va: u64, len: usize) -> SyscallResult<u6
     Ok(SYSCALL_OK)
 }
 
-/// Helper that verifies the calling task holds `Capabilities::IRQ` and has been
-/// granted access to `vector` in its `ResourceGrants`.
-fn verify_irq_permission(vector: u64) -> SyscallResult<usize> {
-    let vector_u8 = u8::try_from(vector).map_err(|_| SyscallError::InvalidArg)?;
-    let irq_idx =
-        crate::drivers::irq_bridge::irq_to_index(vector_u8).ok_or(SyscallError::InvalidArg)? as u8;
-    let irq_vec = crate::drivers::irq_bridge::irq_index_to_vector(irq_idx as usize);
-
-    let caps = scheduler::current_task_caps().ok_or(SyscallError::PermissionDenied)?;
-    if !caps.flags.contains(Capabilities::IRQ) {
-        return Err(SyscallError::PermissionDenied);
-    }
-
-    let is_granted = caps.grants.irqs.contains(&vector_u8)
-        || caps.grants.irqs.contains(&irq_idx)
-        || caps.grants.irqs.contains(&irq_vec);
-    if !is_granted {
-        return Err(SyscallError::PermissionDenied);
-    }
-
-    let current_id = scheduler::current_task_id().ok_or(SyscallError::PermissionDenied)?;
-    Ok(current_id)
-}
-
-/// Subscribes the current task to an IRQ vector.
-///
-/// Arguments:
-/// - `vector`: Hardware IRQ line (0..15) or IDT vector (32..47).
-pub fn syscall_irq_subscribe_impl(vector: u64) -> SyscallResult<u64> {
-    let current_id = verify_irq_permission(vector)?;
-    let vector_u8 = vector as u8;
-
-    crate::drivers::irq_bridge::subscribe(vector_u8, current_id)?;
-    Ok(SYSCALL_OK)
-}
-
-/// Blocks the current task until the subscribed IRQ fires (or timeout).
-///
-/// Arguments:
-/// - `vector`: Hardware IRQ line (0..15) or IDT vector (32..47).
-/// - `timeout_ms`: Maximum wait duration in milliseconds (0 = infinite).
-pub fn syscall_irq_wait_impl(vector: u64, timeout_ms: u64) -> SyscallResult<u64> {
-    let current_id = verify_irq_permission(vector)?;
-    let vector_u8 = vector as u8;
-    let timeout_u32 = u32::try_from(timeout_ms).unwrap_or(u32::MAX);
-
-    crate::drivers::irq_bridge::wait(vector_u8, current_id, timeout_u32)?;
-    Ok(SYSCALL_OK)
-}
-
-/// Acknowledges an IRQ event, triggering PIC EOI.
-///
-/// Arguments:
-/// - `vector`: Hardware IRQ line (0..15) or IDT vector (32..47).
-pub fn syscall_irq_ack_impl(vector: u64) -> SyscallResult<u64> {
-    let current_id = verify_irq_permission(vector)?;
-    let vector_u8 = vector as u8;
-
-    crate::drivers::irq_bridge::ack(vector_u8, current_id)?;
-    Ok(SYSCALL_OK)
-}
-
 /// Spawns a user-space driver process with dedicated capabilities and resource grants.
 ///
 /// Resource grants are derived by the **kernel** from its own PCI enumeration
@@ -286,7 +224,7 @@ pub fn syscall_spawn_driver_impl(
 
     // Step 4: Derive the authoritative grants from the kernel's own PCI enumeration.
     // An unregistered binary receives no grants at all; it can still be spawned (it is
-    // then just an ordinary Ring-3 program), but it may not carry an MMIO/IRQ request.
+    // then just an ordinary Ring-3 program), but it may not carry an MMIO request.
     //
     // A successful `derive_grants` atomically reserves `device` against a second
     // concurrent SpawnDriver for the same binary (see `driver_db::reserve_device`).
@@ -299,8 +237,8 @@ pub fn syscall_spawn_driver_impl(
             crate::logging::logln(
                 "driver",
                 format_args!(
-                    "SpawnDriver: bound '{}' to PCI device {:04x}:{:04x}, IRQ {}",
-                    name, device.vendor_id, device.device_id, device.interrupt_line
+                    "SpawnDriver: bound '{}' to PCI device {:04x}:{:04x}",
+                    name, device.vendor_id, device.device_id
                 ),
             );
             (grants, Some(device))
@@ -308,7 +246,7 @@ pub fn syscall_spawn_driver_impl(
         Err(BindError::UnknownDriver) => {
             // Reject a grant request for a binary the kernel does not know as a driver:
             // there is no PCI device to validate it against.
-            if requested.is_some_and(|req| req.mmio_len > 0 || req.irq != 0xFF) {
+            if requested.is_some_and(|req| req.mmio_len > 0) {
                 crate::logging::logln(
                     "driver",
                     format_args!(
@@ -322,7 +260,6 @@ pub fn syscall_spawn_driver_impl(
             (
                 ResourceGrants {
                     mmio_regions: Vec::new(),
-                    irqs: Vec::new(),
                     mmio_bump: USER_MMIO_BASE,
                 },
                 None,
@@ -338,14 +275,14 @@ pub fn syscall_spawn_driver_impl(
     };
 
     // Step 5: Reject a request that contradicts the derived grant. The caller may ask
-    // for less (base 0 / IRQ 0xFF mean "no preference"), but never for something else.
+    // for less (base 0 means "no preference"), but never for something else.
     if let Some(req) = requested {
-        if !driver_db::request_matches_grants(&grants, req.mmio_base, req.irq) {
+        if !driver_db::request_matches_grants(&grants, req.mmio_base) {
             crate::logging::logln(
                 "driver",
                 format_args!(
-                    "SpawnDriver: '{}' requested MMIO {:#x} / IRQ {} outside its device grant",
-                    name, req.mmio_base, req.irq
+                    "SpawnDriver: '{}' requested MMIO {:#x} outside its device grant",
+                    name, req.mmio_base
                 ),
             );
             if let Some(device) = &bound_device {
@@ -489,11 +426,10 @@ pub fn syscall_alloc_dma_impl(pages: usize, out_phys: *mut u64) -> SyscallResult
         return Err(SyscallError::InvalidArg);
     }
 
-    // Step 2: Check DriverCaps. AllocDma requires MMIO, not IRQ: the buffer is
-    // mapped into the same MMIO VA window as MapPhysical/UnmapPhysical (which
-    // gate on MMIO alone), and is only useful to a driver that can actually
-    // program its physical address into a device register — something an
-    // IRQ-only task cannot do (see `docs/drivers.md`).
+    // Step 2: Check DriverCaps. AllocDma requires MMIO: the buffer is mapped
+    // into the same MMIO VA window as MapPhysical/UnmapPhysical (which gate
+    // on MMIO alone), and is only useful to a driver that can actually
+    // program its physical address into a device register.
     let caps = scheduler::current_task_caps().ok_or(SyscallError::PermissionDenied)?;
     if !caps.flags.contains(Capabilities::MMIO) {
         return Err(SyscallError::PermissionDenied);
@@ -666,7 +602,7 @@ pub fn syscall_free_dma_impl(user_va: u64, pages: usize) -> SyscallResult<u64> {
 pub fn syscall_virt_to_phys_impl(user_va: u64) -> SyscallResult<u64> {
     // Step 1: Verify task capabilities.
     let caps = scheduler::current_task_caps().ok_or(SyscallError::PermissionDenied)?;
-    if !caps.flags.contains(Capabilities::MMIO) && !caps.flags.contains(Capabilities::IRQ) {
+    if !caps.flags.contains(Capabilities::MMIO) {
         return Err(SyscallError::PermissionDenied);
     }
 
@@ -841,11 +777,10 @@ pub fn syscall_net_send_impl(
 ///   than `buf_len` is truncated to `buf_len` bytes, matching the truncating
 ///   `NicDevice::poll_next_packet` convention already used by the drivers.
 /// - `timeout_ms`: `0` polls once and returns `Timeout` immediately if the
-///   ring is empty — **not** "wait forever" the way `IrqWait`'s `timeout_ms
-///   == 0` behaves. This is a deliberate deviation: the background driver
-///   event loop (`docs/nic_driver_design.md` §4.6) drains its TX ring every
-///   iteration and must never block doing so. A non-zero value blocks up to
-///   that many milliseconds.
+///   ring is empty; a non-zero value blocks up to that many milliseconds.
+///   This is a deliberate choice: the background driver event loop
+///   (`docs/nic_driver_design.md` §4.6) drains its TX ring every iteration
+///   and must never block doing so.
 ///
 /// Returns the number of bytes copied into `buf_ptr`, or `SysError::Timeout`
 /// if the ring is still empty once the wait (if any) elapses.
@@ -885,7 +820,7 @@ pub fn syscall_net_recv_impl(
     }
 
     // Step 3: timeout_ms == 0 means "poll once, non-blocking" here — see the
-    // doc comment above for why this deliberately differs from IrqWait.
+    // doc comment above.
     if timeout_ms == 0 {
         return Err(SyscallError::Timeout);
     }
@@ -893,9 +828,8 @@ pub fn syscall_net_recv_impl(
     // Step 4: bounded wait. This cannot use `scheduler::block_task`: once
     // blocked, this task would only ever resume when something else
     // unblocks it, which defeats the timeout entirely if no producer ever
-    // shows up — the exact same constraint `syscall_irq_wait_impl` /
-    // `irq_bridge::wait` document for their own bounded branch. Poll
-    // cooperatively via `yield_now()` against a TSC deadline instead.
+    // shows up. Poll cooperatively via `yield_now()` against a TSC deadline
+    // instead.
     let ticks_per_ms = time::tsc_ticks_per_us().saturating_mul(1000);
     let deadline = time::rdtsc().saturating_add(ticks_per_ms.saturating_mul(timeout_ms));
 
@@ -1043,8 +977,8 @@ pub fn syscall_drv_unload_impl(name_ptr: u64, name_len: u64) -> SyscallResult<u6
     let tid = registry::lookup(&name_buf[..name_len]).ok_or(SyscallError::InvalidArg)?;
 
     // Step 4: hard-kill the task. `terminate_task` -> `remove_task` already
-    // releases this driver's registry entry, MMIO/DMA allocations, IRQ
-    // binding, and PCI device reservation (see `manager.rs::remove_task`).
+    // releases this driver's registry entry, MMIO/DMA allocations, and PCI
+    // device reservation (see `manager.rs::remove_task`).
     if !scheduler::terminate_task(tid) {
         return Err(SyscallError::InvalidArg);
     }

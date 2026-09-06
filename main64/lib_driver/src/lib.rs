@@ -2,7 +2,6 @@
 //!
 //! Provides safe abstractions around driver syscalls:
 //! - [`mmio`] — Memory-Mapped I/O mapping and direct volatile register access
-//! - [`irq`]  — Hardware interrupt subscription, waiting, and acknowledgment
 //! - [`spawn`] — Driver spawning primitives
 //! - [`drv`]  — Driver name registration/resolution, packet transport, and
 //!   status publishing (DrvRegister/DrvLookup, NetSend/NetRecv,
@@ -30,6 +29,5 @@ mod raw;
 pub mod client;
 pub mod dma;
 pub mod drv;
-pub mod irq;
 pub mod mmio;
 pub mod spawn;

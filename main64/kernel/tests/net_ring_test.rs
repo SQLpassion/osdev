@@ -61,7 +61,6 @@ fn spawn_driver_task() -> usize {
     let task_id = sched::spawn_kernel_task(test_task_loop).expect("spawn task");
     let grants = ResourceGrants {
         mmio_regions: vec![],
-        irqs: vec![],
         mmio_bump: vmm::USER_MMIO_BASE,
     };
     let caps_ptr = Box::into_raw(Box::new(DriverCaps::new(Capabilities::NONE, grants)));
@@ -417,8 +416,7 @@ fn test_net_recv_syscall_timeout_zero_polls_once_without_blocking() {
 }
 
 /// `NetRecv` with a non-zero timeout and no producer gives up on its own
-/// once the deadline elapses, mirroring `IrqWait`'s bounded-wait contract
-/// (`test_irq_wait_times_out_when_no_irq_fires`).
+/// once the deadline elapses.
 #[test_case]
 fn test_net_recv_syscall_timeout_elapses_when_no_producer() {
     registry::reset_for_test();

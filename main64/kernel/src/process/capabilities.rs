@@ -17,9 +17,6 @@ impl Capabilities {
     /// May call MapPhysical / UnmapPhysical — but only on granted MMIO regions.
     pub const MMIO: Self = Self(1 << 0);
 
-    /// May call IrqSubscribe / IrqWait / IrqAck — but only on granted IRQ vectors.
-    pub const IRQ: Self = Self(1 << 1);
-
     /// May call SpawnDriver — reserved for the driver manager only.
     pub const SPAWN_DRIVER: Self = Self(1 << 2);
 
@@ -38,7 +35,6 @@ impl Capabilities {
     pub const fn from_bits_truncate(bits: u32) -> Self {
         Self(
             bits & (Self::MMIO.0
-                | Self::IRQ.0
                 | Self::SPAWN_DRIVER.0
                 | Self::UNLOAD_DRIVER.0
                 | Self::LIST_DRIVERS.0),
@@ -95,9 +91,6 @@ impl core::ops::BitAnd for Capabilities {
 pub struct ResourceGrants {
     /// Allowed physical MMIO regions: (phys_start, len_bytes).
     pub mmio_regions: Vec<(u64, u64)>,
-
-    /// Allowed IRQ vectors.
-    pub irqs: Vec<u8>,
 
     /// Bump pointer for the next free user-VA in the MMIO mapping window.
     /// Starts at USER_MMIO_BASE; advanced by MapPhysical.

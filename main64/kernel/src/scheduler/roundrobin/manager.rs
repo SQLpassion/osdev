@@ -197,13 +197,9 @@ pub(crate) fn remove_task(
         meta.slots[task_id].caps = ptr::null_mut();
     }
 
-    // Release any hardware IRQ bindings this task held, so a driver task's
-    // exit (including a crash reaped via `reap_zombies`) does not leave its
-    // subscribed vector permanently owned by a dead task. Must run before the
-    // slot below is cleared, since it needs the still-live generation to
-    // reconstruct the packed task ID that `irq_bridge` stores as the owner.
+    // Reconstruct the packed task ID before the slot below is cleared, since
+    // it needs the still-live generation.
     let packed_id = pack_task_id(task_id, meta.slots[task_id].generation);
-    crate::drivers::irq_bridge::release_task(meta, packed_id);
 
     // Release any PCI device binding this task held, so a driver task's exit
     // does not leave its device permanently unavailable to future SpawnDriver

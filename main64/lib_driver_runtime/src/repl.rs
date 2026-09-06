@@ -162,8 +162,7 @@ pub fn run_background_driver<D: lib_net::NicDevice>(
     loop {
         // Step 1: drain app -> driver TX requests (non-blocking: timeout_ms
         // == 0 polls once and returns Timeout immediately once the ring is
-        // empty, per NetRecv's documented deviation from IrqWait's "0 =
-        // wait forever" convention).
+        // empty — see NetRecv's kernel doc comment).
         while let Ok(len) = lib_driver::drv::net_recv(own_id, &mut tx_buf, 0) {
             let _ = device.transmit(&tx_buf[..len]);
         }

@@ -46,8 +46,7 @@ pub fn unblock_task(task_id: usize) {
 /// already-locked `meta` instead of acquiring `SCHED` itself.
 ///
 /// Required by call sites that run *inside* a `with_scheduler`/`SCHED.lock()`
-/// critical section already (e.g. `irq_bridge::release_task`, invoked from
-/// `remove_task`): `SCHED` is a non-reentrant spinlock, so calling
+/// critical section already: `SCHED` is a non-reentrant spinlock, so calling
 /// `unblock_task` from such a context would spin forever trying to
 /// re-acquire a lock this same core already holds.
 pub(crate) fn unblock_task_locked(meta: &mut SchedulerMetadata, task_id: usize) {

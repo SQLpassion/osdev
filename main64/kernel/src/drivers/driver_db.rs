@@ -32,7 +32,7 @@ use crate::sync::spinlock::SpinLock;
 /// `SPAWN_DRIVER` is deliberately excluded: it belongs to the driver manager alone
 /// and must not be propagated into a spawned driver, which would let any driver
 /// mint further drivers with capabilities of its own choosing.
-pub const DRIVER_GRANTABLE_CAPS: Capabilities = Capabilities::MMIO.union(Capabilities::IRQ);
+pub const DRIVER_GRANTABLE_CAPS: Capabilities = Capabilities::MMIO;
 
 /// PCI IDs the Realtek RTL8139 Fast Ethernet driver may bind to.
 const RTL8139_IDS: &[(u16, u16)] = &[(0x10EC, 0x8139)];
@@ -70,7 +70,7 @@ pub enum BindError {
     /// Without this check, two `SpawnDriver` calls for the same binary (a caller
     /// bug, a race between two callers, or a respawn attempted before the first
     /// instance exits) would each derive a grant for the *same* PCI device,
-    /// handing two Ring-3 tasks concurrent MMIO/IRQ access to one device's
+    /// handing two Ring-3 tasks concurrent MMIO access to one device's
     /// registers and descriptor rings.
     AllDevicesBound,
 }
@@ -168,10 +168,10 @@ pub fn release_reservation(device: &PciDevice) {
 /// Releases every device binding owned by `task_id`.
 ///
 /// Called from the scheduler's `remove_task` — the single choke point reached
-/// by both explicit termination and zombie-reaping after a crash — mirroring
-/// `irq_bridge::release_task`. Without this, a device bound to a crashed or
-/// exited driver task would stay bound forever, permanently refusing
-/// `SpawnDriver` for that device with `AllDevicesBound`.
+/// by both explicit termination and zombie-reaping after a crash. Without
+/// this, a device bound to a crashed or exited driver task would stay bound
+/// forever, permanently refusing `SpawnDriver` for that device with
+/// `AllDevicesBound`.
 ///
 /// Also disables every released device's I/O/Memory/Bus-Master decode bits
 /// before returning. `remove_task` calls this before it defers the task's
@@ -323,7 +323,7 @@ pub fn derive_grants(name: &str) -> Result<(ResourceGrants, PciDevice), BindErro
     // order, skipping any device already bound (or reserved) by another driver task.
     // This is what prevents two `SpawnDriver` calls for the same binary — a caller
     // bug, a race, or a respawn attempted before the first instance exits — from
-    // both being handed the same device's MMIO/IRQ grant.
+    // both being handed the same device's MMIO grant.
     let devices = pci::get_devices();
     let mut device_present = false;
     for device in devices.iter().filter(|dev| {
@@ -355,17 +355,9 @@ pub fn derive_grants(name: &str) -> Result<(ResourceGrants, PciDevice), BindErro
         // bits untouched so an ungranted device never decodes MMIO or masters DMA.
         pci::enable_device(device);
 
-        // Step 5: Derive the IRQ grant from the device's interrupt line. 0xFF
-        // means "no interrupt routed", which is not a grantable vector.
-        let mut irqs = Vec::new();
-        if device.interrupt_line != 0xFF {
-            irqs.push(device.interrupt_line);
-        }
-
         return Ok((
             ResourceGrants {
                 mmio_regions,
-                irqs,
                 mmio_bump: USER_MMIO_BASE,
             },
             *device,
@@ -382,15 +374,11 @@ pub fn derive_grants(name: &str) -> Result<(ResourceGrants, PciDevice), BindErro
 /// Checks that a caller's *requested* grant is consistent with the kernel-derived one.
 ///
 /// The kernel does not adopt the requested values — [`derive_grants`] is authoritative.
-/// This check exists so that a caller asking for a region or vector that does not
-/// belong to its device is rejected loudly instead of silently downgraded.
+/// This check exists so that a caller asking for a region that does not belong to
+/// its device is rejected loudly instead of silently downgraded.
 ///
-/// A request of `0` (MMIO base) or `0xFF` (IRQ) means "no preference" and always passes.
-pub fn request_matches_grants(
-    grants: &ResourceGrants,
-    requested_mmio_base: u64,
-    requested_irq: u8,
-) -> bool {
+/// A request of `0` (MMIO base) means "no preference" and always passes.
+pub fn request_matches_grants(grants: &ResourceGrants, requested_mmio_base: u64) -> bool {
     if requested_mmio_base != 0 {
         let inside_grant = grants.mmio_regions.iter().any(|&(base, len)| {
             base.checked_add(len)
@@ -399,10 +387,6 @@ pub fn request_matches_grants(
         if !inside_grant {
             return false;
         }
-    }
-
-    if requested_irq != 0xFF && !grants.irqs.contains(&requested_irq) {
-        return false;
     }
 
     true

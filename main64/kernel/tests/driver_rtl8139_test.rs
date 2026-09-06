@@ -47,26 +47,22 @@ extern "C" fn test_task_loop() -> ! {
     }
 }
 
-/// Tests that a simulated RTL8139 driver task with MMIO and IRQ capabilities
-/// can map its device registers and subscribe to its interrupt line.
+/// Tests that a simulated RTL8139 driver task with MMIO capabilities can map
+/// its device registers.
 #[test_case]
 fn test_rtl8139_driver_grants_and_mapping() {
     let task_id = sched::spawn_kernel_task(test_task_loop).expect("spawn task");
     let slot = task_id_slot(task_id);
 
-    // Simulated RTL8139 BAR physical 0xFEB0_0000, 256 bytes, IRQ line 11.
+    // Simulated RTL8139 BAR physical 0xFEB0_0000, 256 bytes.
     // The grant itself is page-rounded to 4096 bytes, mirroring what
     // `driver_db::mmio_windows` derives from a real, sub-page BAR — the
     // grant must cover the whole page `MapPhysical` will actually map.
     let grants = ResourceGrants {
         mmio_regions: vec![(0xFEB0_0000, 4096)],
-        irqs: vec![11],
         mmio_bump: vmm::USER_MMIO_BASE,
     };
-    let caps_ptr = Box::into_raw(Box::new(DriverCaps::new(
-        Capabilities::MMIO | Capabilities::IRQ,
-        grants,
-    )));
+    let caps_ptr = Box::into_raw(Box::new(DriverCaps::new(Capabilities::MMIO, grants)));
     set_task_caps(task_id, caps_ptr);
     set_running_slot_for_test(Some(slot));
 
@@ -79,21 +75,12 @@ fn test_rtl8139_driver_grants_and_mapping() {
         "MMIO mapping starts at USER_MMIO_BASE"
     );
 
-    // Subscribe to RTL8139 IRQ
-    let irq_res = dispatch_checked(SyscallId::IRQ_SUBSCRIBE, 11, 0, 0, 0);
-    assert_eq!(
-        irq_res,
-        Ok(SYSCALL_OK),
-        "RTL8139 IRQ subscription must succeed"
-    );
-
     // Clean up
     let unmap_res = dispatch_checked(SyscallId::UNMAP_PHYSICAL, va, 256, 0, 0);
     assert_eq!(unmap_res, Ok(SYSCALL_OK), "Unmap MMIO must succeed");
 
     set_running_slot_for_test(None);
     sched::terminate_task(task_id);
-    kaos_kernel::drivers::irq_bridge::reset_bindings_for_test();
 }
 
 /// Tests that a driver task with MMIO capabilities can allocate contiguous DMA buffers,
@@ -105,13 +92,9 @@ fn test_rtl8139_driver_dma_allocation_and_translation() {
 
     let grants = ResourceGrants {
         mmio_regions: vec![(0xFEB0_0000, 256)],
-        irqs: vec![11],
         mmio_bump: vmm::USER_MMIO_BASE,
     };
-    let caps_ptr = Box::into_raw(Box::new(DriverCaps::new(
-        Capabilities::MMIO | Capabilities::IRQ,
-        grants,
-    )));
+    let caps_ptr = Box::into_raw(Box::new(DriverCaps::new(Capabilities::MMIO, grants)));
     set_task_caps(task_id, caps_ptr);
     set_running_slot_for_test(Some(slot));
 

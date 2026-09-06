@@ -1114,7 +1114,6 @@ fn test_reaping_driver_task_skips_release_for_open_mmio_allocation() {
 
     let grants = ResourceGrants {
         mmio_regions: vec![(0xFEB0_0000, 4096)],
-        irqs: vec![],
         mmio_bump: MMIO_VA + 4096,
     };
     let mut caps = DriverCaps::new(Capabilities::MMIO, grants);
@@ -1201,7 +1200,6 @@ fn test_reaping_driver_task_with_open_mmio_allocation_still_frees_address_space(
 
     let grants = ResourceGrants {
         mmio_regions: vec![(0xFEB0_0000, 4096)],
-        irqs: vec![],
         mmio_bump: MMIO_VA + 4096,
     };
     let mut caps = DriverCaps::new(Capabilities::MMIO, grants);

@@ -1,6 +1,6 @@
 //! Intel Gigabit Ethernet (82577LM / I219-V) PCI user-space device driver.
 //!
-//! Runs in Ring 3 with hardware isolation using `lib_driver` (`Mmio`, `Irq`, `Dma`) and `lib_net`.
+//! Runs in Ring 3 with hardware isolation using `lib_driver` (`Mmio`, `Dma`) and `lib_net`.
 //! Registers itself as "nic:intel_nic" and runs forever as a background
 //! process serving `NetSend`/`NetRecv`/`DrvQuery` requests from apps (Phase
 //! 2 Step 6) -- PCI discovery, MMIO mapping, and the event loop are shared
@@ -101,7 +101,7 @@ pub extern "C" fn _start() -> ! {
     serial_println!("[Intel NIC] Initializing hardware controller and DMA rings...");
 
     // Step 3: Initialize the Intel controller and DMA descriptor rings.
-    let device = match IntelNicDevice::init(model, mmio, dev.interrupt_line) {
+    let device = match IntelNicDevice::init(model, mmio) {
         Ok(d) => d,
         Err(e) => {
             serial_println!("[Intel NIC] Device initialization failed: {:?}", e);

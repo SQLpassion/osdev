@@ -66,39 +66,33 @@ pub enum SyscallId {
     MapPhysical = 30,
     /// Unmap a previously mapped MMIO region from the driver address space.
     UnmapPhysical = 31,
-    /// Subscribe to a hardware IRQ vector.
-    IrqSubscribe = 32,
-    /// Block until the subscribed IRQ fires (or timeout).
-    IrqWait = 33,
-    /// Acknowledge IRQ handling (sends PIC EOI).
-    IrqAck = 34,
     /// Spawn a driver task with specified capabilities and resource grants.
-    SpawnDriver = 35,
+    SpawnDriver = 32,
     /// Allocate physically contiguous frames for DMA.
-    AllocDma = 36,
+    AllocDma = 33,
     /// Free DMA frames.
-    FreeDma = 37,
+    FreeDma = 34,
     /// Translate user virtual address to physical address.
-    VirtToPhys = 38,
+    VirtToPhys = 35,
     /// Register the calling driver task under a well-known name (e.g. "nic:rtl8139").
-    DrvRegister = 39,
+    DrvRegister = 36,
     /// Resolve the task id of a driver previously registered via DrvRegister.
-    DrvLookup = 40,
+    DrvLookup = 37,
     /// Send a raw packet to/from a driver channel (role-based direction).
-    NetSend = 41,
+    NetSend = 38,
     /// Receive a raw packet to/from a driver channel (role-based direction).
-    NetRecv = 42,
+    NetRecv = 39,
     /// Publish the calling driver task's current status snapshot.
-    DrvPublishStatus = 43,
+    DrvPublishStatus = 40,
     /// Read the last status snapshot published by a driver.
-    DrvQuery = 44,
+    DrvQuery = 41,
     /// Terminate a registered driver task by name (hard kill — see
     /// `docs/drivers.md` §15 for the no-clean-shutdown caveat).
-    DrvUnload = 45,
+    DrvUnload = 42,
     /// Retrieve the number of currently registered driver tasks.
-    DrvListCount = 46,
+    DrvListCount = 43,
     /// Retrieve metadata for a specific registered driver by its index.
-    DrvListEntry = 47,
+    DrvListEntry = 44,
 }
 
 impl SyscallId {
@@ -186,12 +180,6 @@ impl SyscallId {
     pub const MAP_PHYSICAL: u64 = Self::MapPhysical as u64;
     /// Syscall number for UnmapPhysical.
     pub const UNMAP_PHYSICAL: u64 = Self::UnmapPhysical as u64;
-    /// Syscall number for IrqSubscribe.
-    pub const IRQ_SUBSCRIBE: u64 = Self::IrqSubscribe as u64;
-    /// Syscall number for IrqWait.
-    pub const IRQ_WAIT: u64 = Self::IrqWait as u64;
-    /// Syscall number for IrqAck.
-    pub const IRQ_ACK: u64 = Self::IrqAck as u64;
     /// Syscall number for SpawnDriver.
     pub const SPAWN_DRIVER: u64 = Self::SpawnDriver as u64;
     /// Syscall number for AllocDma.
@@ -235,7 +223,7 @@ pub const SYSCALL_ERR_OUT_OF_MEMORY: u64 = u64::MAX - 3;
 /// Caller lacks the capability required for this syscall.
 pub const SYSCALL_ERR_PERMISSION_DENIED: u64 = u64::MAX - 4;
 
-/// A bounded wait (e.g. `IrqWait`) elapsed before the awaited event occurred.
+/// A bounded wait (e.g. `NetRecv`) elapsed before the awaited event occurred.
 pub const SYSCALL_ERR_TIMEOUT: u64 = u64::MAX - 5;
 
 /// Successful syscall return code for void-like operations.
@@ -267,7 +255,7 @@ pub enum SyscallError {
     PermissionDenied,
 
     /// A bounded wait elapsed before the awaited event occurred (e.g.
-    /// `IrqWait` with a non-zero `timeout_ms` and no IRQ firing in time).
+    /// `NetRecv` with a non-zero `timeout_ms` and no packet arriving in time).
     Timeout,
 }
 
@@ -674,8 +662,4 @@ pub struct UserDriverGrants {
     pub mmio_base: u64,
     /// Size of the primary MMIO range in bytes (0 if none).
     pub mmio_len: u64,
-    /// Hardware IRQ line or vector (0xFF = none).
-    pub irq: u8,
-    /// Explicit padding for 8-byte alignment structure size matching.
-    pub _padding: [u8; 7],
 }

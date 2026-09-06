@@ -1,6 +1,6 @@
 //! RTL8139 Realtek Fast Ethernet PCI user-space device driver.
 //!
-//! Runs in Ring 3 with hardware isolation using `lib_driver` (`Mmio`, `Irq`, `Dma`).
+//! Runs in Ring 3 with hardware isolation using `lib_driver` (`Mmio`, `Dma`).
 //! Registers itself as "nic:rtl8139" and runs forever as a background
 //! process serving `NetSend`/`NetRecv`/`DrvQuery` requests from apps (Phase
 //! 2 Step 6) -- PCI discovery, MMIO mapping, and the event loop are shared
@@ -72,7 +72,7 @@ pub extern "C" fn _start() -> ! {
     };
 
     // Step 3: Initialize the RTL8139 controller and DMA ring buffers.
-    let device = match Rtl8139Device::init(mmio, dev.interrupt_line) {
+    let device = match Rtl8139Device::init(mmio) {
         Ok(d) => d,
         Err(e) => {
             serial_println!("[RTL8139] Device initialization failed: {:?}", e);

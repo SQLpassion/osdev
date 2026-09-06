@@ -132,7 +132,7 @@ pub fn calibrate_tsc() -> u64 {
 }
 
 /// Cached result of [`calibrate_tsc`], shared by every caller that needs a
-/// TSC-based deadline (e.g. a bounded `IrqWait`) without re-running the
+/// TSC-based deadline (e.g. a bounded `NetRecv`) without re-running the
 /// ~10 ms PIT calibration window on every call. `0` means "not yet cached".
 ///
 /// `calibrate_tsc` never returns `0` (its own worst-case fallback is `2000`),

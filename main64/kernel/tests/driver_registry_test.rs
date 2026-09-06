@@ -55,7 +55,6 @@ fn spawn_driver_task() -> usize {
     let task_id = sched::spawn_kernel_task(test_task_loop).expect("spawn task");
     let grants = ResourceGrants {
         mmio_regions: vec![],
-        irqs: vec![],
         mmio_bump: vmm::USER_MMIO_BASE,
     };
     let caps_ptr = Box::into_raw(Box::new(DriverCaps::new(Capabilities::NONE, grants)));

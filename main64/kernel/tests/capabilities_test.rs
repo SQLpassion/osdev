@@ -52,24 +52,23 @@ fn test_capabilities_bitflags() {
     assert!(!none.contains(Capabilities::MMIO));
 
     let mmio = Capabilities::MMIO;
-    let irq = Capabilities::IRQ;
     let spawn = Capabilities::SPAWN_DRIVER;
+    let unload = Capabilities::UNLOAD_DRIVER;
 
-    let combined = mmio | irq;
+    let combined = mmio | unload;
     assert!(combined.contains(Capabilities::MMIO));
-    assert!(combined.contains(Capabilities::IRQ));
+    assert!(combined.contains(Capabilities::UNLOAD_DRIVER));
     assert!(!combined.contains(Capabilities::SPAWN_DRIVER));
 
     let all = combined.union(spawn);
     assert!(all.contains(Capabilities::MMIO));
-    assert!(all.contains(Capabilities::IRQ));
+    assert!(all.contains(Capabilities::UNLOAD_DRIVER));
     assert!(all.contains(Capabilities::SPAWN_DRIVER));
 
     let truncated = Capabilities::from_bits_truncate(0xFFFF_FFFF);
     assert_eq!(
         truncated.bits(),
         (Capabilities::MMIO
-            | Capabilities::IRQ
             | Capabilities::SPAWN_DRIVER
             | Capabilities::UNLOAD_DRIVER
             | Capabilities::LIST_DRIVERS)
@@ -122,10 +121,9 @@ fn test_driver_caps_attachment_and_cleanup() {
     // Allocate a DriverCaps block on the heap.
     let grants = ResourceGrants {
         mmio_regions: vec![(0xFEB0_0000, 256), (0xFEB1_0000, 4096)],
-        irqs: vec![11, 14],
         mmio_bump: 0x0000_7800_0000_0000,
     };
-    let flags = Capabilities::MMIO | Capabilities::IRQ;
+    let flags = Capabilities::MMIO | Capabilities::UNLOAD_DRIVER;
     let caps_ptr = Box::into_raw(Box::new(DriverCaps::new(flags, grants)));
 
     // Attach to the task.

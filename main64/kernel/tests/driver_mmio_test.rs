@@ -73,7 +73,6 @@ fn test_map_physical_unauthorized_grant_fails() {
     // Grant region 0xFEB0_0000..0xFEB0_0100
     let grants = ResourceGrants {
         mmio_regions: vec![(0xFEB0_0000, 256)],
-        irqs: vec![],
         mmio_bump: vmm::USER_MMIO_BASE,
     };
     let caps_ptr = Box::into_raw(Box::new(DriverCaps::new(Capabilities::MMIO, grants)));
@@ -108,7 +107,6 @@ fn test_map_physical_invalid_arg_fails() {
 
     let grants = ResourceGrants {
         mmio_regions: vec![(0xFEB0_0000, 256)],
-        irqs: vec![],
         mmio_bump: vmm::USER_MMIO_BASE,
     };
     let caps_ptr = Box::into_raw(Box::new(DriverCaps::new(Capabilities::MMIO, grants)));
@@ -143,7 +141,6 @@ fn test_map_and_unmap_physical_lifecycle() {
 
     let grants = ResourceGrants {
         mmio_regions: vec![(0xFEB0_0000, 0x1000), (0xFEB1_0000, 0x2000)],
-        irqs: vec![],
         mmio_bump: vmm::USER_MMIO_BASE,
     };
     let caps_ptr = Box::into_raw(Box::new(DriverCaps::new(Capabilities::MMIO, grants)));
@@ -188,22 +185,20 @@ fn test_map_and_unmap_physical_lifecycle() {
     sched::terminate_task(task_id);
 }
 
-/// Tests that AllocDma requires MMIO capability specifically — IRQ alone is
-/// not a substitute. `syscall_alloc_dma_impl`'s doc comment used to claim
-/// "MMIO or IRQ" while the code only ever checked MMIO; a driver holding only
-/// IRQ has no way to program a DMA buffer's physical address into any device
-/// register, so MMIO is the correct (and only) gate.
+/// Tests that AllocDma requires the MMIO capability specifically — a driver
+/// task with a `DriverCaps` block that holds no capability bits at all must
+/// still be rejected, mirroring the "no DriverCaps at all" case above but for
+/// a task that *is* a driver task, just an under-privileged one.
 #[test_case]
-fn test_alloc_dma_requires_mmio_not_irq_alone() {
+fn test_alloc_dma_requires_mmio_capability() {
     let task_id = sched::spawn_kernel_task(test_task_loop).expect("spawn task");
     let slot = task_id_slot(task_id);
 
     let grants = ResourceGrants {
         mmio_regions: vec![],
-        irqs: vec![11],
         mmio_bump: vmm::USER_MMIO_BASE,
     };
-    let caps_ptr = Box::into_raw(Box::new(DriverCaps::new(Capabilities::IRQ, grants)));
+    let caps_ptr = Box::into_raw(Box::new(DriverCaps::new(Capabilities::NONE, grants)));
     set_task_caps(task_id, caps_ptr);
     set_running_slot_for_test(Some(slot));
 
@@ -211,7 +206,7 @@ fn test_alloc_dma_requires_mmio_not_irq_alone() {
     assert_eq!(
         res,
         Err(SyscallError::PermissionDenied),
-        "AllocDma with only IRQ capability (no MMIO) must return PermissionDenied"
+        "AllocDma without MMIO capability must return PermissionDenied"
     );
 
     set_running_slot_for_test(None);
@@ -220,16 +215,15 @@ fn test_alloc_dma_requires_mmio_not_irq_alone() {
 
 /// Tests that FreeDma requires MMIO capability specifically, mirroring AllocDma.
 #[test_case]
-fn test_free_dma_requires_mmio_not_irq_alone() {
+fn test_free_dma_requires_mmio_capability() {
     let task_id = sched::spawn_kernel_task(test_task_loop).expect("spawn task");
     let slot = task_id_slot(task_id);
 
     let grants = ResourceGrants {
         mmio_regions: vec![],
-        irqs: vec![11],
         mmio_bump: vmm::USER_MMIO_BASE,
     };
-    let caps_ptr = Box::into_raw(Box::new(DriverCaps::new(Capabilities::IRQ, grants)));
+    let caps_ptr = Box::into_raw(Box::new(DriverCaps::new(Capabilities::NONE, grants)));
     set_task_caps(task_id, caps_ptr);
     set_running_slot_for_test(Some(slot));
 
@@ -237,15 +231,15 @@ fn test_free_dma_requires_mmio_not_irq_alone() {
     assert_eq!(
         res,
         Err(SyscallError::PermissionDenied),
-        "FreeDma with only IRQ capability (no MMIO) must return PermissionDenied"
+        "FreeDma without MMIO capability must return PermissionDenied"
     );
 
     set_running_slot_for_test(None);
     sched::terminate_task(task_id);
 }
 
-/// Tests that MMIO capability alone (no IRQ) is sufficient for a full
-/// AllocDma/FreeDma lifecycle — confirming IRQ is not required, only MMIO.
+/// Tests that MMIO capability is sufficient for a full AllocDma/FreeDma
+/// lifecycle.
 #[test_case]
 fn test_alloc_and_free_dma_succeeds_with_mmio_capability_alone() {
     let task_id = sched::spawn_kernel_task(test_task_loop).expect("spawn task");
@@ -253,7 +247,6 @@ fn test_alloc_and_free_dma_succeeds_with_mmio_capability_alone() {
 
     let grants = ResourceGrants {
         mmio_regions: vec![],
-        irqs: vec![],
         mmio_bump: vmm::USER_MMIO_BASE,
     };
     let caps_ptr = Box::into_raw(Box::new(DriverCaps::new(Capabilities::MMIO, grants)));
@@ -294,7 +287,6 @@ fn test_free_dma_rejects_map_physical_va() {
 
     let grants = ResourceGrants {
         mmio_regions: vec![(0xFEB0_0000, 0x1000)],
-        irqs: vec![],
         mmio_bump: vmm::USER_MMIO_BASE,
     };
     let caps_ptr = Box::into_raw(Box::new(DriverCaps::new(Capabilities::MMIO, grants)));
@@ -336,7 +328,6 @@ fn test_unmap_physical_rejects_alloc_dma_va() {
 
     let grants = ResourceGrants {
         mmio_regions: vec![],
-        irqs: vec![],
         mmio_bump: vmm::USER_MMIO_BASE,
     };
     let caps_ptr = Box::into_raw(Box::new(DriverCaps::new(Capabilities::MMIO, grants)));

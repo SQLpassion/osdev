@@ -120,8 +120,8 @@ pub struct DriverEntry {
 
     /// Packed (slot, generation) task id — see `pack_task_id` in
     /// `kernel/src/scheduler/roundrobin/manager.rs`. This is the same stable
-    /// identity `irq_bridge`/`driver_db` use, so a slot reused by a later,
-    /// unrelated task can never be mistaken for this driver.
+    /// identity `driver_db` uses, so a slot reused by a later, unrelated task
+    /// can never be mistaken for this driver.
     pub tid: usize,
 
     /// App → Driver packets, drained by the driver's own `NetRecv`.
@@ -312,9 +312,9 @@ pub fn query_status(driver_id: usize) -> Option<UserDriverStatus> {
 ///
 /// Called from the scheduler's `remove_task` — the single choke point reached
 /// by both explicit termination and zombie-reaping after a crash — mirroring
-/// `driver_db::release_task`/`irq_bridge::release_task`. Without this, a
-/// crashed or exited driver would permanently squat its name and `DrvLookup`
-/// would keep resolving it to a dead task id.
+/// `driver_db::release_task`. Without this, a crashed or exited driver would
+/// permanently squat its name and `DrvLookup` would keep resolving it to a
+/// dead task id.
 pub fn release_task(tid: usize) {
     if tid == 0 {
         return;

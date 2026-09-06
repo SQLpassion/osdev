@@ -1,6 +1,6 @@
 //! Intel Gigabit Ethernet (82577LM / I219-V e1000 family) controller and DMA descriptor rings.
 
-use lib_driver::{dma::DmaBuffer, irq, mmio::Mmio, SysError};
+use lib_driver::{dma::DmaBuffer, mmio::Mmio, SysError};
 use lib_net::{MacAddress, NicDevice};
 
 /// Device register offsets (BAR 0, 32-bit aligned).
@@ -431,7 +431,6 @@ fn status_has_link(status: u32) -> bool {
 pub struct IntelNicDevice {
     model: NicModel,
     mmio: Mmio,
-    irq: u8,
     mac: MacAddress,
 
     _rx_descs: DmaBuffer,
@@ -476,7 +475,7 @@ impl IntelNicDevice {
     }
 
     /// Initializes the Intel Gigabit network controller and descriptor DMA rings.
-    pub fn init(model: NicModel, mmio: Mmio, irq: u8) -> Result<Self, SysError> {
+    pub fn init(model: NicModel, mmio: Mmio) -> Result<Self, SysError> {
         lib_kaos::serial_println!("[Intel NIC] Phase 1: Controller reset...");
         // Step 1: Block new PCH PCIe master requests and wait until every request
         // inherited from firmware has retired. Resetting with an outstanding TLP
@@ -784,19 +783,15 @@ impl IntelNicDevice {
         mmio.write32(REG_TIPG, e1000_transmit_ipg(model));
         let _ = mmio.read32(REG_STATUS);
 
-        // Step 9: Subscribe to hardware IRQ if valid.
-        if irq != 0 && irq != 0xFF {
-            if let Ok(()) = irq::subscribe(irq) {
-                mmio.write32(REG_IMS, INT_RXT0 | INT_TXDW | INT_LSC);
-            }
-        }
-
+        // Step 9: this driver polls hardware RX/TX state directly from its
+        // background loop rather than using interrupts, so no IRQ is
+        // subscribed and REG_IMS stays at its post-reset default (all
+        // interrupt sources masked).
         lib_kaos::serial_println!("[Intel NIC] Phase 4: Initialization complete.");
 
         Ok(Self {
             model,
             mmio,
-            irq,
             mac,
             _rx_descs: rx_descs,
             _rx_bufs: rx_bufs,
@@ -1036,19 +1031,6 @@ impl IntelNicDevice {
         self.rx_tail = (self.rx_tail + 1) % NUM_RX_DESCRIPTORS;
 
         frame_len
-    }
-
-    /// Waits for a hardware IRQ event and clears interrupt cause.
-    pub fn wait_irq(&mut self, timeout_ms: u32) -> Result<u32, SysError> {
-        if self.irq == 0 || self.irq == 0xFF {
-            return Ok(0);
-        }
-
-        irq::wait(self.irq, timeout_ms)?;
-        let icr = self.mmio.read32(REG_ICR); // Read clears ICR on e1000
-        let _ = irq::ack(self.irq);
-
-        Ok(icr)
     }
 
     /// Shuts down the Intel controller (disables TX/RX and masks interrupts).

@@ -98,7 +98,6 @@ fn test_spawn_driver_without_capability_fails() {
     // Give task only MMIO capability (no SPAWN_DRIVER)
     let grants = ResourceGrants {
         mmio_regions: vec![],
-        irqs: vec![],
         mmio_bump: vmm::USER_MMIO_BASE,
     };
     let caps_ptr = Box::into_raw(Box::new(DriverCaps::new(Capabilities::MMIO, grants)));
@@ -144,7 +143,6 @@ fn test_spawn_driver_invalid_name_pointer() {
     // Give task SPAWN_DRIVER capability
     let grants = ResourceGrants {
         mmio_regions: vec![],
-        irqs: vec![],
         mmio_bump: vmm::USER_MMIO_BASE,
     };
     let caps_ptr = Box::into_raw(Box::new(DriverCaps::new(
@@ -180,8 +178,8 @@ fn test_spawn_driver_invalid_name_pointer() {
 fn test_user_driver_grants_layout() {
     assert_eq!(
         core::mem::size_of::<UserDriverGrants>(),
-        24,
-        "UserDriverGrants size must be exactly 24 bytes"
+        16,
+        "UserDriverGrants size must be exactly 16 bytes"
     );
     assert_eq!(
         core::mem::align_of::<UserDriverGrants>(),
@@ -212,7 +210,6 @@ fn test_spawn_driver_end_to_end_creates_ready_task_with_caps_and_parent() {
 
     let caller_grants = ResourceGrants {
         mmio_regions: vec![],
-        irqs: vec![],
         mmio_bump: vmm::USER_MMIO_BASE,
     };
     let caller_caps_ptr = Box::into_raw(Box::new(DriverCaps::new(
@@ -238,7 +235,7 @@ fn test_spawn_driver_end_to_end_creates_ready_task_with_caps_and_parent() {
     }
 
     set_running_slot_for_test(Some(caller_slot));
-    let requested_caps = (Capabilities::MMIO | Capabilities::IRQ).bits() as u64;
+    let requested_caps = Capabilities::MMIO.bits() as u64;
     let tid = dispatch_checked(SyscallId::SPAWN_DRIVER, NAME_VA, requested_caps, 0, 0)
         .expect("SpawnDriver on an ordinary (non-driver) binary must still succeed")
         as usize;
@@ -259,9 +256,7 @@ fn test_spawn_driver_end_to_end_creates_ready_task_with_caps_and_parent() {
     let attached_caps =
         sched::current_task_caps().expect("DriverCaps must be attached to the new task");
     assert!(
-        attached_caps
-            .flags
-            .contains(Capabilities::MMIO | Capabilities::IRQ),
+        attached_caps.flags.contains(Capabilities::MMIO),
         "requested driver-grantable capabilities must reach the new task's DriverCaps"
     );
     set_running_slot_for_test(None);
@@ -285,11 +280,11 @@ fn test_sanitize_driver_caps_strips_spawn_driver() {
         "an all-bits request must be clamped to exactly the driver-grantable set"
     );
 
-    let requested = Capabilities::MMIO | Capabilities::IRQ | Capabilities::SPAWN_DRIVER;
+    let requested = Capabilities::MMIO | Capabilities::SPAWN_DRIVER;
     let granted = driver_db::sanitize_driver_caps(requested.bits() as u64);
     assert!(
-        granted.contains(Capabilities::MMIO) && granted.contains(Capabilities::IRQ),
-        "MMIO and IRQ must survive sanitization"
+        granted.contains(Capabilities::MMIO),
+        "MMIO must survive sanitization"
     );
     assert!(
         !granted.contains(Capabilities::SPAWN_DRIVER),
@@ -353,35 +348,30 @@ fn test_derive_grants_rejects_unknown_driver() {
 fn test_request_must_match_derived_grants() {
     let grants = ResourceGrants {
         mmio_regions: vec![(0xFEBC_0000, 0x2_0000)],
-        irqs: vec![11],
         mmio_bump: vmm::USER_MMIO_BASE,
     };
 
     assert!(
-        driver_db::request_matches_grants(&grants, 0xFEBC_0000, 11),
-        "a request naming the device's own BAR base and IRQ must be accepted"
+        driver_db::request_matches_grants(&grants, 0xFEBC_0000),
+        "a request naming the device's own BAR base must be accepted"
     );
     assert!(
-        driver_db::request_matches_grants(&grants, 0xFEBC_1000, 0xFF),
-        "an address inside the granted window with no IRQ preference must be accepted"
+        driver_db::request_matches_grants(&grants, 0xFEBC_1000),
+        "an address inside the granted window must be accepted"
     );
     assert!(
-        driver_db::request_matches_grants(&grants, 0, 0xFF),
+        driver_db::request_matches_grants(&grants, 0),
         "an empty request must be accepted"
     );
 
     // Kernel physical memory: the exact escalation this check exists to block.
     assert!(
-        !driver_db::request_matches_grants(&grants, 0x0010_0000, 11),
+        !driver_db::request_matches_grants(&grants, 0x0010_0000),
         "a request for physical memory outside the device BAR must be rejected"
     );
     assert!(
-        !driver_db::request_matches_grants(&grants, 0xFEBE_0000, 11),
+        !driver_db::request_matches_grants(&grants, 0xFEBE_0000),
         "a request one byte past the granted window must be rejected"
-    );
-    assert!(
-        !driver_db::request_matches_grants(&grants, 0xFEBC_0000, 10),
-        "a request for an IRQ the device does not own must be rejected"
     );
 }
 
@@ -499,8 +489,7 @@ fn test_device_binding_rejects_double_grant_until_task_exits() {
         "a device bound to a live task must refuse a second claim"
     );
 
-    // Terminate the owning task — `remove_task` releases the device binding
-    // exactly like it releases IRQ bindings (see `irq_bridge::release_task`).
+    // Terminate the owning task — `remove_task` releases the device binding.
     sched::terminate_task(task_id);
 
     assert!(

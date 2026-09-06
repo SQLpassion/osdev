@@ -156,7 +156,7 @@ pub fn load_driver(file: &str) {
 
     // Step 4: grants are derived kernel-side (see doc comment above); pass
     // None to accept them unconditionally.
-    let caps = 1 | 2; // MMIO (1) | IRQ (2)
+    let caps = 1; // MMIO (1)
 
     // Step 5: spawn in the background -- no process::wait() call.
     match lib_driver::spawn::spawn_driver(canonical_name, caps, None) {

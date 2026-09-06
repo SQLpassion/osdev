@@ -95,63 +95,6 @@ pub fn mask_pic() {
     }
 }
 
-/// Unmasks a single IRQ line so the 8259 actually forwards it to the CPU.
-///
-/// `mask_pic()` only unmasks the lines the kernel itself services at boot
-/// (timer, keyboard, cascade, ATA); every other line — including any later
-/// granted to a Ring-3 driver via `irq_bridge::subscribe()` — stays masked
-/// forever unless unmasked here. Without this, a driver's `IrqSubscribe`/
-/// `IrqWait` succeed at the syscall level but the hardware interrupt never
-/// arrives, since the 8259 itself never forwards it to the CPU.
-///
-/// `irq` must be in `0..16` (direct IRQ line number, not the IDT vector).
-pub fn unmask_irq(irq: u8) {
-    debug_assert!(irq < 16, "unmask_irq: irq must be a valid IRQ line (0..16)");
-
-    // SAFETY:
-    // - This requires `unsafe` because hardware port I/O is inherently outside Rust's memory-safety guarantees.
-    // - PIC data ports are valid and read-modify-write only adjusts IRQ mask state.
-    unsafe {
-        if irq < 8 {
-            let data1 = PortByte::new(PIC1_DATA);
-            let mask = data1.read();
-            data1.write(mask & !(1 << irq));
-        } else {
-            let data2 = PortByte::new(PIC2_DATA);
-            let mask = data2.read();
-            data2.write(mask & !(1 << (irq - 8)));
-
-            // A slave-PIC IRQ can only propagate to the CPU if the master's
-            // cascade line (IRQ2) is also unmasked.
-            let data1 = PortByte::new(PIC1_DATA);
-            let cascade_mask = data1.read();
-            data1.write(cascade_mask & !(1 << 2));
-        }
-    }
-}
-
-/// Re-masks a single IRQ line, e.g. once the driver that owned it has exited.
-///
-/// `irq` must be in `0..16` (direct IRQ line number, not the IDT vector).
-pub fn mask_irq(irq: u8) {
-    debug_assert!(irq < 16, "mask_irq: irq must be a valid IRQ line (0..16)");
-
-    // SAFETY:
-    // - This requires `unsafe` because hardware port I/O is inherently outside Rust's memory-safety guarantees.
-    // - PIC data ports are valid and read-modify-write only adjusts IRQ mask state.
-    unsafe {
-        if irq < 8 {
-            let data1 = PortByte::new(PIC1_DATA);
-            let mask = data1.read();
-            data1.write(mask | (1 << irq));
-        } else {
-            let data2 = PortByte::new(PIC2_DATA);
-            let mask = data2.read();
-            data2.write(mask | (1 << (irq - 8)));
-        }
-    }
-}
-
 pub fn end_of_interrupt(irq: u8) {
     // Step 1 (debug/test builds only): count every EOI actually issued to the
     // PIC. Integration tests use this counter to assert that a software
